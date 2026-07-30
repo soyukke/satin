@@ -7,8 +7,8 @@ fi
 
 release_root="spikes/macos-shell/.build/release"
 manifest="$release_root/latest.json"
-app_path="spikes/macos-shell/.build/package/Neovide Tabs.app"
-executable="$app_path/Contents/MacOS/neovide-tabs"
+app_path="spikes/macos-shell/.build/package/Satin.app"
+executable="$app_path/Contents/MacOS/satin"
 test -f "$manifest"
 test -x "$executable"
 jq -e '
@@ -20,4 +20,5 @@ jq -e '
 archive="$(jq -r .archive "$manifest")"
 test -f "$release_root/$archive"
 
-NVTERM_UPDATE_VERIFY_RELEASE_ROOT="$release_root" "$executable"
+SATIN_UPDATE_VERIFY_RELEASE_ROOT="$release_root" "$executable"
+SATIN_UPDATE_VERIFY_INSTALLABLE_RELEASE_ROOT="$release_root" "$executable"

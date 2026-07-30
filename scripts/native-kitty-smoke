@@ -5,18 +5,18 @@ if [[ -z "${IN_NIX_SHELL:-}" ]]; then
   exec nix develop --command ./scripts/native-kitty-smoke "$@"
 fi
 
-app="${NVTERM_NATIVE_EXECUTABLE:-spikes/macos-shell/.build/NativeShellSpike}"
-cli="${NVTERM_CONTROL_EXECUTABLE:-target/debug/nvtermctl}"
+app="${SATIN_NATIVE_EXECUTABLE:-spikes/macos-shell/.build/SatinApplication}"
+cli="${SATIN_CONTROL_EXECUTABLE:-target/debug/satinctl}"
 cli="$(cd "$(dirname "$cli")" && pwd)/$(basename "$cli")"
-smoke_root="$(mktemp -d "${TMPDIR:-/tmp}/neovide-tabs-kitty-smoke.XXXXXX")"
+smoke_root="$(mktemp -d "${TMPDIR:-/tmp}/satin-kitty-smoke.XXXXXX")"
 socket="$smoke_root/control.sock"
 window_id_file="$smoke_root/window-id"
 shot="spikes/macos-shell/.build/native-kitty-smoke.png"
 rm -f "$shot"
 
-NVTERM_CONTROL_SOCKET="$socket" \
-  NVTERM_NATIVE_SMOKE_SCENARIO=kitty \
-  NVTERM_NATIVE_SMOKE_WINDOW_ID="$window_id_file" \
+SATIN_CONTROL_SOCKET="$socket" \
+  SATIN_NATIVE_SMOKE_SCENARIO=kitty \
+  SATIN_NATIVE_SMOKE_WINDOW_ID="$window_id_file" \
   "$app" >"$smoke_root/app.log" 2>&1 &
 app_pid=$!
 
@@ -54,8 +54,8 @@ send_image() {
   "$cli" --socket "$socket" key --pane "$pane" Enter >/dev/null
 }
 
-first_image="$smoke_root/tty-graphics-protocol-neovide-tabs-first.png"
-second_image="$smoke_root/tty-graphics-protocol-neovide-tabs-second.png"
+first_image="$smoke_root/tty-graphics-protocol-satin-first.png"
+second_image="$smoke_root/tty-graphics-protocol-satin-second.png"
 /usr/bin/ditto assets/app-icon.png "$first_image"
 /usr/bin/ditto assets/app-icon.png "$second_image"
 split="$("$cli" --socket "$socket" --json split --pane 1 --vertical --cwd "$smoke_root")"
@@ -103,7 +103,7 @@ jq -e --argjson second "$second_pane" '
   exit 1
 }
 
-replacement="$smoke_root/tty-graphics-protocol-neovide-tabs-replacement.png"
+replacement="$smoke_root/tty-graphics-protocol-satin-replacement.png"
 /usr/bin/ditto assets/app-icon.png "$replacement"
 send_image 1 902 "$replacement"
 for _ in {1..100}; do
@@ -137,7 +137,7 @@ jq -e --argjson second "$second_pane" '
     and any(.result.panes[]; .id == $second and .kittyImages == 1)
 ' <<<"$state" >/dev/null
 
-final_image="$smoke_root/tty-graphics-protocol-neovide-tabs-final.png"
+final_image="$smoke_root/tty-graphics-protocol-satin-final.png"
 /usr/bin/ditto assets/app-icon.png "$final_image"
 "$cli" --socket "$socket" send --pane 1 clear >/dev/null
 "$cli" --socket "$socket" key --pane 1 Enter >/dev/null

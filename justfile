@@ -9,7 +9,7 @@ shell:
 
 # Show tool versions from the flake shell.
 doctor:
-    @if [[ -z "${IN_NIX_SHELL:-}" ]]; then exec nix develop --command just doctor; else echo "zig:  $(zig version)"; echo "rust: $(rustc --version)"; echo "just: $(just --version)"; echo "font: ${NVTERM_FONT:-unset}"; fi
+    @if [[ -z "${IN_NIX_SHELL:-}" ]]; then exec nix develop --command just doctor; else echo "zig:  $(zig version)"; echo "rust: $(rustc --version)"; echo "just: $(just --version)"; echo "font: ${SATIN_FONT:-unset}"; fi
 
 # List Architecture Decision Records.
 adr:
@@ -28,11 +28,11 @@ adr-new title:
 
 # Launch the native macOS terminal host.
 terminal:
-    @if [[ -z "${IN_NIX_SHELL:-}" ]]; then exec nix develop --command just terminal; else just native-build && exec spikes/macos-shell/.build/NativeShellSpike; fi
+    @if [[ -z "${IN_NIX_SHELL:-}" ]]; then exec nix develop --command just terminal; else just native-build && exec spikes/macos-shell/.build/SatinApplication; fi
 
 # Launch the native Neovim UI pane.
 neovim:
-    @if [[ -z "${IN_NIX_SHELL:-}" ]]; then exec nix develop --command just neovim; else just native-build && NVTERM_NATIVE_PANE=nvim exec spikes/macos-shell/.build/NativeShellSpike; fi
+    @if [[ -z "${IN_NIX_SHELL:-}" ]]; then exec nix develop --command just neovim; else just native-build && SATIN_NATIVE_PANE=nvim exec spikes/macos-shell/.build/SatinApplication; fi
 
 alias run := terminal
 alias launch := terminal
@@ -55,11 +55,11 @@ native-release:
 
 # Verify update metadata parsing and semantic-version ordering.
 native-update-test:
-    @if [[ -z "${IN_NIX_SHELL:-}" ]]; then exec nix develop --command just native-update-test; else just native-build && NVTERM_UPDATE_SELF_TEST=1 spikes/macos-shell/.build/NativeShellSpike; fi
+    @if [[ -z "${IN_NIX_SHELL:-}" ]]; then exec nix develop --command just native-update-test; else just native-build && SATIN_UPDATE_SELF_TEST=1 spikes/macos-shell/.build/SatinApplication; fi
 
 # Verify the production update endpoint without consuming GitHub API quota.
 native-update-live-smoke:
-    @if [[ -z "${IN_NIX_SHELL:-}" ]]; then exec nix develop --command just native-update-live-smoke; else version=$(sed -nE 's/^version = "([^"]+)"/\1/p' Cargo.toml | head -1); just native-build && NVTERM_UPDATE_LIVE_CHECK_VERSION="$version" NVTERM_UPDATE_LIVE_CHECK_EXPECTED=current spikes/macos-shell/.build/NativeShellSpike; fi
+    @if [[ -z "${IN_NIX_SHELL:-}" ]]; then exec nix develop --command just native-update-live-smoke; else version=$(sed -nE 's/^version = "([^"]+)"/\1/p' Cargo.toml | head -1); just native-build && SATIN_UPDATE_LIVE_CHECK_VERSION="$version" SATIN_UPDATE_LIVE_CHECK_EXPECTED=current spikes/macos-shell/.build/SatinApplication; fi
 
 # Verify the external updater swaps, validates, and preserves the previous app.
 native-update-install-smoke:
@@ -73,7 +73,7 @@ native-update-release-smoke:
 native-settings-smoke:
     @if [[ -z "${IN_NIX_SHELL:-}" ]]; then exec nix develop --command just native-settings-smoke; else just native-build && ./scripts/native-settings-smoke; fi
 
-# Verify the owner-only control socket and every nvtermctl command end to end.
+# Verify the owner-only control socket and every satinctl command end to end.
 native-control-smoke:
     @if [[ -z "${IN_NIX_SHELL:-}" ]]; then exec nix develop --command just native-control-smoke; else just native-build && ./scripts/native-control-smoke; fi
 
@@ -289,11 +289,11 @@ _nvim-smoke-cursor-switch:
 _nvim-smoke scenario:
     @tmp=$(mktemp); \
     trap 'rm -f "$tmp"' EXIT; \
-    NVTERM_NATIVE_PANE=nvim \
-    NVTERM_NATIVE_SMOKE_SCENARIO="{{scenario}}" \
-    NVTERM_NATIVE_SMOKE_RESULT="$tmp" \
-        spikes/macos-shell/.build/NativeShellSpike \
-        >"/tmp/neovide-tabs-{{scenario}}.log" 2>&1; \
+    SATIN_NATIVE_PANE=nvim \
+    SATIN_NATIVE_SMOKE_SCENARIO="{{scenario}}" \
+    SATIN_NATIVE_SMOKE_RESULT="$tmp" \
+        spikes/macos-shell/.build/SatinApplication \
+        >"/tmp/satin-{{scenario}}.log" 2>&1; \
     result=$(cat "$tmp"); \
     echo "$result"; \
     [[ "$result" == ok* ]]

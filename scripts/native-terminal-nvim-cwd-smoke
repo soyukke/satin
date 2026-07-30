@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-app="spikes/macos-shell/.build/NativeShellSpike"
+app="spikes/macos-shell/.build/SatinApplication"
 result_file="spikes/macos-shell/.build/native-terminal-nvim-cwd.result"
 expected_dir="$(pwd)/spikes/macos-shell/.build/native-terminal-nvim-cwd-dir"
 actual_file="$(pwd)/spikes/macos-shell/.build/native-terminal-nvim-cwd.actual"
@@ -9,15 +9,15 @@ actual_file="$(pwd)/spikes/macos-shell/.build/native-terminal-nvim-cwd.actual"
 rm -f "$result_file" "$actual_file"
 mkdir -p "$expected_dir"
 
-NVTERM_NATIVE_SMOKE_SCENARIO=terminal-nvim-cwd \
-  NVTERM_NATIVE_SMOKE_RESULT="$result_file" \
-  NVTERM_NATIVE_CWD_EXPECTED="$expected_dir" \
-  NVTERM_NATIVE_CWD_ACTUAL="$actual_file" \
-  "$app" >"/tmp/neovide-tabs-terminal-nvim-cwd.log" 2>&1
+SATIN_NATIVE_SMOKE_SCENARIO=terminal-nvim-cwd \
+  SATIN_NATIVE_SMOKE_RESULT="$result_file" \
+  SATIN_NATIVE_CWD_EXPECTED="$expected_dir" \
+  SATIN_NATIVE_CWD_ACTUAL="$actual_file" \
+  "$app" >"/tmp/satin-terminal-nvim-cwd.log" 2>&1
 
 if [[ ! -s "$result_file" ]]; then
   echo "terminal nvim cwd smoke failed before result was written" >&2
-  cat "/tmp/neovide-tabs-terminal-nvim-cwd.log" >&2 || true
+  cat "/tmp/satin-terminal-nvim-cwd.log" >&2 || true
   exit 1
 fi
 

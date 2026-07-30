@@ -1,5 +1,5 @@
 {
-  description = "libghostty-vt terminal renderer prototype";
+  description = "Satin native macOS terminal development environment";
 
   inputs = {
     nixpkgs.url = "nixpkgs";
@@ -43,10 +43,10 @@
             ];
 
             shellHook = ''
-              export NVTERM_FONT="${pkgs.nerd-fonts.caskaydia-cove}/share/fonts/truetype/NerdFonts/CaskaydiaCove/CaskaydiaCoveNerdFontMono-Regular.ttf"
+              export SATIN_FONT="${pkgs.nerd-fonts.caskaydia-cove}/share/fonts/truetype/NerdFonts/CaskaydiaCove/CaskaydiaCoveNerdFontMono-Regular.ttf"
               echo "zig: $(zig version)"
               echo "rustc: $(rustc --version)"
-              echo "font: $NVTERM_FONT"
+              echo "font: $SATIN_FONT"
             '';
           };
         }

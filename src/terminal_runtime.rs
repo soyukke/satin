@@ -805,6 +805,7 @@ fn configure_shell_command(cmd: &mut CommandBuilder, config: &TerminalSpawnConfi
     cmd.env("LC_CTYPE", &locale);
     cmd.env("TERM", "xterm-256color");
     cmd.env("COLORTERM", "truecolor");
+    cmd.env("SATIN_PROTO", "libghostty-vt");
     cmd.env("NVTERM_PROTO", "libghostty-vt");
     for (key, value) in &config.environment {
         if allowed_terminal_environment_key(key) {
@@ -814,7 +815,11 @@ fn configure_shell_command(cmd: &mut CommandBuilder, config: &TerminalSpawnConfi
 }
 
 fn allowed_terminal_environment_key(key: &str) -> bool {
-    key.starts_with("NVTERM_") || key == "NVTERMCTL" || key == "PATH"
+    key.starts_with("SATIN_")
+        || key.starts_with("NVTERM_")
+        || key == "SATINCTL"
+        || key == "NVTERMCTL"
+        || key == "PATH"
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1826,7 +1831,8 @@ fn cursor_style_name(style: CursorVisualStyle) -> &'static str {
 }
 
 fn default_shell() -> String {
-    env_shell("NVTERM_SHELL")
+    env_shell("SATIN_SHELL")
+        .or_else(|| env_shell("NVTERM_SHELL"))
         .or_else(login_shell)
         .or_else(|| env_shell("SHELL"))
         .unwrap_or_else(|| "/bin/zsh".to_owned())
@@ -2144,7 +2150,7 @@ mod tests {
         assert!(terminal.is_kitty_image_from_temp_file_allowed().unwrap());
         assert!(terminal.is_kitty_image_from_shared_mem_allowed().unwrap());
         let path = std::env::temp_dir().join(format!(
-            "tty-graphics-protocol-neovide-tabs-{}-{}.png",
+            "tty-graphics-protocol-satin-{}-{}.png",
             std::process::id(),
             71
         ));
@@ -2163,8 +2169,7 @@ mod tests {
         use std::ffi::CString;
 
         let mut terminal = kitty_terminal(8, 4, 8);
-        let name =
-            CString::new(format!("/neovide-tabs-kitty-{}-{}", std::process::id(), 72)).unwrap();
+        let name = CString::new(format!("/satin-kitty-{}-{}", std::process::id(), 72)).unwrap();
         // SAFETY: this only removes a stale object with the test-specific name.
         unsafe {
             libc::shm_unlink(name.as_ptr());
@@ -2241,8 +2246,8 @@ mod tests {
             PathBuf::from("/Users/soyukke/dev app")
         );
         assert_eq!(
-            terminal_pwd_path("file:///tmp/neovide-tabs").unwrap(),
-            PathBuf::from("/tmp/neovide-tabs")
+            terminal_pwd_path("file:///tmp/satin").unwrap(),
+            PathBuf::from("/tmp/satin")
         );
     }
 
@@ -2250,10 +2255,8 @@ mod tests {
     fn configured_shell_requires_an_executable_absolute_file() {
         assert_eq!(configured_shell(Some("/bin/sh")).unwrap(), "/bin/sh");
         assert!(configured_shell(Some("relative-shell")).is_err());
-        let path = std::env::temp_dir().join(format!(
-            "neovide-tabs-non-executable-shell-{}",
-            std::process::id()
-        ));
+        let path =
+            std::env::temp_dir().join(format!("satin-non-executable-shell-{}", std::process::id()));
         std::fs::write(&path, b"#!/bin/sh\n").unwrap();
         #[cfg(unix)]
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
@@ -2264,6 +2267,8 @@ mod tests {
 
     #[test]
     fn terminal_environment_allows_control_discovery_without_arbitrary_injection() {
+        assert!(allowed_terminal_environment_key("SATIN_SOCKET"));
+        assert!(allowed_terminal_environment_key("SATINCTL"));
         assert!(allowed_terminal_environment_key("NVTERM_SOCKET"));
         assert!(allowed_terminal_environment_key("NVTERMCTL"));
         assert!(allowed_terminal_environment_key("PATH"));

@@ -20,7 +20,7 @@ targets Apple Silicon only.
 
 ## Decision
 
-- Release builds are assembled as `Neovide Tabs.app` with versioned bundle
+- Release builds are assembled as `Satin.app` with versioned bundle
   metadata, a macOS 14 deployment target, an application icon, and
   hardened-runtime entitlements. Developer ID credentials are configuration,
   never repository state. The production path signs with a secure timestamp,
@@ -33,7 +33,7 @@ targets Apple Silicon only.
   notarized production artifact.
 - Packaged Mach-O executables link macOS compatibility libraries through the
   Xcode SDK rather than the Nix store. Packaging rejects any `/nix/store`
-  dynamic dependency, and package smoke launches the nested `nvtermctl`
+  dynamic dependency, and package smoke launches the nested `satinctl`
   executable with a minimal environment so development-machine libraries
   cannot mask a non-portable release.
 - A `v<package-version>` tag runs the arm64 production gate and package smoke,
@@ -80,7 +80,7 @@ targets Apple Silicon only.
   pane kinds, working directories, and the active leaf. Version 1 data migrates
   to terminal leaves, corrupt supported data is discarded with a warning, and
   unknown future schemas are preserved.
-- Rust emits centrally filtered semantic logs through `NVTERM_LOG`; Swift uses
+- Rust emits centrally filtered semantic logs through `SATIN_LOG`; Swift uses
   unified logging categories for lifecycle, runtime, and session events. Fatal
   core or Metal initialization errors are visible to the user before exit.
 - The macOS CI gate verifies Rust, builds the native host and release archive,

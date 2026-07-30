@@ -6,7 +6,7 @@ import MetalKit
 import OSLog
 
 enum NativeLog {
-    private static let subsystem = Bundle.main.bundleIdentifier ?? "dev.soyukke.neovide-tabs"
+    private static let subsystem = Bundle.main.bundleIdentifier ?? "dev.soyukke.satin"
     private static let lifecycle = Logger(subsystem: subsystem, category: "lifecycle")
     private static let runtime = Logger(subsystem: subsystem, category: "runtime")
     private static let session = Logger(subsystem: subsystem, category: "session")
@@ -438,63 +438,63 @@ final class AppUpdateChecker {
     }
 }
 
-@_silgen_name("nvterm_core_create")
-func nvterm_core_create() -> UnsafeMutableRawPointer?
+@_silgen_name("satin_core_create")
+func satin_core_create() -> UnsafeMutableRawPointer?
 
-@_silgen_name("nvterm_core_create_with_theme")
-func nvterm_core_create_with_theme(_ theme: UnsafePointer<CChar>?) -> UnsafeMutableRawPointer?
+@_silgen_name("satin_core_create_with_theme")
+func satin_core_create_with_theme(_ theme: UnsafePointer<CChar>?) -> UnsafeMutableRawPointer?
 
-@_silgen_name("nvterm_core_destroy")
-func nvterm_core_destroy(_ handle: UnsafeMutableRawPointer?)
+@_silgen_name("satin_core_destroy")
+func satin_core_destroy(_ handle: UnsafeMutableRawPointer?)
 
-@_silgen_name("nvterm_core_new_tab")
-func nvterm_core_new_tab(_ handle: UnsafeMutableRawPointer?) -> Int
+@_silgen_name("satin_core_new_tab")
+func satin_core_new_tab(_ handle: UnsafeMutableRawPointer?) -> Int
 
-@_silgen_name("nvterm_core_split_active")
-func nvterm_core_split_active(_ handle: UnsafeMutableRawPointer?, _ axis: UInt32) -> Int
+@_silgen_name("satin_core_split_active")
+func satin_core_split_active(_ handle: UnsafeMutableRawPointer?, _ axis: UInt32) -> Int
 
-@_silgen_name("nvterm_core_close_pane")
-func nvterm_core_close_pane(_ handle: UnsafeMutableRawPointer?, _ paneId: Int) -> UInt8
+@_silgen_name("satin_core_close_pane")
+func satin_core_close_pane(_ handle: UnsafeMutableRawPointer?, _ paneId: Int) -> UInt8
 
-@_silgen_name("nvterm_core_select_tab")
-func nvterm_core_select_tab(_ handle: UnsafeMutableRawPointer?, _ index: Int) -> UInt8
+@_silgen_name("satin_core_select_tab")
+func satin_core_select_tab(_ handle: UnsafeMutableRawPointer?, _ index: Int) -> UInt8
 
-@_silgen_name("nvterm_core_select_pane")
-func nvterm_core_select_pane(_ handle: UnsafeMutableRawPointer?, _ paneId: Int) -> UInt8
+@_silgen_name("satin_core_select_pane")
+func satin_core_select_pane(_ handle: UnsafeMutableRawPointer?, _ paneId: Int) -> UInt8
 
-@_silgen_name("nvterm_core_rename_tab")
-func nvterm_core_rename_tab(
+@_silgen_name("satin_core_rename_tab")
+func satin_core_rename_tab(
     _ handle: UnsafeMutableRawPointer?,
     _ index: Int,
     _ title: UnsafePointer<CChar>?
 ) -> UInt8
 
-@_silgen_name("nvterm_core_set_tab_theme")
-func nvterm_core_set_tab_theme(
+@_silgen_name("satin_core_set_tab_theme")
+func satin_core_set_tab_theme(
     _ handle: UnsafeMutableRawPointer?,
     _ index: Int,
     _ theme: UnsafePointer<CChar>?
 ) -> UInt8
 
-@_silgen_name("nvterm_core_set_default_theme")
-func nvterm_core_set_default_theme(
+@_silgen_name("satin_core_set_default_theme")
+func satin_core_set_default_theme(
     _ handle: UnsafeMutableRawPointer?,
     _ theme: UnsafePointer<CChar>?
 ) -> UInt8
 
-@_silgen_name("nvterm_core_snapshot_json")
-func nvterm_core_snapshot_json(_ handle: UnsafeMutableRawPointer?) -> UnsafeMutablePointer<CChar>?
+@_silgen_name("satin_core_snapshot_json")
+func satin_core_snapshot_json(_ handle: UnsafeMutableRawPointer?) -> UnsafeMutablePointer<CChar>?
 
-@_silgen_name("nvterm_runtime_create")
-func nvterm_runtime_create(
+@_silgen_name("satin_runtime_create")
+func satin_runtime_create(
     _ rows: UInt16,
     _ cols: UInt16,
     _ pixelWidth: UInt16,
     _ pixelHeight: UInt16
 ) -> UnsafeMutableRawPointer?
 
-@_silgen_name("nvterm_runtime_create_in_cwd")
-func nvterm_runtime_create_in_cwd(
+@_silgen_name("satin_runtime_create_in_cwd")
+func satin_runtime_create_in_cwd(
     _ rows: UInt16,
     _ cols: UInt16,
     _ pixelWidth: UInt16,
@@ -502,8 +502,8 @@ func nvterm_runtime_create_in_cwd(
     _ cwd: UnsafePointer<CChar>?
 ) -> UnsafeMutableRawPointer?
 
-@_silgen_name("nvterm_runtime_create_config")
-func nvterm_runtime_create_config(
+@_silgen_name("satin_runtime_create_config")
+func satin_runtime_create_config(
     _ rows: UInt16,
     _ cols: UInt16,
     _ pixelWidth: UInt16,
@@ -511,11 +511,11 @@ func nvterm_runtime_create_config(
     _ config: UnsafePointer<CChar>?
 ) -> UnsafeMutableRawPointer?
 
-@_silgen_name("nvterm_runtime_destroy")
-func nvterm_runtime_destroy(_ handle: UnsafeMutableRawPointer?)
+@_silgen_name("satin_runtime_destroy")
+func satin_runtime_destroy(_ handle: UnsafeMutableRawPointer?)
 
-@_silgen_name("nvterm_runtime_resize")
-func nvterm_runtime_resize(
+@_silgen_name("satin_runtime_resize")
+func satin_runtime_resize(
     _ handle: UnsafeMutableRawPointer?,
     _ rows: UInt16,
     _ cols: UInt16,
@@ -523,15 +523,15 @@ func nvterm_runtime_resize(
     _ pixelHeight: UInt16
 ) -> UInt8
 
-@_silgen_name("nvterm_runtime_write")
-func nvterm_runtime_write(
+@_silgen_name("satin_runtime_write")
+func satin_runtime_write(
     _ handle: UnsafeMutableRawPointer?,
     _ bytes: UnsafePointer<UInt8>?,
     _ len: Int
 ) -> UInt8
 
-@_silgen_name("nvterm_runtime_key")
-func nvterm_runtime_key(
+@_silgen_name("satin_runtime_key")
+func satin_runtime_key(
     _ handle: UnsafeMutableRawPointer?,
     _ keyCode: UInt16,
     _ modifiers: UInt32,
@@ -543,22 +543,22 @@ func nvterm_runtime_key(
     _ released: UInt8
 ) -> UInt8
 
-@_silgen_name("nvterm_runtime_text")
-func nvterm_runtime_text(
+@_silgen_name("satin_runtime_text")
+func satin_runtime_text(
     _ handle: UnsafeMutableRawPointer?,
     _ bytes: UnsafePointer<UInt8>?,
     _ length: Int
 ) -> UInt8
 
-@_silgen_name("nvterm_runtime_paste")
-func nvterm_runtime_paste(
+@_silgen_name("satin_runtime_paste")
+func satin_runtime_paste(
     _ handle: UnsafeMutableRawPointer?,
     _ bytes: UnsafePointer<UInt8>?,
     _ length: Int
 ) -> UInt8
 
-@_silgen_name("nvterm_runtime_mouse")
-func nvterm_runtime_mouse(
+@_silgen_name("satin_runtime_mouse")
+func satin_runtime_mouse(
     _ handle: UnsafeMutableRawPointer?,
     _ action: UInt32,
     _ button: Int32,
@@ -569,14 +569,14 @@ func nvterm_runtime_mouse(
     _ cellHeight: UInt32
 ) -> UInt8
 
-@_silgen_name("nvterm_runtime_focus")
-func nvterm_runtime_focus(
+@_silgen_name("satin_runtime_focus")
+func satin_runtime_focus(
     _ handle: UnsafeMutableRawPointer?,
     _ focused: UInt8
 ) -> UInt8
 
-@_silgen_name("nvterm_runtime_select")
-func nvterm_runtime_select(
+@_silgen_name("satin_runtime_select")
+func satin_runtime_select(
     _ handle: UnsafeMutableRawPointer?,
     _ startRow: UInt32,
     _ startCol: UInt16,
@@ -585,79 +585,79 @@ func nvterm_runtime_select(
     _ rectangular: UInt8
 ) -> UInt8
 
-@_silgen_name("nvterm_runtime_select_all")
-func nvterm_runtime_select_all(_ handle: UnsafeMutableRawPointer?) -> UInt8
+@_silgen_name("satin_runtime_select_all")
+func satin_runtime_select_all(_ handle: UnsafeMutableRawPointer?) -> UInt8
 
-@_silgen_name("nvterm_runtime_clear_selection")
-func nvterm_runtime_clear_selection(_ handle: UnsafeMutableRawPointer?) -> UInt8
+@_silgen_name("satin_runtime_clear_selection")
+func satin_runtime_clear_selection(_ handle: UnsafeMutableRawPointer?) -> UInt8
 
-@_silgen_name("nvterm_runtime_selected_text")
-func nvterm_runtime_selected_text(
+@_silgen_name("satin_runtime_selected_text")
+func satin_runtime_selected_text(
     _ handle: UnsafeMutableRawPointer?
 ) -> UnsafeMutablePointer<CChar>?
 
-@_silgen_name("nvterm_runtime_hyperlink")
-func nvterm_runtime_hyperlink(
+@_silgen_name("satin_runtime_hyperlink")
+func satin_runtime_hyperlink(
     _ handle: UnsafeMutableRawPointer?,
     _ row: UInt32,
     _ col: UInt16
 ) -> UnsafeMutablePointer<CChar>?
 
-@_silgen_name("nvterm_runtime_title")
-func nvterm_runtime_title(_ handle: UnsafeMutableRawPointer?) -> UnsafeMutablePointer<CChar>?
+@_silgen_name("satin_runtime_title")
+func satin_runtime_title(_ handle: UnsafeMutableRawPointer?) -> UnsafeMutablePointer<CChar>?
 
-@_silgen_name("nvterm_runtime_take_bell_count")
-func nvterm_runtime_take_bell_count(_ handle: UnsafeMutableRawPointer?) -> UInt64
+@_silgen_name("satin_runtime_take_bell_count")
+func satin_runtime_take_bell_count(_ handle: UnsafeMutableRawPointer?) -> UInt64
 
-@_silgen_name("nvterm_runtime_find")
-func nvterm_runtime_find(
+@_silgen_name("satin_runtime_find")
+func satin_runtime_find(
     _ handle: UnsafeMutableRawPointer?,
     _ query: UnsafePointer<CChar>?,
     _ backwards: UInt8
 ) -> UInt8
 
-@_silgen_name("nvterm_runtime_set_option_as_alt")
-func nvterm_runtime_set_option_as_alt(
+@_silgen_name("satin_runtime_set_option_as_alt")
+func satin_runtime_set_option_as_alt(
     _ handle: UnsafeMutableRawPointer?,
     _ enabled: UInt8
 ) -> UInt8
 
-@_silgen_name("nvterm_runtime_drain")
-func nvterm_runtime_drain(_ handle: UnsafeMutableRawPointer?) -> UInt8
+@_silgen_name("satin_runtime_drain")
+func satin_runtime_drain(_ handle: UnsafeMutableRawPointer?) -> UInt8
 
-@_silgen_name("nvterm_runtime_exited")
-func nvterm_runtime_exited(_ handle: UnsafeMutableRawPointer?) -> UInt8
+@_silgen_name("satin_runtime_exited")
+func satin_runtime_exited(_ handle: UnsafeMutableRawPointer?) -> UInt8
 
-@_silgen_name("nvterm_runtime_wakeup_fd")
-func nvterm_runtime_wakeup_fd(_ handle: UnsafeMutableRawPointer?) -> Int32
+@_silgen_name("satin_runtime_wakeup_fd")
+func satin_runtime_wakeup_fd(_ handle: UnsafeMutableRawPointer?) -> Int32
 
-@_silgen_name("nvterm_runtime_scroll")
-func nvterm_runtime_scroll(_ handle: UnsafeMutableRawPointer?, _ requestedRows: Int) -> Int
+@_silgen_name("satin_runtime_scroll")
+func satin_runtime_scroll(_ handle: UnsafeMutableRawPointer?, _ requestedRows: Int) -> Int
 
-@_silgen_name("nvterm_runtime_renderer_scroll_position")
-func nvterm_runtime_renderer_scroll_position(_ handle: UnsafeMutableRawPointer?) -> Float
+@_silgen_name("satin_runtime_renderer_scroll_position")
+func satin_runtime_renderer_scroll_position(_ handle: UnsafeMutableRawPointer?) -> Float
 
-@_silgen_name("nvterm_runtime_cwd")
-func nvterm_runtime_cwd(_ handle: UnsafeMutableRawPointer?) -> UnsafeMutablePointer<CChar>?
+@_silgen_name("satin_runtime_cwd")
+func satin_runtime_cwd(_ handle: UnsafeMutableRawPointer?) -> UnsafeMutablePointer<CChar>?
 
-@_silgen_name("nvterm_runtime_screen_text")
-func nvterm_runtime_screen_text(
+@_silgen_name("satin_runtime_screen_text")
+func satin_runtime_screen_text(
     _ handle: UnsafeMutableRawPointer?
 ) -> UnsafeMutablePointer<CChar>?
 
-@_silgen_name("nvterm_runtime_kitty_placement_count")
-func nvterm_runtime_kitty_placement_count(_ handle: UnsafeMutableRawPointer?) -> Int
+@_silgen_name("satin_runtime_kitty_placement_count")
+func satin_runtime_kitty_placement_count(_ handle: UnsafeMutableRawPointer?) -> Int
 
-@_silgen_name("nvterm_nvim_create")
-func nvterm_nvim_create(
+@_silgen_name("satin_nvim_create")
+func satin_nvim_create(
     _ rows: UInt16,
     _ cols: UInt16,
     _ pixelWidth: UInt16,
     _ pixelHeight: UInt16
 ) -> UnsafeMutableRawPointer?
 
-@_silgen_name("nvterm_nvim_create_in_cwd")
-func nvterm_nvim_create_in_cwd(
+@_silgen_name("satin_nvim_create_in_cwd")
+func satin_nvim_create_in_cwd(
     _ rows: UInt16,
     _ cols: UInt16,
     _ pixelWidth: UInt16,
@@ -665,11 +665,11 @@ func nvterm_nvim_create_in_cwd(
     _ cwd: UnsafePointer<CChar>?
 ) -> UnsafeMutableRawPointer?
 
-@_silgen_name("nvterm_nvim_destroy")
-func nvterm_nvim_destroy(_ handle: UnsafeMutableRawPointer?)
+@_silgen_name("satin_nvim_destroy")
+func satin_nvim_destroy(_ handle: UnsafeMutableRawPointer?)
 
-@_silgen_name("nvterm_nvim_resize")
-func nvterm_nvim_resize(
+@_silgen_name("satin_nvim_resize")
+func satin_nvim_resize(
     _ handle: UnsafeMutableRawPointer?,
     _ rows: UInt16,
     _ cols: UInt16,
@@ -677,15 +677,15 @@ func nvterm_nvim_resize(
     _ pixelHeight: UInt16
 ) -> UInt8
 
-@_silgen_name("nvterm_nvim_input")
-func nvterm_nvim_input(
+@_silgen_name("satin_nvim_input")
+func satin_nvim_input(
     _ handle: UnsafeMutableRawPointer?,
     _ bytes: UnsafePointer<UInt8>?,
     _ len: Int
 ) -> UInt8
 
-@_silgen_name("nvterm_nvim_mouse")
-func nvterm_nvim_mouse(
+@_silgen_name("satin_nvim_mouse")
+func satin_nvim_mouse(
     _ handle: UnsafeMutableRawPointer?,
     _ button: UnsafePointer<CChar>?,
     _ action: UnsafePointer<CChar>?,
@@ -695,38 +695,38 @@ func nvterm_nvim_mouse(
     _ col: Int64
 ) -> UInt8
 
-@_silgen_name("nvterm_nvim_command")
-func nvterm_nvim_command(
+@_silgen_name("satin_nvim_command")
+func satin_nvim_command(
     _ handle: UnsafeMutableRawPointer?,
     _ command: UnsafePointer<CChar>?
 ) -> UInt8
 
-@_silgen_name("nvterm_nvim_drain")
-func nvterm_nvim_drain(_ handle: UnsafeMutableRawPointer?) -> UInt8
+@_silgen_name("satin_nvim_drain")
+func satin_nvim_drain(_ handle: UnsafeMutableRawPointer?) -> UInt8
 
-@_silgen_name("nvterm_nvim_exited")
-func nvterm_nvim_exited(_ handle: UnsafeMutableRawPointer?) -> UInt8
+@_silgen_name("satin_nvim_exited")
+func satin_nvim_exited(_ handle: UnsafeMutableRawPointer?) -> UInt8
 
-@_silgen_name("nvterm_nvim_wakeup_fd")
-func nvterm_nvim_wakeup_fd(_ handle: UnsafeMutableRawPointer?) -> Int32
+@_silgen_name("satin_nvim_wakeup_fd")
+func satin_nvim_wakeup_fd(_ handle: UnsafeMutableRawPointer?) -> Int32
 
-@_silgen_name("nvterm_nvim_renderer_model_json")
-func nvterm_nvim_renderer_model_json(_ handle: UnsafeMutableRawPointer?) -> UnsafeMutablePointer<CChar>?
+@_silgen_name("satin_nvim_renderer_model_json")
+func satin_nvim_renderer_model_json(_ handle: UnsafeMutableRawPointer?) -> UnsafeMutablePointer<CChar>?
 
-@_silgen_name("nvterm_string_free")
-func nvterm_string_free(_ value: UnsafeMutablePointer<CChar>?)
+@_silgen_name("satin_string_free")
+func satin_string_free(_ value: UnsafeMutablePointer<CChar>?)
 
-@_silgen_name("nvterm_skia_metal_create")
-func nvterm_skia_metal_create(
+@_silgen_name("satin_skia_metal_create")
+func satin_skia_metal_create(
     _ device: UnsafeMutableRawPointer?,
     _ commandQueue: UnsafeMutableRawPointer?
 ) -> UnsafeMutableRawPointer?
 
-@_silgen_name("nvterm_skia_metal_destroy")
-func nvterm_skia_metal_destroy(_ handle: UnsafeMutableRawPointer?)
+@_silgen_name("satin_skia_metal_destroy")
+func satin_skia_metal_destroy(_ handle: UnsafeMutableRawPointer?)
 
-@_silgen_name("nvterm_skia_metal_render_nvim")
-func nvterm_skia_metal_render_nvim(
+@_silgen_name("satin_skia_metal_render_nvim")
+func satin_skia_metal_render_nvim(
     _ renderer: UnsafeMutableRawPointer?,
     _ nvim: UnsafeMutableRawPointer?,
     _ texture: UnsafeMutableRawPointer?,
@@ -741,8 +741,8 @@ func nvterm_skia_metal_render_nvim(
     _ clear: UInt8
 ) -> UInt8
 
-@_silgen_name("nvterm_skia_metal_render_terminal")
-func nvterm_skia_metal_render_terminal(
+@_silgen_name("satin_skia_metal_render_terminal")
+func satin_skia_metal_render_terminal(
     _ renderer: UnsafeMutableRawPointer?,
     _ runtime: UnsafeMutableRawPointer?,
     _ texture: UnsafeMutableRawPointer?,
@@ -757,23 +757,23 @@ func nvterm_skia_metal_render_terminal(
     _ clear: UInt8
 ) -> UInt8
 
-@_silgen_name("nvterm_skia_metal_needs_animation_frame")
-func nvterm_skia_metal_needs_animation_frame(_ renderer: UnsafeMutableRawPointer?) -> UInt8
+@_silgen_name("satin_skia_metal_needs_animation_frame")
+func satin_skia_metal_needs_animation_frame(_ renderer: UnsafeMutableRawPointer?) -> UInt8
 
-@_silgen_name("nvterm_skia_metal_forget_runtime")
-func nvterm_skia_metal_forget_runtime(
+@_silgen_name("satin_skia_metal_forget_runtime")
+func satin_skia_metal_forget_runtime(
     _ renderer: UnsafeMutableRawPointer?,
     _ runtime: UnsafeMutableRawPointer?
 )
 
-@_silgen_name("nvterm_skia_metal_set_font_family")
-func nvterm_skia_metal_set_font_family(
+@_silgen_name("satin_skia_metal_set_font_family")
+func satin_skia_metal_set_font_family(
     _ renderer: UnsafeMutableRawPointer?,
     _ family: UnsafePointer<CChar>?
 ) -> UInt8
 
-@_silgen_name("nvterm_skia_metal_next_frame_delay_ms")
-func nvterm_skia_metal_next_frame_delay_ms(_ renderer: UnsafeMutableRawPointer?) -> UInt64
+@_silgen_name("satin_skia_metal_next_frame_delay_ms")
+func satin_skia_metal_next_frame_delay_ms(_ renderer: UnsafeMutableRawPointer?) -> UInt64
 
 private let ffiSplitVertical: UInt32 = 0
 private let ffiSplitHorizontal: UInt32 = 1
@@ -975,7 +975,7 @@ final class RustCore {
 
     init?(defaultTheme: String = nativeThemeNames[0]) {
         let handle = defaultTheme.withCString { value in
-            nvterm_core_create_with_theme(value)
+            satin_core_create_with_theme(value)
         }
         guard let handle else {
             return nil
@@ -984,50 +984,50 @@ final class RustCore {
     }
 
     deinit {
-        nvterm_core_destroy(handle)
+        satin_core_destroy(handle)
     }
 
     func snapshot() -> TerminalCoreSnapshot? {
-        decode(nvterm_core_snapshot_json(handle), as: TerminalCoreSnapshot.self)
+        decode(satin_core_snapshot_json(handle), as: TerminalCoreSnapshot.self)
     }
 
     @discardableResult
     func newTab() -> Int {
-        nvterm_core_new_tab(handle)
+        satin_core_new_tab(handle)
     }
 
     func splitActive(axis: UInt32) -> Int? {
-        let paneId = nvterm_core_split_active(handle, axis)
+        let paneId = satin_core_split_active(handle, axis)
         return paneId >= 0 ? paneId : nil
     }
 
     func closePane(_ paneId: Int) -> Bool {
-        nvterm_core_close_pane(handle, paneId) != 0
+        satin_core_close_pane(handle, paneId) != 0
     }
 
     func selectTab(_ index: Int) -> Bool {
-        nvterm_core_select_tab(handle, index) != 0
+        satin_core_select_tab(handle, index) != 0
     }
 
     func selectPane(_ paneId: Int) -> Bool {
-        nvterm_core_select_pane(handle, paneId) != 0
+        satin_core_select_pane(handle, paneId) != 0
     }
 
     func renameTab(_ index: Int, title: String) {
         title.withCString { value in
-            _ = nvterm_core_rename_tab(handle, index, value)
+            _ = satin_core_rename_tab(handle, index, value)
         }
     }
 
     func setTheme(_ theme: String, tab index: Int) {
         theme.withCString { value in
-            _ = nvterm_core_set_tab_theme(handle, index, value)
+            _ = satin_core_set_tab_theme(handle, index, value)
         }
     }
 
     func setDefaultTheme(_ theme: String) {
         theme.withCString { value in
-            _ = nvterm_core_set_default_theme(handle, value)
+            _ = satin_core_set_default_theme(handle, value)
         }
     }
 
@@ -1036,7 +1036,7 @@ final class RustCore {
             return nil
         }
         defer {
-            nvterm_string_free(pointer)
+            satin_string_free(pointer)
         }
 
         let json = String(cString: pointer)
@@ -1086,7 +1086,7 @@ enum NativePaneMode {
     case neovim
 
     static func current() -> Self {
-        ProcessInfo.processInfo.environment["NVTERM_NATIVE_PANE"] == "nvim" ? .neovim : .terminal
+        ProcessInfo.processInfo.environment["SATIN_NATIVE_PANE"] == "nvim" ? .neovim : .terminal
     }
 
     init(sessionValue: String?) {
@@ -1124,7 +1124,7 @@ final class RustTerminalPane: NativePane {
             return nil
         }
         let handle = json.withCString { value in
-            nvterm_runtime_create_config(
+            satin_runtime_create_config(
                 clampedUInt16(grid.rows),
                 clampedUInt16(grid.cols),
                 clampedUInt16(grid.widthPixels),
@@ -1140,11 +1140,11 @@ final class RustTerminalPane: NativePane {
     }
 
     deinit {
-        nvterm_runtime_destroy(handle)
+        satin_runtime_destroy(handle)
     }
 
     func resize(grid: (rows: Int, cols: Int, widthPixels: Int, heightPixels: Int)) {
-        _ = nvterm_runtime_resize(
+        _ = satin_runtime_resize(
             handle,
             clampedUInt16(grid.rows),
             clampedUInt16(grid.cols),
@@ -1158,7 +1158,7 @@ final class RustTerminalPane: NativePane {
             guard let base = buffer.bindMemory(to: UInt8.self).baseAddress else {
                 return
             }
-            _ = nvterm_runtime_write(handle, base, buffer.count)
+            _ = satin_runtime_write(handle, base, buffer.count)
         }
     }
 
@@ -1171,7 +1171,7 @@ final class RustTerminalPane: NativePane {
             let unshiftedBase = unshiftedBuffer.bindMemory(to: UInt8.self).baseAddress
             if let textData {
                 return textData.withUnsafeBytes { textBuffer in
-                    nvterm_runtime_key(
+                    satin_runtime_key(
                         handle,
                         event.keyCode,
                         terminalModifierMask(event.modifierFlags),
@@ -1184,7 +1184,7 @@ final class RustTerminalPane: NativePane {
                     ) != 0
                 }
             }
-            return nvterm_runtime_key(
+            return satin_runtime_key(
                 handle,
                 event.keyCode,
                 terminalModifierMask(event.modifierFlags),
@@ -1200,18 +1200,18 @@ final class RustTerminalPane: NativePane {
 
     func writeText(_ text: String) {
         withUtf8(text) { bytes, count in
-            _ = nvterm_runtime_text(handle, bytes, count)
+            _ = satin_runtime_text(handle, bytes, count)
         }
     }
 
     func paste(_ text: String) {
         withUtf8(text) { bytes, count in
-            _ = nvterm_runtime_paste(handle, bytes, count)
+            _ = satin_runtime_paste(handle, bytes, count)
         }
     }
 
     func mouse(_ input: NativeMouseInput) -> Bool {
-        nvterm_runtime_mouse(
+        satin_runtime_mouse(
             handle,
             terminalMouseAction(input.action),
             terminalMouseButton(input.button, action: input.action),
@@ -1224,11 +1224,11 @@ final class RustTerminalPane: NativePane {
     }
 
     func focus(_ focused: Bool) {
-        _ = nvterm_runtime_focus(handle, focused ? 1 : 0)
+        _ = satin_runtime_focus(handle, focused ? 1 : 0)
     }
 
     func select(start: (row: Int, col: Int), end: (row: Int, col: Int), rectangular: Bool) {
-        _ = nvterm_runtime_select(
+        _ = satin_runtime_select(
             handle,
             UInt32(max(0, start.row)),
             clampedUInt16(start.col + 1) - 1,
@@ -1239,20 +1239,20 @@ final class RustTerminalPane: NativePane {
     }
 
     func selectAll() {
-        _ = nvterm_runtime_select_all(handle)
+        _ = satin_runtime_select_all(handle)
     }
 
     func clearSelection() {
-        _ = nvterm_runtime_clear_selection(handle)
+        _ = satin_runtime_clear_selection(handle)
     }
 
     func selectedText() -> String? {
-        ownedRustString(nvterm_runtime_selected_text(handle))
+        ownedRustString(satin_runtime_selected_text(handle))
     }
 
     func hyperlink(row: Int, col: Int) -> String? {
         ownedRustString(
-            nvterm_runtime_hyperlink(
+            satin_runtime_hyperlink(
                 handle,
                 UInt32(max(0, row)),
                 clampedUInt16(col + 1) - 1
@@ -1261,42 +1261,42 @@ final class RustTerminalPane: NativePane {
     }
 
     func title() -> String? {
-        ownedRustString(nvterm_runtime_title(handle))
+        ownedRustString(satin_runtime_title(handle))
     }
 
     func takeBellCount() -> UInt64 {
-        nvterm_runtime_take_bell_count(handle)
+        satin_runtime_take_bell_count(handle)
     }
 
     func find(_ query: String, backwards: Bool) -> Bool {
         query.withCString { value in
-            nvterm_runtime_find(handle, value, backwards ? 1 : 0) != 0
+            satin_runtime_find(handle, value, backwards ? 1 : 0) != 0
         }
     }
 
     func setOptionAsAlt(_ enabled: Bool) {
-        _ = nvterm_runtime_set_option_as_alt(handle, enabled ? 1 : 0)
+        _ = satin_runtime_set_option_as_alt(handle, enabled ? 1 : 0)
     }
 
     @discardableResult
     func drain() -> Bool {
-        nvterm_runtime_drain(handle) != 0
+        satin_runtime_drain(handle) != 0
     }
 
     func isExited() -> Bool {
-        nvterm_runtime_exited(handle) != 0
+        satin_runtime_exited(handle) != 0
     }
 
     func wakeupFD() -> Int32 {
-        nvterm_runtime_wakeup_fd(handle)
+        satin_runtime_wakeup_fd(handle)
     }
 
     func currentWorkingDirectory() -> String? {
-        guard let pointer = nvterm_runtime_cwd(handle) else {
+        guard let pointer = satin_runtime_cwd(handle) else {
             return nil
         }
         defer {
-            nvterm_string_free(pointer)
+            satin_string_free(pointer)
         }
 
         let value = String(cString: pointer)
@@ -1304,11 +1304,11 @@ final class RustTerminalPane: NativePane {
     }
 
     func scroll(rows: Int) -> Int {
-        nvterm_runtime_scroll(handle, rows)
+        satin_runtime_scroll(handle, rows)
     }
 
     func rendererScrollPosition() -> Double {
-        Double(nvterm_runtime_renderer_scroll_position(handle))
+        Double(satin_runtime_renderer_scroll_position(handle))
     }
 
     func renderHandle() -> UnsafeMutableRawPointer? {
@@ -1316,11 +1316,11 @@ final class RustTerminalPane: NativePane {
     }
 
     func controlScreenText() -> String {
-        ownedRustString(nvterm_runtime_screen_text(handle)) ?? ""
+        ownedRustString(satin_runtime_screen_text(handle)) ?? ""
     }
 
     func controlImageCount() -> Int {
-        nvterm_runtime_kitty_placement_count(handle)
+        satin_runtime_kitty_placement_count(handle)
     }
 
 }
@@ -1332,7 +1332,7 @@ final class RustNeovimPane: NativePane {
     init?(grid: (rows: Int, cols: Int, widthPixels: Int, heightPixels: Int), cwd: String? = nil) {
         let handle = cwd.flatMap { directory in
             directory.withCString { value in
-                nvterm_nvim_create_in_cwd(
+                satin_nvim_create_in_cwd(
                     clampedUInt16(grid.rows),
                     clampedUInt16(grid.cols),
                     clampedUInt16(grid.widthPixels),
@@ -1340,7 +1340,7 @@ final class RustNeovimPane: NativePane {
                     value
                 )
             }
-        } ?? nvterm_nvim_create(
+        } ?? satin_nvim_create(
             clampedUInt16(grid.rows),
             clampedUInt16(grid.cols),
             clampedUInt16(grid.widthPixels),
@@ -1354,11 +1354,11 @@ final class RustNeovimPane: NativePane {
     }
 
     deinit {
-        nvterm_nvim_destroy(handle)
+        satin_nvim_destroy(handle)
     }
 
     func resize(grid: (rows: Int, cols: Int, widthPixels: Int, heightPixels: Int)) {
-        _ = nvterm_nvim_resize(
+        _ = satin_nvim_resize(
             handle,
             clampedUInt16(grid.rows),
             clampedUInt16(grid.cols),
@@ -1372,7 +1372,7 @@ final class RustNeovimPane: NativePane {
             guard let base = buffer.bindMemory(to: UInt8.self).baseAddress else {
                 return
             }
-            _ = nvterm_nvim_input(handle, base, buffer.count)
+            _ = satin_nvim_input(handle, base, buffer.count)
         }
     }
 
@@ -1380,7 +1380,7 @@ final class RustNeovimPane: NativePane {
         input.button.withCString { button in
             input.action.withCString { action in
                 input.modifier.withCString { modifier in
-                    nvterm_nvim_mouse(
+                    satin_nvim_mouse(
                         handle,
                         button,
                         action,
@@ -1396,25 +1396,25 @@ final class RustNeovimPane: NativePane {
 
     func runCommand(_ command: String) -> Bool {
         command.withCString { value in
-            nvterm_nvim_command(handle, value) != 0
+            satin_nvim_command(handle, value) != 0
         }
     }
 
     @discardableResult
     func drain() -> Bool {
-        nvterm_nvim_drain(handle) != 0
+        satin_nvim_drain(handle) != 0
     }
 
     func isExited() -> Bool {
-        nvterm_nvim_exited(handle) != 0
+        satin_nvim_exited(handle) != 0
     }
 
     func wakeupFD() -> Int32 {
-        nvterm_nvim_wakeup_fd(handle)
+        satin_nvim_wakeup_fd(handle)
     }
 
     func rendererModel() -> NeovideRendererModelSnapshot? {
-        decode(nvterm_nvim_renderer_model_json(handle), as: NeovideRendererModelSnapshot.self)
+        decode(satin_nvim_renderer_model_json(handle), as: NeovideRendererModelSnapshot.self)
     }
 
     func renderHandle() -> UnsafeMutableRawPointer? {
@@ -1441,7 +1441,7 @@ final class RustNeovimPane: NativePane {
             return nil
         }
         defer {
-            nvterm_string_free(pointer)
+            satin_string_free(pointer)
         }
 
         let json = String(cString: pointer)
@@ -2671,7 +2671,7 @@ private func ownedRustString(_ pointer: UnsafeMutablePointer<CChar>?) -> String?
         return nil
     }
     defer {
-        nvterm_string_free(pointer)
+        satin_string_free(pointer)
     }
     return String(cString: pointer)
 }
@@ -2774,7 +2774,7 @@ final class TerminalMetalView: MTKView, MTKViewDelegate {
     init(frame frameRect: NSRect) {
         guard let device = MTLCreateSystemDefaultDevice(),
               let commandQueue = device.makeCommandQueue(),
-              let skiaRenderer = nvterm_skia_metal_create(
+              let skiaRenderer = satin_skia_metal_create(
                   metalObjectPointer(device),
                   metalObjectPointer(commandQueue)
         )
@@ -2797,19 +2797,19 @@ final class TerminalMetalView: MTKView, MTKViewDelegate {
     static func isAvailable() -> Bool {
         guard let device = MTLCreateSystemDefaultDevice(),
               let commandQueue = device.makeCommandQueue(),
-              let renderer = nvterm_skia_metal_create(
+              let renderer = satin_skia_metal_create(
                   metalObjectPointer(device),
                   metalObjectPointer(commandQueue)
               )
         else {
             return false
         }
-        nvterm_skia_metal_destroy(renderer)
+        satin_skia_metal_destroy(renderer)
         return true
     }
 
     deinit {
-        nvterm_skia_metal_destroy(skiaRenderer)
+        satin_skia_metal_destroy(skiaRenderer)
     }
 
     override var acceptsFirstResponder: Bool {
@@ -2862,18 +2862,18 @@ final class TerminalMetalView: MTKView, MTKViewDelegate {
     }
 
     func forgetRuntime(_ runtime: UnsafeMutableRawPointer?) {
-        nvterm_skia_metal_forget_runtime(skiaRenderer, runtime)
+        satin_skia_metal_forget_runtime(skiaRenderer, runtime)
     }
 
     func setFontFamily(_ family: String) {
         family.withCString { value in
-            _ = nvterm_skia_metal_set_font_family(skiaRenderer, value)
+            _ = satin_skia_metal_set_font_family(skiaRenderer, value)
         }
         needsDisplay = true
     }
 
     private func requestNextSkiaFrameIfNeeded(_ commandBuffer: MTLCommandBuffer) {
-        let delayMs = nvterm_skia_metal_next_frame_delay_ms(skiaRenderer)
+        let delayMs = satin_skia_metal_next_frame_delay_ms(skiaRenderer)
         guard delayMs != UInt64.max else {
             return
         }
@@ -3735,7 +3735,7 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate, Te
 
     func applyTerminalVimScrollSmokeScenario(resultPath: String) {
         let command = [
-            "tmp=/tmp/neovide-tabs-terminal-vim-scroll-smoke.txt",
+            "tmp=/tmp/satin-terminal-vim-scroll-smoke.txt",
             "awk 'BEGIN { for (i = 1; i <= 240; i++) " +
                 "printf \"%08d terminal vim scroll line %03d token %06d\\n\", i, i, i * 17 }' > $tmp",
             "nvim -Nu NONE -n $tmp",
@@ -3801,10 +3801,10 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate, Te
     }
 
     func applyTerminalNvimCwdSmokeScenario(resultPath: String) {
-        let cwd = ProcessInfo.processInfo.environment["NVTERM_NATIVE_CWD_EXPECTED"]
-            ?? "/tmp/neovide-tabs-terminal-nvim-cwd"
-        let cwdFile = ProcessInfo.processInfo.environment["NVTERM_NATIVE_CWD_ACTUAL"]
-            ?? "/tmp/neovide-tabs-terminal-nvim-cwd.actual"
+        let cwd = ProcessInfo.processInfo.environment["SATIN_NATIVE_CWD_EXPECTED"]
+            ?? "/tmp/satin-terminal-nvim-cwd"
+        let cwdFile = ProcessInfo.processInfo.environment["SATIN_NATIVE_CWD_ACTUAL"]
+            ?? "/tmp/satin-terminal-nvim-cwd.actual"
         try? FileManager.default.createDirectory(
             atPath: cwd,
             withIntermediateDirectories: true
@@ -3852,7 +3852,7 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate, Te
 
     func applyNvimScrollSmokeScenario(resultPath: String) {
         openNvimSmokeBuffer(
-            path: "/tmp/neovide-tabs-nvim-scroll-smoke.txt",
+            path: "/tmp/satin-nvim-scroll-smoke.txt",
             terminalCommand: "nvim -Nu NONE -n $tmp"
         )
 
@@ -3872,7 +3872,7 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate, Te
 
     func applyNvimJumpSmokeScenario(resultPath: String) {
         openNvimSmokeBuffer(
-            path: "/tmp/neovide-tabs-nvim-jump-smoke.txt",
+            path: "/tmp/satin-nvim-jump-smoke.txt",
             terminalCommand: "nvim -Nu NONE -n $tmp"
         )
 
@@ -3883,7 +3883,7 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate, Te
 
     func applyNvimSidePaneSmokeScenario(resultPath: String) {
         openNvimSmokeBuffer(
-            path: "/tmp/neovide-tabs-nvim-side-pane-smoke.txt",
+            path: "/tmp/satin-nvim-side-pane-smoke.txt",
             terminalCommand: "nvim -Nu NONE -n $tmp"
         )
 
@@ -3923,7 +3923,7 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate, Te
 
     func applyNvimCommandLineSmokeScenario(resultPath: String) {
         openNvimSmokeBuffer(
-            path: "/tmp/neovide-tabs-nvim-commandline-smoke.txt",
+            path: "/tmp/satin-nvim-commandline-smoke.txt",
             terminalCommand: "nvim -Nu NONE -n $tmp"
         )
 
@@ -3942,7 +3942,7 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate, Te
 
     func applyNvimShapedTextSmokeScenario(resultPath: String) {
         openNvimShapedTextSmokeBuffer(
-            path: "/tmp/neovide-tabs-nvim-shaped-text-smoke.txt",
+            path: "/tmp/satin-nvim-shaped-text-smoke.txt",
             terminalCommand: "nvim -Nu NONE -n $tmp"
         )
 
@@ -3963,7 +3963,7 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate, Te
 
     func applyNvimUiSurfacesSmokeScenario(resultPath: String) {
         openNvimSmokeBuffer(
-            path: "/tmp/neovide-tabs-nvim-ui-surfaces-smoke.txt",
+            path: "/tmp/satin-nvim-ui-surfaces-smoke.txt",
             terminalCommand: "nvim -Nu NONE -n $tmp"
         )
 
@@ -4016,9 +4016,9 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate, Te
     }
 
     func applyNvimFileTreeSmokeScenario(resultPath: String) {
-        let openedPath = "/tmp/neovide-tabs-nvim-file-tree-opened.txt"
-        let treeLinesPath = "/tmp/neovide-tabs-nvim-file-tree-lines.txt"
-        let cwdPath = "/tmp/neovide-tabs-nvim-file-tree-cwd.txt"
+        let openedPath = "/tmp/satin-nvim-file-tree-opened.txt"
+        let treeLinesPath = "/tmp/satin-nvim-file-tree-lines.txt"
+        let cwdPath = "/tmp/satin-nvim-file-tree-cwd.txt"
         try? FileManager.default.removeItem(atPath: openedPath)
         try? FileManager.default.removeItem(atPath: treeLinesPath)
         try? FileManager.default.removeItem(atPath: cwdPath)
@@ -4523,7 +4523,7 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate, Te
             ? "ok shaped-text \(textSummary) \(rendererSummary) \(geometrySummary) \(cellSummary)\n"
             : "failed shaped-text \(textSummary) \(rendererSummary) \(geometrySummary) \(cellSummary)\n"
         try? result.write(toFile: resultPath, atomically: true, encoding: .utf8)
-        if ProcessInfo.processInfo.environment["NVTERM_NATIVE_SMOKE_KEEP_OPEN"] != "1" {
+        if ProcessInfo.processInfo.environment["SATIN_NATIVE_SMOKE_KEEP_OPEN"] != "1" {
             NSApp.terminate(nil)
         }
     }
@@ -4563,7 +4563,7 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate, Te
         ].joined(separator: " ")
         let result = ok ? "ok nvim-skia \(summary)\n" : "failed nvim-skia \(summary)\n"
         try? result.write(toFile: resultPath, atomically: true, encoding: .utf8)
-        if ProcessInfo.processInfo.environment["NVTERM_NATIVE_SMOKE_KEEP_OPEN"] != "1" {
+        if ProcessInfo.processInfo.environment["SATIN_NATIVE_SMOKE_KEEP_OPEN"] != "1" {
             NSApp.terminate(nil)
         }
     }
@@ -4612,7 +4612,7 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate, Te
         ].joined(separator: " ")
         let result = ok ? "ok ui-surfaces \(summary)\n" : "failed ui-surfaces \(summary)\n"
         try? result.write(toFile: resultPath, atomically: true, encoding: .utf8)
-        if ProcessInfo.processInfo.environment["NVTERM_NATIVE_SMOKE_KEEP_OPEN"] != "1" {
+        if ProcessInfo.processInfo.environment["SATIN_NATIVE_SMOKE_KEEP_OPEN"] != "1" {
             NSApp.terminate(nil)
         }
     }
@@ -4643,7 +4643,7 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate, Te
         ].joined(separator: " ")
         let result = ok ? "ok popupmenu \(summary)\n" : "failed popupmenu \(summary)\n"
         try? result.write(toFile: resultPath, atomically: true, encoding: .utf8)
-        if ProcessInfo.processInfo.environment["NVTERM_NATIVE_SMOKE_KEEP_OPEN"] != "1" {
+        if ProcessInfo.processInfo.environment["SATIN_NATIVE_SMOKE_KEEP_OPEN"] != "1" {
             NSApp.terminate(nil)
         }
     }
@@ -4676,7 +4676,7 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate, Te
         )
         let rawRepo = terminalTextView.rendererModelRawTextStartSummary(
             label: "repo",
-            text: "neovide-tabs"
+            text: "satin"
         )
         let windows = terminalTextView.rendererModelWindowTextSummary()
         let hasTreeTarget = nvimFileTreeSmokeTarget != "none"
@@ -4712,7 +4712,7 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate, Te
         ].joined(separator: " ")
         let result = ok ? "ok file-tree \(summary)\n" : "failed file-tree \(summary)\n"
         try? result.write(toFile: resultPath, atomically: true, encoding: .utf8)
-        if ProcessInfo.processInfo.environment["NVTERM_NATIVE_SMOKE_KEEP_OPEN"] != "1" {
+        if ProcessInfo.processInfo.environment["SATIN_NATIVE_SMOKE_KEEP_OPEN"] != "1" {
             NSApp.terminate(nil)
         }
     }
@@ -4744,7 +4744,7 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate, Te
         ].joined(separator: " ")
         let result = ok ? "ok cursor-switch \(summary)\n" : "failed cursor-switch \(summary)\n"
         try? result.write(toFile: resultPath, atomically: true, encoding: .utf8)
-        if ProcessInfo.processInfo.environment["NVTERM_NATIVE_SMOKE_KEEP_OPEN"] != "1" {
+        if ProcessInfo.processInfo.environment["SATIN_NATIVE_SMOKE_KEEP_OPEN"] != "1" {
             NSApp.terminate(nil)
         }
     }
@@ -4801,7 +4801,7 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate, Te
         ].joined(separator: " ")
         let result = ok ? "ok \(label) \(summary)\n" : "failed \(label) \(summary)\n"
         try? result.write(toFile: resultPath, atomically: true, encoding: .utf8)
-        if ProcessInfo.processInfo.environment["NVTERM_NATIVE_SMOKE_KEEP_OPEN"] != "1" {
+        if ProcessInfo.processInfo.environment["SATIN_NATIVE_SMOKE_KEEP_OPEN"] != "1" {
             NSApp.terminate(nil)
         }
     }
@@ -5250,7 +5250,7 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate, Te
 
     private func windowTitle(_ snapshot: TerminalCoreSnapshot) -> String {
         let tab = snapshot.tabs.first(where: { $0.index == snapshot.active_tab })
-        return "\(tab?.title ?? "neovide-tabs") - native shell"
+        return "\(tab?.title ?? "Satin") — Satin"
     }
 
     private func configureTabControl() {
@@ -5351,11 +5351,15 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate, Te
         }
         let tabId = lastSnapshot?.tabs.first(where: { $0.panes.contains(paneId) })?.id ?? 0
         var environment = [
+            "SATIN_SOCKET": controlSocketPath,
+            "SATIN_TAB_ID": String(tabId),
+            "SATIN_PANE_ID": String(paneId),
             "NVTERM_SOCKET": controlSocketPath,
             "NVTERM_TAB_ID": String(tabId),
             "NVTERM_PANE_ID": String(paneId),
         ]
         if !controlCliPath.isEmpty {
+            environment["SATINCTL"] = controlCliPath
             environment["NVTERMCTL"] = controlCliPath
             let cliDirectory = URL(fileURLWithPath: controlCliPath)
                 .deletingLastPathComponent()
@@ -5572,7 +5576,7 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate, Te
 
     private func restoreSessionIfNeeded() {
         let environment = ProcessInfo.processInfo.environment
-        guard environment["NVTERM_NATIVE_SMOKE_SCENARIO"] == nil,
+        guard environment["SATIN_NATIVE_SMOKE_SCENARIO"] == nil,
               preferredBool(NativePreferenceKey.sessionRestore, defaultValue: true),
               let data = UserDefaults.standard.data(forKey: NativePreferenceKey.sessionState)
         else {
@@ -5908,7 +5912,7 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate, Te
             let clear: UInt8 = index == 0 ? 1 : 0
             let ok: Bool
             if pane.kind == .terminal {
-                ok = nvterm_skia_metal_render_terminal(
+                ok = satin_skia_metal_render_terminal(
                     renderer,
                     renderHandle,
                     metalObjectPointer(texture),
@@ -5923,7 +5927,7 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate, Te
                     clear
                 ) != 0
             } else {
-                ok = nvterm_skia_metal_render_nvim(
+                ok = satin_skia_metal_render_nvim(
                     renderer,
                     renderHandle,
                     metalObjectPointer(texture),
@@ -5944,7 +5948,7 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate, Te
     }
 }
 
-final class AppDelegate: NSObject, NSApplicationDelegate {
+final class SatinAppDelegate: NSObject, NSApplicationDelegate {
     private var window: NSWindow?
     private var shellController: TerminalShellViewController?
     private let settingsStore = NativeSettingsStore()
@@ -5998,7 +6002,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             defer: false
         )
 
-        window.title = "neovide-tabs native shell"
+        window.title = "Satin"
         window.tabbingMode = .preferred
         controller.view.frame = NSRect(origin: .zero, size: contentRect.size)
         window.contentViewController = controller
@@ -6037,7 +6041,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
-        if ProcessInfo.processInfo.environment["NVTERM_NATIVE_SMOKE_SCENARIO"] == nil {
+        if ProcessInfo.processInfo.environment["SATIN_NATIVE_SMOKE_SCENARIO"] == nil {
             shellController?.saveSessionState()
         }
     }
@@ -6103,7 +6107,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func scheduleAutomaticUpdateCheck() {
-        guard ProcessInfo.processInfo.environment["NVTERM_NATIVE_SMOKE_SCENARIO"] == nil else {
+        guard ProcessInfo.processInfo.environment["SATIN_NATIVE_SMOKE_SCENARIO"] == nil else {
             return
         }
         guard settingsStore.shouldAutomaticallyCheckForUpdates() else {
@@ -6169,7 +6173,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     ) {
         let alert = NSAlert()
         alert.alertStyle = .informational
-        alert.messageText = "Neovide Tabs \(update.version) is available"
+        alert.messageText = "Satin \(update.version) is available"
         alert.informativeText = """
         You are running \(currentVersion). The update will be downloaded from GitHub, verified \
         with the embedded publisher key, installed, and restarted.
@@ -6200,7 +6204,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let alert = NSAlert()
         alert.alertStyle = .informational
-        alert.messageText = "Installing Neovide Tabs \(update.version)…"
+        alert.messageText = "Installing Satin \(update.version)…"
         alert.informativeText = "Downloading and verifying the signed Apple Silicon update."
         alert.accessoryView = progress
         updateProgressAlert = alert
@@ -6256,7 +6260,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func presentCurrentVersion(_ currentVersion: String) {
         let alert = NSAlert()
         alert.alertStyle = .informational
-        alert.messageText = "Neovide Tabs is up to date"
+        alert.messageText = "Satin is up to date"
         alert.informativeText = "Version \(currentVersion) is the latest available release."
         alert.addButton(withTitle: "OK")
         alert.runModal()
@@ -6283,97 +6287,97 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func applySmokeScenarioIfNeeded(_ controller: TerminalShellViewController) {
         let environment = ProcessInfo.processInfo.environment
-        switch environment["NVTERM_NATIVE_SMOKE_SCENARIO"] {
+        switch environment["SATIN_NATIVE_SMOKE_SCENARIO"] {
         case "settings":
             settingsWindowController?.present()
         case "1":
-            controller.applySmokeScenario(resultPath: environment["NVTERM_NATIVE_SMOKE_RESULT"])
+            controller.applySmokeScenario(resultPath: environment["SATIN_NATIVE_SMOKE_RESULT"])
         case "terminal-vim-scroll":
-            if let path = environment["NVTERM_NATIVE_SMOKE_RESULT"], !path.isEmpty {
+            if let path = environment["SATIN_NATIVE_SMOKE_RESULT"], !path.isEmpty {
                 controller.applyTerminalVimScrollSmokeScenario(resultPath: path)
             }
         case "terminal-bottom-input":
-            if let path = environment["NVTERM_NATIVE_SMOKE_RESULT"], !path.isEmpty {
+            if let path = environment["SATIN_NATIVE_SMOKE_RESULT"], !path.isEmpty {
                 controller.applyTerminalBottomInputSmokeScenario(resultPath: path)
             }
         case "terminal-exit-closes-tab":
-            if let path = environment["NVTERM_NATIVE_SMOKE_RESULT"], !path.isEmpty {
+            if let path = environment["SATIN_NATIVE_SMOKE_RESULT"], !path.isEmpty {
                 controller.applyTerminalExitClosesTabSmokeScenario(resultPath: path)
             }
         case "session-schema":
-            if let path = environment["NVTERM_NATIVE_SMOKE_RESULT"], !path.isEmpty {
+            if let path = environment["SATIN_NATIVE_SMOKE_RESULT"], !path.isEmpty {
                 controller.applySessionSchemaSmokeScenario(resultPath: path)
             }
         case "terminal-resize":
-            if let path = environment["NVTERM_NATIVE_SMOKE_RESULT"], !path.isEmpty {
+            if let path = environment["SATIN_NATIVE_SMOKE_RESULT"], !path.isEmpty {
                 controller.applyTerminalResizeSmokeScenario(resultPath: path)
             }
         case "terminal-nvim-handoff":
-            if let path = environment["NVTERM_NATIVE_SMOKE_RESULT"], !path.isEmpty {
+            if let path = environment["SATIN_NATIVE_SMOKE_RESULT"], !path.isEmpty {
                 controller.applyTerminalNvimHandoffSmokeScenario(resultPath: path)
             }
         case "terminal-nvim-cwd":
-            if let path = environment["NVTERM_NATIVE_SMOKE_RESULT"], !path.isEmpty {
+            if let path = environment["SATIN_NATIVE_SMOKE_RESULT"], !path.isEmpty {
                 controller.applyTerminalNvimCwdSmokeScenario(resultPath: path)
             }
         case "terminal-nvim-quit":
-            if let path = environment["NVTERM_NATIVE_SMOKE_RESULT"], !path.isEmpty {
+            if let path = environment["SATIN_NATIVE_SMOKE_RESULT"], !path.isEmpty {
                 controller.applyTerminalNvimQuitSmokeScenario(resultPath: path)
             }
         case "nvim-scroll":
-            if let path = environment["NVTERM_NATIVE_SMOKE_RESULT"], !path.isEmpty {
+            if let path = environment["SATIN_NATIVE_SMOKE_RESULT"], !path.isEmpty {
                 controller.applyNvimScrollSmokeScenario(resultPath: path)
             }
         case "nvim-jump":
-            if let path = environment["NVTERM_NATIVE_SMOKE_RESULT"], !path.isEmpty {
+            if let path = environment["SATIN_NATIVE_SMOKE_RESULT"], !path.isEmpty {
                 controller.applyNvimJumpSmokeScenario(resultPath: path)
             }
         case "nvim-side-pane":
-            if let path = environment["NVTERM_NATIVE_SMOKE_RESULT"], !path.isEmpty {
+            if let path = environment["SATIN_NATIVE_SMOKE_RESULT"], !path.isEmpty {
                 controller.applyNvimSidePaneSmokeScenario(resultPath: path)
             }
         case "nvim-commandline":
-            if let path = environment["NVTERM_NATIVE_SMOKE_RESULT"], !path.isEmpty {
+            if let path = environment["SATIN_NATIVE_SMOKE_RESULT"], !path.isEmpty {
                 controller.applyNvimCommandLineSmokeScenario(resultPath: path)
             }
         case "nvim-shaped-text":
-            if let path = environment["NVTERM_NATIVE_SMOKE_RESULT"], !path.isEmpty {
+            if let path = environment["SATIN_NATIVE_SMOKE_RESULT"], !path.isEmpty {
                 controller.applyNvimShapedTextSmokeScenario(resultPath: path)
             }
         case "nvim-skia":
-            if let path = environment["NVTERM_NATIVE_SMOKE_RESULT"], !path.isEmpty {
+            if let path = environment["SATIN_NATIVE_SMOKE_RESULT"], !path.isEmpty {
                 controller.applyNvimSkiaSmokeScenario(resultPath: path)
             }
         case "nvim-ui-surfaces":
-            if let path = environment["NVTERM_NATIVE_SMOKE_RESULT"], !path.isEmpty {
+            if let path = environment["SATIN_NATIVE_SMOKE_RESULT"], !path.isEmpty {
                 controller.applyNvimUiSurfacesSmokeScenario(resultPath: path)
             }
         case "nvim-popupmenu":
-            if let path = environment["NVTERM_NATIVE_SMOKE_RESULT"], !path.isEmpty {
+            if let path = environment["SATIN_NATIVE_SMOKE_RESULT"], !path.isEmpty {
                 controller.applyNvimPopupmenuSmokeScenario(resultPath: path)
             }
         case "nvim-file-tree":
-            if let path = environment["NVTERM_NATIVE_SMOKE_RESULT"], !path.isEmpty {
+            if let path = environment["SATIN_NATIVE_SMOKE_RESULT"], !path.isEmpty {
                 controller.applyNvimFileTreeSmokeScenario(resultPath: path)
             }
         case "nvim-cursor-switch":
-            if let path = environment["NVTERM_NATIVE_SMOKE_RESULT"], !path.isEmpty {
+            if let path = environment["SATIN_NATIVE_SMOKE_RESULT"], !path.isEmpty {
                 controller.applyNvimCursorSwitchSmokeScenario(resultPath: path)
             }
         case "nvim-cursor-shape":
-            if let path = environment["NVTERM_NATIVE_SMOKE_RESULT"], !path.isEmpty {
+            if let path = environment["SATIN_NATIVE_SMOKE_RESULT"], !path.isEmpty {
                 controller.applyNvimCursorShapeSmokeScenario(resultPath: path)
             }
         case "nvim-cursor-normal-shape":
-            if let path = environment["NVTERM_NATIVE_SMOKE_RESULT"], !path.isEmpty {
+            if let path = environment["SATIN_NATIVE_SMOKE_RESULT"], !path.isEmpty {
                 controller.applyNvimCursorNormalShapeSmokeScenario(resultPath: path)
             }
         case "nvim-cursor-replace-shape":
-            if let path = environment["NVTERM_NATIVE_SMOKE_RESULT"], !path.isEmpty {
+            if let path = environment["SATIN_NATIVE_SMOKE_RESULT"], !path.isEmpty {
                 controller.applyNvimCursorReplaceShapeSmokeScenario(resultPath: path)
             }
         case "nvim-cursor-blink":
-            if let path = environment["NVTERM_NATIVE_SMOKE_RESULT"], !path.isEmpty {
+            if let path = environment["SATIN_NATIVE_SMOKE_RESULT"], !path.isEmpty {
                 controller.applyNvimCursorBlinkSmokeScenario(resultPath: path)
             }
         default:
@@ -6383,10 +6387,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func scheduleSmokeShotIfNeeded(_ window: NSWindow) {
         let environment = ProcessInfo.processInfo.environment
-        guard let path = environment["NVTERM_NATIVE_SMOKE_SHOT"], !path.isEmpty else {
+        guard let path = environment["SATIN_NATIVE_SMOKE_SHOT"], !path.isEmpty else {
             return
         }
-        let targetWindow = environment["NVTERM_NATIVE_SMOKE_SCENARIO"] == "settings"
+        let targetWindow = environment["SATIN_NATIVE_SMOKE_SCENARIO"] == "settings"
             ? settingsWindowController?.window ?? window
             : window
 
@@ -6400,10 +6404,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func writeSmokeWindowIdIfNeeded(_ window: NSWindow) {
         let environment = ProcessInfo.processInfo.environment
-        guard let path = environment["NVTERM_NATIVE_SMOKE_WINDOW_ID"], !path.isEmpty else {
+        guard let path = environment["SATIN_NATIVE_SMOKE_WINDOW_ID"], !path.isEmpty else {
             return
         }
-        let targetWindow = environment["NVTERM_NATIVE_SMOKE_SCENARIO"] == "settings"
+        let targetWindow = environment["SATIN_NATIVE_SMOKE_SCENARIO"] == "settings"
             ? settingsWindowController?.window ?? window
             : window
         writeSmokeWindowId(path: path, window: targetWindow, attempts: 20)
@@ -6518,7 +6522,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let item = NSMenuItem()
         let menu = NSMenu()
         menu.addItem(
-            withTitle: "About Neovide Tabs",
+            withTitle: "About Satin",
             action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)),
             keyEquivalent: ""
         )
@@ -6533,7 +6537,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(settingsItem)
         menu.addItem(NSMenuItem.separator())
         menu.addItem(
-            withTitle: "Quit Neovide Tabs",
+            withTitle: "Quit Satin",
             action: #selector(NSApplication.terminate(_:)),
             keyEquivalent: "q"
         )
@@ -6640,7 +6644,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 }
 
 @main
-struct NeovideTabsApplication {
+struct SatinApplication {
     private static func failDiagnostic(_ message: String) -> Never {
         fputs("\(message)\n", stderr)
         exit(EXIT_FAILURE)
@@ -6648,7 +6652,7 @@ struct NeovideTabsApplication {
 
     static func main() {
         if let releaseRoot = ProcessInfo.processInfo.environment[
-            "NVTERM_UPDATE_VERIFY_INSTALLABLE_RELEASE_ROOT"
+            "SATIN_UPDATE_VERIFY_INSTALLABLE_RELEASE_ROOT"
         ] {
             let root = URL(fileURLWithPath: releaseRoot, isDirectory: true)
             if !AppUpdateInstaller.verifyInstallableRelease(at: root) {
@@ -6658,7 +6662,7 @@ struct NeovideTabsApplication {
             return
         }
         if let releaseRoot = ProcessInfo.processInfo.environment[
-            "NVTERM_UPDATE_VERIFY_RELEASE_ROOT"
+            "SATIN_UPDATE_VERIFY_RELEASE_ROOT"
         ] {
             let root = URL(fileURLWithPath: releaseRoot, isDirectory: true)
             if !AppUpdateInstaller.verifyRelease(at: root) {
@@ -6667,7 +6671,7 @@ struct NeovideTabsApplication {
             print("signed release verification passed")
             return
         }
-        if ProcessInfo.processInfo.environment["NVTERM_UPDATE_SELF_TEST"] == "1" {
+        if ProcessInfo.processInfo.environment["SATIN_UPDATE_SELF_TEST"] == "1" {
             if !AppUpdateChecker.runSelfTests()
                 || !AppUpdateInstaller.runSelfTests()
                 || !NativeSettingsStore.runSelfTests() {
@@ -6677,10 +6681,10 @@ struct NeovideTabsApplication {
             return
         }
         if let currentVersion = ProcessInfo.processInfo.environment[
-            "NVTERM_UPDATE_LIVE_CHECK_VERSION"
+            "SATIN_UPDATE_LIVE_CHECK_VERSION"
         ] {
             let expected = ProcessInfo.processInfo.environment[
-                "NVTERM_UPDATE_LIVE_CHECK_EXPECTED"
+                "SATIN_UPDATE_LIVE_CHECK_EXPECTED"
             ] ?? "current"
             if !AppUpdateChecker.runLiveSmoke(
                 currentVersion: currentVersion,
@@ -6691,8 +6695,9 @@ struct NeovideTabsApplication {
             return
         }
 
+        NativeSettingsStore.migrateLegacyDefaultsIfNeeded()
         let app = NSApplication.shared
-        let delegate = AppDelegate()
+        let delegate = SatinAppDelegate()
         app.delegate = delegate
         app.setActivationPolicy(.regular)
         app.run()

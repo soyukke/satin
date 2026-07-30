@@ -6,7 +6,7 @@ Status: Accepted
 
 ## Context
 
-neovide-tabs started as an experimental terminal renderer, but the intended
+The project started as an experimental terminal renderer, but the intended
 product direction now includes native macOS UI, Neovide-like terminal rendering,
 tabs and panes, session restore, agent notifications, and inline image support.
 

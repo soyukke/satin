@@ -7,12 +7,12 @@ use std::{
 };
 
 use anyhow::{Context, Result, anyhow, bail};
-use neovide_tabs::control::{ControlCommand, ControlRequest, ControlResponse, ControlSplitAxis};
+use satin::control::{ControlCommand, ControlRequest, ControlResponse, ControlSplitAxis};
 use serde_json::Value;
 
 fn main() {
     if let Err(error) = run() {
-        eprintln!("nvtermctl: {error:#}");
+        eprintln!("satinctl: {error:#}");
         std::process::exit(1);
     }
 }
@@ -20,14 +20,15 @@ fn main() {
 fn run() -> Result<()> {
     let mut args = env::args().skip(1).collect::<Vec<_>>();
     if version_requested(&args) {
-        println!("nvtermctl {}", env!("CARGO_PKG_VERSION"));
+        println!("satinctl {}", env!("CARGO_PKG_VERSION"));
         return Ok(());
     }
     let socket = extract_value(&mut args, "--socket")
         .map(PathBuf::from)
+        .or_else(|| env::var_os("SATIN_SOCKET").map(PathBuf::from))
         .or_else(|| env::var_os("NVTERM_SOCKET").map(PathBuf::from))
         .or_else(default_socket_path)
-        .ok_or_else(|| anyhow!("set NVTERM_SOCKET or pass --socket PATH"))?;
+        .ok_or_else(|| anyhow!("set SATIN_SOCKET or pass --socket PATH"))?;
     let json_output = remove_flag(&mut args, "--json");
     let request = parse_request(&mut args)?;
     let response = send_request(&socket, &request)?;
@@ -185,21 +186,23 @@ fn parse_set_theme(args: &mut Vec<String>) -> Result<ControlCommand> {
 }
 
 fn pane_argument(args: &mut Vec<String>) -> Result<usize> {
-    numeric_argument(args, "--pane", "NVTERM_PANE_ID", "pane")
+    numeric_argument(args, "--pane", "SATIN_PANE_ID", "NVTERM_PANE_ID", "pane")
 }
 
 fn tab_argument(args: &mut Vec<String>) -> Result<usize> {
-    numeric_argument(args, "--tab", "NVTERM_TAB_ID", "tab")
+    numeric_argument(args, "--tab", "SATIN_TAB_ID", "NVTERM_TAB_ID", "tab")
 }
 
 fn numeric_argument(
     args: &mut Vec<String>,
     flag: &str,
     environment: &str,
+    legacy_environment: &str,
     label: &str,
 ) -> Result<usize> {
     extract_value(args, flag)
         .or_else(|| env::var(environment).ok())
+        .or_else(|| env::var(legacy_environment).ok())
         .ok_or_else(|| anyhow!("pass {flag} or set {environment}"))?
         .parse::<usize>()
         .with_context(|| format!("invalid {label} identifier"))
@@ -281,15 +284,15 @@ fn default_socket_path() -> Option<PathBuf> {
         PathBuf::from(home)
             .join("Library")
             .join("Application Support")
-            .join("Neovide Tabs")
+            .join("Satin")
             .join("run")
             .join("control.sock"),
     )
 }
 
 fn usage() -> &'static str {
-    "usage: nvtermctl --version
-       nvtermctl [--socket PATH] [--json] COMMAND
+    "usage: satinctl --version
+       satinctl [--socket PATH] [--json] COMMAND
 
 commands:
   list

@@ -19,21 +19,21 @@ else
   notarized=false
 fi
 
-app_path="spikes/macos-shell/.build/package/Neovide Tabs.app"
+app_path="spikes/macos-shell/.build/package/Satin.app"
 release_root="spikes/macos-shell/.build/release"
 version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app_path/Contents/Info.plist")"
 build_number="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$app_path/Contents/Info.plist")"
 minimum_macos="$(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' "$app_path/Contents/Info.plist")"
-architecture="$(/usr/bin/lipo -archs "$app_path/Contents/MacOS/neovide-tabs")"
+architecture="$(/usr/bin/lipo -archs "$app_path/Contents/MacOS/satin")"
 if [[ "$architecture" != "arm64" ]]; then
   echo "unsupported release architecture: $architecture (expected arm64)" >&2
   exit 65
 fi
-archive_name="Neovide-Tabs-${version}-macOS-${architecture}.zip"
+archive_name="Satin-${version}-macOS-${architecture}.zip"
 archive="$release_root/$archive_name"
 manifest="$release_root/latest.json"
 update_key_config="assets/update-signing-public-key.json"
-base_url="${NVTERM_RELEASE_BASE_URL:-https://github.com/soyukke/neovide-tabs/releases/download/v$version}"
+base_url="${SATIN_RELEASE_BASE_URL:-https://github.com/soyukke/satin/releases/download/v$version}"
 
 mkdir -p "$release_root"
 rm -f -- "$archive" "$manifest"
@@ -101,7 +101,7 @@ jq -e '
     and .architecture == "arm64"
     and (.archiveSize > 0)
     and (.sha256 | test("^[0-9a-f]{64}$"))
-    and (.downloadURL | startswith("https://github.com/soyukke/neovide-tabs/releases/download/"))
+    and (.downloadURL | startswith("https://github.com/soyukke/satin/releases/download/"))
     and (
       .signature == null
       or (

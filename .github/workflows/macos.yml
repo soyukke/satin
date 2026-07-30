@@ -56,8 +56,8 @@ jobs:
       - name: Upload release archive
         uses: actions/upload-artifact@v7
         with:
-          name: Neovide-Tabs-macOS-arm64
+          name: Satin-macOS-arm64
           path: |
-            spikes/macos-shell/.build/release/Neovide-Tabs-*-macOS-arm64.zip
+            spikes/macos-shell/.build/release/Satin-*-macOS-arm64.zip
             spikes/macos-shell/.build/release/latest.json
           if-no-files-found: error

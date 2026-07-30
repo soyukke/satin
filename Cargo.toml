@@ -1,8 +1,12 @@
 [package]
-name = "neovide-tabs"
-version = "0.1.6"
+name = "satin"
+version = "0.2.0"
 edition = "2024"
+description = "A native macOS terminal with tabs and animated rendering"
 license = "MIT"
+repository = "https://github.com/soyukke/satin"
+readme = "README.md"
+publish = false
 
 [lib]
 crate-type = ["rlib", "staticlib"]

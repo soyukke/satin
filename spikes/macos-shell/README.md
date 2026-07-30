@@ -29,8 +29,8 @@ just native-build
 
 That builds:
 
-- `target/debug/libneovide_tabs.a`
-- `spikes/macos-shell/.build/NativeShellSpike`
+- `target/debug/libsatin.a`
+- `spikes/macos-shell/.build/SatinApplication`
 
 Run the native host with:
 

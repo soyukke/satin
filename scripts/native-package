@@ -6,14 +6,14 @@ if [[ -z "${IN_NIX_SHELL:-}" ]]; then
 fi
 
 version="$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')"
-build_number="${NVTERM_BUILD_NUMBER:-$(git rev-list --count HEAD 2>/dev/null || printf '1')}"
+build_number="${SATIN_BUILD_NUMBER:-$(git rev-list --count HEAD 2>/dev/null || printf '1')}"
 package_root="spikes/macos-shell/.build/package"
-app_path="$package_root/Neovide Tabs.app"
+app_path="$package_root/Satin.app"
 contents="$app_path/Contents"
-binary="$contents/MacOS/neovide-tabs"
-control_binary="$contents/MacOS/nvtermctl"
+binary="$contents/MacOS/satin"
+control_binary="$contents/MacOS/satinctl"
 plist_template="spikes/macos-shell/Info.plist.in"
-entitlements="spikes/macos-shell/NeovideTabs.entitlements"
+entitlements="spikes/macos-shell/Satin.entitlements"
 icon_source="assets/app-icon.png"
 update_key_source="assets/update-signing-public-key.json"
 update_helper_source="scripts/apply-update"
@@ -58,8 +58,8 @@ for flag in "${inherited_ldflags[@]}"; do
 done
 NIX_LDFLAGS="${portable_ldflags[*]}" \
   MACOSX_DEPLOYMENT_TARGET="$minimum_macos" \
-  cargo build --release --lib --bin nvtermctl
-tmp_binary="$package_root/neovide-tabs.$$"
+  cargo build --release --lib --bin satinctl
+tmp_binary="$package_root/satin.$$"
 trap 'rm -f "$tmp_binary"' EXIT INT TERM
 
 env -u SDKROOT -u DEVELOPER_DIR \
@@ -72,9 +72,9 @@ env -u SDKROOT -u DEVELOPER_DIR \
   -target "$swift_target" \
   spikes/macos-shell/ControlHost.swift \
   spikes/macos-shell/SettingsWindow.swift \
-  spikes/macos-shell/NativeShellSpike.swift \
+  spikes/macos-shell/SatinApplication.swift \
   spikes/macos-shell/UpdateInstaller.swift \
-  target/release/libneovide_tabs.a \
+  target/release/libsatin.a \
   -framework AppKit \
   -framework CryptoKit \
   -framework MetalKit \
@@ -83,7 +83,7 @@ env -u SDKROOT -u DEVELOPER_DIR \
   -lc++ \
   -o "$tmp_binary"
 mv -f "$tmp_binary" "$binary"
-/usr/bin/ditto target/release/nvtermctl "$control_binary"
+/usr/bin/ditto target/release/satinctl "$control_binary"
 chmod 755 "$control_binary"
 
 rm -rf -- "$iconset"
@@ -149,7 +149,7 @@ for packaged_binary in "$binary" "$control_binary"; do
   fi
 done
 if [[ "$(lipo -archs "$control_binary")" != "arm64" ]]; then
-  echo "nvtermctl is not an exact arm64 binary" >&2
+  echo "satinctl is not an exact arm64 binary" >&2
   exit 65
 fi
 actual_minimum="$(

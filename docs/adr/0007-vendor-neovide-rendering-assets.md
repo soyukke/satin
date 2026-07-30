@@ -51,7 +51,7 @@ scrolling clip.
 
 The Rust Skia/Metal adapter also owns Neovim text shaping. It uses a
 Neovide-derived `swash` shaping path, groups cell text into grid-positioned
-clusters, caches Skia `TextBlob`s with `lru`, uses `$NVTERM_FONT` as the
+clusters, caches Skia `TextBlob`s with `lru`, uses `$SATIN_FONT` as the
 primary font, falls back through Skia `FontMgr::match_family_style_character`,
 and vendors Neovide's default Nerd Font and LastResort font assets for stable
 fallback behavior. Cell snapshots carry bold, italic, underline, and

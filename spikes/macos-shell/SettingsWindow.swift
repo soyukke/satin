@@ -20,6 +20,23 @@ enum NativePreferenceKey {
     static let updateCheckIntervalHours = "updateCheckIntervalHours"
     static let lastUpdateCheck = "lastUpdateCheck"
     static let keyBindings = "keyBindings"
+    static let legacyMigration = "didMigrateNeovideTabsDefaultsV1"
+
+    static let migratedKeys = [
+        fontFamily,
+        fontSize,
+        optionAsAlt,
+        notifications,
+        sessionRestore,
+        sessionState,
+        defaultTheme,
+        shellPath,
+        startupDirectory,
+        automaticUpdateChecks,
+        updateCheckIntervalHours,
+        lastUpdateCheck,
+        keyBindings,
+    ]
 }
 
 enum NativeCommandID: String, CaseIterable {
@@ -130,10 +147,24 @@ struct NativeSettings: Equatable {
 }
 
 final class NativeSettingsStore {
+    private static let legacyBundleIdentifier = "dev.soyukke.neovide-tabs"
     private let defaults: UserDefaults
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
+    }
+
+    static func migrateLegacyDefaultsIfNeeded() {
+        let defaults = UserDefaults.standard
+        guard !defaults.bool(forKey: NativePreferenceKey.legacyMigration) else {
+            return
+        }
+        if let legacyValues = defaults.persistentDomain(
+            forName: legacyBundleIdentifier
+        ) {
+            migrateLegacyValues(legacyValues, into: defaults)
+        }
+        defaults.set(true, forKey: NativePreferenceKey.legacyMigration)
     }
 
     func load() -> NativeSettings {
@@ -248,12 +279,35 @@ final class NativeSettingsStore {
     }
 
     static func runSelfTests() -> Bool {
-        let suiteName = "dev.soyukke.neovide-tabs.settings-test.\(UUID().uuidString)"
+        let suiteName = "dev.soyukke.satin.settings-test.\(UUID().uuidString)"
         guard let defaults = UserDefaults(suiteName: suiteName) else {
             return false
         }
         defer {
             defaults.removePersistentDomain(forName: suiteName)
+        }
+        let migrationSuiteName = "dev.soyukke.satin.migration-test.\(UUID().uuidString)"
+        guard let migrationDefaults = UserDefaults(suiteName: migrationSuiteName) else {
+            return false
+        }
+        defer {
+            migrationDefaults.removePersistentDomain(forName: migrationSuiteName)
+        }
+        let migratedSession = Data("legacy-session".utf8)
+        migrationDefaults.set(17.0, forKey: NativePreferenceKey.fontSize)
+        migrateLegacyValues(
+            [
+                NativePreferenceKey.fontSize: 22.0,
+                NativePreferenceKey.defaultTheme: "Rose",
+                NativePreferenceKey.sessionState: migratedSession,
+            ],
+            into: migrationDefaults
+        )
+        guard migrationDefaults.double(forKey: NativePreferenceKey.fontSize) == 17.0,
+              migrationDefaults.string(forKey: NativePreferenceKey.defaultTheme) == "Rose",
+              migrationDefaults.data(forKey: NativePreferenceKey.sessionState) == migratedSession
+        else {
+            return false
         }
         let store = NativeSettingsStore(defaults: defaults)
         let initial = store.load()
@@ -299,6 +353,19 @@ final class NativeSettingsStore {
         }
         _ = store.reset()
         return store.load() == initial
+    }
+
+    private static func migrateLegacyValues(
+        _ legacyValues: [String: Any],
+        into defaults: UserDefaults
+    ) {
+        for key in NativePreferenceKey.migratedKeys
+            where defaults.object(forKey: key) == nil {
+            guard let value = legacyValues[key] else {
+                continue
+            }
+            defaults.set(value, forKey: key)
+        }
     }
 
     private func preferredBool(_ key: String, defaultValue: Bool) -> Bool {
@@ -430,8 +497,8 @@ final class NativeSettingsWindowController: NSWindowController, NSTextFieldDeleg
         tabs.addTabViewItem(tab(title: "Terminal", symbol: "terminal", view: terminalView()))
         tabs.addTabViewItem(tab(title: "Keybindings", symbol: "keyboard", view: keybindingsView()))
         tabs.addTabViewItem(tab(title: "Updates", symbol: "arrow.triangle.2.circlepath", view: updatesView()))
-        tabs.title = "Neovide Tabs Settings"
-        window.title = "Neovide Tabs Settings"
+        tabs.title = "Satin Settings"
+        window.title = "Satin Settings"
         refreshControls()
     }
 
@@ -441,7 +508,7 @@ final class NativeSettingsWindowController: NSWindowController, NSTextFieldDeleg
 
     func present() {
         refreshControls()
-        if let requestedTab = ProcessInfo.processInfo.environment["NVTERM_SETTINGS_TAB"],
+        if let requestedTab = ProcessInfo.processInfo.environment["SATIN_SETTINGS_TAB"],
            let index = ["general", "appearance", "terminal", "keybindings", "updates"]
            .firstIndex(of: requestedTab.lowercased()) {
             tabController.selectedTabViewItemIndex = index

@@ -5,17 +5,17 @@
   <key>CFBundleDevelopmentRegion</key>
   <string>en</string>
   <key>CFBundleDisplayName</key>
-  <string>Neovide Tabs</string>
+  <string>Satin</string>
   <key>CFBundleExecutable</key>
-  <string>neovide-tabs</string>
+  <string>satin</string>
   <key>CFBundleIdentifier</key>
-  <string>dev.soyukke.neovide-tabs</string>
+  <string>dev.soyukke.satin</string>
   <key>CFBundleIconFile</key>
   <string>AppIcon</string>
   <key>CFBundleInfoDictionaryVersion</key>
   <string>6.0</string>
   <key>CFBundleName</key>
-  <string>Neovide Tabs</string>
+  <string>Satin</string>
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleShortVersionString</key>

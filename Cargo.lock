@@ -371,24 +371,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "neovide-tabs"
-version = "0.1.6"
-dependencies = [
- "anyhow",
- "libc",
- "libghostty-vt",
- "log",
- "lru",
- "png",
- "portable-pty",
- "rmpv",
- "serde",
- "serde_json",
- "skia-safe",
- "swash",
-]
-
-[[package]]
 name = "nix"
 version = "0.28.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -580,6 +562,24 @@ dependencies = [
  "libc",
  "linux-raw-sys",
  "windows-sys",
+]
+
+[[package]]
+name = "satin"
+version = "0.2.0"
+dependencies = [
+ "anyhow",
+ "libc",
+ "libghostty-vt",
+ "log",
+ "lru",
+ "png",
+ "portable-pty",
+ "rmpv",
+ "serde",
+ "serde_json",
+ "skia-safe",
+ "swash",
 ]
 
 [[package]]

@@ -5,19 +5,19 @@ if [[ -z "${IN_NIX_SHELL:-}" ]]; then
   exec nix develop --command ./scripts/native-control-smoke "$@"
 fi
 
-app="${NVTERM_NATIVE_EXECUTABLE:-spikes/macos-shell/.build/NativeShellSpike}"
-cli="${NVTERM_CONTROL_EXECUTABLE:-target/debug/nvtermctl}"
+app="${SATIN_NATIVE_EXECUTABLE:-spikes/macos-shell/.build/SatinApplication}"
+cli="${SATIN_CONTROL_EXECUTABLE:-target/debug/satinctl}"
 cli="$(cd "$(dirname "$cli")" && pwd)/$(basename "$cli")"
 app_arguments=()
-if [[ -n "${NVTERM_CONTROL_SMOKE_SHELL:-}" ]]; then
-  app_arguments=(-shellPath "$NVTERM_CONTROL_SMOKE_SHELL")
+if [[ -n "${SATIN_CONTROL_SMOKE_SHELL:-}" ]]; then
+  app_arguments=(-shellPath "$SATIN_CONTROL_SMOKE_SHELL")
 fi
-smoke_root="$(mktemp -d "${TMPDIR:-/tmp}/neovide-tabs-control-smoke.XXXXXX")"
+smoke_root="$(mktemp -d "${TMPDIR:-/tmp}/satin-control-smoke.XXXXXX")"
 socket="$smoke_root/control.sock"
 app_log="$smoke_root/app.log"
 
-NVTERM_CONTROL_SOCKET="$socket" \
-  NVTERM_NATIVE_SMOKE_SCENARIO=control \
+SATIN_CONTROL_SOCKET="$socket" \
+  SATIN_NATIVE_SMOKE_SCENARIO=control \
   "$app" "${app_arguments[@]}" >"$app_log" 2>&1 &
 app_pid=$!
 
@@ -50,7 +50,7 @@ list="$("$cli" --socket "$socket" --json list)"
 jq -e '.ok and .result.activeTab == 1 and (.result.panes | length) == 1' <<<"$list" >/dev/null
 
 "$cli" --socket "$socket" send --pane 1 \
-  "resolved_nvtermctl=\$(command -v nvtermctl 2>/dev/null || true); printf 'CONTROL_ENV:%s:%s:%s:%s:%s\\n' \"\$NVTERM_TAB_ID\" \"\$NVTERM_PANE_ID\" \"\$NVTERM_SOCKET\" \"\$NVTERMCTL\" \"\$resolved_nvtermctl\"; if [ \"\$NVTERM_TAB_ID:\$NVTERM_PANE_ID:\$NVTERM_SOCKET:\$NVTERMCTL\" = \"1:1:$socket:$cli\" ] && [ \"\$resolved_nvtermctl\" = \"\$NVTERMCTL\" ]; then echo CONTROL_READY:OK; else echo CONTROL_READY:BAD; fi" \
+  "resolved_satinctl=\$(command -v satinctl 2>/dev/null || true); printf 'CONTROL_ENV:%s:%s:%s:%s:%s\\n' \"\$SATIN_TAB_ID\" \"\$SATIN_PANE_ID\" \"\$SATIN_SOCKET\" \"\$SATINCTL\" \"\$resolved_satinctl\"; if [ \"\$SATIN_TAB_ID:\$SATIN_PANE_ID:\$SATIN_SOCKET:\$SATINCTL\" = \"1:1:$socket:$cli\" ] && [ \"\$resolved_satinctl\" = \"\$SATINCTL\" ]; then echo CONTROL_READY:OK; else echo CONTROL_READY:BAD; fi" \
   >/dev/null
 "$cli" --socket "$socket" key --pane 1 Enter >/dev/null
 for _ in {1..100}; do
