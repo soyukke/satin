@@ -43,6 +43,8 @@ grep -F "Copyright (c) 2023 Neovide Contributors" \
   "$app_path/Contents/Resources/Legal/THIRD_PARTY_NOTICES.md" >/dev/null
 grep -F "SIL OPEN FONT LICENSE Version 1.1" \
   "$app_path/Contents/Resources/Legal/FONT_LICENSE.txt" >/dev/null
+grep -F "Copyright (c) 2014 Ryan L McIntyre" \
+  "$app_path/Contents/Resources/Legal/FONT_LICENSE.txt" >/dev/null
 grep -F "Third Party Licenses" \
   "$app_path/Contents/Resources/Legal/RUST_DEPENDENCY_LICENSES.html" >/dev/null
 test -x "$app_path/Contents/Resources/apply-update"

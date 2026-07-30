@@ -18,20 +18,23 @@ identifier `dev.soyukke.neovide-tabs`. Publishing only a renamed archive would
 strand those installations.
 
 The source repository contains the required Neovide and bundled-font notices,
-but early release bundles did not include them.
+but early release bundles did not include them. The first Satin release added
+the baseline notices; its follow-up completes the Nerd Fonts copyright and MIT
+notice for the patched fallback font.
 
 ## Decision
 
 The independent product name is `Satin`.
 
-- `soyukke/neovide-tabs` remains public and publishes 0.1.6 as the final
-  Neovide Tabs release.
-- Version 0.1.6 keeps the legacy archive and bundle identity so every existing
-  signed updater can install it.
-- The 0.1.6 updater switches to `soyukke/satin`, accepts only `Satin.app` with
+- `soyukke/neovide-tabs` remains public. Version 0.1.6 introduces the bridge;
+  0.1.7 is the final, notice-complete Neovide Tabs release.
+- Versions 0.1.6 and 0.1.7 keep the legacy archive and bundle identity so every
+  existing signed updater can install them.
+- The bridge updater switches to `soyukke/satin`, accepts only `Satin.app` with
   bundle identifier `dev.soyukke.satin`, and atomically migrates the installed
   application path while keeping the previous bundle recoverable in Trash.
-- Satin starts at version 0.2.0 in the new public repository.
+- Satin starts at version 0.2.0 in the new public repository. Version 0.2.1
+  completes the bundled Nerd Fonts attribution.
 - The existing Ed25519 key remains the update trust root across the migration.
   Its legacy key identifier is retained until a separately shipped,
   cross-signed rotation is available.
@@ -45,9 +48,9 @@ The independent product name is `Satin`.
 ## Consequences
 
 Existing installations have a safe two-step in-app update path:
-Neovide Tabs 0.1.x → bridge 0.1.6 → Satin 0.2.x.
+Neovide Tabs 0.1.x → bridge 0.1.7 → Satin 0.2.1 or newer.
 
-The legacy repository and v0.1.6 Release must remain available as long as
+The legacy repository and its bridge Releases must remain available as long as
 0.1.x installations may exist. New development, issues, releases, and update
 metadata move to `soyukke/satin`.
 

@@ -20,8 +20,12 @@ grep -F "618605b79d70577f4b7ec92b50b3b9b5bf482c1a" THIRD_PARTY_NOTICES.md >/dev/
 grep -F "$expected_fira_hash" THIRD_PARTY_NOTICES.md >/dev/null
 grep -F "$expected_last_resort_hash" THIRD_PARTY_NOTICES.md >/dev/null
 grep -F "Copyright 2014-2021 The Fira Code Project Authors" assets/fonts/LICENSE >/dev/null
+grep -F "Copyright (c) 2014 Ryan L McIntyre" assets/fonts/LICENSE >/dev/null
+grep -F "https://github.com/ryanoasis/nerd-fonts/tree/v2.1.0" \
+  assets/fonts/LICENSE >/dev/null
 grep -F "Copyright © 2020 Unicode, Inc." assets/fonts/LICENSE >/dev/null
 grep -F "SIL OPEN FONT LICENSE Version 1.1" assets/fonts/LICENSE >/dev/null
+grep -F "Copyright (c) 2014 Ryan L McIntyre" THIRD_PARTY_NOTICES.md >/dev/null
 
 license_report="$(mktemp "${TMPDIR:-/tmp}/satin-license-audit.XXXXXX.html")"
 case "$license_report" in

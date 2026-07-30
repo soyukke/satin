@@ -22,7 +22,15 @@ if /usr/sbin/screencapture -x -l "$window_id" "$output" 2>/dev/null && [[ -s "$o
 fi
 
 swift_bin="/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swift"
-env -u SDKROOT -u DEVELOPER_DIR "$swift_bin" -e '
+swift_sdk="$(
+  env -u SDKROOT -u DEVELOPER_DIR \
+    /usr/bin/xcrun --sdk macosx --show-sdk-path
+)"
+swift_target="$(uname -m)-apple-macos14.0"
+env -u SDKROOT -u DEVELOPER_DIR "$swift_bin" \
+  -sdk "$swift_sdk" \
+  -target "$swift_target" \
+  -e '
 import CoreGraphics
 import Foundation
 
