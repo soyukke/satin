@@ -296,7 +296,7 @@ final class AppUpdateInstaller {
         }
 
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(
-            "neovide-tabs-update-\(UUID().uuidString)",
+            "satin-update-\(UUID().uuidString)",
             isDirectory: true
         )
         do {

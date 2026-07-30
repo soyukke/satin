@@ -1,23 +1,23 @@
 import Foundation
 
-@_silgen_name("nvterm_control_create")
-private func nvterm_control_create(
+@_silgen_name("satin_control_create")
+private func satin_control_create(
     _ path: UnsafePointer<CChar>?
 ) -> UnsafeMutableRawPointer?
 
-@_silgen_name("nvterm_control_destroy")
-private func nvterm_control_destroy(_ handle: UnsafeMutableRawPointer?)
+@_silgen_name("satin_control_destroy")
+private func satin_control_destroy(_ handle: UnsafeMutableRawPointer?)
 
-@_silgen_name("nvterm_control_wakeup_fd")
-private func nvterm_control_wakeup_fd(_ handle: UnsafeMutableRawPointer?) -> Int32
+@_silgen_name("satin_control_wakeup_fd")
+private func satin_control_wakeup_fd(_ handle: UnsafeMutableRawPointer?) -> Int32
 
-@_silgen_name("nvterm_control_take_request_json")
-private func nvterm_control_take_request_json(
+@_silgen_name("satin_control_take_request_json")
+private func satin_control_take_request_json(
     _ handle: UnsafeMutableRawPointer?
 ) -> UnsafeMutablePointer<CChar>?
 
-@_silgen_name("nvterm_control_respond")
-private func nvterm_control_respond(
+@_silgen_name("satin_control_respond")
+private func satin_control_respond(
     _ handle: UnsafeMutableRawPointer?,
     _ id: UInt64,
     _ response: UnsafePointer<CChar>?
@@ -60,14 +60,14 @@ final class NativeControlServer {
 
     init?(socketPath: String) {
         let handle = socketPath.withCString { path in
-            nvterm_control_create(path)
+            satin_control_create(path)
         }
         guard let handle else {
             return nil
         }
-        let descriptor = nvterm_control_wakeup_fd(handle)
+        let descriptor = satin_control_wakeup_fd(handle)
         guard descriptor >= 0 else {
-            nvterm_control_destroy(handle)
+            satin_control_destroy(handle)
             return nil
         }
         self.socketPath = socketPath
@@ -85,13 +85,13 @@ final class NativeControlServer {
 
     deinit {
         wakeupSource?.cancel()
-        nvterm_control_destroy(handle)
+        satin_control_destroy(handle)
     }
 
     private func drain() {
-        while let pointer = nvterm_control_take_request_json(handle) {
+        while let pointer = satin_control_take_request_json(handle) {
             let json = String(cString: pointer)
-            nvterm_string_free(pointer)
+            satin_string_free(pointer)
             guard let data = json.data(using: .utf8) else {
                 continue
             }
@@ -166,21 +166,22 @@ final class NativeControlServer {
             return
         }
         json.withCString { value in
-            _ = nvterm_control_respond(handle, id, value)
+            _ = satin_control_respond(handle, id, value)
         }
     }
 }
 
 enum NativeControlEnvironment {
     static func socketPath() -> String {
-        if let override = ProcessInfo.processInfo.environment["NVTERM_CONTROL_SOCKET"],
+        if let override = ProcessInfo.processInfo.environment["SATIN_CONTROL_SOCKET"]
+            ?? ProcessInfo.processInfo.environment["NVTERM_CONTROL_SOCKET"],
            !override.isEmpty {
             return override
         }
-        if ProcessInfo.processInfo.environment["NVTERM_NATIVE_SMOKE_SCENARIO"] != nil {
+        if ProcessInfo.processInfo.environment["SATIN_NATIVE_SMOKE_SCENARIO"] != nil {
             return FileManager.default.temporaryDirectory
                 .appendingPathComponent(
-                    "neovide-tabs-smoke-\(ProcessInfo.processInfo.processIdentifier)",
+                    "satin-smoke-\(ProcessInfo.processInfo.processIdentifier)",
                     isDirectory: true
                 )
                 .appendingPathComponent("control.sock")
@@ -191,7 +192,7 @@ enum NativeControlEnvironment {
             in: .userDomainMask
         ).first ?? FileManager.default.homeDirectoryForCurrentUser
         return base
-            .appendingPathComponent("Neovide Tabs", isDirectory: true)
+            .appendingPathComponent("Satin", isDirectory: true)
             .appendingPathComponent("run", isDirectory: true)
             .appendingPathComponent("control.sock")
             .path
@@ -200,7 +201,7 @@ enum NativeControlEnvironment {
     static func cliPath() -> String {
         let bundled = Bundle.main.executableURL?
             .deletingLastPathComponent()
-            .appendingPathComponent("nvtermctl")
+            .appendingPathComponent("satinctl")
         if let bundled, FileManager.default.isExecutableFile(atPath: bundled.path) {
             return bundled.path
         }
@@ -208,7 +209,7 @@ enum NativeControlEnvironment {
             fileURLWithPath: FileManager.default.currentDirectoryPath,
             isDirectory: true
         )
-        .appendingPathComponent("target/debug/nvtermctl")
+        .appendingPathComponent("target/debug/satinctl")
         .path
     }
 }

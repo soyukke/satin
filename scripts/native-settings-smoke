@@ -5,8 +5,8 @@ if [[ -z "${IN_NIX_SHELL:-}" ]]; then
   exec nix develop --command ./scripts/native-settings-smoke "$@"
 fi
 
-app="${NVTERM_NATIVE_EXECUTABLE:-spikes/macos-shell/.build/NativeShellSpike}"
-socket_root="$(mktemp -d "${TMPDIR:-/tmp}/neovide-tabs-settings-smoke.XXXXXX")"
+app="${SATIN_NATIVE_EXECUTABLE:-spikes/macos-shell/.build/SatinApplication}"
+socket_root="$(mktemp -d "${TMPDIR:-/tmp}/satin-settings-smoke.XXXXXX")"
 app_pid=""
 
 cleanup() {
@@ -23,10 +23,10 @@ for tab in general appearance terminal keybindings updates; do
   window_id_file="$socket_root/${tab}-window-id"
   app_log="$socket_root/${tab}-app.log"
   rm -f "$shot" "$window_id_file"
-  NVTERM_CONTROL_SOCKET="$socket_root/${tab}.sock" \
-    NVTERM_NATIVE_SMOKE_SCENARIO=settings \
-    NVTERM_NATIVE_SMOKE_WINDOW_ID="$window_id_file" \
-    NVTERM_SETTINGS_TAB="$tab" \
+  SATIN_CONTROL_SOCKET="$socket_root/${tab}.sock" \
+    SATIN_NATIVE_SMOKE_SCENARIO=settings \
+    SATIN_NATIVE_SMOKE_WINDOW_ID="$window_id_file" \
+    SATIN_SETTINGS_TAB="$tab" \
     "$app" >"$app_log" 2>&1 &
   app_pid=$!
 

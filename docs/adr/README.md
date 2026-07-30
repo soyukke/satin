@@ -1,6 +1,6 @@
 # Architecture Decision Records
 
-This directory stores Architecture Decision Records for neovide-tabs.
+This directory stores Architecture Decision Records for Satin.
 
 ADRs are used for decisions that shape the long-term architecture, especially
 choices that are hard to reverse or that explain why the current prototype is

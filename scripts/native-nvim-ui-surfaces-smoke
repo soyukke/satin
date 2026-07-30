@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-app="spikes/macos-shell/.build/NativeShellSpike"
+app="spikes/macos-shell/.build/SatinApplication"
 shot="spikes/macos-shell/.build/native-nvim-ui-surfaces.png"
 result_file="spikes/macos-shell/.build/native-nvim-ui-surfaces.result"
 window_id_file="spikes/macos-shell/.build/native-nvim-ui-surfaces-window-id"
@@ -10,11 +10,11 @@ verify_error="spikes/macos-shell/.build/native-nvim-ui-surfaces-verify.err"
 
 rm -f "$shot" "$result_file" "$window_id_file" "$capture_error" "$verify_error"
 
-NVTERM_NATIVE_PANE=nvim \
-  NVTERM_NATIVE_SMOKE_SCENARIO=nvim-ui-surfaces \
-  NVTERM_NATIVE_SMOKE_RESULT="$result_file" \
-  NVTERM_NATIVE_SMOKE_WINDOW_ID="$window_id_file" \
-  NVTERM_NATIVE_SMOKE_KEEP_OPEN=1 \
+SATIN_NATIVE_PANE=nvim \
+  SATIN_NATIVE_SMOKE_SCENARIO=nvim-ui-surfaces \
+  SATIN_NATIVE_SMOKE_RESULT="$result_file" \
+  SATIN_NATIVE_SMOKE_WINDOW_ID="$window_id_file" \
+  SATIN_NATIVE_SMOKE_KEEP_OPEN=1 \
   "$app" &
 app_pid=$!
 

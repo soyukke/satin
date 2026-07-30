@@ -6,8 +6,8 @@ if [[ -z "${IN_NIX_SHELL:-}" ]]; then
 fi
 
 build_dir="spikes/macos-shell/.build"
-output="$build_dir/NativeShellSpike"
-tmp_output="$build_dir/NativeShellSpike.$$"
+output="$build_dir/SatinApplication"
+tmp_output="$build_dir/SatinApplication.$$"
 lock_dir="$build_dir/native-build.lock"
 minimum_macos="14.0"
 host_arch="$(uname -m)"
@@ -60,7 +60,7 @@ for flag in "${inherited_ldflags[@]}"; do
 done
 NIX_LDFLAGS="${portable_ldflags[*]}" \
   MACOSX_DEPLOYMENT_TARGET="$minimum_macos" \
-  cargo build --lib --bin nvtermctl
+  cargo build --lib --bin satinctl
 env -u SDKROOT -u DEVELOPER_DIR \
   /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc \
   -parse-as-library \
@@ -69,9 +69,9 @@ env -u SDKROOT -u DEVELOPER_DIR \
   -target "$swift_target" \
   spikes/macos-shell/ControlHost.swift \
   spikes/macos-shell/SettingsWindow.swift \
-  spikes/macos-shell/NativeShellSpike.swift \
+  spikes/macos-shell/SatinApplication.swift \
   spikes/macos-shell/UpdateInstaller.swift \
-  target/debug/libneovide_tabs.a \
+  target/debug/libsatin.a \
   -framework AppKit \
   -framework CryptoKit \
   -framework MetalKit \

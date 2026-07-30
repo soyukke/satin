@@ -1,33 +1,32 @@
 <p align="center">
-  <img src="assets/app-icon.png" width="180" height="180" alt="Neovide Tabs app icon">
+  <img src="assets/app-icon.png" width="180" height="180" alt="Satin app icon">
 </p>
 
-<h1 align="center">Neovide Tabs</h1>
+<h1 align="center">Satin</h1>
 
 <p align="center">
   A native macOS terminal with tabs, splits, animated cursor movement, and smooth scrolling.
 </p>
 
 <p align="center">
-  <a href="https://github.com/soyukke/neovide-tabs/releases/latest"><img
-    src="https://img.shields.io/github/v/release/soyukke/neovide-tabs"
+  <a href="https://github.com/soyukke/satin/releases/latest"><img
+    src="https://img.shields.io/github/v/release/soyukke/satin"
     alt="Latest release"></a>
-  <a href="https://github.com/soyukke/neovide-tabs/actions/workflows/macos.yml"><img
-    src="https://github.com/soyukke/neovide-tabs/actions/workflows/macos.yml/badge.svg"
+  <a href="https://github.com/soyukke/satin/actions/workflows/macos.yml"><img
+    src="https://github.com/soyukke/satin/actions/workflows/macos.yml/badge.svg"
     alt="macOS production gate"></a>
   <a href="LICENSE"><img
-    src="https://img.shields.io/github/license/soyukke/neovide-tabs"
+    src="https://img.shields.io/github/license/soyukke/satin"
     alt="MIT License"></a>
 </p>
 
 > [!IMPORTANT]
-> Neovide Tabs is being renamed to
-> [Satin](https://github.com/soyukke/satin) to establish an independent
-> product identity. Version 0.1.6 is the signed migration bridge: existing
-> installations update to it first, then its in-app updater installs
-> `Satin.app` from the new repository without breaking the Ed25519 trust chain.
+> Existing Neovide Tabs installations should first update to the signed
+> [0.1.6 migration bridge](https://github.com/soyukke/neovide-tabs/releases/tag/v0.1.6).
+> Its in-app updater installs `Satin.app` from this repository without breaking
+> the existing Ed25519 trust chain or discarding settings and session state.
 
-Neovide Tabs combines a Rust terminal core and Neovide-derived Skia/Metal
+Satin combines a Rust terminal core and Neovide-derived Skia/Metal
 renderer with a native AppKit shell. Terminal bytes flow through a real PTY and
 `libghostty-vt`, while AppKit owns the macOS window, menus, tabs, pane layout,
 settings, and input translation.
@@ -43,7 +42,7 @@ settings, and input translation.
   keybindings, session behavior, and signed updates.
 - An experimental native Neovim UI backed by `nvim --embed`, `ext_multigrid`,
   and the same Skia/Metal renderer.
-- Kitty graphics support and an owner-only `nvtermctl` automation interface.
+- Kitty graphics support and an owner-only `satinctl` automation interface.
 - Publisher-signed in-app updates distributed through GitHub Releases.
 
 ## Requirements
@@ -56,8 +55,8 @@ Intel Macs are not supported.
 ## Install
 
 1. Download the macOS arm64 ZIP from the
-   [latest GitHub Release](https://github.com/soyukke/neovide-tabs/releases/latest).
-2. Extract `Neovide Tabs.app` and move it to `/Applications`.
+   [latest GitHub Release](https://github.com/soyukke/satin/releases/latest).
+2. Extract `Satin.app` and move it to `/Applications`.
 3. Launch the application from `/Applications`.
 
 Public release archives are publisher-signed for the in-app updater but are
@@ -101,7 +100,7 @@ just native-update-test # test version ordering and GitHub update metadata
 just native-update-install-smoke # test atomic replacement and rollback paths
 just native-update-release-smoke # verify a signed ZIP with the embedded key
 just native-settings-smoke # capture and verify every native Settings tab
-just native-control-smoke # exercise nvtermctl and its owner-only socket
+just native-control-smoke # exercise satinctl and its owner-only socket
 just native-kitty-smoke # verify Kitty transfer, isolation, deletion, and pixels
 just native-notarize # Developer ID sign, notarize, staple, and assess the .app
 just native-smoke # launch the native host briefly and write a PNG smoke shot
@@ -170,7 +169,7 @@ terminal and Neovim panes.
 ## Release
 
 `just native-release` creates the Apple Silicon archive
-`spikes/macos-shell/.build/release/Neovide-Tabs-<version>-macOS-arm64.zip` and
+`spikes/macos-shell/.build/release/Satin-<version>-macOS-arm64.zip` and
 `latest.json`. With no Apple credentials it produces an ad-hoc signed artifact
 and labels the manifest as `development`.
 
@@ -178,8 +177,8 @@ Pushing a tag that exactly matches the Cargo package version publishes a GitHub
 Release after the full verification and packaged-application smoke gates pass:
 
 ```sh
-git tag v0.1.6
-git push origin v0.1.6
+git tag v0.2.0
+git push origin v0.2.0
 ```
 
 The tag workflow runs on GitHub's Apple Silicon runner, attaches the arm64 ZIP
@@ -201,12 +200,13 @@ stays silent when current or offline and presents an alert only when a newer
 semantic version is available. Help → Check for Updates… performs the same
 check interactively and reports every outcome.
 
-Version 0.1.1 is the one-time updater bootstrap and must replace 0.1.0
-manually. Version 0.1.1 and later can install newer releases through Update and
-Restart. Version 0.1.6 is the final Neovide Tabs release and migration bridge;
-it changes the trusted update feed to `soyukke/satin`, accepts the renamed
-bundle, and atomically replaces `Neovide Tabs.app` with `Satin.app`. The updater
-downloads the exact arm64 asset and schema-2 manifest,
+Neovide Tabs 0.1.6 is the final release in the legacy repository and the signed
+migration bridge to Satin. It changes the trusted update feed to
+`soyukke/satin`, accepts the renamed bundle, and atomically replaces
+`Neovide Tabs.app` with `Satin.app`. Satin 0.2.0 migrates the old macOS defaults
+domain on first launch without overwriting values already saved by Satin.
+
+For every update, Satin downloads the exact arm64 asset and schema-2 manifest,
 validates its declared size and SHA-256, verifies its Ed25519 publisher
 signature, extracts and validates the bundle ID/version/architecture/code
 signature, then stages it alongside the installed application. A detached
@@ -218,17 +218,18 @@ The Ed25519 public key and identifier are checked in at
 [`assets/update-signing-public-key.json`](assets/update-signing-public-key.json).
 The private key is never stored in the repository. Release Actions read
 `UPDATE_SIGNING_PRIVATE_KEY_B64` from GitHub Actions Secrets. The maintainer's
-recoverable local copy is stored in macOS Keychain under service
-`dev.soyukke.neovide-tabs.update-signing`, account `soyukke`. Losing both copies
-would prevent existing installations from trusting future updates, so key
-rotation must be shipped and cross-signed before retiring this key.
+recoverable local copy remains in macOS Keychain under the legacy service
+`dev.soyukke.neovide-tabs.update-signing`, account `soyukke`, so the update
+trust root survives the rename. Losing both copies would prevent existing
+installations from trusting future updates, so key rotation must be shipped
+and cross-signed before retiring this key.
 
 This updater signature authenticates project releases without an Apple
 Developer ID. It does not remove the first-install Gatekeeper warning; Apple
 notarization remains a separate trust boundary.
 
 Rust diagnostic verbosity is controlled by
-`NVTERM_LOG=off|error|warn|info|debug|trace`; native lifecycle/runtime/session
+`SATIN_LOG=off|error|warn|info|debug|trace`; native lifecycle/runtime/session
 events use macOS unified logging.
 
 ## Terminal Features
@@ -253,7 +254,7 @@ events use macOS unified logging.
   shell and startup directory, conflict-checked keybindings, and signed-update
   frequency. Live-safe settings apply immediately; shell and directory changes
   apply to newly created panes.
-- Bundles `nvtermctl`, a versioned local control CLI for reading visible pane
+- Bundles `satinctl`, a versioned local control CLI for reading visible pane
   text, sending input and keys, creating and naming tabs/splits, changing
   themes, and coordinating agent status.
 - Uses runtime wakeup descriptors and renderer animation deadlines instead of
@@ -277,7 +278,7 @@ events use macOS unified logging.
 
 ## Settings
 
-Open Neovide Tabs → Settings… or press `Command-,`.
+Open Satin → Settings… or press `Command-,`.
 
 - General controls Option-as-Alt, bell attention, and session restore.
 - Appearance selects a fixed-pitch font, font size, and the default theme for
@@ -295,23 +296,23 @@ safe defaults during load so preferences cannot prevent startup.
 
 ## Local control API
 
-Every pane receives `NVTERM_SOCKET`, `NVTERM_TAB_ID`, `NVTERM_PANE_ID`, and
-`NVTERMCTL`, and can invoke:
+Every pane receives `SATIN_SOCKET`, `SATIN_TAB_ID`, `SATIN_PANE_ID`, and
+`SATINCTL`, and can invoke:
 
 ```sh
-"$NVTERMCTL" list
-"$NVTERMCTL" read-screen
-"$NVTERMCTL" split --vertical
-"$NVTERMCTL" status set running "working"
-"$NVTERMCTL" status wait --timeout 300
+"$SATINCTL" list
+"$SATINCTL" read-screen
+"$SATINCTL" split --vertical
+"$SATINCTL" status set running "working"
+"$SATINCTL" status wait --timeout 300
 ```
 
-The app bundle also contains `Contents/MacOS/nvtermctl` for external scripts.
-Its directory is prepended to the pane's initial `PATH`; use `$NVTERMCTL` when
+The app bundle also contains `Contents/MacOS/satinctl` for external scripts.
+Its directory is prepended to the pane's initial `PATH`; use `$SATINCTL` when
 a shell startup file replaces `PATH`.
 The Unix socket is owner-only, verifies the peer UID, and has bounded request,
 client, and timeout limits; it is not a remote-control interface. See
-[`docs/nvtermctl.md`](docs/nvtermctl.md) for commands, JSON behavior, and the
+[`docs/satinctl.md`](docs/satinctl.md) for commands, JSON behavior, and the
 security boundary.
 
 ## Native Shortcuts
@@ -368,7 +369,7 @@ scrolling clip. The native nvim path reads those hints from
 Neovim text in the Skia/Metal path is shaped by a Neovide-derived Rust shaper
 instead of direct `Canvas::draw_str` cell drawing. The shaper uses `swash` to map
 grapheme clusters onto grid-cell positions, caches Skia `TextBlob`s with `lru`,
-loads `$NVTERM_FONT` as the primary face, falls back through Skia `FontMgr`
+loads `$SATIN_FONT` as the primary face, falls back through Skia `FontMgr`
 character matching, and keeps bundled Neovide font assets as default and last
 resort faces. Cell style carries bold, italic, faint, blink, underline
 variants/colors, strikethrough, and overline from terminal SGR state into the
@@ -405,13 +406,15 @@ renderer extensions remain event-driven; terminal behavior stays owned by
 ## Contributing
 
 Bug reports and focused feature requests are welcome through GitHub Issues.
-Pull request creation is currently limited to repository collaborators. Before
-publishing a change, run `just precommit`; renderer changes should also run the
-relevant native terminal or Neovim smoke recipes.
+Accepted pull requests are currently limited to repository maintainers;
+external pull requests are closed automatically without checking out or
+executing their contents. Before publishing a change, run `just precommit`;
+renderer changes should also run the relevant native terminal or Neovim smoke
+recipes.
 
 ## License
 
-The neovide-tabs source is available under the [MIT License](LICENSE),
+The Satin source is available under the [MIT License](LICENSE),
 copyright © 2026 soyukke. Adapted code, bundled fonts, and other third-party
 components remain under their respective licenses as documented in
 [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md). Release bundles include

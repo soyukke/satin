@@ -34,11 +34,12 @@ state without polling the screen.
   socket. Version 1 supports listing tabs and panes, reading the visible screen,
   sending input and named keys, creating tabs and splits, renaming tabs,
   selecting themes, and setting or waiting for bounded agent status.
-- The bundled `nvtermctl` executable is the supported client. Each terminal
-  pane receives `NVTERM_SOCKET`, `NVTERM_TAB_ID`, `NVTERM_PANE_ID`, and
-  `NVTERMCTL`; the bundled CLI directory is prepended to that pane's initial
-  `PATH`. The absolute `NVTERMCTL` value remains authoritative when a shell
-  startup file replaces `PATH`.
+- The bundled `satinctl` executable is the supported client. Each terminal
+  pane receives `SATIN_SOCKET`, `SATIN_TAB_ID`, `SATIN_PANE_ID`, and
+  `SATINCTL`; the bundled CLI directory is prepended to that pane's initial
+  `PATH`. The absolute `SATINCTL` value remains authoritative when a shell
+  startup file replaces `PATH`. The former `NVTERM_*` names remain accepted as
+  migration aliases but are no longer documented as the primary interface.
 - The socket parent must already be owner-only or is created owner-only. The
   socket is mode `0600`, stale paths are replaced only when they are sockets
   owned by the current user and are no longer accepting connections. A live

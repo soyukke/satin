@@ -70,7 +70,7 @@ jobs:
         uses: actions/attest-build-provenance@v4
         with:
           subject-path: |
-            spikes/macos-shell/.build/release/Neovide-Tabs-*-macOS-arm64.zip
+            spikes/macos-shell/.build/release/Satin-*-macOS-arm64.zip
             spikes/macos-shell/.build/release/latest.json
 
       - name: Publish GitHub Release
@@ -81,8 +81,8 @@ jobs:
             --repo "$GITHUB_REPOSITORY" \
             --verify-tag \
             --latest \
-            --title "Neovide Tabs $GITHUB_REF_NAME" \
+            --title "Satin $GITHUB_REF_NAME" \
             --generate-notes \
             --notes "Apple Silicon only. The archive is signed for in-app updates but is not Apple-notarized; macOS may require approval in Privacy & Security on first launch." \
-            spikes/macos-shell/.build/release/Neovide-Tabs-*-macOS-arm64.zip \
+            spikes/macos-shell/.build/release/Satin-*-macOS-arm64.zip \
             spikes/macos-shell/.build/release/latest.json

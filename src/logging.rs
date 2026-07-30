@@ -11,7 +11,8 @@ static LOGGER: NativeLogger = NativeLogger;
 
 pub fn init() {
     INIT.call_once(|| {
-        let level = match env::var("NVTERM_LOG")
+        let level = match env::var("SATIN_LOG")
+            .or_else(|_| env::var("NVTERM_LOG"))
             .unwrap_or_else(|_| "info".to_owned())
             .to_ascii_lowercase()
             .as_str()

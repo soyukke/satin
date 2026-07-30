@@ -5,12 +5,12 @@ if [[ -z "${IN_NIX_SHELL:-}" ]]; then
   exec nix develop --command ./scripts/native-update-install-smoke "$@"
 fi
 
-source_app="spikes/macos-shell/.build/package/Neovide Tabs.app"
+source_app="spikes/macos-shell/.build/package/Satin.app"
 test -d "$source_app"
 
-smoke_root="$(mktemp -d "${TMPDIR:-/tmp}/neovide-tabs-update-smoke.XXXXXX")"
+smoke_root="$(mktemp -d "${TMPDIR:-/tmp}/satin-update-smoke.XXXXXX")"
 case "$smoke_root" in
-  "${TMPDIR:-/tmp}"/neovide-tabs-update-smoke.*) ;;
+  "${TMPDIR:-/tmp}"/satin-update-smoke.*) ;;
   *)
     echo "refusing unexpected update smoke root: $smoke_root" >&2
     exit 70
@@ -90,4 +90,35 @@ test -f "$rollback_staged/Contents/Resources/update-smoke-marker"
 test ! -e "$rollback_backup"
 test ! -e "$rollback_trash"
 /usr/bin/codesign --verify --deep --strict --verbose=2 "$rollback_current"
+
+regular_applications="$smoke_root/regular/Applications"
+regular_trash_root="$smoke_root/regular/user/.Trash"
+regular_current="$regular_applications/Satin.app"
+regular_staged="$regular_applications/.Satin.update.regular.app"
+regular_backup="$regular_applications/.Satin.previous.regular.app"
+regular_trash="$regular_trash_root/Satin.previous.regular.app"
+mkdir -p "$regular_applications" "$regular_trash_root"
+/usr/bin/ditto "$source_app" "$regular_current"
+/usr/bin/ditto "$source_app" "$regular_staged"
+printf 'regular\n' >"$regular_staged/Contents/Resources/update-smoke-marker"
+/usr/bin/codesign --force --sign - --options runtime --timestamp=none "$regular_staged"
+
+/bin/sleep 0.2 &
+regular_wait_pid=$!
+scripts/apply-update \
+  "$regular_current" \
+  "$regular_staged" \
+  "$regular_current" \
+  "$regular_backup" \
+  "$regular_trash" \
+  "$regular_wait_pid" \
+  smoke
+wait "$regular_wait_pid" 2>/dev/null || true
+
+test -f "$regular_current/Contents/Resources/update-smoke-marker"
+test ! -e "$regular_staged"
+test ! -e "$regular_backup"
+test -d "$regular_trash"
+test ! -e "$regular_trash/Contents/Resources/update-smoke-marker"
+/usr/bin/codesign --verify --deep --strict --verbose=2 "$regular_current"
 printf 'native update install smoke passed\n'

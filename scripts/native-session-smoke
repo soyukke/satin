@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-app="spikes/macos-shell/.build/NativeShellSpike"
+app="spikes/macos-shell/.build/SatinApplication"
 result_file="spikes/macos-shell/.build/native-session-schema.result"
-log_file="/tmp/neovide-tabs-session-schema.log"
+log_file="/tmp/satin-session-schema.log"
 
 rm -f -- "$result_file" "$log_file"
-NVTERM_NATIVE_SMOKE_SCENARIO=session-schema \
-  NVTERM_NATIVE_SMOKE_RESULT="$result_file" \
+SATIN_NATIVE_SMOKE_SCENARIO=session-schema \
+  SATIN_NATIVE_SMOKE_RESULT="$result_file" \
   "$app" >"$log_file" 2>&1
 
 if [[ ! -s "$result_file" ]]; then

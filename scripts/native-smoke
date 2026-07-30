@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-app="${NVTERM_NATIVE_EXECUTABLE:-spikes/macos-shell/.build/NativeShellSpike}"
+app="${SATIN_NATIVE_EXECUTABLE:-spikes/macos-shell/.build/SatinApplication}"
 shot="spikes/macos-shell/.build/native-smoke.png"
 result_file="spikes/macos-shell/.build/native-smoke.result"
 window_id_file="spikes/macos-shell/.build/native-window-id"
 
 rm -f "$shot" "$result_file" "$window_id_file"
 
-NVTERM_NATIVE_SMOKE_SCENARIO=1 \
-  NVTERM_NATIVE_SMOKE_RESULT="$result_file" \
-  NVTERM_NATIVE_SMOKE_WINDOW_ID="$window_id_file" \
+SATIN_NATIVE_SMOKE_SCENARIO=1 \
+  SATIN_NATIVE_SMOKE_RESULT="$result_file" \
+  SATIN_NATIVE_SMOKE_WINDOW_ID="$window_id_file" \
   "$app" &
 app_pid=$!
 

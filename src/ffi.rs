@@ -12,18 +12,18 @@ use crate::terminal_runtime::{
     TerminalSpawnConfig,
 };
 
-const NVTERM_SPLIT_VERTICAL: u32 = 0;
-const NVTERM_SPLIT_HORIZONTAL: u32 = 1;
+const SATIN_SPLIT_VERTICAL: u32 = 0;
+const SATIN_SPLIT_HORIZONTAL: u32 = 1;
 
 #[unsafe(no_mangle)]
-pub extern "C" fn nvterm_core_create() -> *mut TerminalCore {
+pub extern "C" fn satin_core_create() -> *mut TerminalCore {
     crate::logging::init();
     log::info!(target: "lifecycle", "core_created");
     Box::into_raw(Box::new(TerminalCore::new()))
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn nvterm_core_create_with_theme(theme: *const c_char) -> *mut TerminalCore {
+pub extern "C" fn satin_core_create_with_theme(theme: *const c_char) -> *mut TerminalCore {
     crate::logging::init();
     let theme = c_string(theme).unwrap_or_else(|| "Graphite".to_owned());
     log::info!(target: "lifecycle", "core_created theme={theme}");
@@ -33,21 +33,21 @@ pub extern "C" fn nvterm_core_create_with_theme(theme: *const c_char) -> *mut Te
 #[unsafe(no_mangle)]
 /// # Safety
 ///
-/// `handle` must be either null or a pointer returned by `nvterm_core_create`.
+/// `handle` must be either null or a pointer returned by `satin_core_create`.
 /// Non-null handles must be passed to this function at most once.
-pub unsafe extern "C" fn nvterm_core_destroy(handle: *mut TerminalCore) {
+pub unsafe extern "C" fn satin_core_destroy(handle: *mut TerminalCore) {
     if handle.is_null() {
         return;
     }
 
-    // SAFETY: `handle` must come from `nvterm_core_create` and is consumed once here.
+    // SAFETY: `handle` must come from `satin_core_create` and is consumed once here.
     unsafe {
         drop(Box::from_raw(handle));
     }
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn nvterm_core_new_tab(handle: *mut TerminalCore) -> usize {
+pub extern "C" fn satin_core_new_tab(handle: *mut TerminalCore) -> usize {
     let Some(core) = core_mut(handle) else {
         return usize::MAX;
     };
@@ -55,7 +55,7 @@ pub extern "C" fn nvterm_core_new_tab(handle: *mut TerminalCore) -> usize {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn nvterm_core_split_active(handle: *mut TerminalCore, axis: u32) -> usize {
+pub extern "C" fn satin_core_split_active(handle: *mut TerminalCore, axis: u32) -> usize {
     let Some(core) = core_mut(handle) else {
         return usize::MAX;
     };
@@ -66,22 +66,22 @@ pub extern "C" fn nvterm_core_split_active(handle: *mut TerminalCore, axis: u32)
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn nvterm_core_close_pane(handle: *mut TerminalCore, pane_id: usize) -> u8 {
+pub extern "C" fn satin_core_close_pane(handle: *mut TerminalCore, pane_id: usize) -> u8 {
     core_mut(handle).is_some_and(|core| core.close_pane(pane_id)) as u8
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn nvterm_core_select_tab(handle: *mut TerminalCore, index: usize) -> u8 {
+pub extern "C" fn satin_core_select_tab(handle: *mut TerminalCore, index: usize) -> u8 {
     core_mut(handle).is_some_and(|core| core.select_tab(index)) as u8
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn nvterm_core_select_pane(handle: *mut TerminalCore, pane_id: usize) -> u8 {
+pub extern "C" fn satin_core_select_pane(handle: *mut TerminalCore, pane_id: usize) -> u8 {
     core_mut(handle).is_some_and(|core| core.select_pane(pane_id)) as u8
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn nvterm_core_rename_tab(
+pub extern "C" fn satin_core_rename_tab(
     handle: *mut TerminalCore,
     index: usize,
     title: *const c_char,
@@ -96,7 +96,7 @@ pub extern "C" fn nvterm_core_rename_tab(
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn nvterm_core_set_tab_theme(
+pub extern "C" fn satin_core_set_tab_theme(
     handle: *mut TerminalCore,
     index: usize,
     theme: *const c_char,
@@ -111,7 +111,7 @@ pub extern "C" fn nvterm_core_set_tab_theme(
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn nvterm_core_set_default_theme(
+pub extern "C" fn satin_core_set_default_theme(
     handle: *mut TerminalCore,
     theme: *const c_char,
 ) -> u8 {
@@ -126,7 +126,7 @@ pub extern "C" fn nvterm_core_set_default_theme(
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn nvterm_core_snapshot_json(handle: *const TerminalCore) -> *mut c_char {
+pub extern "C" fn satin_core_snapshot_json(handle: *const TerminalCore) -> *mut c_char {
     let Some(core) = core_ref(handle) else {
         return ptr::null_mut();
     };
@@ -134,7 +134,7 @@ pub extern "C" fn nvterm_core_snapshot_json(handle: *const TerminalCore) -> *mut
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn nvterm_control_create(path: *const c_char) -> *mut ControlServer {
+pub extern "C" fn satin_control_create(path: *const c_char) -> *mut ControlServer {
     crate::logging::init();
     let Some(path) = c_string(path) else {
         return ptr::null_mut();
@@ -158,31 +158,31 @@ pub extern "C" fn nvterm_control_create(path: *const c_char) -> *mut ControlServ
 #[unsafe(no_mangle)]
 /// # Safety
 ///
-/// `handle` must be null or a pointer returned by `nvterm_control_create`.
-pub unsafe extern "C" fn nvterm_control_destroy(handle: *mut ControlServer) {
+/// `handle` must be null or a pointer returned by `satin_control_create`.
+pub unsafe extern "C" fn satin_control_destroy(handle: *mut ControlServer) {
     if handle.is_null() {
         return;
     }
-    // SAFETY: `handle` was returned by `Box::into_raw` in `nvterm_control_create`.
+    // SAFETY: `handle` was returned by `Box::into_raw` in `satin_control_create`.
     unsafe {
         drop(Box::from_raw(handle));
     }
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn nvterm_control_wakeup_fd(handle: *const ControlServer) -> i32 {
+pub extern "C" fn satin_control_wakeup_fd(handle: *const ControlServer) -> i32 {
     control_ref(handle).map_or(-1, ControlServer::wakeup_fd)
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn nvterm_control_take_request_json(handle: *mut ControlServer) -> *mut c_char {
+pub extern "C" fn satin_control_take_request_json(handle: *mut ControlServer) -> *mut c_char {
     control_mut(handle)
         .and_then(ControlServer::take_request)
         .map_or(ptr::null_mut(), |request| json_ptr(&request))
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn nvterm_control_respond(
+pub extern "C" fn satin_control_respond(
     handle: *mut ControlServer,
     id: u64,
     response: *const c_char,
@@ -200,7 +200,7 @@ pub extern "C" fn nvterm_control_respond(
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn nvterm_runtime_create(
+pub extern "C" fn satin_runtime_create(
     rows: u16,
     cols: u16,
     pixel_width: u16,
@@ -223,7 +223,7 @@ pub extern "C" fn nvterm_runtime_create(
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn nvterm_runtime_create_in_cwd(
+pub extern "C" fn satin_runtime_create_in_cwd(
     rows: u16,
     cols: u16,
     pixel_width: u16,
@@ -248,7 +248,7 @@ pub extern "C" fn nvterm_runtime_create_in_cwd(
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn nvterm_runtime_create_config(
+pub extern "C" fn satin_runtime_create_config(
     rows: u16,
     cols: u16,
     pixel_width: u16,
@@ -281,21 +281,21 @@ pub extern "C" fn nvterm_runtime_create_config(
 #[unsafe(no_mangle)]
 /// # Safety
 ///
-/// `handle` must be either null or a pointer returned by `nvterm_runtime_create`.
+/// `handle` must be either null or a pointer returned by `satin_runtime_create`.
 /// Non-null handles must be passed to this function at most once.
-pub unsafe extern "C" fn nvterm_runtime_destroy(handle: *mut NativeTerminalRuntime) {
+pub unsafe extern "C" fn satin_runtime_destroy(handle: *mut NativeTerminalRuntime) {
     if handle.is_null() {
         return;
     }
 
-    // SAFETY: `handle` must come from `nvterm_runtime_create` and is consumed once here.
+    // SAFETY: `handle` must come from `satin_runtime_create` and is consumed once here.
     unsafe {
         drop(Box::from_raw(handle));
     }
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn nvterm_runtime_resize(
+pub extern "C" fn satin_runtime_resize(
     handle: *mut NativeTerminalRuntime,
     rows: u16,
     cols: u16,
@@ -318,7 +318,7 @@ pub extern "C" fn nvterm_runtime_resize(
 /// # Safety
 ///
 /// `bytes` must point to `len` readable bytes for the duration of the call.
-pub unsafe extern "C" fn nvterm_runtime_write(
+pub unsafe extern "C" fn satin_runtime_write(
     handle: *mut NativeTerminalRuntime,
     bytes: *const u8,
     len: usize,
@@ -339,7 +339,7 @@ pub unsafe extern "C" fn nvterm_runtime_write(
 /// # Safety
 ///
 /// Non-null text pointers must point to their specified number of readable bytes.
-pub unsafe extern "C" fn nvterm_runtime_key(
+pub unsafe extern "C" fn satin_runtime_key(
     handle: *mut NativeTerminalRuntime,
     key_code: u16,
     modifiers: u32,
@@ -375,7 +375,7 @@ pub unsafe extern "C" fn nvterm_runtime_key(
 /// # Safety
 ///
 /// `bytes` must point to `len` readable UTF-8 bytes for the duration of the call.
-pub unsafe extern "C" fn nvterm_runtime_text(
+pub unsafe extern "C" fn satin_runtime_text(
     handle: *mut NativeTerminalRuntime,
     bytes: *const u8,
     len: usize,
@@ -394,7 +394,7 @@ pub unsafe extern "C" fn nvterm_runtime_text(
 /// # Safety
 ///
 /// `bytes` must point to `len` readable UTF-8 bytes for the duration of the call.
-pub unsafe extern "C" fn nvterm_runtime_paste(
+pub unsafe extern "C" fn satin_runtime_paste(
     handle: *mut NativeTerminalRuntime,
     bytes: *const u8,
     len: usize,
@@ -410,7 +410,7 @@ pub unsafe extern "C" fn nvterm_runtime_paste(
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn nvterm_runtime_mouse(
+pub extern "C" fn satin_runtime_mouse(
     handle: *mut NativeTerminalRuntime,
     action: u32,
     button: i32,
@@ -443,7 +443,7 @@ pub extern "C" fn nvterm_runtime_mouse(
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn nvterm_runtime_focus(handle: *mut NativeTerminalRuntime, focused: u8) -> u8 {
+pub extern "C" fn satin_runtime_focus(handle: *mut NativeTerminalRuntime, focused: u8) -> u8 {
     let Some(runtime) = runtime_mut(handle) else {
         return 0;
     };
@@ -451,7 +451,7 @@ pub extern "C" fn nvterm_runtime_focus(handle: *mut NativeTerminalRuntime, focus
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn nvterm_runtime_select(
+pub extern "C" fn satin_runtime_select(
     handle: *mut NativeTerminalRuntime,
     start_row: u32,
     start_col: u16,
@@ -477,26 +477,24 @@ pub extern "C" fn nvterm_runtime_select(
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn nvterm_runtime_select_all(handle: *const NativeTerminalRuntime) -> u8 {
+pub extern "C" fn satin_runtime_select_all(handle: *const NativeTerminalRuntime) -> u8 {
     runtime_ref(handle).is_some_and(|runtime| runtime.select_all().is_ok()) as u8
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn nvterm_runtime_clear_selection(handle: *const NativeTerminalRuntime) -> u8 {
+pub extern "C" fn satin_runtime_clear_selection(handle: *const NativeTerminalRuntime) -> u8 {
     runtime_ref(handle).is_some_and(|runtime| runtime.clear_selection().is_ok()) as u8
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn nvterm_runtime_selected_text(
-    handle: *const NativeTerminalRuntime,
-) -> *mut c_char {
+pub extern "C" fn satin_runtime_selected_text(handle: *const NativeTerminalRuntime) -> *mut c_char {
     runtime_ref(handle)
         .and_then(|runtime| runtime.selected_text().ok().flatten())
         .map_or(ptr::null_mut(), string_ptr)
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn nvterm_runtime_hyperlink(
+pub extern "C" fn satin_runtime_hyperlink(
     handle: *const NativeTerminalRuntime,
     row: u32,
     col: u16,
@@ -512,19 +510,19 @@ pub extern "C" fn nvterm_runtime_hyperlink(
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn nvterm_runtime_title(handle: *const NativeTerminalRuntime) -> *mut c_char {
+pub extern "C" fn satin_runtime_title(handle: *const NativeTerminalRuntime) -> *mut c_char {
     runtime_ref(handle)
         .and_then(NativeTerminalRuntime::title)
         .map_or(ptr::null_mut(), string_ptr)
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn nvterm_runtime_take_bell_count(handle: *const NativeTerminalRuntime) -> u64 {
+pub extern "C" fn satin_runtime_take_bell_count(handle: *const NativeTerminalRuntime) -> u64 {
     runtime_ref(handle).map_or(0, NativeTerminalRuntime::take_bell_count)
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn nvterm_runtime_set_option_as_alt(
+pub extern "C" fn satin_runtime_set_option_as_alt(
     handle: *mut NativeTerminalRuntime,
     enabled: u8,
 ) -> u8 {
@@ -536,7 +534,7 @@ pub extern "C" fn nvterm_runtime_set_option_as_alt(
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn nvterm_runtime_find(
+pub extern "C" fn satin_runtime_find(
     handle: *mut NativeTerminalRuntime,
     query: *const c_char,
     backwards: u8,
@@ -551,7 +549,7 @@ pub extern "C" fn nvterm_runtime_find(
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn nvterm_runtime_drain(handle: *mut NativeTerminalRuntime) -> u8 {
+pub extern "C" fn satin_runtime_drain(handle: *mut NativeTerminalRuntime) -> u8 {
     let Some(runtime) = runtime_mut(handle) else {
         return 0;
     };
@@ -559,7 +557,7 @@ pub extern "C" fn nvterm_runtime_drain(handle: *mut NativeTerminalRuntime) -> u8
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn nvterm_runtime_exited(handle: *mut NativeTerminalRuntime) -> u8 {
+pub extern "C" fn satin_runtime_exited(handle: *mut NativeTerminalRuntime) -> u8 {
     let Some(runtime) = runtime_mut(handle) else {
         return 1;
     };
@@ -567,12 +565,12 @@ pub extern "C" fn nvterm_runtime_exited(handle: *mut NativeTerminalRuntime) -> u
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn nvterm_runtime_wakeup_fd(handle: *const NativeTerminalRuntime) -> i32 {
+pub extern "C" fn satin_runtime_wakeup_fd(handle: *const NativeTerminalRuntime) -> i32 {
     runtime_ref(handle).map_or(-1, NativeTerminalRuntime::wakeup_fd)
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn nvterm_runtime_scroll(
+pub extern "C" fn satin_runtime_scroll(
     handle: *mut NativeTerminalRuntime,
     requested_rows: isize,
 ) -> isize {
@@ -583,14 +581,14 @@ pub extern "C" fn nvterm_runtime_scroll(
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn nvterm_runtime_renderer_scroll_position(
+pub extern "C" fn satin_runtime_renderer_scroll_position(
     handle: *const NativeTerminalRuntime,
 ) -> f32 {
     runtime_ref(handle).map_or(0.0, NativeTerminalRuntime::renderer_scroll_position)
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn nvterm_runtime_cwd(handle: *const NativeTerminalRuntime) -> *mut c_char {
+pub extern "C" fn satin_runtime_cwd(handle: *const NativeTerminalRuntime) -> *mut c_char {
     let Some(runtime) = runtime_ref(handle) else {
         return ptr::null_mut();
     };
@@ -601,7 +599,7 @@ pub extern "C" fn nvterm_runtime_cwd(handle: *const NativeTerminalRuntime) -> *m
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn nvterm_runtime_screen_text(handle: *mut NativeTerminalRuntime) -> *mut c_char {
+pub extern "C" fn satin_runtime_screen_text(handle: *mut NativeTerminalRuntime) -> *mut c_char {
     let Some(runtime) = runtime_mut(handle) else {
         return ptr::null_mut();
     };
@@ -609,7 +607,7 @@ pub extern "C" fn nvterm_runtime_screen_text(handle: *mut NativeTerminalRuntime)
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn nvterm_runtime_kitty_placement_count(
+pub extern "C" fn satin_runtime_kitty_placement_count(
     handle: *const NativeTerminalRuntime,
 ) -> usize {
     let Some(runtime) = runtime_ref(handle) else {
@@ -621,7 +619,7 @@ pub extern "C" fn nvterm_runtime_kitty_placement_count(
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn nvterm_nvim_create(
+pub extern "C" fn satin_nvim_create(
     rows: u16,
     cols: u16,
     pixel_width: u16,
@@ -637,7 +635,7 @@ pub extern "C" fn nvterm_nvim_create(
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn nvterm_nvim_create_in_cwd(
+pub extern "C" fn satin_nvim_create_in_cwd(
     rows: u16,
     cols: u16,
     pixel_width: u16,
@@ -667,21 +665,21 @@ fn create_nvim_runtime(size: TerminalGridSize, cwd: Option<PathBuf>) -> *mut Nat
 #[unsafe(no_mangle)]
 /// # Safety
 ///
-/// `handle` must be either null or a pointer returned by `nvterm_nvim_create`.
+/// `handle` must be either null or a pointer returned by `satin_nvim_create`.
 /// Non-null handles must be passed to this function at most once.
-pub unsafe extern "C" fn nvterm_nvim_destroy(handle: *mut NativeNeovimRuntime) {
+pub unsafe extern "C" fn satin_nvim_destroy(handle: *mut NativeNeovimRuntime) {
     if handle.is_null() {
         return;
     }
 
-    // SAFETY: `handle` must come from `nvterm_nvim_create` and is consumed once here.
+    // SAFETY: `handle` must come from `satin_nvim_create` and is consumed once here.
     unsafe {
         drop(Box::from_raw(handle));
     }
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn nvterm_nvim_resize(
+pub extern "C" fn satin_nvim_resize(
     handle: *mut NativeNeovimRuntime,
     rows: u16,
     cols: u16,
@@ -704,7 +702,7 @@ pub extern "C" fn nvterm_nvim_resize(
 /// # Safety
 ///
 /// `bytes` must point to `len` readable bytes for the duration of the call.
-pub unsafe extern "C" fn nvterm_nvim_input(
+pub unsafe extern "C" fn satin_nvim_input(
     handle: *mut NativeNeovimRuntime,
     bytes: *const u8,
     len: usize,
@@ -722,7 +720,7 @@ pub unsafe extern "C" fn nvterm_nvim_input(
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn nvterm_nvim_mouse(
+pub extern "C" fn satin_nvim_mouse(
     handle: *mut NativeNeovimRuntime,
     button: *const c_char,
     action: *const c_char,
@@ -749,7 +747,7 @@ pub extern "C" fn nvterm_nvim_mouse(
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn nvterm_nvim_command(
+pub extern "C" fn satin_nvim_command(
     handle: *mut NativeNeovimRuntime,
     command: *const c_char,
 ) -> u8 {
@@ -763,7 +761,7 @@ pub extern "C" fn nvterm_nvim_command(
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn nvterm_nvim_drain(handle: *mut NativeNeovimRuntime) -> u8 {
+pub extern "C" fn satin_nvim_drain(handle: *mut NativeNeovimRuntime) -> u8 {
     let Some(runtime) = nvim_mut(handle) else {
         return 0;
     };
@@ -771,7 +769,7 @@ pub extern "C" fn nvterm_nvim_drain(handle: *mut NativeNeovimRuntime) -> u8 {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn nvterm_nvim_exited(handle: *mut NativeNeovimRuntime) -> u8 {
+pub extern "C" fn satin_nvim_exited(handle: *mut NativeNeovimRuntime) -> u8 {
     let Some(runtime) = nvim_mut(handle) else {
         return 1;
     };
@@ -779,12 +777,12 @@ pub extern "C" fn nvterm_nvim_exited(handle: *mut NativeNeovimRuntime) -> u8 {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn nvterm_nvim_wakeup_fd(handle: *const NativeNeovimRuntime) -> i32 {
+pub extern "C" fn satin_nvim_wakeup_fd(handle: *const NativeNeovimRuntime) -> i32 {
     nvim_ref(handle).map_or(-1, NativeNeovimRuntime::wakeup_fd)
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn nvterm_nvim_renderer_model_json(handle: *mut NativeNeovimRuntime) -> *mut c_char {
+pub extern "C" fn satin_nvim_renderer_model_json(handle: *mut NativeNeovimRuntime) -> *mut c_char {
     let Some(runtime) = nvim_mut(handle) else {
         return ptr::null_mut();
     };
@@ -795,7 +793,7 @@ pub extern "C" fn nvterm_nvim_renderer_model_json(handle: *mut NativeNeovimRunti
 /// # Safety
 ///
 /// `device` and `command_queue` must be live Metal protocol object pointers.
-pub unsafe extern "C" fn nvterm_skia_metal_create(
+pub unsafe extern "C" fn satin_skia_metal_create(
     device: *mut c_void,
     command_queue: *mut c_void,
 ) -> *mut NativeSkiaMetalRenderer {
@@ -809,14 +807,14 @@ pub unsafe extern "C" fn nvterm_skia_metal_create(
 #[unsafe(no_mangle)]
 /// # Safety
 ///
-/// `handle` must be either null or a pointer returned by `nvterm_skia_metal_create`.
+/// `handle` must be either null or a pointer returned by `satin_skia_metal_create`.
 /// Non-null handles must be passed to this function at most once.
-pub unsafe extern "C" fn nvterm_skia_metal_destroy(handle: *mut NativeSkiaMetalRenderer) {
+pub unsafe extern "C" fn satin_skia_metal_destroy(handle: *mut NativeSkiaMetalRenderer) {
     if handle.is_null() {
         return;
     }
 
-    // SAFETY: `handle` must come from `nvterm_skia_metal_create` and is consumed once here.
+    // SAFETY: `handle` must come from `satin_skia_metal_create` and is consumed once here.
     unsafe {
         drop(Box::from_raw(handle));
     }
@@ -826,7 +824,7 @@ pub unsafe extern "C" fn nvterm_skia_metal_destroy(handle: *mut NativeSkiaMetalR
 /// # Safety
 ///
 /// `renderer`, `nvim`, and `texture` must be live pointers for the duration of the call.
-pub unsafe extern "C" fn nvterm_skia_metal_render_nvim(
+pub unsafe extern "C" fn satin_skia_metal_render_nvim(
     renderer: *mut NativeSkiaMetalRenderer,
     nvim: *mut NativeNeovimRuntime,
     texture: *mut c_void,
@@ -864,7 +862,7 @@ pub unsafe extern "C" fn nvterm_skia_metal_render_nvim(
 /// # Safety
 ///
 /// `renderer`, `runtime`, and `texture` must be live pointers for the duration of the call.
-pub unsafe extern "C" fn nvterm_skia_metal_render_terminal(
+pub unsafe extern "C" fn satin_skia_metal_render_terminal(
     renderer: *mut NativeSkiaMetalRenderer,
     runtime: *mut NativeTerminalRuntime,
     texture: *mut c_void,
@@ -899,14 +897,14 @@ pub unsafe extern "C" fn nvterm_skia_metal_render_terminal(
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn nvterm_skia_metal_needs_animation_frame(
+pub extern "C" fn satin_skia_metal_needs_animation_frame(
     renderer: *const NativeSkiaMetalRenderer,
 ) -> u8 {
     skia_renderer_ref(renderer).is_some_and(NativeSkiaMetalRenderer::needs_animation_frame) as u8
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn nvterm_skia_metal_forget_runtime(
+pub extern "C" fn satin_skia_metal_forget_runtime(
     renderer: *mut NativeSkiaMetalRenderer,
     runtime: *const c_void,
 ) {
@@ -920,7 +918,7 @@ pub extern "C" fn nvterm_skia_metal_forget_runtime(
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn nvterm_skia_metal_set_font_family(
+pub extern "C" fn satin_skia_metal_set_font_family(
     renderer: *mut NativeSkiaMetalRenderer,
     family: *const c_char,
 ) -> u8 {
@@ -933,7 +931,7 @@ pub extern "C" fn nvterm_skia_metal_set_font_family(
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn nvterm_skia_metal_next_frame_delay_ms(
+pub extern "C" fn satin_skia_metal_next_frame_delay_ms(
     renderer: *const NativeSkiaMetalRenderer,
 ) -> u64 {
     skia_renderer_ref(renderer)
@@ -946,7 +944,7 @@ pub extern "C" fn nvterm_skia_metal_next_frame_delay_ms(
 ///
 /// `value` must be either null or a pointer returned by this crate through
 /// `CString::into_raw`. Non-null pointers must be passed at most once.
-pub unsafe extern "C" fn nvterm_string_free(value: *mut c_char) {
+pub unsafe extern "C" fn satin_string_free(value: *mut c_char) {
     if value.is_null() {
         return;
     }
@@ -959,8 +957,8 @@ pub unsafe extern "C" fn nvterm_string_free(value: *mut c_char) {
 
 fn split_axis(axis: u32) -> Option<SplitAxis> {
     match axis {
-        NVTERM_SPLIT_VERTICAL => Some(SplitAxis::Vertical),
-        NVTERM_SPLIT_HORIZONTAL => Some(SplitAxis::Horizontal),
+        SATIN_SPLIT_VERTICAL => Some(SplitAxis::Vertical),
+        SATIN_SPLIT_HORIZONTAL => Some(SplitAxis::Horizontal),
         _ => None,
     }
 }
@@ -970,7 +968,7 @@ fn core_ref<'a>(handle: *const TerminalCore) -> Option<&'a TerminalCore> {
         return None;
     }
 
-    // SAFETY: Callers pass an opaque pointer created by `nvterm_core_create`.
+    // SAFETY: Callers pass an opaque pointer created by `satin_core_create`.
     unsafe { handle.as_ref() }
 }
 
@@ -978,7 +976,7 @@ fn control_mut<'a>(handle: *mut ControlServer) -> Option<&'a mut ControlServer> 
     if handle.is_null() {
         return None;
     }
-    // SAFETY: Callers pass an exclusive opaque pointer created by `nvterm_control_create`.
+    // SAFETY: Callers pass an exclusive opaque pointer created by `satin_control_create`.
     Some(unsafe { &mut *handle })
 }
 
@@ -986,7 +984,7 @@ fn control_ref<'a>(handle: *const ControlServer) -> Option<&'a ControlServer> {
     if handle.is_null() {
         return None;
     }
-    // SAFETY: Callers pass an opaque pointer created by `nvterm_control_create`.
+    // SAFETY: Callers pass an opaque pointer created by `satin_control_create`.
     Some(unsafe { &*handle })
 }
 
@@ -995,7 +993,7 @@ fn core_mut<'a>(handle: *mut TerminalCore) -> Option<&'a mut TerminalCore> {
         return None;
     }
 
-    // SAFETY: Callers pass an exclusive opaque pointer created by `nvterm_core_create`.
+    // SAFETY: Callers pass an exclusive opaque pointer created by `satin_core_create`.
     unsafe { handle.as_mut() }
 }
 
@@ -1004,7 +1002,7 @@ fn runtime_mut<'a>(handle: *mut NativeTerminalRuntime) -> Option<&'a mut NativeT
         return None;
     }
 
-    // SAFETY: Callers pass an exclusive opaque pointer created by `nvterm_runtime_create`.
+    // SAFETY: Callers pass an exclusive opaque pointer created by `satin_runtime_create`.
     unsafe { handle.as_mut() }
 }
 
@@ -1013,7 +1011,7 @@ fn runtime_ref<'a>(handle: *const NativeTerminalRuntime) -> Option<&'a NativeTer
         return None;
     }
 
-    // SAFETY: Callers pass an opaque pointer created by `nvterm_runtime_create`.
+    // SAFETY: Callers pass an opaque pointer created by `satin_runtime_create`.
     unsafe { handle.as_ref() }
 }
 
@@ -1022,7 +1020,7 @@ fn nvim_mut<'a>(handle: *mut NativeNeovimRuntime) -> Option<&'a mut NativeNeovim
         return None;
     }
 
-    // SAFETY: Callers pass an exclusive opaque pointer created by `nvterm_nvim_create`.
+    // SAFETY: Callers pass an exclusive opaque pointer created by `satin_nvim_create`.
     unsafe { handle.as_mut() }
 }
 
@@ -1031,7 +1029,7 @@ fn nvim_ref<'a>(handle: *const NativeNeovimRuntime) -> Option<&'a NativeNeovimRu
         return None;
     }
 
-    // SAFETY: Callers pass an opaque pointer created by `nvterm_nvim_create`.
+    // SAFETY: Callers pass an opaque pointer created by `satin_nvim_create`.
     unsafe { handle.as_ref() }
 }
 
@@ -1042,7 +1040,7 @@ fn skia_renderer_mut<'a>(
         return None;
     }
 
-    // SAFETY: Callers pass an exclusive opaque pointer created by `nvterm_skia_metal_create`.
+    // SAFETY: Callers pass an exclusive opaque pointer created by `satin_skia_metal_create`.
     unsafe { handle.as_mut() }
 }
 
@@ -1053,7 +1051,7 @@ fn skia_renderer_ref<'a>(
         return None;
     }
 
-    // SAFETY: Callers pass an opaque pointer created by `nvterm_skia_metal_create`.
+    // SAFETY: Callers pass an opaque pointer created by `satin_skia_metal_create`.
     unsafe { handle.as_ref() }
 }
 
@@ -1129,15 +1127,15 @@ mod tests {
 
     #[test]
     fn ffi_snapshot_json_exposes_tabs() {
-        let handle = nvterm_core_create();
+        let handle = satin_core_create();
         assert!(!handle.is_null());
 
-        assert_eq!(nvterm_core_new_tab(handle), 1);
-        let json = owned_string(nvterm_core_snapshot_json(handle));
+        assert_eq!(satin_core_new_tab(handle), 1);
+        let json = owned_string(satin_core_snapshot_json(handle));
 
-        // SAFETY: `handle` was created by `nvterm_core_create` in this test.
+        // SAFETY: `handle` was created by `satin_core_create` in this test.
         unsafe {
-            nvterm_core_destroy(handle);
+            satin_core_destroy(handle);
         }
         assert!(json.contains("\"active_tab\":1"));
         assert!(json.contains("\"session 2\""));
@@ -1151,7 +1149,7 @@ mod tests {
             .into_owned();
         // SAFETY: `value` was returned by an FFI function in this module.
         unsafe {
-            nvterm_string_free(value);
+            satin_string_free(value);
         }
         string
     }

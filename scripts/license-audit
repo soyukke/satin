@@ -23,9 +23,9 @@ grep -F "Copyright 2014-2021 The Fira Code Project Authors" assets/fonts/LICENSE
 grep -F "Copyright © 2020 Unicode, Inc." assets/fonts/LICENSE >/dev/null
 grep -F "SIL OPEN FONT LICENSE Version 1.1" assets/fonts/LICENSE >/dev/null
 
-license_report="$(mktemp "${TMPDIR:-/tmp}/neovide-tabs-license-audit.XXXXXX.html")"
+license_report="$(mktemp "${TMPDIR:-/tmp}/satin-license-audit.XXXXXX.html")"
 case "$license_report" in
-  "${TMPDIR:-/tmp}"/neovide-tabs-license-audit.*.html) ;;
+  "${TMPDIR:-/tmp}"/satin-license-audit.*.html) ;;
   *)
     echo "refusing unexpected license audit path: $license_report" >&2
     exit 70

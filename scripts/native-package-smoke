@@ -6,14 +6,30 @@ if [[ -z "${IN_NIX_SHELL:-}" ]]; then
 fi
 
 ./scripts/native-package
-app_path="spikes/macos-shell/.build/package/Neovide Tabs.app"
-executable="$app_path/Contents/MacOS/neovide-tabs"
-control_executable="$app_path/Contents/MacOS/nvtermctl"
+app_path="spikes/macos-shell/.build/package/Satin.app"
+executable="$app_path/Contents/MacOS/satin"
+control_executable="$app_path/Contents/MacOS/satinctl"
 package_version="$(
   sed -nE 's/^version = "([^"]+)"$/\1/p' Cargo.toml |
     head -n 1
 )"
 test -n "$package_version"
+test "$(
+  /usr/libexec/PlistBuddy -c 'Print :CFBundleDisplayName' \
+    "$app_path/Contents/Info.plist"
+)" = "Satin"
+test "$(
+  /usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' \
+    "$app_path/Contents/Info.plist"
+)" = "satin"
+test "$(
+  /usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' \
+    "$app_path/Contents/Info.plist"
+)" = "dev.soyukke.satin"
+test "$(
+  /usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' \
+    "$app_path/Contents/Info.plist"
+)" = "$package_version"
 
 /usr/bin/codesign --verify --deep --strict --verbose=2 "$app_path"
 /usr/bin/codesign --verify --strict --verbose=2 "$control_executable"
@@ -49,8 +65,8 @@ test "$(
     awk '/minos/ {print $2; exit}'
 )" = "14.0"
 env -i PATH=/usr/bin:/bin "$control_executable" --version |
-  grep -Fx "nvtermctl $package_version"
+  grep -Fx "satinctl $package_version"
 
-env -u NVTERM_FONT \
-  NVTERM_NATIVE_EXECUTABLE="$executable" \
+env -u SATIN_FONT -u NVTERM_FONT \
+  SATIN_NATIVE_EXECUTABLE="$executable" \
   ./scripts/native-smoke

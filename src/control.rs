@@ -581,7 +581,7 @@ mod tests {
 
     fn test_root(label: &str) -> PathBuf {
         std::env::temp_dir().join(format!(
-            "neovide-tabs-control-{label}-{}-{}",
+            "satin-control-{label}-{}-{}",
             std::process::id(),
             next_test_id()
         ))

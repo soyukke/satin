@@ -13,8 +13,8 @@ fi
 APPLE_SIGNING_IDENTITY="$APPLE_SIGNING_IDENTITY" ./scripts/native-package
 
 package_root="spikes/macos-shell/.build/package"
-app_path="$package_root/Neovide Tabs.app"
-archive="$package_root/NeovideTabs-notarization.zip"
+app_path="$package_root/Satin.app"
+archive="$package_root/Satin-notarization.zip"
 
 rm -f -- "$archive"
 /usr/bin/ditto -c -k --keepParent "$app_path" "$archive"

@@ -321,7 +321,9 @@ impl CachingShaper {
         let font_size = 14.0;
         Self {
             primary_font_family: None,
-            primary_font_path: env::var("NVTERM_FONT").ok(),
+            primary_font_path: env::var("SATIN_FONT")
+                .or_else(|_| env::var("NVTERM_FONT"))
+                .ok(),
             font_loader: FontLoader::new(font_size),
             blob_cache: LruCache::new(NonZeroUsize::new(SHAPE_CACHE_ENTRIES).unwrap()),
             shape_context: ShapeContext::new(),

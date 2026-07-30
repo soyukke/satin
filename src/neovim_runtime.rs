@@ -243,7 +243,7 @@ impl NeovimProcess {
             .arg("--cmd")
             .arg("let g:neovide = v:true")
             .arg("--cmd")
-            .arg("let g:neovide_tabs = v:true")
+            .arg("let g:satin = v:true")
             .arg("--cmd")
             .arg("let g:auto_session_enabled = v:false")
             .stdin(Stdio::piped())
@@ -394,7 +394,9 @@ fn read_msgpack_loop(
 }
 
 fn nvim_command() -> String {
-    env::var("NVTERM_NVIM").unwrap_or_else(|_| "nvim".to_owned())
+    env::var("SATIN_NVIM")
+        .or_else(|_| env::var("NVTERM_NVIM"))
+        .unwrap_or_else(|_| "nvim".to_owned())
 }
 
 fn nvim_input_notation(bytes: &[u8]) -> String {

@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-app="spikes/macos-shell/.build/NativeShellSpike"
+app="spikes/macos-shell/.build/SatinApplication"
 result_file="spikes/macos-shell/.build/native-terminal-bottom-input.result"
 
 rm -f "$result_file"
 
-NVTERM_NATIVE_SMOKE_SCENARIO=terminal-bottom-input \
-  NVTERM_NATIVE_SMOKE_RESULT="$result_file" \
-  "$app" >"/tmp/neovide-tabs-terminal-bottom-input.log" 2>&1
+SATIN_NATIVE_SMOKE_SCENARIO=terminal-bottom-input \
+  SATIN_NATIVE_SMOKE_RESULT="$result_file" \
+  "$app" >"/tmp/satin-terminal-bottom-input.log" 2>&1
 
 result=$(cat "$result_file")
 echo "$result"
