@@ -51,6 +51,11 @@ application binary and remain under the SIL Open Font License 1.1.
   - Fira Code 6.002, patched with Nerd Fonts 2.1.0
   - Sources: https://github.com/tonsky/FiraCode and
     https://github.com/ryanoasis/nerd-fonts
+  - Nerd Fonts patch tooling and glyph collection:
+    Copyright (c) 2014 Ryan L McIntyre
+  - Audited Nerd Fonts release:
+    https://github.com/ryanoasis/nerd-fonts/tree/v2.1.0
+  - Licenses: Nerd Fonts MIT notice plus SIL Open Font License 1.1
 - `LastResort-Regular.ttf`
   - SHA-256:
     `2cdfa3f7d70ee06c32e9bb37c94634cecd54ba018e5a8110e853b394e0f91f01`
@@ -58,8 +63,9 @@ application binary and remain under the SIL Open Font License 1.1.
   - Last Resort 13.001 for Unicode 13.0.0
   - Source: https://github.com/unicode-org/last-resort-font
 
-The copyright notices and full OFL text are kept in `assets/fonts/LICENSE` and
-are included in every application bundle under `Contents/Resources/Legal/`.
+The copyright notices, Nerd Fonts MIT notice, and full OFL text are kept in
+`assets/fonts/LICENSE` and are included in every application bundle under
+`Contents/Resources/Legal/`.
 
 ## Rust Dependencies
 

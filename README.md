@@ -22,7 +22,7 @@
 
 > [!IMPORTANT]
 > Existing Neovide Tabs installations should first update to the signed
-> [0.1.6 migration bridge](https://github.com/soyukke/neovide-tabs/releases/tag/v0.1.6).
+> [0.1.7 migration bridge](https://github.com/soyukke/neovide-tabs/releases/tag/v0.1.7).
 > Its in-app updater installs `Satin.app` from this repository without breaking
 > the existing Ed25519 trust chain or discarding settings and session state.
 
@@ -177,8 +177,8 @@ Pushing a tag that exactly matches the Cargo package version publishes a GitHub
 Release after the full verification and packaged-application smoke gates pass:
 
 ```sh
-git tag v0.2.0
-git push origin v0.2.0
+git tag v0.2.1
+git push origin v0.2.1
 ```
 
 The tag workflow runs on GitHub's Apple Silicon runner, attaches the arm64 ZIP
@@ -200,10 +200,11 @@ stays silent when current or offline and presents an alert only when a newer
 semantic version is available. Help → Check for Updates… performs the same
 check interactively and reports every outcome.
 
-Neovide Tabs 0.1.6 is the final release in the legacy repository and the signed
-migration bridge to Satin. It changes the trusted update feed to
+Neovide Tabs 0.1.6 introduced the signed migration bridge to Satin. Version
+0.1.7 is the final, notice-complete release in the legacy repository. It uses
+the trusted update feed at
 `soyukke/satin`, accepts the renamed bundle, and atomically replaces
-`Neovide Tabs.app` with `Satin.app`. Satin 0.2.0 migrates the old macOS defaults
+`Neovide Tabs.app` with `Satin.app`. Satin migrates the old macOS defaults
 domain on first launch without overwriting values already saved by Satin.
 
 For every update, Satin downloads the exact arm64 asset and schema-2 manifest,
