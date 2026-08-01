@@ -18,7 +18,10 @@ pub struct SkiaRenderGeometry {
 mod platform {
     use super::SkiaRenderGeometry;
     use crate::{
-        neovide_render::{NeovideRenderedWindowSnapshot, NeovideRendererModelSnapshot},
+        neovide_render::{
+            CriticallyDampedSpringAnimation, NeovideRenderedWindowSnapshot,
+            NeovideRendererModelSnapshot,
+        },
         neovide_text::{NeovideTextRenderer, TextGridGeometry},
         neovim_runtime::NativeNeovimRuntime,
         terminal_runtime::{
@@ -27,8 +30,8 @@ mod platform {
         },
     };
     use skia_safe::{
-        AlphaType, Canvas, Color, ColorSpace, ColorType, Data, Image, ImageInfo, Paint, PaintStyle,
-        Rect, Surface, SurfaceProps, SurfacePropsFlags,
+        AlphaType, Canvas, Color, ColorSpace, ColorType, Data, Image, ImageInfo, Paint, Path,
+        PathBuilder, Rect, Surface, SurfaceProps, SurfacePropsFlags,
         canvas::SrcRectConstraint,
         gpu::{
             self, DirectContext, SurfaceOrigin,
@@ -44,8 +47,8 @@ mod platform {
         time::{Duration, Instant},
     };
 
-    const CURSOR_TRAIL_SECONDS: f32 = 0.16;
-    const CURSOR_TRAIL_ALPHA: u8 = 145;
+    const CURSOR_ANIMATION_LENGTH_SECONDS: f32 = 0.15;
+    const CURSOR_SHORT_ANIMATION_LENGTH_SECONDS: f32 = 0.04;
     const CURSOR_BODY_ALPHA: u8 = 199;
     const MAX_ANIMATION_DT: f32 = 1.0 / 30.0;
 
@@ -96,16 +99,18 @@ mod platform {
                 return false;
             };
             let runtime_id = runtime as *const NativeNeovimRuntime as usize;
-            let model = runtime.renderer_model();
             let state = self.runtime_states.entry(runtime_id).or_default();
             let dt = state.animation_dt();
-            state.cursor_trail.update(model.cursor.as_ref());
+            state.scroll_animation_active =
+                runtime.advance_renderer_animations(dt) || runtime.has_active_renderer_animation();
+            let model = runtime.renderer_model();
+            state.cursor_animation.update(&model, geometry, dt);
             state.cursor_blink.update(model.cursor.as_ref());
             state.text_blink_active = model_has_blink(&model);
             draw_model(
                 surface.canvas(),
                 &mut self.text_renderer,
-                &state.cursor_trail,
+                &state.cursor_animation,
                 state.cursor_blink.should_render(),
                 &model,
                 geometry,
@@ -116,8 +121,6 @@ mod platform {
                     runtime_id,
                 },
             );
-            state.scroll_animation_active =
-                runtime.advance_renderer_animations(dt) || runtime.has_active_renderer_animation();
             self.context.flush_and_submit();
             true
         }
@@ -138,9 +141,6 @@ mod platform {
                 return false;
             };
             let runtime_id = runtime as *const NativeTerminalRuntime as usize;
-            let Ok(model) = runtime.renderer_model() else {
-                return false;
-            };
             let placements = match runtime.kitty_placements() {
                 Ok(placements) => {
                     self.reported_kitty_failures.remove(&runtime_id);
@@ -165,13 +165,18 @@ mod platform {
             });
             let state = self.runtime_states.entry(runtime_id).or_default();
             let dt = state.animation_dt();
-            state.cursor_trail.update(model.cursor.as_ref());
+            state.scroll_animation_active =
+                runtime.advance_renderer_animations(dt) || runtime.has_active_renderer_animation();
+            let Ok(model) = runtime.renderer_model() else {
+                return false;
+            };
+            state.cursor_animation.update(&model, geometry, dt);
             state.cursor_blink.update(model.cursor.as_ref());
             state.text_blink_active = model_has_blink(&model);
             draw_model(
                 surface.canvas(),
                 &mut self.text_renderer,
-                &state.cursor_trail,
+                &state.cursor_animation,
                 state.cursor_blink.should_render(),
                 &model,
                 geometry,
@@ -182,8 +187,6 @@ mod platform {
                     runtime_id,
                 },
             );
-            state.scroll_animation_active =
-                runtime.advance_renderer_animations(dt) || runtime.has_active_renderer_animation();
             self.context.flush_and_submit();
             true
         }
@@ -237,7 +240,7 @@ mod platform {
 
     #[derive(Default)]
     struct RuntimeRenderState {
-        cursor_trail: CursorTrailState,
+        cursor_animation: CursorAnimationState,
         cursor_blink: CursorBlinkState,
         last_frame_at: Option<Instant>,
         scroll_animation_active: bool,
@@ -255,7 +258,7 @@ mod platform {
         }
 
         fn next_frame_delay_ms(&self) -> Option<u64> {
-            if self.cursor_trail.needs_animation_frame() || self.scroll_animation_active {
+            if self.cursor_animation.needs_animation_frame() || self.scroll_animation_active {
                 return Some(0);
             }
             let cursor_delay = self.cursor_blink.next_frame_delay_ms();
@@ -289,7 +292,7 @@ mod platform {
     fn draw_model(
         canvas: &Canvas,
         text_renderer: &mut NeovideTextRenderer,
-        cursor_trail: &CursorTrailState,
+        cursor_animation: &CursorAnimationState,
         cursor_visible: bool,
         model: &NeovideRendererModelSnapshot,
         geometry: SkiaRenderGeometry,
@@ -312,7 +315,7 @@ mod platform {
             |z| z < 0,
         );
         for window in sorted_windows(&model.windows) {
-            draw_window(canvas, text_renderer, window, geometry);
+            draw_window(canvas, text_renderer, window, model.background, geometry);
         }
         draw_kitty_images(
             canvas,
@@ -324,7 +327,7 @@ mod platform {
             |z| z >= 0,
         );
         text_renderer.cleanup_font_cache();
-        draw_cursor(canvas, cursor_trail, cursor_visible, model, geometry);
+        draw_cursor(canvas, cursor_animation, cursor_visible, model);
         canvas.restore();
     }
 
@@ -478,8 +481,15 @@ mod platform {
         canvas: &Canvas,
         text_renderer: &mut NeovideTextRenderer,
         window: &NeovideRenderedWindowSnapshot,
+        background: TerminalColor,
         geometry: SkiaRenderGeometry,
     ) {
+        // Neovide clears each retained window surface before drawing its cached
+        // lines. This is required for multigrid compositing: after a split moves
+        // or closes, the resized foreground window must cover separators that
+        // remain in the root grid, even when Neovim does not resend every blank
+        // line of that foreground grid.
+        fill_window_background(canvas, background, window, geometry);
         let inner = window.inner_row_range();
         draw_fixed_lines(canvas, text_renderer, window, 0..inner.start, geometry);
         draw_scrollable_lines(canvas, text_renderer, window, inner.clone(), geometry);
@@ -490,6 +500,23 @@ mod platform {
             inner.end..window.height,
             geometry,
         );
+    }
+
+    fn fill_window_background(
+        canvas: &Canvas,
+        background: TerminalColor,
+        window: &NeovideRenderedWindowSnapshot,
+        geometry: SkiaRenderGeometry,
+    ) {
+        let rect = Rect::from_xywh(
+            geometry.origin_x + window.left as f32 * geometry.cell_width,
+            geometry.origin_y + window.top as f32 * geometry.cell_height,
+            window.width as f32 * geometry.cell_width,
+            window.height as f32 * geometry.cell_height,
+        );
+        let mut paint = Paint::default();
+        paint.set_color(color(background));
+        canvas.draw_rect(rect, &paint);
     }
 
     fn draw_fixed_lines(
@@ -532,16 +559,23 @@ mod platform {
             Some(false),
         );
         let floor = window.scroll_position.floor();
-        let row_offset = floor - window.scroll_position;
+        canvas.translate((
+            0.0,
+            scroll_offset_pixels(window.scroll_position, geometry.cell_height),
+        ));
         let signed_start = floor as isize;
         for inner_row in 0..=inner.len() {
             let Some(line) = window.scrollback_line(signed_start + inner_row as isize) else {
                 continue;
             };
-            let row = window.top as f32 + inner.start as f32 + inner_row as f32 + row_offset;
+            let row = window.top as f32 + inner.start as f32 + inner_row as f32;
             draw_line(canvas, text_renderer, line, row, window, geometry);
         }
         canvas.restore();
+    }
+
+    fn scroll_offset_pixels(scroll_position: f32, cell_height: f32) -> f32 {
+        ((scroll_position.floor() - scroll_position) * cell_height).round()
     }
 
     fn draw_line(
@@ -603,127 +637,54 @@ mod platform {
 
     fn draw_cursor(
         canvas: &Canvas,
-        cursor_trail: &CursorTrailState,
+        cursor_animation: &CursorAnimationState,
         cursor_visible: bool,
         model: &NeovideRendererModelSnapshot,
-        geometry: SkiaRenderGeometry,
     ) {
-        let Some(cursor) = &model.cursor else {
-            return;
-        };
-        if !cursor_visible {
+        if model.cursor.is_none() || !cursor_visible {
             return;
         }
-        let rect = cursor_rect(cursor.x as f32, cursor.y as f32, geometry);
-        draw_cursor_trail(canvas, cursor_trail, rect, model.cursor_color, geometry);
-        draw_cursor_body(canvas, cursor, rect, model.cursor_color);
-    }
-
-    fn draw_cursor_trail(
-        canvas: &Canvas,
-        cursor_trail: &CursorTrailState,
-        target: Rect,
-        color: TerminalColor,
-        geometry: SkiaRenderGeometry,
-    ) {
-        let Some(tail) = cursor_trail.animated_tail() else {
+        let Some(path) = cursor_animation.path() else {
             return;
         };
-        let tail_rect = cursor_rect(tail.x, tail.y, geometry);
-        let dx = target.left - tail_rect.left;
-        let dy = target.top - tail_rect.top;
-        let distance = dx.hypot(dy);
-        if distance < 0.75 {
-            return;
-        }
-
         let mut paint = Paint::default();
         paint.set_anti_alias(true);
-        paint.set_color(color_with_alpha(color, CURSOR_TRAIL_ALPHA));
-        if let Some(rect) = cursor_trail_rect(tail_rect, target, geometry) {
-            canvas.draw_rect(rect, &paint);
-            return;
-        }
-
-        paint.set_style(PaintStyle::Stroke);
-        paint.set_stroke_width(geometry.cell_width.max(geometry.cell_height) * 0.72);
-        canvas.draw_line(
-            (tail_rect.center_x(), tail_rect.center_y()),
-            (target.center_x(), target.center_y()),
-            &paint,
-        );
+        paint.set_color(color_with_alpha(model.cursor_color, CURSOR_BODY_ALPHA));
+        canvas.draw_path(&path, &paint);
     }
 
-    fn draw_cursor_body(
-        canvas: &Canvas,
+    fn cursor_render_point(
+        model: &NeovideRendererModelSnapshot,
         cursor: &TerminalCursorSnapshot,
-        rect: Rect,
-        color: TerminalColor,
-    ) {
-        let mut paint = Paint::default();
-        paint.set_color(color_with_alpha(color, CURSOR_BODY_ALPHA));
-        match cursor.style {
-            "bar" => {
-                canvas.draw_rect(
-                    Rect::from_xywh(
-                        rect.left,
-                        rect.top,
-                        cursor_thickness(cursor.cell_percentage, rect.width()),
-                        rect.height(),
-                    ),
-                    &paint,
-                );
-            }
-            "underline" => {
-                let height = cursor_thickness(cursor.cell_percentage, rect.height());
-                canvas.draw_rect(
-                    Rect::from_xywh(rect.left, rect.bottom - height, rect.width(), height),
-                    &paint,
-                );
-            }
-            _ => {
-                canvas.draw_rect(rect, &paint);
-            }
+    ) -> GridPoint {
+        adjust_cursor_point_for_scroll(model, GridPoint::from_cursor(cursor))
+    }
+
+    fn adjust_cursor_point_for_scroll(
+        model: &NeovideRendererModelSnapshot,
+        point: GridPoint,
+    ) -> GridPoint {
+        let Some(parent_grid_id) = model.cursor_parent_grid_id else {
+            return point;
         };
-    }
-
-    fn cursor_thickness(percentage: u8, size: f32) -> f32 {
-        let fraction = percentage.clamp(1, 100) as f32 / 100.0;
-        (size * fraction).clamp(1.0, size)
-    }
-
-    fn cursor_trail_rect(tail: Rect, target: Rect, geometry: SkiaRenderGeometry) -> Option<Rect> {
-        let dx = (target.left - tail.left).abs();
-        let dy = (target.top - tail.top).abs();
-        if dx < 0.75 && dy < 0.75 {
-            return None;
+        let Some(window) = model
+            .windows
+            .iter()
+            .find(|window| window.grid_id == parent_grid_id && !window.hidden)
+        else {
+            return point;
+        };
+        let local_y = point.y - window.top as f32;
+        let inner = window.inner_row_range();
+        if local_y < inner.start as f32 || local_y >= inner.end as f32 {
+            return point;
         }
-        if dy <= geometry.cell_height * 0.25 {
-            return Some(Rect::from_xywh(
-                tail.left.min(target.left),
-                target.top,
-                dx + geometry.cell_width,
-                geometry.cell_height,
-            ));
+        let minimum_y = window.top as f32 + inner.start as f32;
+        let maximum_y = window.top as f32 + inner.end.saturating_sub(1) as f32;
+        GridPoint {
+            x: point.x,
+            y: (point.y - window.scroll_position).clamp(minimum_y, maximum_y),
         }
-        if dx <= geometry.cell_width * 0.25 {
-            return Some(Rect::from_xywh(
-                target.left,
-                tail.top.min(target.top),
-                geometry.cell_width,
-                dy + geometry.cell_height,
-            ));
-        }
-        None
-    }
-
-    fn cursor_rect(x: f32, y: f32, geometry: SkiaRenderGeometry) -> Rect {
-        Rect::from_xywh(
-            geometry.origin_x + x * geometry.cell_width,
-            geometry.origin_y + y * geometry.cell_height,
-            geometry.cell_width,
-            geometry.cell_height,
-        )
     }
 
     fn surface_props() -> SurfaceProps {
@@ -890,62 +851,387 @@ mod platform {
         }
     }
 
-    #[derive(Default)]
-    struct CursorTrailState {
-        start: Option<GridPoint>,
-        target: Option<GridPoint>,
-        started_at: Option<Instant>,
+    #[derive(Clone, Copy, Debug, Default, PartialEq)]
+    struct PixelPoint {
+        x: f32,
+        y: f32,
     }
 
-    impl CursorTrailState {
-        fn update(&mut self, cursor: Option<&TerminalCursorSnapshot>) {
-            let Some(cursor) = cursor else {
+    impl PixelPoint {
+        fn offset(self, other: Self) -> Self {
+            Self {
+                x: self.x + other.x,
+                y: self.y + other.y,
+            }
+        }
+
+        fn difference(self, other: Self) -> Self {
+            Self {
+                x: self.x - other.x,
+                y: self.y - other.y,
+            }
+        }
+
+        fn scale(self, x: f32, y: f32) -> Self {
+            Self {
+                x: self.x * x,
+                y: self.y * y,
+            }
+        }
+
+        fn normalized(self) -> Self {
+            let length = self.x.hypot(self.y);
+            if length <= f32::EPSILON {
+                return Self::default();
+            }
+            Self {
+                x: self.x / length,
+                y: self.y / length,
+            }
+        }
+
+        fn dot(self, other: Self) -> f32 {
+            self.x * other.x + self.y * other.y
+        }
+    }
+
+    #[derive(Clone)]
+    struct CursorCorner {
+        current_position: PixelPoint,
+        relative_position: PixelPoint,
+        previous_destination: Option<PixelPoint>,
+        animation_x: CriticallyDampedSpringAnimation,
+        animation_y: CriticallyDampedSpringAnimation,
+        animation_length: f32,
+    }
+
+    impl CursorCorner {
+        fn new() -> Self {
+            Self {
+                current_position: PixelPoint::default(),
+                relative_position: PixelPoint::default(),
+                previous_destination: None,
+                animation_x: CriticallyDampedSpringAnimation::new(),
+                animation_y: CriticallyDampedSpringAnimation::new(),
+                animation_length: 0.0,
+            }
+        }
+
+        fn destination(
+            &self,
+            center_destination: PixelPoint,
+            cursor_dimensions: PixelPoint,
+        ) -> PixelPoint {
+            center_destination.offset(
+                self.relative_position
+                    .scale(cursor_dimensions.x, cursor_dimensions.y),
+            )
+        }
+
+        fn direction_alignment(
+            &self,
+            center_destination: PixelPoint,
+            cursor_dimensions: PixelPoint,
+        ) -> f32 {
+            let destination = self.destination(center_destination, cursor_dimensions);
+            destination
+                .difference(self.current_position)
+                .normalized()
+                .dot(self.relative_position.normalized())
+        }
+
+        fn jump(
+            &mut self,
+            center_destination: PixelPoint,
+            cursor_dimensions: PixelPoint,
+            rank: usize,
+        ) {
+            let destination = self.destination(center_destination, cursor_dimensions);
+            let previous = self.previous_destination.unwrap_or(destination);
+            let jump = destination
+                .difference(previous)
+                .scale(1.0 / cursor_dimensions.x, 1.0 / cursor_dimensions.y);
+            self.animation_length = if jump.x.abs() <= 2.001 && jump.y.abs() <= 0.001 {
+                CURSOR_SHORT_ANIMATION_LENGTH_SECONDS
+            } else {
+                match rank {
+                    2..=3 => 0.0,
+                    1 => CURSOR_ANIMATION_LENGTH_SECONDS / 2.0,
+                    _ => CURSOR_ANIMATION_LENGTH_SECONDS,
+                }
+            };
+        }
+
+        fn update(
+            &mut self,
+            center_destination: PixelPoint,
+            cursor_dimensions: PixelPoint,
+            dt: f32,
+        ) -> bool {
+            let destination = self.destination(center_destination, cursor_dimensions);
+            if self.previous_destination != Some(destination) {
+                let delta = destination.difference(self.current_position);
+                self.animation_x.position = delta.x;
+                self.animation_y.position = delta.y;
+                self.previous_destination = Some(destination);
+            }
+            let mut animating = self.animation_x.update(dt, self.animation_length);
+            animating |= self.animation_y.update(dt, self.animation_length);
+            self.current_position = PixelPoint {
+                x: destination.x - self.animation_x.position,
+                y: destination.y - self.animation_y.position,
+            };
+            animating
+        }
+
+        fn snap(&mut self, center_destination: PixelPoint, cursor_dimensions: PixelPoint) {
+            let destination = self.destination(center_destination, cursor_dimensions);
+            self.current_position = destination;
+            self.previous_destination = Some(destination);
+            self.animation_x.reset();
+            self.animation_y.reset();
+        }
+    }
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    struct CursorShapeSignature {
+        style: &'static str,
+        cell_percentage: u8,
+    }
+
+    impl CursorShapeSignature {
+        fn from_cursor(cursor: &TerminalCursorSnapshot) -> Self {
+            Self {
+                style: cursor.style,
+                cell_percentage: cursor.cell_percentage,
+            }
+        }
+    }
+
+    struct CursorAnimationState {
+        corners: [CursorCorner; 4],
+        previous_cursor_position: Option<(Option<i64>, u16, u16)>,
+        previous_shape: Option<CursorShapeSignature>,
+        initialized: bool,
+        animating: bool,
+    }
+
+    impl Default for CursorAnimationState {
+        fn default() -> Self {
+            Self {
+                corners: std::array::from_fn(|_| CursorCorner::new()),
+                previous_cursor_position: None,
+                previous_shape: None,
+                initialized: false,
+                animating: false,
+            }
+        }
+    }
+
+    impl CursorAnimationState {
+        fn update(
+            &mut self,
+            model: &NeovideRendererModelSnapshot,
+            geometry: SkiaRenderGeometry,
+            dt: f32,
+        ) {
+            let Some(cursor) = model.cursor.as_ref() else {
                 self.clear();
                 return;
             };
-            let next = GridPoint::from_cursor(cursor);
-            if self.target.is_none() {
-                self.target = Some(next);
+            let shape = CursorShapeSignature::from_cursor(cursor);
+            if self.previous_shape != Some(shape) {
+                self.set_cursor_shape(shape);
+                self.previous_shape = Some(shape);
+            }
+
+            let point = cursor_render_point(model, cursor);
+            let cursor_dimensions = PixelPoint {
+                x: geometry.cell_width,
+                y: geometry.cell_height,
+            };
+            let center_destination = PixelPoint {
+                x: geometry.origin_x + (point.x + 0.5) * geometry.cell_width,
+                y: geometry.origin_y + (point.y + 0.5) * geometry.cell_height,
+            };
+            let cursor_position = (model.cursor_parent_grid_id, cursor.x, cursor.y);
+            let jumped = self.previous_cursor_position != Some(cursor_position);
+
+            if !self.initialized {
+                for corner in &mut self.corners {
+                    corner.snap(center_destination, cursor_dimensions);
+                }
+                self.previous_cursor_position = Some(cursor_position);
+                self.initialized = true;
+                self.animating = false;
                 return;
             }
-            if self.target == Some(next) {
-                return;
+
+            if jumped {
+                let mut alignments = self
+                    .corners
+                    .iter()
+                    .enumerate()
+                    .map(|(id, corner)| {
+                        (
+                            id,
+                            corner.direction_alignment(center_destination, cursor_dimensions),
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                alignments.sort_by(|left, right| {
+                    left.1
+                        .partial_cmp(&right.1)
+                        .unwrap_or(Ordering::Equal)
+                        .then(left.0.cmp(&right.0))
+                });
+                let mut ranks = [0; 4];
+                for (rank, (id, _)) in alignments.into_iter().enumerate() {
+                    ranks[id] = rank;
+                }
+                for (id, corner) in self.corners.iter_mut().enumerate() {
+                    corner.jump(center_destination, cursor_dimensions, ranks[id]);
+                }
             }
-            self.start = self.animated_tail().or(self.target);
-            self.target = Some(next);
-            self.started_at = Some(Instant::now());
+
+            self.animating = self.corners.iter_mut().fold(false, |animating, corner| {
+                corner.update(center_destination, cursor_dimensions, dt) | animating
+            });
+            self.previous_cursor_position = Some(cursor_position);
         }
 
-        fn clear(&mut self) {
-            self.start = None;
-            self.target = None;
-            self.started_at = None;
+        fn set_cursor_shape(&mut self, shape: CursorShapeSignature) {
+            let percentage = shape.cell_percentage.clamp(1, 100) as f32 / 100.0;
+            let standard = [
+                PixelPoint { x: -0.5, y: -0.5 },
+                PixelPoint { x: 0.5, y: -0.5 },
+                PixelPoint { x: 0.5, y: 0.5 },
+                PixelPoint { x: -0.5, y: 0.5 },
+            ];
+            for (corner, standard) in self.corners.iter_mut().zip(standard) {
+                corner.relative_position = match shape.style {
+                    "bar" => PixelPoint {
+                        x: (standard.x + 0.5) * percentage - 0.5,
+                        y: standard.y,
+                    },
+                    "underline" => PixelPoint {
+                        x: standard.x,
+                        y: -((-standard.y + 0.5) * percentage - 0.5),
+                    },
+                    _ => standard,
+                };
+            }
         }
 
-        fn animated_tail(&self) -> Option<GridPoint> {
-            let start = self.start?;
-            let target = self.target?;
-            let progress = self.progress()?;
-            let eased = 1.0 - (1.0 - progress).powi(3);
-            Some(GridPoint {
-                x: start.x + (target.x - start.x) * eased,
-                y: start.y + (target.y - start.y) * eased,
-            })
+        fn path(&self) -> Option<Path> {
+            if !self.initialized {
+                return None;
+            }
+            let mut builder = PathBuilder::new();
+            builder
+                .move_to((
+                    self.corners[0].current_position.x.round(),
+                    self.corners[0].current_position.y.round(),
+                ))
+                .line_to((
+                    self.corners[1].current_position.x.round(),
+                    self.corners[1].current_position.y.round(),
+                ))
+                .line_to((
+                    self.corners[2].current_position.x.round(),
+                    self.corners[2].current_position.y.round(),
+                ))
+                .line_to((
+                    self.corners[3].current_position.x.round(),
+                    self.corners[3].current_position.y.round(),
+                ))
+                .close();
+            Some(builder.detach())
         }
 
         fn needs_animation_frame(&self) -> bool {
-            self.progress().is_some()
+            self.animating
         }
 
-        fn progress(&self) -> Option<f32> {
-            let elapsed = self.started_at?.elapsed().as_secs_f32();
-            (elapsed < CURSOR_TRAIL_SECONDS).then_some(elapsed / CURSOR_TRAIL_SECONDS)
+        fn clear(&mut self) {
+            self.previous_cursor_position = None;
+            self.previous_shape = None;
+            self.initialized = false;
+            self.animating = false;
         }
     }
-
     #[cfg(test)]
     mod tests {
         use super::*;
+
+        #[test]
+        fn foreground_window_background_masks_stale_root_grid_cells() {
+            let background = TerminalColor { r: 3, g: 5, b: 7 };
+            let stale = TerminalColor {
+                r: 220,
+                g: 210,
+                b: 200,
+            };
+            let stale_line =
+                crate::neovide_render::NeovideLine::from_cells(vec![TerminalCellSnapshot {
+                    text: " ".to_owned(),
+                    fg: stale,
+                    bg: Some(stale),
+                    blend: 0,
+                    style: Default::default(),
+                }]);
+            let mut root = crate::neovide_render::NeovideRenderedWindowCache::new(2, 1).snapshot(
+                1,
+                crate::neovide_render::NeovideRenderedWindowPlacement::main(2, 1),
+            );
+            root.lines[0] = Some(stale_line.clone());
+            root.scrollback_lines[0] = Some(stale_line);
+            let foreground = crate::neovide_render::NeovideRenderedWindowCache::new(2, 1).snapshot(
+                2,
+                crate::neovide_render::NeovideRenderedWindowPlacement::main(2, 1),
+            );
+            let model = NeovideRendererModelSnapshot {
+                schema_version: 1,
+                background,
+                cursor_color: background,
+                cursor: None,
+                cursor_parent_grid_id: None,
+                scrollbar: None,
+                scroll_hint: None,
+                windows: vec![root, foreground],
+            };
+            let geometry = SkiaRenderGeometry {
+                width: 20,
+                height: 10,
+                origin_x: 0.0,
+                origin_y: 0.0,
+                content_width: 20.0,
+                content_height: 10.0,
+                cell_width: 10.0,
+                cell_height: 10.0,
+            };
+            let mut surface = skia_safe::surfaces::raster_n32_premul((20, 10)).unwrap();
+            let mut text_renderer = NeovideTextRenderer::new();
+            let mut images = HashMap::new();
+
+            draw_model(
+                surface.canvas(),
+                &mut text_renderer,
+                &CursorAnimationState::default(),
+                false,
+                &model,
+                geometry,
+                ModelRenderOptions {
+                    clear: true,
+                    kitty_placements: &[],
+                    kitty_images: &mut images,
+                    runtime_id: 1,
+                },
+            );
+
+            let pixels = surface.peek_pixels().unwrap();
+            assert_eq!(pixels.get_color((5, 5)), color(background));
+        }
 
         #[test]
         fn cursor_blink_waits_then_toggles_off_and_on() {
@@ -995,20 +1281,7 @@ mod platform {
 
         #[test]
         fn kitty_row_uses_the_same_scroll_animation_as_terminal_text() {
-            let mut model = NeovideRendererModelSnapshot {
-                schema_version: 1,
-                background: TerminalColor { r: 0, g: 0, b: 0 },
-                cursor_color: TerminalColor { r: 0, g: 0, b: 0 },
-                cursor: None,
-                scrollbar: None,
-                scroll_hint: None,
-                windows: vec![
-                    crate::neovide_render::NeovideRenderedWindowCache::new(8, 6).snapshot(
-                        1,
-                        crate::neovide_render::NeovideRenderedWindowPlacement::main(8, 6),
-                    ),
-                ],
-            };
+            let mut model = renderer_model(8, 6);
             model.windows[0].scroll_position = -2.0;
 
             assert_eq!(animated_kitty_row(&model, 3), 5.0);
@@ -1016,6 +1289,95 @@ mod platform {
             assert_eq!(animated_kitty_row(&model, 3), 4.0);
             model.windows[0].scroll_position = 0.0;
             assert_eq!(animated_kitty_row(&model, 3), 3.0);
+        }
+
+        #[test]
+        fn text_scroll_offset_is_rounded_to_device_pixels_like_neovide() {
+            assert_eq!(scroll_offset_pixels(0.0, 20.0), 0.0);
+            assert_eq!(scroll_offset_pixels(-0.55, 20.0), -9.0);
+            assert_eq!(scroll_offset_pixels(-0.017, 20.0), -20.0);
+        }
+
+        #[test]
+        fn cursor_uses_parent_window_scroll_and_stays_inside_viewport() {
+            let mut model = renderer_model(8, 8);
+            model.cursor_parent_grid_id = Some(1);
+            model.windows[0].scroll_position = -2.0;
+            model.windows[0].viewport_margins = crate::neovide_render::NeovideViewportMargins {
+                top: 1,
+                bottom: 1,
+                left: 0,
+                right: 0,
+            };
+
+            let point = cursor_render_point(&model, &cursor(4, 3, "block", 100, 0, 0, 0));
+            assert_eq!(point, GridPoint { x: 4.0, y: 5.0 });
+
+            let border = cursor_render_point(&model, &cursor(4, 0, "block", 100, 0, 0, 0));
+            assert_eq!(border, GridPoint { x: 4.0, y: 0.0 });
+
+            model.windows[0].scroll_position = -20.0;
+            let clamped = cursor_render_point(&model, &cursor(4, 3, "block", 100, 0, 0, 0));
+            assert_eq!(clamped, GridPoint { x: 4.0, y: 6.0 });
+        }
+
+        #[test]
+        fn vertical_cursor_move_deforms_neovide_corners_instead_of_drawing_a_trail() {
+            let geometry = geometry();
+            let mut model = renderer_model(8, 8);
+            model.cursor_parent_grid_id = Some(1);
+            model.cursor = Some(cursor(4, 2, "block", 100, 0, 0, 0));
+            let mut animation = CursorAnimationState::default();
+            animation.update(&model, geometry, 0.0);
+
+            model.cursor = Some(cursor(4, 3, "block", 100, 0, 0, 0));
+            animation.update(&model, geometry, 1.0 / 60.0);
+
+            let target_top = geometry.origin_y + 3.0 * geometry.cell_height;
+            let target_bottom = target_top + geometry.cell_height;
+            assert!(animation.corners[0].current_position.y < target_top);
+            assert!(animation.corners[1].current_position.y < target_top);
+            assert_eq!(animation.corners[2].current_position.y, target_bottom);
+            assert_eq!(animation.corners[3].current_position.y, target_bottom);
+            assert!(animation.needs_animation_frame());
+
+            for _ in 0..60 {
+                animation.update(&model, geometry, 1.0 / 60.0);
+            }
+            assert!(!animation.needs_animation_frame());
+            assert_eq!(animation.corners[0].current_position.y, target_top);
+            assert_eq!(animation.corners[1].current_position.y, target_top);
+        }
+
+        fn geometry() -> SkiaRenderGeometry {
+            SkiaRenderGeometry {
+                width: 800,
+                height: 600,
+                origin_x: 10.0,
+                origin_y: 20.0,
+                content_width: 780.0,
+                content_height: 560.0,
+                cell_width: 10.0,
+                cell_height: 20.0,
+            }
+        }
+
+        fn renderer_model(width: usize, height: usize) -> NeovideRendererModelSnapshot {
+            NeovideRendererModelSnapshot {
+                schema_version: 1,
+                background: TerminalColor { r: 0, g: 0, b: 0 },
+                cursor_color: TerminalColor { r: 0, g: 0, b: 0 },
+                cursor: None,
+                cursor_parent_grid_id: None,
+                scrollbar: None,
+                scroll_hint: None,
+                windows: vec![
+                    crate::neovide_render::NeovideRenderedWindowCache::new(width, height).snapshot(
+                        1,
+                        crate::neovide_render::NeovideRenderedWindowPlacement::main(width, height),
+                    ),
+                ],
+            }
         }
 
         fn cursor(

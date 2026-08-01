@@ -55,6 +55,11 @@ Statuses are one of `idle`, `running`, `waiting`, `done`, `failed`, or
 `blocked`. A wait returns immediately for a terminal status and otherwise
 blocks until the next status update or the requested timeout.
 
+The bundled `satin-nvim` launcher also uses a protocol-private `open-neovim`
+request. It is not a general `satinctl` command: the launcher validates that it
+is a direct interactive shell invocation, supplies the resolved real Neovim
+executable and invocation context, and waits until that native session exits.
+
 ## Protocol and security
 
 Protocol version 1 is newline-delimited JSON. A request has `version: 1`, a
@@ -65,7 +70,8 @@ The socket is local-only, mode `0600`, and accepts peers only when their UID
 matches the application. Its parent directory must be owner-only, and a second
 instance cannot replace a socket that is still accepting connections. Requests
 are limited to 1 MiB, concurrent clients to 32, normal requests to 30 seconds,
-and status waits to one hour.
+and status waits to one hour. The launcher-owned Neovim request lasts for the
+editor session so it can restore the original shell and return the exit status.
 
 This boundary protects against other macOS users, not other processes running
 as the same user. Do not move the socket into a shared directory or forward it

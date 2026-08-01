@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-app="spikes/macos-shell/.build/SatinApplication"
-shot="spikes/macos-shell/.build/native-nvim-shaped-text-visual.png"
-result_file="spikes/macos-shell/.build/native-nvim-shaped-text-visual.result"
-window_id_file="spikes/macos-shell/.build/native-nvim-shaped-text-window-id"
-capture_error="spikes/macos-shell/.build/native-nvim-shaped-text-screencapture.err"
-verify_error="spikes/macos-shell/.build/native-nvim-shaped-text-verify.err"
+app="${SATIN_NATIVE_EXECUTABLE:-spikes/macos-shell/.build/SatinApplication}"
+shot="spikes/macos-shell/.build/native-nvim-file-tree-close.png"
+result_file="spikes/macos-shell/.build/native-nvim-file-tree-close.result"
+window_id_file="spikes/macos-shell/.build/native-nvim-file-tree-close-window-id"
+capture_error="spikes/macos-shell/.build/native-nvim-file-tree-close-screencapture.err"
+verify_error="spikes/macos-shell/.build/native-nvim-file-tree-close-verify.err"
 
 rm -f "$shot" "$result_file" "$window_id_file" "$capture_error" "$verify_error"
 
@@ -14,8 +14,8 @@ rm -f "$shot" "$result_file" "$window_id_file" "$capture_error" "$verify_error"
 caffeinate_pid=$!
 
 SATIN_NATIVE_PANE=nvim \
-  SATIN_NATIVE_SMOKE_CLEAN_NVIM=1 \
-  SATIN_NATIVE_SMOKE_SCENARIO=nvim-shaped-text \
+  SATIN_NATIVE_SMOKE_CLEAN_NVIM=0 \
+  SATIN_NATIVE_SMOKE_SCENARIO=nvim-file-tree-close \
   SATIN_NATIVE_SMOKE_RESULT="$result_file" \
   SATIN_NATIVE_SMOKE_WINDOW_ID="$window_id_file" \
   SATIN_NATIVE_SMOKE_KEEP_OPEN=1 \
@@ -42,21 +42,22 @@ for _ in {1..100}; do
 done
 
 if [[ ! -s "$window_id_file" ]]; then
-  echo "native shaped text visual smoke failed: window id was not written" >&2
+  echo "native file tree close smoke failed: window id was not written" >&2
   exit 1
 fi
 
 window_id=$(tr -d '[:space:]' < "$window_id_file")
 if [[ -z "$window_id" ]]; then
-  echo "native shaped text visual smoke failed: empty window id" >&2
+  echo "native file tree close smoke failed: empty window id" >&2
   exit 1
 fi
 
-for _ in {1..80}; do
+for _ in {1..100}; do
   if [[ -s "$result_file" ]] &&
     ./scripts/native-window-capture "$window_id" "$shot" 2>"$capture_error" &&
     [[ -s "$shot" ]] &&
-    ./scripts/native-smoke-verify "$shot" nvim-shaped-text-visual "$result_file" 2>"$verify_error"; then
+    ./scripts/native-smoke-verify \
+      "$shot" nvim-file-tree-close "$result_file" 2>"$verify_error"; then
     cat "$result_file"
     exit 0
   fi
@@ -68,6 +69,6 @@ if [[ -s "$verify_error" ]]; then
 elif [[ -s "$capture_error" ]]; then
   cat "$capture_error" >&2
 else
-  echo "native shaped text visual smoke failed before verifier ran" >&2
+  echo "native file tree close smoke failed before verifier ran" >&2
 fi
 exit 1

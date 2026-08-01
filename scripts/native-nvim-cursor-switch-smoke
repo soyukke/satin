@@ -10,7 +10,11 @@ verify_error="spikes/macos-shell/.build/native-nvim-cursor-switch-verify.err"
 
 rm -f "$shot" "$result_file" "$window_id_file" "$capture_error" "$verify_error"
 
+/usr/bin/caffeinate -du -t 300 >/dev/null 2>&1 &
+caffeinate_pid=$!
+
 SATIN_NATIVE_PANE=nvim \
+  SATIN_NATIVE_SMOKE_CLEAN_NVIM=1 \
   SATIN_NATIVE_SMOKE_SCENARIO=nvim-cursor-switch \
   SATIN_NATIVE_SMOKE_RESULT="$result_file" \
   SATIN_NATIVE_SMOKE_WINDOW_ID="$window_id_file" \
@@ -22,6 +26,10 @@ cleanup() {
   if kill -0 "$app_pid" 2>/dev/null; then
     kill "$app_pid" 2>/dev/null || true
     wait "$app_pid" 2>/dev/null || true
+  fi
+  if kill -0 "$caffeinate_pid" 2>/dev/null; then
+    kill "$caffeinate_pid" 2>/dev/null || true
+    wait "$caffeinate_pid" 2>/dev/null || true
   fi
 }
 trap cleanup EXIT

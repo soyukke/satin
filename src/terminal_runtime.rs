@@ -78,6 +78,7 @@ pub struct NativeTerminalRuntime {
     pty_replies: Rc<RefCell<Vec<u8>>>,
     bell_count: Rc<Cell<u64>>,
     terminal: Terminal<'static, 'static>,
+    scroll_sequence_tracker: TerminalScrollSequenceTracker,
     key_encoder: key::Encoder<'static>,
     mouse_encoder: mouse::Encoder<'static>,
     mouse_button_pressed: bool,
@@ -133,6 +134,7 @@ impl NativeTerminalRuntime {
             pty_replies,
             bell_count,
             terminal,
+            scroll_sequence_tracker: TerminalScrollSequenceTracker::default(),
             key_encoder: key::Encoder::new()?,
             mouse_encoder: mouse::Encoder::new()?,
             mouse_button_pressed: false,
@@ -449,7 +451,9 @@ impl NativeTerminalRuntime {
         self.pty.clear_wakeup();
         let mut changed = false;
         while let Ok(bytes) = self.pty.rx.try_recv() {
+            let scroll_update = self.scroll_sequence_tracker.feed(&bytes);
             self.terminal.vt_write(&bytes);
+            self.renderer_model.record_scroll_update(scroll_update);
             self.update_working_directory_from_terminal();
             changed = true;
 
@@ -671,8 +675,9 @@ impl RuntimePty {
     fn spawn(size: TerminalGridSize, config: &TerminalSpawnConfig) -> Result<Self> {
         let pty_system = native_pty_system();
         let pair = pty_system.openpty(size.pty_size())?;
-        let mut cmd = CommandBuilder::new(configured_shell(config.shell.as_deref())?);
-        configure_shell_command(&mut cmd, config);
+        let shell = configured_shell(config.shell.as_deref())?;
+        let mut cmd = CommandBuilder::new(&shell);
+        configure_shell_command(&mut cmd, config, &shell);
 
         let child = pair.slave.spawn_command(cmd)?;
         let process_group_id = child.process_id().and_then(|pid| i32::try_from(pid).ok());
@@ -792,7 +797,7 @@ fn terminate_pty_process_tree(child: &mut dyn Child, _process_group_id: Option<i
     let _ = child.wait();
 }
 
-fn configure_shell_command(cmd: &mut CommandBuilder, config: &TerminalSpawnConfig) {
+fn configure_shell_command(cmd: &mut CommandBuilder, config: &TerminalSpawnConfig, shell: &str) {
     cmd.arg("-l");
     cmd.arg("-i");
     if let Some(cwd) = config.cwd.clone().or_else(|| env::current_dir().ok()) {
@@ -812,6 +817,29 @@ fn configure_shell_command(cmd: &mut CommandBuilder, config: &TerminalSpawnConfi
             cmd.env(key, value);
         }
     }
+    cmd.env("SATIN_SHELL_EXECUTABLE", shell);
+    configure_zsh_integration(cmd, config, shell);
+}
+
+fn configure_zsh_integration(cmd: &mut CommandBuilder, config: &TerminalSpawnConfig, shell: &str) {
+    if Path::new(shell).file_name().and_then(|name| name.to_str()) != Some("zsh") {
+        return;
+    }
+    let Some(integration) = config
+        .environment
+        .get("SATIN_ZSH_INTEGRATION_DIR")
+        .map(Path::new)
+        .filter(|path| path.is_absolute() && path.is_dir())
+    else {
+        return;
+    };
+    let original = env::var("ZDOTDIR")
+        .ok()
+        .filter(|value| !value.is_empty())
+        .or_else(|| env::var("HOME").ok())
+        .unwrap_or_else(|| "/tmp".to_owned());
+    cmd.env("SATIN_USER_ZDOTDIR", original);
+    cmd.env("ZDOTDIR", integration);
 }
 
 fn allowed_terminal_environment_key(key: &str) -> bool {
@@ -1210,58 +1238,287 @@ struct TerminalFrameRenderer {
 
 struct TerminalRendererModel {
     window: NeovideRenderedWindowCache,
-    pending_scroll_delta: isize,
+    width: usize,
+    height: usize,
+    pending_scroll: TerminalScrollUpdate,
     last_scrollbar: Option<ScrollbarSnapshot>,
+    last_screen: Option<TerminalScreenSnapshot>,
 }
 
-const MAX_TERMINAL_SCROLL_DETECTION_ROWS: usize = 80;
-const MIN_TERMINAL_SCROLL_MATCH_ROWS: usize = 4;
-const MIN_TERMINAL_SCROLL_REGION_ROWS: usize = 2;
 const MAX_TERMINAL_SCROLL_ANIMATION_ROWS: isize = 24;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum TerminalScrollParseState {
+    #[default]
+    Ground,
+    Escape,
+    Csi,
+    Osc,
+    OscEscape,
+    String,
+    StringEscape,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct TerminalVtScrollRegion {
+    top: u16,
+    bottom: u16,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct TerminalScrollUpdate {
+    rows: isize,
+    region: Option<TerminalVtScrollRegion>,
+}
+
+#[derive(Default)]
+struct TerminalScrollSequenceTracker {
+    state: TerminalScrollParseState,
+    parameters: [u16; 2],
+    parameter_present: [bool; 2],
+    parameter_index: usize,
+    csi_valid: bool,
+    active_scroll_region: Option<TerminalVtScrollRegion>,
+}
+
+impl TerminalScrollSequenceTracker {
+    fn feed(&mut self, bytes: &[u8]) -> TerminalScrollUpdate {
+        let mut update = TerminalScrollUpdate::default();
+        for &byte in bytes {
+            let next = self.feed_byte(byte);
+            if next.rows == 0 {
+                continue;
+            }
+            if update.rows == 0 || update.region == next.region {
+                update.rows = update.rows.saturating_add(next.rows);
+                update.region = next.region;
+            } else {
+                update = next;
+            }
+        }
+        update
+    }
+
+    fn feed_byte(&mut self, byte: u8) -> TerminalScrollUpdate {
+        match self.state {
+            TerminalScrollParseState::Ground => self.feed_ground(byte),
+            TerminalScrollParseState::Escape => {
+                self.feed_escape(byte);
+                TerminalScrollUpdate::default()
+            }
+            TerminalScrollParseState::Csi => self.feed_csi(byte),
+            TerminalScrollParseState::Osc => {
+                self.feed_control_string(byte, true);
+                TerminalScrollUpdate::default()
+            }
+            TerminalScrollParseState::OscEscape => {
+                self.feed_control_string_escape(byte, true);
+                TerminalScrollUpdate::default()
+            }
+            TerminalScrollParseState::String => {
+                self.feed_control_string(byte, false);
+                TerminalScrollUpdate::default()
+            }
+            TerminalScrollParseState::StringEscape => {
+                self.feed_control_string_escape(byte, false);
+                TerminalScrollUpdate::default()
+            }
+        }
+    }
+
+    fn feed_ground(&mut self, byte: u8) -> TerminalScrollUpdate {
+        match byte {
+            0x1b => self.state = TerminalScrollParseState::Escape,
+            0x9b => self.start_csi(),
+            0x9d => self.state = TerminalScrollParseState::Osc,
+            0x90 | 0x98 | 0x9e | 0x9f => self.state = TerminalScrollParseState::String,
+            _ => {}
+        }
+        TerminalScrollUpdate::default()
+    }
+
+    fn feed_escape(&mut self, byte: u8) {
+        match byte {
+            b'[' => self.start_csi(),
+            b']' => self.state = TerminalScrollParseState::Osc,
+            b'P' | b'X' | b'^' | b'_' => self.state = TerminalScrollParseState::String,
+            0x1b => {}
+            _ => self.state = TerminalScrollParseState::Ground,
+        }
+    }
+
+    fn start_csi(&mut self) {
+        self.state = TerminalScrollParseState::Csi;
+        self.parameters = [0; 2];
+        self.parameter_present = [false; 2];
+        self.parameter_index = 0;
+        self.csi_valid = true;
+    }
+
+    fn feed_csi(&mut self, byte: u8) -> TerminalScrollUpdate {
+        match byte {
+            b'0'..=b'9' if self.parameter_index < self.parameters.len() => {
+                self.parameter_present[self.parameter_index] = true;
+                self.parameters[self.parameter_index] = self.parameters[self.parameter_index]
+                    .saturating_mul(10)
+                    .saturating_add(u16::from(byte - b'0'));
+                TerminalScrollUpdate::default()
+            }
+            b';' => {
+                self.parameter_index = self.parameter_index.saturating_add(1);
+                if self.parameter_index >= self.parameters.len() {
+                    self.csi_valid = false;
+                }
+                TerminalScrollUpdate::default()
+            }
+            0x20..=0x2f | 0x3a..=0x3f => {
+                self.csi_valid = false;
+                TerminalScrollUpdate::default()
+            }
+            0x40..=0x7e => {
+                self.state = TerminalScrollParseState::Ground;
+                self.update_for_final(byte)
+            }
+            0x1b => {
+                self.state = TerminalScrollParseState::Escape;
+                TerminalScrollUpdate::default()
+            }
+            _ => {
+                self.state = TerminalScrollParseState::Ground;
+                TerminalScrollUpdate::default()
+            }
+        }
+    }
+
+    fn update_for_final(&mut self, byte: u8) -> TerminalScrollUpdate {
+        if !self.csi_valid {
+            return TerminalScrollUpdate::default();
+        }
+        if byte == b'r' {
+            self.active_scroll_region = self.parsed_scroll_region();
+            return TerminalScrollUpdate::default();
+        }
+        if self.parameter_index != 0 {
+            return TerminalScrollUpdate::default();
+        }
+        let count = if self.parameter_present[0] && self.parameters[0] != 0 {
+            self.parameters[0]
+        } else {
+            1
+        };
+        let count = isize::try_from(count)
+            .unwrap_or(MAX_TERMINAL_SCROLL_ANIMATION_ROWS)
+            .min(MAX_TERMINAL_SCROLL_ANIMATION_ROWS);
+        let rows = match byte {
+            b'M' | b'S' => count,
+            b'L' | b'T' => -count,
+            _ => 0,
+        };
+        TerminalScrollUpdate {
+            rows,
+            region: self.active_scroll_region,
+        }
+    }
+
+    fn parsed_scroll_region(&self) -> Option<TerminalVtScrollRegion> {
+        if self.parameter_index != 1 || !self.parameter_present[0] || !self.parameter_present[1] {
+            return None;
+        }
+        let top = self.parameters[0];
+        let bottom = self.parameters[1];
+        (top > 0 && bottom >= top).then_some(TerminalVtScrollRegion { top, bottom })
+    }
+
+    fn feed_control_string(&mut self, byte: u8, osc: bool) {
+        match byte {
+            0x07 if osc => self.state = TerminalScrollParseState::Ground,
+            0x9c => self.state = TerminalScrollParseState::Ground,
+            0x1b => {
+                self.state = if osc {
+                    TerminalScrollParseState::OscEscape
+                } else {
+                    TerminalScrollParseState::StringEscape
+                };
+            }
+            _ => {}
+        }
+    }
+
+    fn feed_control_string_escape(&mut self, byte: u8, osc: bool) {
+        self.state = match byte {
+            b'\\' => TerminalScrollParseState::Ground,
+            0x1b => self.state,
+            _ if osc => TerminalScrollParseState::Osc,
+            _ => TerminalScrollParseState::String,
+        };
+    }
+}
 
 impl TerminalRendererModel {
     fn new(size: TerminalGridSize) -> Self {
+        let width = size.cols as usize;
+        let height = size.rows as usize;
         Self {
-            window: NeovideRenderedWindowCache::new(size.cols as usize, size.rows as usize),
-            pending_scroll_delta: 0,
+            window: NeovideRenderedWindowCache::new(width, height),
+            width,
+            height,
+            pending_scroll: TerminalScrollUpdate::default(),
             last_scrollbar: None,
+            last_screen: None,
         }
     }
 
     fn resize(&mut self, size: TerminalGridSize) {
-        self.apply_position(size.cols as usize, size.rows as usize);
+        self.resize_window(size.cols as usize, size.rows as usize);
         self.last_scrollbar = None;
     }
 
     fn record_scroll_delta(&mut self, rows: isize) {
-        self.pending_scroll_delta += rows;
+        self.record_scroll_update(TerminalScrollUpdate { rows, region: None });
+    }
+
+    fn record_scroll_update(&mut self, update: TerminalScrollUpdate) {
+        if update.rows == 0 {
+            return;
+        }
+        if self.pending_scroll.rows == 0 || self.pending_scroll.region == update.region {
+            self.pending_scroll.rows = self.pending_scroll.rows.saturating_add(update.rows);
+            self.pending_scroll.region = update.region;
+        } else {
+            self.pending_scroll = update;
+        }
     }
 
     fn snapshot(&mut self, frame: &TerminalFrameSnapshot) -> NeovideRendererModelSnapshot {
         let height = frame.rows.len().max(1);
         let width = frame.rows.iter().map(Vec::len).max().unwrap_or(1).max(1);
         let inferred_scroll = self.infer_output_scroll(frame);
-        let bottom_margin = terminal_bottom_margin(&frame.rows);
-        self.apply_position(width, height);
-        self.apply_viewport_margins(bottom_margin);
+        if let Some(rows) = inferred_scroll {
+            self.record_scroll_delta(rows);
+        }
+        self.resize_window(width, height);
+        if self.last_screen != Some(frame.active_screen) {
+            self.apply_viewport_margins(0, 0);
+        }
+        self.prepare_pending_scroll_region(height);
+        self.window.flush(1);
         for (row, cells) in frame.rows.iter().enumerate() {
             self.window.apply(&NeovideWindowDrawCommand::DrawLine {
                 row,
                 line: NeovideLine::from_cells(cells.clone()),
             });
         }
-        if let Some(rows) = inferred_scroll {
-            self.record_scroll_delta(rows);
-        }
         self.apply_pending_scroll_delta();
         self.window.flush(1);
         self.last_scrollbar = Some(frame.scrollbar.clone());
+        self.last_screen = Some(frame.active_screen);
 
         NeovideRendererModelSnapshot {
             schema_version: 1,
             background: frame.background,
             cursor_color: frame.cursor_color,
             cursor: frame.cursor.clone(),
+            cursor_parent_grid_id: Some(1),
             scrollbar: Some(frame.scrollbar.clone()),
             scroll_hint: None,
             windows: vec![
@@ -1295,35 +1552,55 @@ impl TerminalRendererModel {
         });
     }
 
-    fn apply_viewport_margins(&mut self, bottom: usize) {
+    fn resize_window(&mut self, width: usize, height: usize) {
+        if self.width == width && self.height == height {
+            return;
+        }
+        self.apply_position(width, height);
+        self.width = width;
+        self.height = height;
+    }
+
+    fn apply_viewport_margins(&mut self, top: usize, bottom: usize) {
         self.window
             .apply(&NeovideWindowDrawCommand::ViewportMargins {
-                top: 0,
+                top,
                 bottom,
                 left: 0,
                 right: 0,
             });
     }
 
+    fn prepare_pending_scroll_region(&mut self, height: usize) {
+        if self.pending_scroll.rows == 0 {
+            return;
+        }
+        let (top, bottom) = self
+            .pending_scroll
+            .region
+            .and_then(|region| viewport_margins_for_region(region, height))
+            .unwrap_or((0, 0));
+        self.apply_viewport_margins(top, bottom);
+    }
+
     fn apply_pending_scroll_delta(&mut self) {
-        if self.pending_scroll_delta == 0 {
+        if self.pending_scroll.rows == 0 {
             return;
         }
         self.window.apply(&NeovideWindowDrawCommand::Viewport {
-            scroll_delta: self.pending_scroll_delta,
+            scroll_delta: self.pending_scroll.rows,
         });
-        self.pending_scroll_delta = 0;
+        self.pending_scroll = TerminalScrollUpdate::default();
     }
 
     fn infer_output_scroll(&self, frame: &TerminalFrameSnapshot) -> Option<isize> {
         if !scrollbar_is_at_bottom(&frame.scrollbar) {
             return None;
         }
-        if frame.active_screen == TerminalScreenSnapshot::Primary {
-            return self.infer_primary_output_scroll(frame);
+        if frame.active_screen != TerminalScreenSnapshot::Primary {
+            return None;
         }
-        let previous = self.previous_rows(frame.rows.len())?;
-        detect_terminal_output_scroll(&previous, &frame.rows)
+        self.infer_primary_output_scroll(frame)
     }
 
     fn infer_primary_output_scroll(&self, frame: &TerminalFrameSnapshot) -> Option<isize> {
@@ -1338,153 +1615,23 @@ impl TerminalRendererModel {
         ))
         .filter(|rows| *rows != 0)
     }
-
-    fn previous_rows(&self, height: usize) -> Option<Vec<Vec<TerminalCellSnapshot>>> {
-        let rows = (0..height)
-            .map(|row| self.window.line(row).map(|line| line.cells.clone()))
-            .collect::<Option<Vec<_>>>()?;
-        Some(rows)
-    }
 }
 
-fn detect_terminal_output_scroll(
-    previous: &[Vec<TerminalCellSnapshot>],
-    current: &[Vec<TerminalCellSnapshot>],
-) -> Option<isize> {
-    if previous.len() != current.len() || previous.len() < 2 || previous == current {
+fn viewport_margins_for_region(
+    region: TerminalVtScrollRegion,
+    height: usize,
+) -> Option<(usize, usize)> {
+    let top = usize::from(region.top.saturating_sub(1));
+    let bottom_row = usize::from(region.bottom).min(height);
+    if top >= bottom_row || top >= height {
         return None;
     }
-    let end_row = terminal_scrollable_end_row(current)?;
-    let previous = &previous[..=end_row];
-    let current = &current[..=end_row];
-    best_terminal_scroll_shift(previous, current).map(|rows| {
-        let limit = (current.len() as isize - 1).clamp(1, MAX_TERMINAL_SCROLL_ANIMATION_ROWS);
-        rows.clamp(-limit, limit)
-    })
-}
-
-fn best_terminal_scroll_shift(
-    previous: &[Vec<TerminalCellSnapshot>],
-    current: &[Vec<TerminalCellSnapshot>],
-) -> Option<isize> {
-    let max_shift = (previous.len() - 1).min(MAX_TERMINAL_SCROLL_DETECTION_ROWS);
-    let mut best = None;
-    for shift in 1..=max_shift {
-        best = better_scroll_candidate(best, scroll_candidate(previous, current, shift, 1));
-        best = better_scroll_candidate(best, scroll_candidate(previous, current, shift, -1));
-    }
-    best.map(|candidate| candidate.rows)
-}
-
-fn scroll_candidate(
-    previous: &[Vec<TerminalCellSnapshot>],
-    current: &[Vec<TerminalCellSnapshot>],
-    shift: usize,
-    direction: isize,
-) -> Option<TerminalScrollCandidate> {
-    let mut matched_rows = 0;
-    let mut content_rows = 0;
-    for row in 0..previous.len().saturating_sub(shift) {
-        let previous_row = if direction > 0 { row + shift } else { row };
-        let current_row = if direction > 0 { row } else { row + shift };
-        if !terminal_rows_match(&previous[previous_row], &current[current_row]) {
-            continue;
-        }
-        matched_rows += 1;
-        if terminal_row_has_content(&previous[previous_row])
-            || terminal_row_has_content(&current[current_row])
-        {
-            content_rows += 1;
-        }
-    }
-    let required = MIN_TERMINAL_SCROLL_MATCH_ROWS.max(previous.len() / 4);
-    (content_rows >= required && content_rows >= MIN_TERMINAL_SCROLL_REGION_ROWS).then_some(
-        TerminalScrollCandidate {
-            rows: direction * shift as isize,
-            score: content_rows * 100 + matched_rows,
-        },
-    )
-}
-
-#[derive(Clone, Copy)]
-struct TerminalScrollCandidate {
-    rows: isize,
-    score: usize,
-}
-
-fn better_scroll_candidate(
-    current: Option<TerminalScrollCandidate>,
-    next: Option<TerminalScrollCandidate>,
-) -> Option<TerminalScrollCandidate> {
-    match (current, next) {
-        (Some(current), Some(next)) if current.score >= next.score => Some(current),
-        (_, Some(next)) => Some(next),
-        (current, None) => current,
-    }
-}
-
-fn terminal_rows_match(
-    previous: &[TerminalCellSnapshot],
-    current: &[TerminalCellSnapshot],
-) -> bool {
-    if previous == current {
-        return true;
-    }
-    let previous_text = row_text(previous);
-    let current_text = row_text(current);
-    if previous_text.chars().count() <= 8 || current_text.chars().count() <= 8 {
-        return false;
-    }
-    let previous_body = scroll_row_body(&previous_text);
-    let current_body = scroll_row_body(&current_text);
-    previous_body == current_body && !previous_body.trim().is_empty()
-}
-
-fn terminal_row_has_content(row: &[TerminalCellSnapshot]) -> bool {
-    let text = row_text(row);
-    let body = scroll_row_body(&text).trim().to_owned();
-    !body.is_empty() || (text.chars().count() <= 8 && !text.trim().is_empty())
-}
-
-fn terminal_scrollable_end_row(rows: &[Vec<TerminalCellSnapshot>]) -> Option<usize> {
-    if rows.is_empty() {
-        return None;
-    }
-    let fixed_tail_start = terminal_fixed_tail_start(rows);
-    Some(fixed_tail_start.map_or(rows.len() - 1, |start| start.saturating_sub(1)))
-}
-
-fn terminal_bottom_margin(rows: &[Vec<TerminalCellSnapshot>]) -> usize {
-    terminal_fixed_tail_start(rows).map_or(0, |start| rows.len().saturating_sub(start))
-}
-
-fn terminal_fixed_tail_start(rows: &[Vec<TerminalCellSnapshot>]) -> Option<usize> {
-    if rows.len() < 4 {
-        return None;
-    }
-    let first_candidate = rows.len().saturating_sub(8);
-    (first_candidate..rows.len()).find(|row| terminal_row_looks_fixed(&rows[*row]))
-}
-
-fn terminal_row_looks_fixed(row: &[TerminalCellSnapshot]) -> bool {
-    let colored_cells = row.iter().filter(|cell| cell.bg.is_some()).count();
-    colored_cells >= 8.max(row.len() / 4)
+    Some((top, height.saturating_sub(bottom_row)))
 }
 
 fn scrollbar_is_at_bottom(scrollbar: &ScrollbarSnapshot) -> bool {
     scrollbar.total <= scrollbar.visible
         || scrollbar.top.saturating_add(scrollbar.visible) >= scrollbar.total
-}
-
-fn row_text(row: &[TerminalCellSnapshot]) -> String {
-    row.iter().map(|cell| cell.text.as_str()).collect()
-}
-
-fn scroll_row_body(text: &str) -> String {
-    if text.chars().count() <= 8 {
-        return text.to_owned();
-    }
-    text.chars().skip(8).collect()
 }
 
 fn cap_primary_output_scroll_rows(rows: u64, visible_rows: u64) -> isize {
@@ -2327,7 +2474,64 @@ mod tests {
     }
 
     #[test]
-    fn terminal_renderer_model_infers_vim_output_scroll_animation() {
+    fn terminal_scroll_tracker_reads_region_delete_line_sequence() {
+        let mut tracker = TerminalScrollSequenceTracker::default();
+
+        assert_eq!(
+            tracker.feed(b"\x1b[1;22r\x1b[H\x1b["),
+            TerminalScrollUpdate::default()
+        );
+        assert_eq!(
+            tracker.feed(b"11M\x1b[r"),
+            TerminalScrollUpdate {
+                rows: 11,
+                region: Some(TerminalVtScrollRegion { top: 1, bottom: 22 }),
+            }
+        );
+    }
+
+    #[test]
+    fn terminal_scroll_tracker_ignores_cursor_and_control_string_updates() {
+        let mut tracker = TerminalScrollSequenceTracker::default();
+        let cursor_update = b"\x1b[?25l\x1b[24;70H\x1b[13A\x1b[?25h";
+        let title_with_scroll_text = b"\x1b]2;not-a-scroll-\x1b[8M\x07";
+
+        assert_eq!(tracker.feed(cursor_update), TerminalScrollUpdate::default());
+        assert_eq!(
+            tracker.feed(title_with_scroll_text),
+            TerminalScrollUpdate::default()
+        );
+    }
+
+    #[test]
+    fn terminal_scroll_tracker_reads_scroll_up_and_down_sequences() {
+        let mut tracker = TerminalScrollSequenceTracker::default();
+
+        assert_eq!(
+            tracker.feed(b"\x1b[3S"),
+            TerminalScrollUpdate {
+                rows: 3,
+                region: None,
+            }
+        );
+        assert_eq!(
+            tracker.feed(b"\x1b[2T"),
+            TerminalScrollUpdate {
+                rows: -2,
+                region: None,
+            }
+        );
+        assert_eq!(
+            tracker.feed(b"\x1b[L"),
+            TerminalScrollUpdate {
+                rows: -1,
+                region: None,
+            }
+        );
+    }
+
+    #[test]
+    fn terminal_renderer_model_keeps_region_scroll_when_fixed_style_changes() {
         let mut model = TerminalRendererModel::new(grid_size(8, 16));
         model.snapshot(&frame_with_rows(vec![
             row("00000001 alpha"),
@@ -2340,6 +2544,8 @@ mod tests {
             status_row("vim status"),
         ]));
 
+        let mut tracker = TerminalScrollSequenceTracker::default();
+        model.record_scroll_update(tracker.feed(b"\x1b[1;7r\x1b[H\x1b[M\x1b[r"));
         let snapshot = model.snapshot(&frame_with_rows(vec![
             row("00000002 beta"),
             row("00000003 gamma"),
@@ -2348,13 +2554,52 @@ mod tests {
             row("00000006 zeta"),
             row("00000007 eta"),
             row("00000008 theta"),
-            status_row("vim status"),
+            row("vim status"),
         ]));
 
         let window = &snapshot.windows[0];
         assert_eq!(window.scroll_position, -1.0);
         assert_eq!(window.viewport_margins.bottom, 1);
         assert_eq!(window.lines[7].as_ref().unwrap().text, "vim status");
+    }
+
+    #[test]
+    fn terminal_renderer_model_does_not_animate_repeated_one_screen_cursor_redraw() {
+        let repeated = vec![
+            row("00000001 alpha"),
+            row("00000002 beta"),
+            row("00000003 gamma"),
+            row("00000004 delta"),
+            row("00000005 alpha"),
+            row("00000006 beta"),
+            row("00000007 gamma"),
+            row("00000008 delta"),
+            row("00000009 alpha"),
+            row("00000010 beta"),
+            row("00000011 gamma"),
+            status_row("vim status"),
+        ];
+        let redrawn = vec![
+            row("00000002 alpha"),
+            row("00000001 beta"),
+            row("00000002 gamma"),
+            row("00000003 delta"),
+            row("00000004 alpha"),
+            row("00000005 beta"),
+            row("00000006 gamma"),
+            row("00000007 delta"),
+            row("00000008 alpha"),
+            row("00000009 beta"),
+            row("00000010 gamma"),
+            status_row("vim status"),
+        ];
+        let mut model = TerminalRendererModel::new(grid_size(12, 16));
+        model.snapshot(&frame_with_rows(repeated));
+
+        let snapshot = model.snapshot(&frame_with_rows(redrawn));
+
+        assert_eq!(snapshot.windows[0].scroll_position, 0.0);
+        assert!(!model.has_active_animation());
     }
 
     #[test]

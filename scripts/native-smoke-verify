@@ -43,6 +43,10 @@ def main() -> int:
         result_path = sys.argv[3] if len(sys.argv) > 3 else ""
         verify_cursor_blink(width, height, pixels, result_path)
         return 0
+    if mode == "nvim-file-tree-close":
+        result_path = sys.argv[3] if len(sys.argv) > 3 else ""
+        verify_file_tree_close(width, height, pixels, result_path)
+        return 0
     if mode == "nvim-skia" and len(sys.argv) > 3:
         verify_nvim_skia(width, height, pixels, sys.argv[3])
         return 0
@@ -130,6 +134,41 @@ def verify_nvim_skia(width: int, height: int, pixels, result_path: str) -> None:
         f"{width}x{height} origin={origin_x},{origin_y} "
         f"cell={cell_width}x{cell_height} marker={marker['row']}:{marker['col']} "
         f"ink={stats['ink']}"
+    )
+
+
+def verify_file_tree_close(width: int, height: int, pixels, result_path: str) -> None:
+    result = read_prefixed_result(result_path, "ok file-tree-close ")
+    geometry = parse_geometry(result)
+    boundary = int(parse_result_field(result, "boundary"))
+    marker = parse_named_cell(result, "marker", "marker")
+    content_x, _ = terminal_surface_origin(width, height, pixels)
+    origin_x = content_x + geometry["origin_x"]
+    origin_y = terminal_text_first_row_origin_y(height, pixels, geometry["cell_height"])
+    cell_width = geometry["cell_width"]
+    cell_height = geometry["cell_height"]
+    if marker["row"] != 0:
+        raise SystemExit(f"file tree close marker is not on first row: {marker}")
+
+    separator_x = origin_x + boundary * cell_width
+    sample_height = min(height - origin_y, cell_height * 30)
+    stats = cell_ink_stats(
+        pixels,
+        separator_x,
+        origin_y,
+        cell_width,
+        sample_height,
+    )
+    if stats["ink"] > 8:
+        raise SystemExit(
+            "file tree separator pixels remain after close: "
+            f"boundary={boundary} stats={stats}"
+        )
+
+    print(
+        "native file tree close verified: "
+        f"{width}x{height} origin={origin_x},{origin_y} "
+        f"cell={cell_width}x{cell_height} boundary={boundary} ink={stats['ink']}"
     )
 
 
@@ -630,7 +669,7 @@ def cursor_cell_stats(pixels, x: int, y: int, width: int, height: int):
     for yy in range(top, bottom):
         for xx in range(left, right):
             r, g, b, a = pixels[yy][xx]
-            if is_cursor_pixel(r, g, b, a):
+            if is_cursor_pixel(r, g, b, a) or is_glyph_pixel(r, g, b, a):
                 cursor += 1
     return {"cursor": cursor, "area": max(0, right - left) * max(0, bottom - top)}
 
@@ -672,7 +711,7 @@ def bar_cursor_stats(pixels, x: int, y: int, width: int, height: int, percentage
     for yy in range(top, bottom):
         for xx in range(left, right):
             r, g, b, a = pixels[yy][xx]
-            if not is_cursor_pixel(r, g, b, a):
+            if not is_visual_cursor_pixel(r, g, b, a):
                 continue
             if xx < bar_right:
                 bar += 1
@@ -696,7 +735,7 @@ def underline_cursor_stats(pixels, x: int, y: int, width: int, height: int, perc
     for yy in range(top, bottom):
         for xx in range(left, right):
             r, g, b, a = pixels[yy][xx]
-            if not is_cursor_pixel(r, g, b, a):
+            if not is_visual_cursor_pixel(r, g, b, a):
                 continue
             if yy >= underline_top:
                 underline += 1
@@ -720,6 +759,10 @@ def is_glyph_pixel(r: int, g: int, b: int, a: int) -> bool:
 
 def is_cursor_pixel(r: int, g: int, b: int, a: int) -> bool:
     return a > 180 and r > 145 and g > 135 and b > 115 and r >= b + 10 and g >= b + 5
+
+
+def is_visual_cursor_pixel(r: int, g: int, b: int, a: int) -> bool:
+    return is_cursor_pixel(r, g, b, a) or is_glyph_pixel(r, g, b, a)
 
 
 def glyph_region_visible(stats, cell_width: int, cell_height: int, label: str) -> bool:

@@ -12,6 +12,7 @@ app_path="$package_root/Satin.app"
 contents="$app_path/Contents"
 binary="$contents/MacOS/satin"
 control_binary="$contents/MacOS/satinctl"
+nvim_launcher="$contents/MacOS/satin-nvim"
 plist_template="spikes/macos-shell/Info.plist.in"
 entitlements="spikes/macos-shell/Satin.entitlements"
 icon_source="assets/app-icon.png"
@@ -58,7 +59,7 @@ for flag in "${inherited_ldflags[@]}"; do
 done
 NIX_LDFLAGS="${portable_ldflags[*]}" \
   MACOSX_DEPLOYMENT_TARGET="$minimum_macos" \
-  cargo build --release --lib --bin satinctl
+  cargo build --release --lib --bin satinctl --bin satin-nvim
 tmp_binary="$package_root/satin.$$"
 trap 'rm -f "$tmp_binary"' EXIT INT TERM
 
@@ -84,7 +85,9 @@ env -u SDKROOT -u DEVELOPER_DIR \
   -o "$tmp_binary"
 mv -f "$tmp_binary" "$binary"
 /usr/bin/ditto target/release/satinctl "$control_binary"
+/usr/bin/ditto target/release/satin-nvim "$nvim_launcher"
 chmod 755 "$control_binary"
+chmod 755 "$nvim_launcher"
 
 rm -rf -- "$iconset"
 mkdir -p "$iconset"
@@ -113,6 +116,8 @@ rm -rf -- "$iconset"
 /usr/bin/ditto "$project_license_source" "$legal_resources/LICENSE.txt"
 /usr/bin/ditto "$third_party_notices_source" "$legal_resources/THIRD_PARTY_NOTICES.md"
 /usr/bin/ditto "$font_license_source" "$legal_resources/FONT_LICENSE.txt"
+mkdir -p "$contents/Resources/ShellIntegration"
+/usr/bin/ditto scripts/shell-integration/zsh "$contents/Resources/ShellIntegration/zsh"
 cargo about generate \
   --locked \
   --fail \
@@ -139,7 +144,9 @@ jq -e '
 ' "$contents/Resources/update-signing-public-key.json" >/dev/null
 test -x "$contents/Resources/apply-update"
 test -x "$control_binary"
-for packaged_binary in "$binary" "$control_binary"; do
+test -x "$nvim_launcher"
+test -s "$contents/Resources/ShellIntegration/zsh/.zshrc"
+for packaged_binary in "$binary" "$control_binary" "$nvim_launcher"; do
   if /usr/bin/otool -L "$packaged_binary" |
     awk 'NR > 1 { print $1 }' |
     grep -Eq '^/nix/store/'; then
@@ -148,10 +155,12 @@ for packaged_binary in "$binary" "$control_binary"; do
     exit 65
   fi
 done
-if [[ "$(lipo -archs "$control_binary")" != "arm64" ]]; then
-  echo "satinctl is not an exact arm64 binary" >&2
-  exit 65
-fi
+for auxiliary_binary in "$control_binary" "$nvim_launcher"; do
+  if [[ "$(lipo -archs "$auxiliary_binary")" != "arm64" ]]; then
+    echo "auxiliary binary is not exact arm64: $auxiliary_binary" >&2
+    exit 65
+  fi
+done
 actual_minimum="$(
   env -u SDKROOT -u DEVELOPER_DIR /usr/bin/vtool -show-build "$binary" |
     awk '/minos/ {print $2; exit}'
@@ -160,8 +169,12 @@ control_minimum="$(
   env -u SDKROOT -u DEVELOPER_DIR /usr/bin/vtool -show-build "$control_binary" |
     awk '/minos/ {print $2; exit}'
 )"
-if [[ "$actual_minimum" != "$minimum_macos" || "$control_minimum" != "$minimum_macos" ]]; then
-  echo "unexpected minimum macOS: app=$actual_minimum cli=$control_minimum (expected $minimum_macos)" >&2
+launcher_minimum="$(
+  env -u SDKROOT -u DEVELOPER_DIR /usr/bin/vtool -show-build "$nvim_launcher" |
+    awk '/minos/ {print $2; exit}'
+)"
+if [[ "$actual_minimum" != "$minimum_macos" || "$control_minimum" != "$minimum_macos" || "$launcher_minimum" != "$minimum_macos" ]]; then
+  echo "unexpected minimum macOS: app=$actual_minimum cli=$control_minimum launcher=$launcher_minimum (expected $minimum_macos)" >&2
   exit 65
 fi
 
@@ -171,6 +184,13 @@ fi
   --options runtime \
   "$timestamp_option" \
   "$control_binary"
+
+/usr/bin/codesign \
+  --force \
+  --sign "$identity" \
+  --options runtime \
+  "$timestamp_option" \
+  "$nvim_launcher"
 
 /usr/bin/codesign \
   --force \

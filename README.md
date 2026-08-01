@@ -40,8 +40,8 @@ settings, and input translation.
   links, and a scroll indicator.
 - A native Settings window for appearance, shell, startup directory,
   keybindings, session behavior, and signed updates.
-- An experimental native Neovim UI backed by `nvim --embed`, `ext_multigrid`,
-  and the same Skia/Metal renderer.
+- A unified native Neovim UI backed by `nvim --embed`, `ext_multigrid`, and the
+  same Skia/Metal renderer whether it is opened from the shell or Command-N.
 - Kitty graphics support and an owner-only `satinctl` automation interface.
 - Publisher-signed in-app updates distributed through GitHub Releases.
 
@@ -108,7 +108,7 @@ just native-package-smoke # visually verify the exact Release .app executable
 just native-resize-smoke # verify window resizing reaches terminal pane grids
 just native-session-smoke # verify v2 sessions, migration, and corruption policy
 just native-soak # repeat high-risk native lifecycle and input smokes
-just terminal-vim-scroll-smoke # verify Vim-style terminal scroll animates in Skia
+just shell-nvim-smoke # verify shell nvim, terminal split scrolling, and shell resume
 just terminal-nvim-handoff-smoke # verify explicit native Neovim pane replacement
 just terminal-nvim-cwd-smoke # verify native Neovim inherits the terminal cwd
 just terminal-nvim-quit-smoke # verify :qa returns the pane to a terminal
@@ -121,7 +121,8 @@ just nvim-smoke-cursor-normal-shape # verify normal-mode block cursor in Skia
 just nvim-smoke-cursor-shape # verify Neovim mode cursor shape in Skia
 just nvim-smoke-cursor-replace-shape # verify replace-mode horizontal cursor in Skia
 just nvim-smoke-cursor-blink # verify cursor blink off phase in Skia
-just nvim-smoke-cursor-switch # verify cursor body/trail cleanup after tab switch
+just nvim-smoke-cursor-switch # verify cursor cleanup after tab switch
+just nvim-smoke-file-tree-cursor-move # verify file-tree j/k does not animate a viewport
 just adr         # list Architecture Decision Records
 just adr-new     # create a new ADR
 just check       # cargo check
@@ -177,8 +178,8 @@ Pushing a tag that exactly matches the Cargo package version publishes a GitHub
 Release after the full verification and packaged-application smoke gates pass:
 
 ```sh
-git tag v0.2.1
-git push origin v0.2.1
+git tag v0.2.2
+git push origin v0.2.2
 ```
 
 The tag workflow runs on GitHub's Apple Silicon runner, attaches the arm64 ZIP
@@ -261,14 +262,16 @@ events use macOS unified logging.
 - Uses runtime wakeup descriptors and renderer animation deadlines instead of
   permanent 60 Hz polling, and tears down PTY process groups and reader threads
   when panes close.
-- Animates cursor movement in the Rust Skia/Metal renderer with a
-  Neovide-style trail.
+- Animates cursor movement in the Rust Skia/Metal renderer with Neovide's
+  four-corner spring cursor geometry.
 - Scrolls `libghostty-vt` history from the native wheel event and animates the
   retained terminal window through the Skia/Metal renderer.
-- Launches an experimental native Neovim UI pane through `just neovim` or the
-  File → Open Native Neovim command, backed by `nvim --embed`, `ext_multigrid`,
-  and a Rust editor/window compositor instead of terminal cell diffing. Typing
-  `nvim` in a shell remains ordinary terminal input and is never intercepted.
+- Routes a direct interactive `nvim` command from Satin's zsh integration and
+  File → Open Native Neovim through one `nvim --embed`, `ext_multigrid` Rust
+  compositor. Shell cwd, arguments, environment, exit status, and the original
+  PTY are retained; quitting Neovim resumes the same shell process. Headless,
+  remote, stdin-driven, nested tmux/SSH, and `SATIN_NVIM_TUI=1` invocations keep
+  real terminal-mode semantics.
 - Preserves terminal faint, blink, overline, strikethrough, underline variants,
   and underline colors through the retained model.
 - Decodes Kitty graphics through `libghostty-vt` and composites visible image
@@ -321,7 +324,7 @@ security boundary.
 - `Command-T`: new tab
 - `Command-D` / `Command-Shift-D`: vertical / horizontal split
 - `Command-W`: close the active pane
-- `Command-N`: explicitly replace the active terminal pane with native Neovim
+- `Command-N`: open the unified native Neovim UI while retaining the current shell
 - `Command-C`, `Command-V`, `Command-A`, `Command-F`: copy, paste, select all,
   and scrollback search
 - `Command-+`, `Command--`, `Command-0`: terminal font size
@@ -335,15 +338,21 @@ There are two scroll sources targeted by the renderer:
 
 - History scroll: integer rows are applied to `libghostty-vt`; fractional rows
   are held in the renderer and settled back to a cell boundary after wheel idle.
-- Screen shift: when the visible rows look like they moved up/down between two
-  frames, the renderer starts from the old visual position and springs to the new
-  one.
+  Primary-screen output growth is read from `libghostty-vt` scrollbar state.
+- TUI viewport scroll: all direct interactive Neovim sessions use
+  `win_viewport.scroll_delta`; other full-screen terminal applications use
+  explicit VT line insert/delete or scroll commands (`CSI L/M/S/T`) together
+  with their declared VT scroll region.
+
+Visible terminal rows are never compared to guess TUI scrolling. Cursor-only
+redraws, relative-number updates, plugin virtual text, and statusline background
+colors therefore cannot change or move the retained viewport.
 
 The native host keeps AppKit responsible for tabs, menus, input routing, and
 context menus. Cell drawing is owned by the Rust Skia/Metal adapter for both
 normal terminal panes and native Neovim panes.
 
-The native Neovim pane uses Neovim `ext_multigrid` redraw events to keep
+The unified Neovim pane uses Neovim `ext_multigrid` redraw events to keep
 separate grids for editor windows, floating windows, messages, cmdline, and file
 tree panes. Rust now emits a Neovide-derived retained command batch from those
 events: `grid_line` produces `DrawLine`, `grid_scroll` produces `Scroll`, and
@@ -352,13 +361,16 @@ event-origin command hints instead of snapshot-diff guessing.
 
 The renderer model contains the background, cursor, and retained windows with
 screen placement, window kind, z-order, hidden state, scroll animation position,
-and colored cell lines. The Skia/Metal adapter consumes this model directly.
+and colored cell lines. Both visible lines and scrollback use Neovide's logical
+ring-buffer layout. The Skia/Metal adapter advances retained-window animation
+before taking the model snapshot, updates the cursor destination from that same
+snapshot, and then draws both in one frame.
 
 `just terminal` and `just neovim` draw content from retained renderer models.
 The Rust Skia/Metal adapter wraps the current `MTKView` drawable, draws the
-retained terminal or Neovim windows, and owns cursor body/trail rendering. The
-AppKit overlay is limited to native UI such as tabs, menus, dialogs, and context
-menus.
+retained terminal or Neovim windows, and owns the Neovide-derived four-corner
+cursor rendering. The AppKit overlay is limited to native UI such as tabs,
+menus, dialogs, and context menus.
 
 The Rust renderer model also carries viewport margins, scrollback line source,
 scroll position, and event-origin scroll hint metadata. The Skia/Metal adapter
@@ -381,7 +393,7 @@ Japanese, Nerd Font, combining-mark, and ambiguous-width fixture cells contain
 visible glyph pixels at the retained-model coordinates.
 `nvim-smoke-cursor-switch` captures the Skia/Metal surface after switching tabs
 and checks that the active tab's cursor body is visible while the previous tab's
-cursor/trail and marker text are absent.
+cursor and marker text are absent.
 The cursor shape smokes drive Neovim `mode_info_set` / `mode_change` through
 normal block, insert `ver25`, and replace `hor20` modes and check both the
 renderer model and captured pixels. `nvim-smoke-cursor-blink` verifies the
@@ -399,7 +411,7 @@ The smoke recipes require Skia frames; `native-smoke` also checks
 
 ## Remaining Direction
 
-The native Neovim compositor can continue toward deeper Neovide parity,
+The Neovim compositor can continue toward deeper Neovide parity,
 including externalized windows and richer editor-side drag selection. Those
 renderer extensions remain event-driven; terminal behavior stays owned by
 `libghostty-vt`.

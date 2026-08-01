@@ -38,6 +38,9 @@ struct NativeControlRequest: Decodable {
     let axis: String?
     let title: String?
     let theme: String?
+    let executable: String?
+    let arguments: [String]?
+    let environment: [String: String]?
 }
 
 private struct NativeControlEnvelope: Decodable {
@@ -210,6 +213,37 @@ enum NativeControlEnvironment {
             isDirectory: true
         )
         .appendingPathComponent("target/debug/satinctl")
+        .path
+    }
+
+    static func nvimLauncherPath() -> String {
+        let bundled = Bundle.main.executableURL?
+            .deletingLastPathComponent()
+            .appendingPathComponent("satin-nvim")
+        if let bundled, FileManager.default.isExecutableFile(atPath: bundled.path) {
+            return bundled.path
+        }
+        return URL(
+            fileURLWithPath: FileManager.default.currentDirectoryPath,
+            isDirectory: true
+        )
+        .appendingPathComponent("target/debug/satin-nvim")
+        .path
+    }
+
+    static func zshIntegrationPath() -> String {
+        let bundled = Bundle.main.resourceURL?
+            .appendingPathComponent("ShellIntegration", isDirectory: true)
+            .appendingPathComponent("zsh", isDirectory: true)
+        if let bundled,
+           FileManager.default.fileExists(atPath: bundled.appendingPathComponent(".zshrc").path) {
+            return bundled.path
+        }
+        return URL(
+            fileURLWithPath: FileManager.default.currentDirectoryPath,
+            isDirectory: true
+        )
+        .appendingPathComponent("scripts/shell-integration/zsh", isDirectory: true)
         .path
     }
 }

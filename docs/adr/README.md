@@ -19,6 +19,7 @@ allowed to differ from the target design during a migration.
 - [0009: Harden the native runtime and release pipeline](0009-harden-native-runtime-and-release-pipeline.md)
 - [0010: Use native settings and an owner-only control API](0010-use-native-settings-and-an-owner-only-control-api.md)
 - [0011: Rename the product to Satin through a signed migration bridge](0011-rename-product-to-satin-through-signed-migration-bridge.md)
+- [0012: Unify shell and Command-N Neovim runtime](0012-unify-shell-and-command-neovim-runtime.md)
 
 ## Workflow
 
