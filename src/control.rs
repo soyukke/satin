@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{BTreeMap, HashMap},
     fs,
     io::{self, BufRead, BufReader, Read, Write},
     os::unix::{
@@ -76,6 +76,13 @@ pub enum ControlCommand {
         axis: ControlSplitAxis,
         cwd: Option<String>,
     },
+    OpenNeovim {
+        pane: usize,
+        cwd: String,
+        executable: String,
+        arguments: Vec<String>,
+        environment: BTreeMap<String, String>,
+    },
     RenameTab {
         tab: usize,
         title: String,
@@ -87,12 +94,13 @@ pub enum ControlCommand {
 }
 
 impl ControlCommand {
-    fn response_timeout(&self) -> Duration {
+    fn response_timeout(&self) -> Option<Duration> {
         match self {
-            Self::StatusWait { timeout_ms, .. } => {
-                Duration::from_millis((*timeout_ms).min(MAX_WAIT_TIMEOUT_MS) + 2_000)
-            }
-            _ => DEFAULT_RESPONSE_TIMEOUT,
+            Self::StatusWait { timeout_ms, .. } => Some(Duration::from_millis(
+                (*timeout_ms).min(MAX_WAIT_TIMEOUT_MS) + 2_000,
+            )),
+            Self::OpenNeovim { .. } => None,
+            _ => Some(DEFAULT_RESPONSE_TIMEOUT),
         }
     }
 }
@@ -132,6 +140,18 @@ impl ControlResponse {
             }),
         }
     }
+}
+
+pub fn send_control_request(path: &Path, request: &ControlRequest) -> Result<ControlResponse> {
+    let mut stream =
+        UnixStream::connect(path).with_context(|| format!("connect {}", path.display()))?;
+    stream.set_write_timeout(Some(Duration::from_secs(5)))?;
+    serde_json::to_writer(&mut stream, request)?;
+    stream.write_all(b"\n")?;
+    stream.flush()?;
+    stream.set_read_timeout(request.command.response_timeout())?;
+    let reader = BufReader::new(stream.take(MAX_CONTROL_REQUEST_BYTES));
+    serde_json::from_reader(reader).context("decode control response")
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -365,9 +385,14 @@ fn handle_client(
         })
         .map_err(|_| anyhow!("control host stopped"))?;
     wakeup.notify();
-    let response = response_rx
-        .recv_timeout(timeout)
-        .unwrap_or_else(|_| ControlResponse::failure("timeout", "control request timed out"));
+    let response = match timeout {
+        Some(timeout) => response_rx
+            .recv_timeout(timeout)
+            .unwrap_or_else(|_| ControlResponse::failure("timeout", "control request timed out")),
+        None => response_rx.recv().unwrap_or_else(|_| {
+            ControlResponse::failure("host_stopped", "control host stopped before responding")
+        }),
+    };
     write_response(&mut stream, &response)?;
     Ok(())
 }
@@ -483,6 +508,29 @@ mod tests {
             request
         );
         assert!(json.contains("\"command\":\"status-set\""));
+    }
+
+    #[test]
+    fn protocol_preserves_native_neovim_launch_context() {
+        let request = ControlRequest::new(ControlCommand::OpenNeovim {
+            pane: 4,
+            cwd: "/tmp/project".to_owned(),
+            executable: "/usr/local/bin/nvim".to_owned(),
+            arguments: vec!["-u".to_owned(), "NONE".to_owned(), "file name".to_owned()],
+            environment: BTreeMap::from([
+                ("NVIM_APPNAME".to_owned(), "minimal".to_owned()),
+                ("PATH".to_owned(), "/usr/bin:/bin".to_owned()),
+            ]),
+        });
+        let json = serde_json::to_string(&request).unwrap();
+
+        assert_eq!(
+            serde_json::from_str::<ControlRequest>(&json).unwrap(),
+            request
+        );
+        assert!(json.contains("\"command\":\"open-neovim\""));
+        assert!(json.contains("\"NVIM_APPNAME\":\"minimal\""));
+        assert_eq!(request.command.response_timeout(), None);
     }
 
     #[test]

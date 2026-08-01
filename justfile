@@ -89,9 +89,9 @@ native-smoke:
 native-package-smoke:
     @./scripts/native-package-smoke
 
-# Verify terminal-pane Vim-style scroll produces Skia animation frames.
-terminal-vim-scroll-smoke:
-    @if [[ -z "${IN_NIX_SHELL:-}" ]]; then exec nix develop --command just terminal-vim-scroll-smoke; else just native-build && ./scripts/native-terminal-vim-scroll-smoke; fi
+# Verify a shell nvim command uses native multigrid, scrolls with a terminal split, and resumes the same shell.
+shell-nvim-smoke:
+    @if [[ -z "${IN_NIX_SHELL:-}" ]]; then exec nix develop --command just shell-nvim-smoke; else just native-build && ./scripts/native-shell-nvim-smoke; fi
 
 # Verify bottom-line terminal input does not trigger synthetic scroll animation.
 terminal-bottom-input-smoke:
@@ -139,6 +139,9 @@ nvim-smoke-all:
         just _nvim-smoke nvim-jump; \
         just _nvim-smoke nvim-side-pane; \
         just _nvim-smoke nvim-commandline; \
+        just _nvim-smoke nvim-cursor-move; \
+        just _nvim-smoke nvim-file-tree-cursor-move; \
+        ./scripts/native-nvim-file-tree-close-smoke; \
         just _nvim-smoke nvim-shaped-text; \
         just _nvim-smoke-shaped-text-visual; \
         just _nvim-smoke-ui-surfaces; \
@@ -180,6 +183,14 @@ nvim-smoke-commandline:
         exec nix develop --command just nvim-smoke-commandline; \
     else \
         just native-build && just _nvim-smoke nvim-commandline; \
+    fi
+
+# Verify cursor-only j/k movement in a one-screen buffer never animates the viewport.
+nvim-smoke-cursor-move:
+    @if [[ -z "${IN_NIX_SHELL:-}" ]]; then \
+        exec nix develop --command just nvim-smoke-cursor-move; \
+    else \
+        just native-build && just _nvim-smoke nvim-cursor-move; \
     fi
 
 # Verify shaped Japanese, Nerd Font, combining, and ambiguous-width text reaches Skia.
@@ -229,6 +240,22 @@ nvim-smoke-file-tree:
         exec nix develop --command just nvim-smoke-file-tree; \
     else \
         just native-build && just _nvim-smoke nvim-file-tree; \
+    fi
+
+# Verify one-row movement in the file tree does not animate any retained viewport.
+nvim-smoke-file-tree-cursor-move:
+    @if [[ -z "${IN_NIX_SHELL:-}" ]]; then \
+        exec nix develop --command just nvim-smoke-file-tree-cursor-move; \
+    else \
+        just native-build && just _nvim-smoke nvim-file-tree-cursor-move; \
+    fi
+
+# Verify closing the file tree removes its retained grid and separator column.
+nvim-smoke-file-tree-close:
+    @if [[ -z "${IN_NIX_SHELL:-}" ]]; then \
+        exec nix develop --command just nvim-smoke-file-tree-close; \
+    else \
+        just native-build && ./scripts/native-nvim-file-tree-close-smoke; \
     fi
 
 # Verify Neovim mode cursor shape reaches the Skia/Metal cursor body.
@@ -289,7 +316,10 @@ _nvim-smoke-cursor-switch:
 _nvim-smoke scenario:
     @tmp=$(mktemp); \
     trap 'rm -f "$tmp"' EXIT; \
+    clean_nvim=1; \
+    if [[ "{{scenario}}" == nvim-file-tree* ]]; then clean_nvim=0; fi; \
     SATIN_NATIVE_PANE=nvim \
+    SATIN_NATIVE_SMOKE_CLEAN_NVIM="$clean_nvim" \
     SATIN_NATIVE_SMOKE_SCENARIO="{{scenario}}" \
     SATIN_NATIVE_SMOKE_RESULT="$tmp" \
         spikes/macos-shell/.build/SatinApplication \
@@ -333,7 +363,7 @@ secrets:
 
 # Lint release/smoke shell scripts and GitHub Actions workflows.
 ops-lint:
-    @if [[ -z "${IN_NIX_SHELL:-}" ]]; then exec nix develop --command just ops-lint; else shellcheck scripts/apply-update scripts/license-audit scripts/native-build scripts/native-control-smoke scripts/native-kitty-smoke scripts/native-package scripts/native-package-smoke scripts/native-notarize scripts/native-release scripts/native-resize-smoke scripts/native-session-smoke scripts/native-settings-smoke scripts/native-smoke scripts/native-soak scripts/native-update-install-smoke scripts/native-update-release-smoke && actionlint .github/workflows/*.yml; fi
+    @if [[ -z "${IN_NIX_SHELL:-}" ]]; then exec nix develop --command just ops-lint; else shellcheck scripts/apply-update scripts/license-audit scripts/native-build scripts/native-control-smoke scripts/native-kitty-smoke scripts/native-package scripts/native-package-smoke scripts/native-notarize scripts/native-release scripts/native-resize-smoke scripts/native-session-smoke scripts/native-settings-smoke scripts/native-shell-nvim-smoke scripts/native-smoke scripts/native-soak scripts/native-update-install-smoke scripts/native-update-release-smoke && zsh -n scripts/shell-integration/zsh/.zshenv scripts/shell-integration/zsh/.zprofile scripts/shell-integration/zsh/.zshrc scripts/shell-integration/zsh/.zlogin scripts/shell-integration/zsh/.zlogout && actionlint .github/workflows/*.yml; fi
 
 # Configure this clone to use the repository-managed Git hooks.
 install-hooks:

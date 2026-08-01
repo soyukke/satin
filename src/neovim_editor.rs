@@ -131,6 +131,7 @@ impl NeovimEditor {
             background: self.default_bg,
             cursor_color: self.default_fg,
             cursor: self.cursor_snapshot(),
+            cursor_parent_grid_id: self.cursor.map(|cursor| cursor.grid),
             scrollbar: None,
             scroll_hint,
             windows,
@@ -356,9 +357,12 @@ impl NeovimEditor {
             return false;
         };
         let grid_size = self.grid_size(grid);
+        let Some((top, left)) = self.float_window_top_left(args, grid_size) else {
+            return false;
+        };
         let position = WindowPosition {
-            top: value_usize_rounded(args.get(9)).unwrap_or(0),
-            left: value_usize_rounded(args.get(10)).unwrap_or(0),
+            top,
+            left,
             width: grid_size.0 as usize,
             height: grid_size.1 as usize,
         };
@@ -370,6 +374,34 @@ impl NeovimEditor {
         true
     }
 
+    fn float_window_top_left(
+        &self,
+        args: &[Value],
+        grid_size: (u16, u16),
+    ) -> Option<(usize, usize)> {
+        // Neovim's composed multigrid extension appends comp_index,
+        // screen_row, and screen_col. Prefer those absolute coordinates when
+        // present, as Neovide does.
+        if let (Some(top), Some(left)) = (
+            value_usize_rounded(args.get(9)),
+            value_usize_rounded(args.get(10)),
+        ) {
+            return Some((top, left));
+        }
+
+        let anchor = FloatWindowAnchor::from_value(args.get(2)?)?;
+        let anchor_grid = value_i64(args.get(3))?;
+        let anchor_top = value_f64(args.get(4))?;
+        let anchor_left = value_f64(args.get(5))?;
+        let (mut left, mut top) =
+            anchor.top_left(anchor_left, anchor_top, grid_size.0, grid_size.1);
+        if let Some(parent) = self.grid_screen_offset(anchor_grid) {
+            left += parent.left as f64;
+            top += parent.top as f64;
+        }
+        Some((nonnegative_rounded(top), nonnegative_rounded(left)))
+    }
+
     fn handle_message_position(&mut self, args: &Value) -> bool {
         let Some(args) = args.as_array() else {
             return false;
@@ -377,6 +409,11 @@ impl NeovimEditor {
         let Some(grid) = grid_id(args) else {
             return false;
         };
+        // Neovim 0.11.3+ may emit a duplicate msg_set_pos for grid 0. Neovide
+        // ignores it because the actual message grid always has a nonzero id.
+        if grid == 0 {
+            return false;
+        }
         let position = WindowPosition {
             top: value_usize(args.get(1)).unwrap_or(0),
             left: 0,
@@ -425,15 +462,17 @@ impl NeovimEditor {
         let Some(grid) = grid_id(args) else {
             return false;
         };
-        let rows = value_f64(args.get(7)).unwrap_or(0.0).round() as isize;
+        let Some(rows) = value_f64(args.get(7)).map(|value| value.round() as isize) else {
+            return false;
+        };
         if rows != 0 {
             self.window_mut(grid).pending_scroll_rows += rows;
-            self.queue_window_command(
-                grid,
-                NeovideWindowDrawCommand::Viewport { scroll_delta: rows },
-            );
         }
-        rows != 0
+        self.queue_window_command(
+            grid,
+            NeovideWindowDrawCommand::Viewport { scroll_delta: rows },
+        );
+        true
     }
 
     fn handle_viewport_margins(&mut self, args: &Value) -> bool {
@@ -599,7 +638,7 @@ impl NeovimEditor {
     }
 
     fn queue_position_for_grid(&mut self, grid: i64) {
-        let (width, height) = self.grid_size(grid);
+        let grid_size = self.grid_size(grid);
         let position = self
             .windows
             .get(&grid)
@@ -607,15 +646,15 @@ impl NeovimEditor {
             .unwrap_or(WindowPosition {
                 top: 0,
                 left: 0,
-                width: width as usize,
-                height: height as usize,
+                width: grid_size.0 as usize,
+                height: grid_size.1 as usize,
             });
         let (kind, sort) = self
             .windows
             .get(&grid)
             .map(|window| (window.kind, window.sort))
             .unwrap_or((WindowKind::Normal, WindowSort::default()));
-        self.queue_window_command(grid, position_command(position, kind, sort));
+        self.queue_window_command(grid, position_command(position, grid_size, kind, sort));
     }
 
     fn queue_window_command(&mut self, grid: i64, command: NeovideWindowDrawCommand) {
@@ -1006,6 +1045,38 @@ enum WindowKind {
     Message,
 }
 
+#[derive(Clone, Copy)]
+enum FloatWindowAnchor {
+    NorthWest,
+    NorthEast,
+    SouthWest,
+    SouthEast,
+}
+
+impl FloatWindowAnchor {
+    fn from_value(value: &Value) -> Option<Self> {
+        match value.as_str()? {
+            "NW" => Some(Self::NorthWest),
+            "NE" => Some(Self::NorthEast),
+            "SW" => Some(Self::SouthWest),
+            "SE" => Some(Self::SouthEast),
+            _ => None,
+        }
+    }
+
+    fn top_left(self, anchor_left: f64, anchor_top: f64, width: u16, height: u16) -> (f64, f64) {
+        match self {
+            Self::NorthWest => (anchor_left, anchor_top),
+            Self::NorthEast => (anchor_left - f64::from(width), anchor_top),
+            Self::SouthWest => (anchor_left, anchor_top - f64::from(height)),
+            Self::SouthEast => (
+                anchor_left - f64::from(width),
+                anchor_top - f64::from(height),
+            ),
+        }
+    }
+}
+
 #[derive(Clone, Copy, Default)]
 struct WindowSort {
     zindex: i64,
@@ -1296,6 +1367,10 @@ fn value_usize_rounded(value: Option<&Value>) -> Option<usize> {
     (value >= 0.0).then_some(value as usize)
 }
 
+fn nonnegative_rounded(value: f64) -> usize {
+    value.round().max(0.0) as usize
+}
+
 fn saturating_u16(value: usize) -> u16 {
     value.min(u16::MAX as usize) as u16
 }
@@ -1307,14 +1382,15 @@ fn clamp_scroll_rows(rows: isize, height: usize) -> isize {
 
 fn position_command(
     position: WindowPosition,
+    grid_size: (u16, u16),
     kind: WindowKind,
     sort: WindowSort,
 ) -> NeovideWindowDrawCommand {
     NeovideWindowDrawCommand::Position {
         top: position.top,
         left: position.left,
-        width: position.width,
-        height: position.height,
+        width: grid_size.0 as usize,
+        height: grid_size.1 as usize,
         window_kind: neovide_window_kind(kind),
         zindex: sort.zindex,
         compindex: sort.compindex,
@@ -1530,6 +1606,108 @@ mod tests {
     }
 
     #[test]
+    fn one_screen_viewport_event_uses_neovim_scroll_delta() {
+        let mut editor = NeovimEditor::new(10, 6);
+        editor.grid_mut(2).resize(10, 6, blank());
+        editor.show_window(
+            2,
+            WindowPosition {
+                top: 0,
+                left: 0,
+                width: 10,
+                height: 6,
+            },
+            WindowKind::Normal,
+            WindowSort::default(),
+        );
+        editor.layout_changed = false;
+        editor.handle_event(
+            "win_viewport",
+            &Value::Array(vec![
+                2.into(),
+                1000.into(),
+                0.into(),
+                5.into(),
+                1.into(),
+                0.into(),
+                5.into(),
+                3.into(),
+            ]),
+        );
+        editor.flush_renderer();
+
+        let model = editor.renderer_model_with_pending_scroll();
+        let window = model
+            .windows
+            .iter()
+            .find(|window| window.grid_id == 2)
+            .unwrap();
+        assert_eq!(window.scroll_position, -3.0);
+        assert_eq!(model.scroll_hint.unwrap().rows, 3);
+    }
+
+    #[test]
+    fn zero_viewport_delta_does_not_cancel_scroll_animation() {
+        let mut editor = NeovimEditor::new(10, 6);
+        editor.grid_mut(2).resize(10, 6, blank());
+        editor.show_window(
+            2,
+            WindowPosition {
+                top: 0,
+                left: 0,
+                width: 10,
+                height: 6,
+            },
+            WindowKind::Normal,
+            WindowSort::default(),
+        );
+        editor.layout_changed = false;
+        editor.queue_window_command(2, NeovideWindowDrawCommand::Viewport { scroll_delta: 2 });
+        editor.flush_renderer();
+
+        editor.handle_event(
+            "win_viewport",
+            &Value::Array(vec![
+                2.into(),
+                1000.into(),
+                0.into(),
+                5.into(),
+                1.into(),
+                0.into(),
+                5.into(),
+                0.into(),
+            ]),
+        );
+        editor.flush_renderer();
+
+        let model = editor.renderer_model_with_pending_scroll();
+        let window = model
+            .windows
+            .iter()
+            .find(|window| window.grid_id == 2)
+            .unwrap();
+        assert_eq!(window.scroll_position, -2.0);
+        assert!(model.scroll_hint.is_none());
+    }
+
+    #[test]
+    fn duplicate_zero_message_grid_is_ignored() {
+        let mut editor = NeovimEditor::new(10, 6);
+
+        assert!(!editor.handle_event(
+            "msg_set_pos",
+            &Value::Array(vec![0.into(), 5.into(), false.into(), " ".into(), 0.into()]),
+        ));
+        assert!(
+            editor
+                .renderer_model()
+                .windows
+                .iter()
+                .all(|window| window.grid_id != 0)
+        );
+    }
+
+    #[test]
     fn renderer_model_consumes_pending_scroll_hint() {
         let mut editor = NeovimEditor::new(10, 6);
         editor.grid_mut(2).resize(10, 6, blank());
@@ -1616,6 +1794,77 @@ mod tests {
     }
 
     #[test]
+    fn grid_resize_preserves_initial_lines_when_viewport_margins_arrive_first() {
+        let mut editor = NeovimEditor::new(80, 35);
+        let grid = 5;
+
+        editor.handle_event(
+            "win_viewport_margins",
+            &Value::Array(vec![
+                grid.into(),
+                1000.into(),
+                0.into(),
+                0.into(),
+                0.into(),
+                0.into(),
+            ]),
+        );
+        editor.handle_event(
+            "grid_resize",
+            &Value::Array(vec![grid.into(), 30.into(), 35.into()]),
+        );
+        for row in 0..35 {
+            editor.handle_event(
+                "grid_line",
+                &Value::Array(vec![
+                    grid.into(),
+                    row.into(),
+                    0.into(),
+                    Value::Array(vec![Value::Array(vec![
+                        format!("row-{row:02}").into(),
+                        0.into(),
+                    ])]),
+                ]),
+            );
+        }
+        editor.handle_event(
+            "win_pos",
+            &Value::Array(vec![
+                grid.into(),
+                1000.into(),
+                0.into(),
+                0.into(),
+                30.into(),
+                35.into(),
+            ]),
+        );
+
+        let model = editor.renderer_model();
+        let window = model
+            .windows
+            .iter()
+            .find(|window| window.grid_id == grid)
+            .unwrap();
+
+        assert_eq!(window.lines.len(), 35);
+        assert_eq!(
+            window
+                .lines
+                .iter()
+                .filter(|line| line
+                    .as_ref()
+                    .is_some_and(|line| !line.text.trim().is_empty()))
+                .count(),
+            35
+        );
+        assert!(
+            window.lines[34]
+                .as_ref()
+                .is_some_and(|line| line.text.starts_with("row-34"))
+        );
+    }
+
+    #[test]
     fn renderer_model_exposes_window_placement() {
         let mut editor = NeovimEditor::new(10, 4);
         editor.grid_mut(2).resize(4, 2, blank());
@@ -1646,6 +1895,66 @@ mod tests {
         assert_eq!(window.window_kind, NeovideWindowKind::Float);
         assert_eq!(window.zindex, 50);
         assert!(!window.hidden);
+    }
+
+    #[test]
+    fn float_position_uses_anchor_coordinates_without_composed_extension() {
+        let mut editor = NeovimEditor::new(40, 12);
+        editor.grid_mut(2).resize(4, 2, blank());
+
+        assert!(editor.handle_event(
+            "win_float_pos",
+            &Value::Array(vec![
+                2.into(),
+                100.into(),
+                "NW".into(),
+                1.into(),
+                3.0.into(),
+                20.0.into(),
+                true.into(),
+                50.into(),
+            ]),
+        ));
+
+        let model = editor.renderer_model();
+        let window = model
+            .windows
+            .iter()
+            .find(|window| window.grid_id == 2)
+            .unwrap();
+        assert_eq!((window.top, window.left), (3, 20));
+    }
+
+    #[test]
+    fn float_position_prefers_composed_screen_coordinates() {
+        let mut editor = NeovimEditor::new(40, 12);
+        editor.grid_mut(2).resize(4, 2, blank());
+
+        assert!(editor.handle_event(
+            "win_float_pos",
+            &Value::Array(vec![
+                2.into(),
+                100.into(),
+                "SE".into(),
+                1.into(),
+                3.0.into(),
+                20.0.into(),
+                true.into(),
+                50.into(),
+                4.into(),
+                6.into(),
+                7.into(),
+            ]),
+        ));
+
+        let model = editor.renderer_model();
+        let window = model
+            .windows
+            .iter()
+            .find(|window| window.grid_id == 2)
+            .unwrap();
+        assert_eq!((window.top, window.left), (6, 7));
+        assert_eq!(window.compindex, 4);
     }
 
     fn set_row(grid: &mut NeovimGrid, row: usize, text: &str) {

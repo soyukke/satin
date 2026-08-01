@@ -9,6 +9,7 @@ fi
 app_path="spikes/macos-shell/.build/package/Satin.app"
 executable="$app_path/Contents/MacOS/satin"
 control_executable="$app_path/Contents/MacOS/satinctl"
+nvim_launcher="$app_path/Contents/MacOS/satin-nvim"
 package_version="$(
   sed -nE 's/^version = "([^"]+)"$/\1/p' Cargo.toml |
     head -n 1
@@ -33,6 +34,7 @@ test "$(
 
 /usr/bin/codesign --verify --deep --strict --verbose=2 "$app_path"
 /usr/bin/codesign --verify --strict --verbose=2 "$control_executable"
+/usr/bin/codesign --verify --strict --verbose=2 "$nvim_launcher"
 test -s "$app_path/Contents/Resources/AppIcon.icns"
 test -s "$app_path/Contents/Resources/update-signing-public-key.json"
 test -s "$app_path/Contents/Resources/Legal/LICENSE.txt"
@@ -49,7 +51,9 @@ grep -F "Third Party Licenses" \
   "$app_path/Contents/Resources/Legal/RUST_DEPENDENCY_LICENSES.html" >/dev/null
 test -x "$app_path/Contents/Resources/apply-update"
 test -x "$control_executable"
-for packaged_executable in "$executable" "$control_executable"; do
+test -x "$nvim_launcher"
+test -s "$app_path/Contents/Resources/ShellIntegration/zsh/.zshrc"
+for packaged_executable in "$executable" "$control_executable" "$nvim_launcher"; do
   if /usr/bin/otool -L "$packaged_executable" |
     awk 'NR > 1 { print $1 }' |
     grep -Eq '^/nix/store/'; then
@@ -58,6 +62,7 @@ for packaged_executable in "$executable" "$control_executable"; do
   fi
 done
 test "$(/usr/bin/lipo -archs "$control_executable")" = "arm64"
+test "$(/usr/bin/lipo -archs "$nvim_launcher")" = "arm64"
 test "$(
   env -u SDKROOT -u DEVELOPER_DIR /usr/bin/vtool -show-build "$executable" |
     awk '/minos/ {print $2; exit}'
@@ -66,8 +71,14 @@ test "$(
   env -u SDKROOT -u DEVELOPER_DIR /usr/bin/vtool -show-build "$control_executable" |
     awk '/minos/ {print $2; exit}'
 )" = "14.0"
+test "$(
+  env -u SDKROOT -u DEVELOPER_DIR /usr/bin/vtool -show-build "$nvim_launcher" |
+    awk '/minos/ {print $2; exit}'
+)" = "14.0"
 env -i PATH=/usr/bin:/bin "$control_executable" --version |
   grep -Fx "satinctl $package_version"
+env -i PATH=/usr/bin:/bin "$nvim_launcher" --satin-launcher-version |
+  grep -Fx "satin-nvim $package_version"
 
 env -u SATIN_FONT -u NVTERM_FONT \
   SATIN_NATIVE_EXECUTABLE="$executable" \

@@ -34,6 +34,10 @@ state without polling the screen.
   socket. Version 1 supports listing tabs and panes, reading the visible screen,
   sending input and named keys, creating tabs and splits, renaming tabs,
   selecting themes, and setting or waiting for bounded agent status.
+- The bundled Neovim launcher uses an internal `open-neovim` request carrying
+  the resolved executable, cwd, arguments, and invocation environment. Its
+  response remains open until native Neovim exits so the foreground shell
+  command can preserve blocking and exit-status semantics.
 - The bundled `satinctl` executable is the supported client. Each terminal
   pane receives `SATIN_SOCKET`, `SATIN_TAB_ID`, `SATIN_PANE_ID`, and
   `SATINCTL`; the bundled CLI directory is prepended to that pane's initial
@@ -46,8 +50,9 @@ state without polling the screen.
   socket is never replaced. Connected peer credentials must match the
   application's effective UID. There is no TCP listener.
 - Requests are limited to 1 MiB, concurrent clients to 32, normal responses to
-  30 seconds, and status waits to one hour. AppKit handles commands on the main
-  queue; Rust owns socket I/O, limits, peer checks, and request routing.
+  30 seconds, and status waits to one hour. The native Neovim launcher request
+  is lifecycle-bound instead of timer-bound. AppKit handles commands on the
+  main queue; Rust owns socket I/O, limits, peer checks, and request routing.
 
 ## Consequences
 

@@ -17,6 +17,11 @@ cleanup_auxiliary_files() {
 }
 trap cleanup_auxiliary_files EXIT
 
+# Metal drawables are unavailable while the display is asleep, which produces a
+# valid but entirely black window image. Wake the display and keep it active
+# long enough for AppKit/Metal to present a fresh frame before capturing.
+/usr/bin/caffeinate -u -t 1
+
 if /usr/sbin/screencapture -x -l "$window_id" "$output" 2>/dev/null && [[ -s "$output" ]]; then
   exit 0
 fi

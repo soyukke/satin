@@ -1,11 +1,11 @@
 use std::ffi::{CStr, CString, c_char, c_void};
 use std::{path::PathBuf, ptr};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::control::{ControlResponse, ControlServer};
 use crate::core::{SplitAxis, TerminalCore};
-use crate::neovim_runtime::NativeNeovimRuntime;
+use crate::neovim_runtime::{NativeNeovimRuntime, NeovimLaunchOptions};
 use crate::skia_metal::{NativeSkiaMetalRenderer, SkiaRenderGeometry};
 use crate::terminal_runtime::{
     NativeKeyInput, NativeMouseInput, NativeTerminalRuntime, TerminalGridSize, TerminalPoint,
@@ -631,7 +631,7 @@ pub extern "C" fn satin_nvim_create(
         pixel_width,
         pixel_height,
     };
-    create_nvim_runtime(size, None)
+    create_nvim_runtime(size, NeovimLaunchOptions::default())
 }
 
 #[unsafe(no_mangle)]
@@ -648,12 +648,62 @@ pub extern "C" fn satin_nvim_create_in_cwd(
         pixel_width,
         pixel_height,
     };
-    create_nvim_runtime(size, c_string(cwd).map(PathBuf::from))
+    create_nvim_runtime(
+        size,
+        NeovimLaunchOptions {
+            cwd: c_string(cwd).map(PathBuf::from),
+            ..NeovimLaunchOptions::default()
+        },
+    )
 }
 
-fn create_nvim_runtime(size: TerminalGridSize, cwd: Option<PathBuf>) -> *mut NativeNeovimRuntime {
+#[derive(Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct NativeNeovimLaunchConfiguration {
+    cwd: Option<PathBuf>,
+    executable: Option<PathBuf>,
+    #[serde(default)]
+    arguments: Vec<String>,
+    #[serde(default)]
+    environment: std::collections::BTreeMap<String, String>,
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn satin_nvim_create_with_config(
+    rows: u16,
+    cols: u16,
+    pixel_width: u16,
+    pixel_height: u16,
+    configuration: *const c_char,
+) -> *mut NativeNeovimRuntime {
+    let Some(configuration) = c_string(configuration)
+        .and_then(|json| serde_json::from_str::<NativeNeovimLaunchConfiguration>(&json).ok())
+    else {
+        return ptr::null_mut();
+    };
+    let size = TerminalGridSize {
+        rows,
+        cols,
+        pixel_width,
+        pixel_height,
+    };
+    create_nvim_runtime(
+        size,
+        NeovimLaunchOptions {
+            cwd: configuration.cwd,
+            executable: configuration.executable,
+            arguments: configuration.arguments,
+            environment: configuration.environment,
+        },
+    )
+}
+
+fn create_nvim_runtime(
+    size: TerminalGridSize,
+    options: NeovimLaunchOptions,
+) -> *mut NativeNeovimRuntime {
     crate::logging::init();
-    match NativeNeovimRuntime::spawn_in_directory(size, cwd) {
+    match NativeNeovimRuntime::spawn_with_options(size, options) {
         Ok(runtime) => Box::into_raw(Box::new(runtime)),
         Err(error) => {
             log::error!(target: "neovim", "spawn_failed error={error:#}");
@@ -774,6 +824,13 @@ pub extern "C" fn satin_nvim_exited(handle: *mut NativeNeovimRuntime) -> u8 {
         return 1;
     };
     runtime.is_exited() as u8
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn satin_nvim_exit_code(handle: *mut NativeNeovimRuntime) -> i32 {
+    nvim_mut(handle)
+        .and_then(NativeNeovimRuntime::exit_code)
+        .unwrap_or(i32::MIN)
 }
 
 #[unsafe(no_mangle)]

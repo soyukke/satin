@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeMap,
     env,
     io::{BufReader, Write},
     path::{Path, PathBuf},
@@ -11,7 +12,7 @@ use std::{
 #[cfg(target_os = "macos")]
 use std::os::fd::AsRawFd;
 #[cfg(unix)]
-use std::os::unix::process::CommandExt;
+use std::os::unix::process::{CommandExt, ExitStatusExt};
 
 use anyhow::{Result, anyhow};
 use rmpv::{Value, decode::read_value, encode::write_value};
@@ -32,6 +33,15 @@ pub struct NativeNeovimRuntime {
     next_msg_id: u64,
     editor: NeovimEditor,
     exited: bool,
+    exit_code: Option<i32>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct NeovimLaunchOptions {
+    pub cwd: Option<PathBuf>,
+    pub executable: Option<PathBuf>,
+    pub arguments: Vec<String>,
+    pub environment: BTreeMap<String, String>,
 }
 
 impl NativeNeovimRuntime {
@@ -40,14 +50,33 @@ impl NativeNeovimRuntime {
     }
 
     pub fn spawn_in_directory(size: TerminalGridSize, cwd: Option<PathBuf>) -> Result<Self> {
-        let initial_cwd = cwd.or_else(|| env::current_dir().ok());
-        let (process, rx) = NeovimProcess::spawn(initial_cwd.as_deref())?;
+        Self::spawn_with_options(
+            size,
+            NeovimLaunchOptions {
+                cwd,
+                ..NeovimLaunchOptions::default()
+            },
+        )
+    }
+
+    pub fn spawn_with_options(
+        size: TerminalGridSize,
+        options: NeovimLaunchOptions,
+    ) -> Result<Self> {
+        let initial_cwd = options.cwd.or_else(|| env::current_dir().ok());
+        let (process, rx) = NeovimProcess::spawn(
+            initial_cwd.as_deref(),
+            options.executable.as_deref(),
+            &options.arguments,
+            &options.environment,
+        )?;
         let mut runtime = Self {
             process,
             rx,
             next_msg_id: 1,
             editor: NeovimEditor::new(size.cols, size.rows),
             exited: false,
+            exit_code: None,
         };
         runtime.attach(size)?;
         if let Some(cwd) = initial_cwd {
@@ -126,6 +155,11 @@ impl NativeNeovimRuntime {
         self.refresh_exited()
     }
 
+    pub fn exit_code(&mut self) -> Option<i32> {
+        self.refresh_exited();
+        self.exit_code
+    }
+
     pub fn renderer_model(&self) -> NeovideRendererModelSnapshot {
         self.editor.renderer_model()
     }
@@ -178,7 +212,12 @@ impl NativeNeovimRuntime {
     }
 
     fn refresh_exited(&mut self) -> bool {
-        self.exited = self.exited || self.process.poll_exited();
+        if !self.exited
+            && let Some(exit_code) = self.process.poll_exit_code()
+        {
+            self.exited = true;
+            self.exit_code = Some(exit_code);
+        }
         self.exited
     }
 
@@ -234,10 +273,20 @@ struct NeovimProcess {
 }
 
 impl NeovimProcess {
-    fn spawn(cwd: Option<&Path>) -> Result<(Self, Receiver<Value>)> {
-        let mut command = Command::new(nvim_command());
+    fn spawn(
+        cwd: Option<&Path>,
+        executable: Option<&Path>,
+        arguments: &[String],
+        environment: &BTreeMap<String, String>,
+    ) -> Result<(Self, Receiver<Value>)> {
+        let mut command = Command::new(
+            executable
+                .map(Path::to_path_buf)
+                .unwrap_or_else(|| PathBuf::from(nvim_command())),
+        );
         configure_process_group(&mut command);
         configure_working_directory(&mut command, cwd);
+        command.envs(environment);
         let mut child = command
             .arg("--embed")
             .arg("--cmd")
@@ -246,6 +295,7 @@ impl NeovimProcess {
             .arg("let g:satin = v:true")
             .arg("--cmd")
             .arg("let g:auto_session_enabled = v:false")
+            .args(arguments)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -295,11 +345,11 @@ impl Drop for NeovimProcess {
 }
 
 impl NeovimProcess {
-    fn poll_exited(&mut self) -> bool {
+    fn poll_exit_code(&mut self) -> Option<i32> {
         match self.child.try_wait() {
-            Ok(Some(_)) => true,
-            Ok(None) => false,
-            Err(_) => true,
+            Ok(Some(status)) => Some(exit_status_code(status)),
+            Ok(None) => None,
+            Err(_) => Some(1),
         }
     }
 
@@ -310,6 +360,19 @@ impl NeovimProcess {
     fn clear_wakeup(&self) {
         self.wakeup.clear();
     }
+}
+
+#[cfg(unix)]
+fn exit_status_code(status: std::process::ExitStatus) -> i32 {
+    status
+        .code()
+        .or_else(|| status.signal().map(|signal| 128_i32.saturating_add(signal)))
+        .unwrap_or(1)
+}
+
+#[cfg(not(unix))]
+fn exit_status_code(status: std::process::ExitStatus) -> i32 {
+    status.code().unwrap_or(1)
 }
 
 #[cfg(target_os = "macos")]

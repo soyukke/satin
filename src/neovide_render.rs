@@ -1,5 +1,3 @@
-use std::collections::VecDeque;
-
 use serde::Serialize;
 
 use crate::terminal_runtime::{TerminalCellSnapshot, TerminalColor, TerminalCursorSnapshot};
@@ -77,8 +75,8 @@ impl NeovideLine {
 pub struct NeovideRenderedWindowCache {
     height: usize,
     width: usize,
-    lines: Vec<Option<NeovideLine>>,
-    scrollback_lines: VecDeque<Option<NeovideLine>>,
+    lines: NeovideRingBuffer<Option<NeovideLine>>,
+    scrollback_lines: NeovideRingBuffer<Option<NeovideLine>>,
     scroll_delta: isize,
     viewport_margins: NeovideViewportMargins,
     pub scroll_animation: CriticallyDampedSpringAnimation,
@@ -89,8 +87,8 @@ impl NeovideRenderedWindowCache {
         let mut cache = Self {
             height: 0,
             width: 0,
-            lines: Vec::new(),
-            scrollback_lines: VecDeque::new(),
+            lines: NeovideRingBuffer::new(0, None),
+            scrollback_lines: NeovideRingBuffer::new(0, None),
             scroll_delta: 0,
             viewport_margins: NeovideViewportMargins::default(),
             scroll_animation: CriticallyDampedSpringAnimation::new(),
@@ -148,12 +146,23 @@ impl NeovideRenderedWindowCache {
         self.rotate_scrollback(scroll_delta);
         self.clone_inner_lines_to_scrollback(inner_range);
         if scroll_delta != 0 {
-            self.scroll_animation.position = limited_scroll_offset(
-                self.scroll_animation.position,
-                scroll_delta,
-                far_lines,
-                inner_height,
-            );
+            let max_delta = self.scrollback_lines.len().saturating_sub(self.height);
+            if scroll_delta.unsigned_abs() > max_delta {
+                let far_lines = far_lines.min(self.lines.len()) as isize;
+                self.scroll_animation.position = -(far_lines * scroll_delta.signum()) as f32;
+                let empty_lines = if scroll_delta > 0 {
+                    -far_lines..0
+                } else {
+                    self.lines.len() as isize..self.lines.len() as isize + far_lines
+                };
+                for signed_row in empty_lines {
+                    self.set_scrollback_line(signed_row, None);
+                }
+            } else {
+                let position = self.scroll_animation.position - scroll_delta as f32;
+                self.scroll_animation.position =
+                    position.clamp(-(max_delta as f32), max_delta as f32);
+            }
         }
         self.scroll_delta = 0;
     }
@@ -193,24 +202,22 @@ impl NeovideRenderedWindowCache {
             scroll_position: self.scroll_animation.position,
             viewport_margins: self.viewport_margins,
             scrollback_zero_index: self.scrollback_zero_index(),
-            scrollback_lines: self.scrollback_lines.iter().cloned().collect(),
-            lines: self.lines.clone(),
+            scrollback_lines: self.scrollback_lines.elements.clone(),
+            lines: self.lines.logical_elements(),
         }
     }
 
     fn resize(&mut self, width: usize, height: usize) {
         let width = width.max(1);
         let height = height.max(1);
-        if self.width == width && self.height == height {
-            return;
-        }
-
         self.width = width;
         self.height = height;
         self.lines.resize(self.height, None);
         self.scroll_delta = 0;
-        self.scroll_animation.reset();
-        self.reset_scrollback();
+        self.scrollback_lines
+            .resize(scrollback_len(self.height), None);
+        self.scrollback_lines
+            .clone_from_iter(self.lines.logical_elements());
     }
 
     fn draw_line(&mut self, row: usize, line: NeovideLine) {
@@ -234,17 +241,7 @@ impl NeovideRenderedWindowCache {
     }
 
     fn rotate_visible_rows(&mut self, rows: isize) {
-        if rows > 0 {
-            for _ in 0..rows {
-                self.lines.remove(0);
-                self.lines.push(None);
-            }
-            return;
-        }
-        for _ in 0..rows.unsigned_abs() {
-            self.lines.pop();
-            self.lines.insert(0, None);
-        }
+        self.lines.rotate(rows);
     }
 
     fn clear(&mut self) {
@@ -257,7 +254,7 @@ impl NeovideRenderedWindowCache {
     fn reset_scrollback(&mut self) {
         let inner_range = self.inner_row_range();
         let inner_height = inner_range.len();
-        self.scrollback_lines = VecDeque::from(vec![None; scrollback_len(inner_height)]);
+        self.scrollback_lines = NeovideRingBuffer::new(scrollback_len(inner_height), None);
         self.clone_inner_lines_to_scrollback(inner_range);
     }
 
@@ -273,39 +270,22 @@ impl NeovideRenderedWindowCache {
     }
 
     fn rotate_scrollback(&mut self, scroll_delta: isize) {
-        if scroll_delta == 0 || self.scrollback_lines.is_empty() {
-            return;
-        }
-        let len = self.scrollback_lines.len();
-        if scroll_delta.unsigned_abs() >= len {
-            for line in &mut self.scrollback_lines {
-                *line = None;
-            }
-            return;
-        }
-        let rows = scroll_delta.unsigned_abs() % len;
-        if scroll_delta > 0 {
-            self.scrollback_lines.rotate_left(rows);
-        } else {
-            self.scrollback_lines.rotate_right(rows);
-        }
+        self.scrollback_lines.rotate(scroll_delta);
     }
 
     fn set_scrollback_line(&mut self, signed_row: isize, line: Option<NeovideLine>) {
         let Some(index) = self.scrollback_index(signed_row) else {
             return;
         };
-        if let Some(target) = self.scrollback_lines.get_mut(index) {
-            *target = line;
-        }
+        self.scrollback_lines.elements[index] = line;
     }
 
     fn scrollback_index(&self, signed_row: isize) -> Option<usize> {
-        scrollback_index(self.scrollback_lines.len(), signed_row)
+        self.scrollback_lines.array_index(signed_row)
     }
 
     fn scrollback_zero_index(&self) -> usize {
-        self.scrollback_lines.len() / 2
+        self.scrollback_lines.array_index(0).unwrap_or(0)
     }
 
     fn inner_row_range(&self) -> std::ops::Range<usize> {
@@ -318,34 +298,86 @@ impl NeovideRenderedWindowCache {
     }
 }
 
-fn limited_scroll_offset(
-    current: f32,
-    scroll_delta: isize,
-    far_lines: usize,
-    inner_height: usize,
-) -> f32 {
-    if inner_height == 0 {
-        return 0.0;
-    }
-    let far_lines = far_lines.max(1).min(inner_height) as isize;
-    let max_delta = inner_height as f32;
-    if scroll_delta.unsigned_abs() > inner_height {
-        return -(far_lines * scroll_delta.signum()) as f32;
-    }
-    (current - scroll_delta as f32).clamp(-max_delta, max_delta)
-}
-
 fn scrollback_len(inner_height: usize) -> usize {
-    if inner_height == 0 {
-        return 0;
-    }
-    inner_height * 2 + 1
+    inner_height * 2
 }
 
-fn scrollback_index(len: usize, signed_row: isize) -> Option<usize> {
-    let zero = len / 2;
-    let raw_index = zero.checked_add_signed(signed_row)?;
-    (raw_index < len).then_some(raw_index)
+fn ring_index(len: usize, zero: usize, signed_row: isize) -> Option<usize> {
+    let len = i128::try_from(len).ok().filter(|len| *len > 0)?;
+    let zero = i128::try_from(zero).ok()?;
+    let signed_row = signed_row as i128;
+    usize::try_from((zero + signed_row).rem_euclid(len)).ok()
+}
+
+#[derive(Clone, Debug)]
+struct NeovideRingBuffer<T> {
+    elements: Vec<T>,
+    current_index: isize,
+}
+
+impl<T: Clone> NeovideRingBuffer<T> {
+    fn new(size: usize, default_value: T) -> Self {
+        Self {
+            elements: vec![default_value; size],
+            current_index: 0,
+        }
+    }
+
+    fn len(&self) -> usize {
+        self.elements.len()
+    }
+
+    fn resize(&mut self, new_size: usize, default_value: T) {
+        if new_size > 0 && !self.elements.is_empty() {
+            let zero = self.array_index(0).unwrap_or(0);
+            self.elements.rotate_left(zero);
+        }
+        self.elements.resize(new_size, default_value);
+        self.current_index = 0;
+    }
+
+    fn rotate(&mut self, rows: isize) {
+        let Some(index) = ring_index(self.len(), self.current_index as usize, rows) else {
+            self.current_index = 0;
+            return;
+        };
+        self.current_index = isize::try_from(index).unwrap_or(0);
+    }
+
+    fn array_index(&self, signed_row: isize) -> Option<usize> {
+        ring_index(self.len(), self.current_index as usize, signed_row)
+    }
+
+    fn get(&self, logical_index: usize) -> Option<&T> {
+        let array_index = self.array_index(isize::try_from(logical_index).ok()?)?;
+        self.elements.get(array_index)
+    }
+
+    fn get_mut(&mut self, logical_index: usize) -> Option<&mut T> {
+        let array_index = self.array_index(isize::try_from(logical_index).ok()?)?;
+        self.elements.get_mut(array_index)
+    }
+
+    fn fill(&mut self, value: T) {
+        self.elements.fill(value);
+    }
+
+    fn clone_from_iter<I>(&mut self, iter: I)
+    where
+        I: IntoIterator<Item = T>,
+    {
+        for (logical_index, value) in iter.into_iter().take(self.len()).enumerate() {
+            if let Some(slot) = self.get_mut(logical_index) {
+                *slot = value;
+            }
+        }
+    }
+
+    fn logical_elements(&self) -> Vec<T> {
+        (0..self.len())
+            .filter_map(|logical_index| self.get(logical_index).cloned())
+            .collect()
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -403,6 +435,7 @@ pub struct NeovideRendererModelSnapshot {
     pub background: TerminalColor,
     pub cursor_color: TerminalColor,
     pub cursor: Option<TerminalCursorSnapshot>,
+    pub cursor_parent_grid_id: Option<i64>,
     pub scrollbar: Option<crate::terminal_runtime::ScrollbarSnapshot>,
     pub scroll_hint: Option<NeovideScrollHint>,
     pub windows: Vec<NeovideRenderedWindowSnapshot>,
@@ -437,7 +470,11 @@ pub struct NeovideRenderedWindowSnapshot {
 
 impl NeovideRenderedWindowSnapshot {
     pub fn scrollback_line(&self, signed_row: isize) -> Option<&NeovideLine> {
-        let index = self.scrollback_zero_index.checked_add_signed(signed_row)?;
+        let index = ring_index(
+            self.scrollback_lines.len(),
+            self.scrollback_zero_index,
+            signed_row,
+        )?;
         self.scrollback_lines.get(index)?.as_ref()
     }
 
@@ -518,7 +555,7 @@ mod tests {
 
         assert_eq!(window.line(0).map(|line| line.text.as_str()), Some("bbb"));
         assert_eq!(window.line(1).map(|line| line.text.as_str()), Some("ccc"));
-        assert!(window.line(2).is_none());
+        assert_eq!(window.line(2).map(|line| line.text.as_str()), Some("aaa"));
     }
 
     #[test]
@@ -564,6 +601,52 @@ mod tests {
     }
 
     #[test]
+    fn upward_scroll_preserves_old_and_new_rows_across_ring_boundary() {
+        let mut window = NeovideRenderedWindowCache::new(3, 3);
+        set_window_rows(&mut window, ["aaa", "bbb", "ccc"]);
+        window.flush(1);
+
+        window.apply(&NeovideWindowDrawCommand::Scroll {
+            top: 0,
+            bottom: 3,
+            left: 0,
+            right: 3,
+            rows: -2,
+            cols: 0,
+        });
+        window.apply(&NeovideWindowDrawCommand::DrawLine {
+            row: 0,
+            line: NeovideLine::from_cells(row("xxx")),
+        });
+        window.apply(&NeovideWindowDrawCommand::DrawLine {
+            row: 1,
+            line: NeovideLine::from_cells(row("yyy")),
+        });
+        window.apply(&NeovideWindowDrawCommand::Viewport { scroll_delta: -2 });
+        window.flush(1);
+
+        let snapshot = window.snapshot(1, NeovideRenderedWindowPlacement::main(3, 3));
+        assert_eq!(snapshot.scroll_position, 2.0);
+        let rows = (0..=4)
+            .map(|signed_row| {
+                snapshot
+                    .scrollback_line(signed_row)
+                    .map(|line| line.text.as_str())
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            rows,
+            vec![
+                Some("xxx"),
+                Some("yyy"),
+                Some("aaa"),
+                Some("bbb"),
+                Some("ccc"),
+            ]
+        );
+    }
+
+    #[test]
     fn repeated_position_keeps_retained_scroll_animation() {
         let mut window = NeovideRenderedWindowCache::new(3, 3);
         set_window_rows(&mut window, ["aaa", "bbb", "ccc"]);
@@ -588,6 +671,20 @@ mod tests {
             snapshot.scrollback_line(0).map(|line| line.text.as_str()),
             Some("aaa")
         );
+    }
+
+    #[test]
+    fn zero_viewport_delta_keeps_retained_scroll_animation() {
+        let mut window = NeovideRenderedWindowCache::new(8, 6);
+        window.apply(&NeovideWindowDrawCommand::Viewport { scroll_delta: 2 });
+        window.flush(1);
+        assert_eq!(window.scroll_position(), -2.0);
+
+        window.apply(&NeovideWindowDrawCommand::Viewport { scroll_delta: 0 });
+        window.flush(1);
+
+        assert_eq!(window.scroll_position(), -2.0);
+        assert!(window.has_active_animation());
     }
 
     #[test]

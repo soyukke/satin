@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+app="${SATIN_NATIVE_EXECUTABLE:-spikes/macos-shell/.build/SatinApplication}"
+result_file="spikes/macos-shell/.build/native-shell-nvim.result"
+
+rm -f "$result_file"
+
+SATIN_NATIVE_SMOKE_SCENARIO=shell-nvim-native \
+  SATIN_NATIVE_SMOKE_RESULT="$result_file" \
+  "$app" >"/tmp/satin-shell-nvim.log" 2>&1
+
+result=$(cat "$result_file")
+echo "$result"
+[[ "$result" == ok* ]]

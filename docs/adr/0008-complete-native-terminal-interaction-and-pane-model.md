@@ -4,6 +4,10 @@ Date: 2026-07-28
 
 Status: Accepted
 
+The explicit-only Neovim handoff clause is superseded by ADR 0012. Raw
+keystroke inference remains prohibited; shell integration now operates at the
+executable/control-protocol boundary.
+
 ## Context
 
 The AppKit host can run a real PTY and render `libghostty-vt` state through

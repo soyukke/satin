@@ -1,13 +1,13 @@
 use std::{
     env,
-    io::{self, BufReader, Read, Write},
-    os::unix::net::UnixStream,
+    io::{self, Read},
     path::PathBuf,
-    time::Duration,
 };
 
 use anyhow::{Context, Result, anyhow, bail};
-use satin::control::{ControlCommand, ControlRequest, ControlResponse, ControlSplitAxis};
+use satin::control::{
+    ControlCommand, ControlRequest, ControlResponse, ControlSplitAxis, send_control_request,
+};
 use serde_json::Value;
 
 fn main() {
@@ -31,7 +31,7 @@ fn run() -> Result<()> {
         .ok_or_else(|| anyhow!("set SATIN_SOCKET or pass --socket PATH"))?;
     let json_output = remove_flag(&mut args, "--json");
     let request = parse_request(&mut args)?;
-    let response = send_request(&socket, &request)?;
+    let response = send_control_request(&socket, &request)?;
     print_response(response, json_output)
 }
 
@@ -206,27 +206,6 @@ fn numeric_argument(
         .ok_or_else(|| anyhow!("pass {flag} or set {environment}"))?
         .parse::<usize>()
         .with_context(|| format!("invalid {label} identifier"))
-}
-
-fn send_request(socket: &PathBuf, request: &ControlRequest) -> Result<ControlResponse> {
-    let mut stream =
-        UnixStream::connect(socket).with_context(|| format!("connect {}", socket.display()))?;
-    stream.set_write_timeout(Some(Duration::from_secs(5)))?;
-    serde_json::to_writer(&mut stream, request)?;
-    stream.write_all(b"\n")?;
-    stream.flush()?;
-    stream.set_read_timeout(Some(request_timeout(request)))?;
-    let reader = BufReader::new(stream.take(1024 * 1024));
-    serde_json::from_reader(reader).context("decode control response")
-}
-
-fn request_timeout(request: &ControlRequest) -> Duration {
-    match &request.command {
-        ControlCommand::StatusWait { timeout_ms, .. } => {
-            Duration::from_millis((*timeout_ms).min(60 * 60 * 1_000) + 5_000)
-        }
-        _ => Duration::from_secs(35),
-    }
 }
 
 fn print_response(response: ControlResponse, json_output: bool) -> Result<()> {
