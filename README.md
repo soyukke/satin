@@ -87,56 +87,11 @@ nix develop
 just terminal
 ```
 
-## Commands
+## Development commands
 
-```sh
-just             # list recipes
-just terminal    # build and launch the native AppKit terminal host
-just neovim      # build and launch the native Neovim UI pane
-just native-build # build the AppKit/Metal host without launching it
-just native-package # build and locally verify a hardened-runtime .app
-just native-release # build a ZIP plus checksummed update manifest
-just native-update-test # test version ordering and GitHub update metadata
-just native-update-install-smoke # test atomic replacement and rollback paths
-just native-update-release-smoke # verify a signed ZIP with the embedded key
-just native-settings-smoke # capture and verify every native Settings tab
-just native-control-smoke # exercise satinctl and its owner-only socket
-just native-kitty-smoke # verify Kitty transfer, isolation, deletion, and pixels
-just native-notarize # Developer ID sign, notarize, staple, and assess the .app
-just native-smoke # launch the native host briefly and write a PNG smoke shot
-just native-package-smoke # visually verify the exact Release .app executable
-just native-resize-smoke # verify window resizing reaches terminal pane grids
-just native-session-smoke # verify v2 sessions, migration, and corruption policy
-just native-soak # repeat high-risk native lifecycle and input smokes
-just shell-nvim-smoke # verify shell nvim, terminal split scrolling, and shell resume
-just terminal-nvim-handoff-smoke # verify explicit native Neovim pane replacement
-just terminal-nvim-cwd-smoke # verify native Neovim inherits the terminal cwd
-just terminal-nvim-quit-smoke # verify :qa returns the pane to a terminal
-just nvim-skia-smoke # screenshot smoke for the native Neovim Skia/Metal pane
-just nvim-smoke-all # run deterministic Neovim scroll/jump/pane/cmdline smokes
-just nvim-smoke-shaped-text-visual # verify shaped glyph pixels in a screenshot
-just nvim-smoke-ui-surfaces # verify split/float/message surfaces and float blend
-just nvim-smoke-popupmenu # verify popupmenu model and Skia pixels
-just nvim-smoke-cursor-normal-shape # verify normal-mode block cursor in Skia
-just nvim-smoke-cursor-shape # verify Neovim mode cursor shape in Skia
-just nvim-smoke-cursor-replace-shape # verify replace-mode horizontal cursor in Skia
-just nvim-smoke-cursor-blink # verify cursor blink off phase in Skia
-just nvim-smoke-cursor-switch # verify cursor cleanup after tab switch
-just nvim-smoke-file-tree-cursor-move # verify file-tree j/k does not animate a viewport
-just adr         # list Architecture Decision Records
-just adr-new     # create a new ADR
-just check       # cargo check
-just lint        # clippy with -D warnings
-just test        # cargo test
-just fmt         # cargo fmt
-just precommit   # fmt --check + lint + test
-just ops-lint    # ShellCheck release/smoke scripts and validate Actions YAML
-just secrets-staged # scan staged changes for secrets, as the commit hook does
-just secrets     # scan all Git history plus the current worktree
-just install-hooks # use repo-managed Git hooks
-just verify      # fmt --check + check + lint + test
-just doctor      # print tool versions and selected font
-```
+Build, test, smoke, release, and maintenance workflows are managed in the
+repository [`justfile`](justfile). Run `just` to list the available recipes
+with their descriptions; the README does not duplicate that command index.
 
 ## Architecture Decisions
 
