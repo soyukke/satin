@@ -108,55 +108,70 @@ def verify_kitty(width: int, height: int, pixels) -> None:
 
 def verify_nvim_skia(width: int, height: int, pixels, result_path: str) -> None:
     result = read_prefixed_result(result_path, "ok nvim-skia ")
-    geometry = parse_geometry(result)
     marker = parse_named_cell(result, "marker-cell", "marker")
     text_count = int(parse_result_field(result, "text"))
     if text_count != 1:
         raise SystemExit(f"nvim skia marker count mismatch: {text_count}")
 
-    content_x, _ = terminal_surface_origin(width, height, pixels)
-    origin_x = content_x + geometry["origin_x"]
-    origin_y = terminal_text_first_row_origin_y(height, pixels, geometry["cell_height"])
-    cell_width = geometry["cell_width"]
-    cell_height = geometry["cell_height"]
-    stats = cell_ink_stats(
-        pixels,
-        origin_x + marker["col"] * cell_width,
-        origin_y + marker["row"] * cell_height,
+    origin_x, origin_y, cell_width, cell_height = captured_grid_geometry_from_result(
+        width,
+        height,
+        result,
+    )
+    cell_x, cell_y, cell_pixel_width, cell_pixel_height = captured_cell_rect(
+        origin_x,
+        origin_y,
         cell_width,
         cell_height,
+        marker["row"],
+        marker["col"],
     )
-    if not glyph_region_visible(stats, cell_width, cell_height, "marker"):
+    stats = cell_ink_stats(
+        pixels,
+        cell_x,
+        cell_y,
+        cell_pixel_width,
+        cell_pixel_height,
+    )
+    if not glyph_region_visible(stats, cell_pixel_width, cell_pixel_height, "marker"):
         raise SystemExit(f"nvim skia marker glyph pixels missing: {stats}")
 
     print(
         "native nvim skia verified: "
-        f"{width}x{height} origin={origin_x},{origin_y} "
-        f"cell={cell_width}x{cell_height} marker={marker['row']}:{marker['col']} "
+        f"{width}x{height} origin={origin_x:.2f},{origin_y:.2f} "
+        f"cell={cell_width:.2f}x{cell_height:.2f} "
+        f"marker={marker['row']}:{marker['col']} "
         f"ink={stats['ink']}"
     )
 
 
 def verify_file_tree_close(width: int, height: int, pixels, result_path: str) -> None:
     result = read_prefixed_result(result_path, "ok file-tree-close ")
-    geometry = parse_geometry(result)
     boundary = int(parse_result_field(result, "boundary"))
     marker = parse_named_cell(result, "marker", "marker")
-    content_x, _ = terminal_surface_origin(width, height, pixels)
-    origin_x = content_x + geometry["origin_x"]
-    origin_y = terminal_text_first_row_origin_y(height, pixels, geometry["cell_height"])
-    cell_width = geometry["cell_width"]
-    cell_height = geometry["cell_height"]
+    origin_x, origin_y, cell_width, cell_height = captured_grid_geometry_from_result(
+        width,
+        height,
+        result,
+    )
     if marker["row"] != 0:
         raise SystemExit(f"file tree close marker is not on first row: {marker}")
 
-    separator_x = origin_x + boundary * cell_width
-    sample_height = min(height - origin_y, cell_height * 30)
+    separator_x, separator_y, separator_width, separator_height = captured_cell_rect(
+        origin_x,
+        origin_y,
+        cell_width,
+        cell_height,
+        0,
+        boundary,
+        rows=30,
+    )
+    sample_height = min(height - separator_y, separator_height)
     stats = cell_ink_stats(
         pixels,
         separator_x,
-        origin_y,
-        cell_width,
+        separator_y,
+        separator_width,
         sample_height,
     )
     if stats["ink"] > 8:
@@ -167,8 +182,9 @@ def verify_file_tree_close(width: int, height: int, pixels, result_path: str) ->
 
     print(
         "native file tree close verified: "
-        f"{width}x{height} origin={origin_x},{origin_y} "
-        f"cell={cell_width}x{cell_height} boundary={boundary} ink={stats['ink']}"
+        f"{width}x{height} origin={origin_x:.2f},{origin_y:.2f} "
+        f"cell={cell_width:.2f}x{cell_height:.2f} boundary={boundary} "
+        f"ink={stats['ink']}"
     )
 
 
@@ -182,26 +198,35 @@ def verify_shaped_text_visual(width: int, height: int, pixels, result_path: str)
     if not result_path:
         raise SystemExit("shaped text visual smoke missing result path")
     result = read_result(result_path)
-    geometry = parse_geometry(result)
     cells = parse_cells(result)
-    content_x, content_y = terminal_surface_origin(width, height, pixels)
-    origin_x = content_x + geometry["origin_x"]
-    origin_y = terminal_text_first_row_origin_y(height, pixels, geometry["cell_height"])
-    cell_width = geometry["cell_width"]
-    cell_height = geometry["cell_height"]
+    origin_x, origin_y, cell_width, cell_height = captured_grid_geometry_from_result(
+        width,
+        height,
+        result,
+    )
 
     failures = []
     for label in ("jp1", "jp2", "jp3", "nerd", "combining", "ambiguous"):
         row, col = cells[label]
         width_cells = 2 if label.startswith("jp") else 1
+        cell_x, cell_y, cell_pixel_width, cell_pixel_height = captured_cell_rect(
+            origin_x,
+            origin_y,
+            cell_width,
+            cell_height,
+            row,
+            col,
+            cols=width_cells,
+        )
         stats = cell_ink_stats(
             pixels,
-            origin_x + col * cell_width,
-            origin_y + row * cell_height,
-            width_cells * cell_width,
-            cell_height,
+            cell_x,
+            cell_y,
+            cell_pixel_width,
+            cell_pixel_height,
         )
-        if not glyph_region_visible(stats, cell_width, cell_height, label):
+        single_cell_width = max(1, round(cell_pixel_width / width_cells))
+        if not glyph_region_visible(stats, single_cell_width, cell_pixel_height, label):
             failures.append(f"{label}:{stats}")
 
     if failures:
@@ -209,8 +234,8 @@ def verify_shaped_text_visual(width: int, height: int, pixels, result_path: str)
 
     print(
         "native shaped text visual verified: "
-        f"{width}x{height} origin={origin_x},{origin_y} "
-        f"cell={cell_width}x{cell_height} labels={','.join(cells)}"
+        f"{width}x{height} origin={origin_x:.2f},{origin_y:.2f} "
+        f"cell={cell_width:.2f}x{cell_height:.2f} labels={','.join(cells)}"
     )
 
 
@@ -218,30 +243,45 @@ def verify_cursor_switch(width: int, height: int, pixels, result_path: str) -> N
     if not result_path:
         raise SystemExit("cursor switch smoke missing result path")
     result = read_prefixed_result(result_path, "ok cursor-switch ")
-    geometry = parse_geometry(result)
     old_row, old_col = parse_row_col_field(result, "old")
     new_row, new_col = parse_row_col_field(result, "new")
-    content_x, _ = terminal_surface_origin(width, height, pixels)
-    origin_x = content_x + geometry["origin_x"]
-    origin_y = terminal_text_first_row_origin_y(height, pixels, geometry["cell_height"])
-    cell_width = geometry["cell_width"]
-    cell_height = geometry["cell_height"]
+    origin_x, origin_y, cell_width, cell_height = captured_grid_geometry_from_result(
+        width,
+        height,
+        result,
+    )
+    new_x, new_y, new_width, new_height = captured_cell_rect(
+        origin_x,
+        origin_y,
+        cell_width,
+        cell_height,
+        new_row,
+        new_col,
+    )
+    old_x, old_y, old_width, old_height = captured_cell_rect(
+        origin_x,
+        origin_y,
+        cell_width,
+        cell_height,
+        old_row,
+        old_col,
+    )
 
     new_stats = cursor_cell_stats(
         pixels,
-        origin_x + new_col * cell_width,
-        origin_y + new_row * cell_height,
-        cell_width,
-        cell_height,
+        new_x,
+        new_y,
+        new_width,
+        new_height,
     )
     old_stats = cursor_cell_stats(
         pixels,
-        origin_x + old_col * cell_width,
-        origin_y + old_row * cell_height,
-        cell_width,
-        cell_height,
+        old_x,
+        old_y,
+        old_width,
+        old_height,
     )
-    min_cursor_pixels = max(40, cell_width * cell_height // 4)
+    min_cursor_pixels = max(40, new_width * new_height // 4)
     if new_stats["cursor"] < min_cursor_pixels:
         raise SystemExit(f"new cursor body pixels missing: {new_stats}")
     if old_stats["cursor"] > 8:
@@ -249,8 +289,9 @@ def verify_cursor_switch(width: int, height: int, pixels, result_path: str) -> N
 
     print(
         "native cursor switch verified: "
-        f"{width}x{height} origin={origin_x},{origin_y} "
-        f"cell={cell_width}x{cell_height} new={new_row}:{new_col} old={old_row}:{old_col}"
+        f"{width}x{height} origin={origin_x:.2f},{origin_y:.2f} "
+        f"cell={cell_width:.2f}x{cell_height:.2f} "
+        f"new={new_row}:{new_col} old={old_row}:{old_col}"
     )
 
 
@@ -258,19 +299,26 @@ def verify_ui_surfaces(width: int, height: int, pixels, result_path: str) -> Non
     if not result_path:
         raise SystemExit("ui surfaces smoke missing result path")
     result = read_prefixed_result(result_path, "ok ui-surfaces ")
-    geometry = parse_geometry(result)
     blend = parse_blend_cell(result)
-    content_x, _ = terminal_surface_origin(width, height, pixels)
-    origin_x = content_x + geometry["origin_x"]
-    origin_y = terminal_text_first_row_origin_y(height, pixels, geometry["cell_height"])
-    cell_width = geometry["cell_width"]
-    cell_height = geometry["cell_height"]
-    stats = blended_cell_stats(
-        pixels,
-        origin_x + blend["col"] * cell_width,
-        origin_y + blend["row"] * cell_height,
+    origin_x, origin_y, cell_width, cell_height = captured_grid_geometry_from_result(
+        width,
+        height,
+        result,
+    )
+    cell_x, cell_y, cell_pixel_width, cell_pixel_height = captured_cell_rect(
+        origin_x,
+        origin_y,
         cell_width,
         cell_height,
+        blend["row"],
+        blend["col"],
+    )
+    stats = blended_cell_stats(
+        pixels,
+        cell_x,
+        cell_y,
+        cell_pixel_width,
+        cell_pixel_height,
     )
     expected = blended_rgb(blend["bg"], blend["base"], blend["amount"])
     distance = color_distance(stats["average"], expected)
@@ -282,8 +330,9 @@ def verify_ui_surfaces(width: int, height: int, pixels, result_path: str) -> Non
 
     print(
         "native ui surfaces verified: "
-        f"{width}x{height} origin={origin_x},{origin_y} "
-        f"cell={cell_width}x{cell_height} blend={blend['row']}:{blend['col']} "
+        f"{width}x{height} origin={origin_x:.2f},{origin_y:.2f} "
+        f"cell={cell_width:.2f}x{cell_height:.2f} "
+        f"blend={blend['row']}:{blend['col']} "
         f"average={stats['average']} expected={expected}"
     )
 
@@ -292,27 +341,35 @@ def verify_popupmenu(width: int, height: int, pixels, result_path: str) -> None:
     if not result_path:
         raise SystemExit("popupmenu smoke missing result path")
     result = read_prefixed_result(result_path, "ok popupmenu ")
-    geometry = parse_geometry(result)
     popup = parse_named_cell(result, "popup-cell", "popup")
-    content_x, _ = terminal_surface_origin(width, height, pixels)
-    origin_x = content_x + geometry["origin_x"]
-    origin_y = terminal_text_first_row_origin_y(height, pixels, geometry["cell_height"])
-    cell_width = geometry["cell_width"]
-    cell_height = geometry["cell_height"]
-    stats = cell_ink_stats(
-        pixels,
-        origin_x + popup["col"] * cell_width,
-        origin_y + popup["row"] * cell_height,
+    origin_x, origin_y, cell_width, cell_height = captured_grid_geometry_from_result(
+        width,
+        height,
+        result,
+    )
+    cell_x, cell_y, cell_pixel_width, cell_pixel_height = captured_cell_rect(
+        origin_x,
+        origin_y,
         cell_width,
         cell_height,
+        popup["row"],
+        popup["col"],
     )
-    if not glyph_region_visible(stats, cell_width, cell_height, "popup"):
+    stats = cell_ink_stats(
+        pixels,
+        cell_x,
+        cell_y,
+        cell_pixel_width,
+        cell_pixel_height,
+    )
+    if not glyph_region_visible(stats, cell_pixel_width, cell_pixel_height, "popup"):
         raise SystemExit(f"popupmenu glyph pixels missing: {stats}")
 
     print(
         "native popupmenu verified: "
-        f"{width}x{height} origin={origin_x},{origin_y} "
-        f"cell={cell_width}x{cell_height} popup={popup['row']}:{popup['col']} "
+        f"{width}x{height} origin={origin_x:.2f},{origin_y:.2f} "
+        f"cell={cell_width:.2f}x{cell_height:.2f} "
+        f"popup={popup['row']}:{popup['col']} "
         f"ink={stats['ink']}"
     )
 
@@ -321,24 +378,31 @@ def verify_cursor_shape(width: int, height: int, pixels, result_path: str) -> No
     if not result_path:
         raise SystemExit("cursor shape smoke missing result path")
     result = read_prefixed_result(result_path, "ok cursor-shape ")
-    geometry = parse_geometry(result)
     cursor = parse_cursor_detail(result)
     if cursor["style"] != "bar" or cursor["percentage"] != 25:
         raise SystemExit(f"cursor shape result is not expected insert bar: {cursor}")
-    content_x, _ = terminal_surface_origin(width, height, pixels)
-    origin_x = content_x + geometry["origin_x"]
-    origin_y = terminal_text_first_row_origin_y(height, pixels, geometry["cell_height"])
-    cell_width = geometry["cell_width"]
-    cell_height = geometry["cell_height"]
-    stats = bar_cursor_stats(
-        pixels,
-        origin_x + cursor["col"] * cell_width,
-        origin_y + cursor["row"] * cell_height,
+    origin_x, origin_y, cell_width, cell_height = captured_grid_geometry_from_result(
+        width,
+        height,
+        result,
+    )
+    cell_x, cell_y, cell_pixel_width, cell_pixel_height = captured_cell_rect(
+        origin_x,
+        origin_y,
         cell_width,
         cell_height,
+        cursor["row"],
+        cursor["col"],
+    )
+    stats = bar_cursor_stats(
+        pixels,
+        cell_x,
+        cell_y,
+        cell_pixel_width,
+        cell_pixel_height,
         cursor["percentage"],
     )
-    min_bar_pixels = max(20, stats["bar_width"] * cell_height // 8)
+    min_bar_pixels = max(20, stats["bar_width"] * cell_pixel_height // 8)
     if stats["bar"] < min_bar_pixels:
         raise SystemExit(f"bar cursor pixels missing: {stats}")
     if stats["outside"] > 8:
@@ -346,8 +410,9 @@ def verify_cursor_shape(width: int, height: int, pixels, result_path: str) -> No
 
     print(
         "native cursor shape verified: "
-        f"{width}x{height} origin={origin_x},{origin_y} "
-        f"cell={cell_width}x{cell_height} cursor={cursor['row']}:{cursor['col']} "
+        f"{width}x{height} origin={origin_x:.2f},{origin_y:.2f} "
+        f"cell={cell_width:.2f}x{cell_height:.2f} "
+        f"cursor={cursor['row']}:{cursor['col']} "
         f"bar={stats['bar']} outside={stats['outside']}"
     )
 
@@ -356,31 +421,38 @@ def verify_cursor_normal_shape(width: int, height: int, pixels, result_path: str
     if not result_path:
         raise SystemExit("cursor normal shape smoke missing result path")
     result = read_prefixed_result(result_path, "ok cursor-normal-shape ")
-    geometry = parse_geometry(result)
     cursor = parse_cursor_detail(result)
     if cursor["style"] != "block":
         raise SystemExit(f"cursor normal result is not expected block: {cursor}")
-    origin_x, origin_y, cell_width, cell_height = cursor_pixel_origin(
+    origin_x, origin_y, cell_width, cell_height = captured_grid_geometry_from_result(
         width,
         height,
-        pixels,
-        geometry,
+        result,
+    )
+    cell_x, cell_y, cell_pixel_width, cell_pixel_height = captured_cell_rect(
+        origin_x,
+        origin_y,
+        cell_width,
+        cell_height,
+        cursor["row"],
+        cursor["col"],
     )
     stats = cursor_cell_stats(
         pixels,
-        origin_x + cursor["col"] * cell_width,
-        origin_y + cursor["row"] * cell_height,
-        cell_width,
-        cell_height,
+        cell_x,
+        cell_y,
+        cell_pixel_width,
+        cell_pixel_height,
     )
-    min_cursor_pixels = max(40, cell_width * cell_height // 4)
+    min_cursor_pixels = max(40, cell_pixel_width * cell_pixel_height // 4)
     if stats["cursor"] < min_cursor_pixels:
         raise SystemExit(f"block cursor pixels missing: {stats}")
 
     print(
         "native cursor normal shape verified: "
-        f"{width}x{height} origin={origin_x},{origin_y} "
-        f"cell={cell_width}x{cell_height} cursor={cursor['row']}:{cursor['col']} "
+        f"{width}x{height} origin={origin_x:.2f},{origin_y:.2f} "
+        f"cell={cell_width:.2f}x{cell_height:.2f} "
+        f"cursor={cursor['row']}:{cursor['col']} "
         f"pixels={stats['cursor']}"
     )
 
@@ -389,25 +461,31 @@ def verify_cursor_replace_shape(width: int, height: int, pixels, result_path: st
     if not result_path:
         raise SystemExit("cursor replace shape smoke missing result path")
     result = read_prefixed_result(result_path, "ok cursor-replace-shape ")
-    geometry = parse_geometry(result)
     cursor = parse_cursor_detail(result)
     if cursor["style"] != "underline" or cursor["percentage"] != 20:
         raise SystemExit(f"cursor replace result is not expected underline: {cursor}")
-    origin_x, origin_y, cell_width, cell_height = cursor_pixel_origin(
+    origin_x, origin_y, cell_width, cell_height = captured_grid_geometry_from_result(
         width,
         height,
-        pixels,
-        geometry,
+        result,
+    )
+    cell_x, cell_y, cell_pixel_width, cell_pixel_height = captured_cell_rect(
+        origin_x,
+        origin_y,
+        cell_width,
+        cell_height,
+        cursor["row"],
+        cursor["col"],
     )
     stats = underline_cursor_stats(
         pixels,
-        origin_x + cursor["col"] * cell_width,
-        origin_y + cursor["row"] * cell_height,
-        cell_width,
-        cell_height,
+        cell_x,
+        cell_y,
+        cell_pixel_width,
+        cell_pixel_height,
         cursor["percentage"],
     )
-    min_underline_pixels = max(20, cell_width)
+    min_underline_pixels = max(20, cell_pixel_width)
     if stats["underline"] < min_underline_pixels:
         raise SystemExit(f"underline cursor pixels missing: {stats}")
     if stats["above"] > 8:
@@ -415,8 +493,9 @@ def verify_cursor_replace_shape(width: int, height: int, pixels, result_path: st
 
     print(
         "native cursor replace shape verified: "
-        f"{width}x{height} origin={origin_x},{origin_y} "
-        f"cell={cell_width}x{cell_height} cursor={cursor['row']}:{cursor['col']} "
+        f"{width}x{height} origin={origin_x:.2f},{origin_y:.2f} "
+        f"cell={cell_width:.2f}x{cell_height:.2f} "
+        f"cursor={cursor['row']}:{cursor['col']} "
         f"underline={stats['underline']} above={stats['above']}"
     )
 
@@ -425,21 +504,28 @@ def verify_cursor_blink(width: int, height: int, pixels, result_path: str) -> No
     if not result_path:
         raise SystemExit("cursor blink smoke missing result path")
     result = read_prefixed_result(result_path, "ok cursor-blink ")
-    geometry = parse_geometry(result)
     cursor = parse_cursor_detail(result)
     if cursor["style"] != "bar" or cursor["blinkoff"] < 1000:
         raise SystemExit(f"cursor blink result is not expected long off-phase bar: {cursor}")
-    content_x, _ = terminal_surface_origin(width, height, pixels)
-    origin_x = content_x + geometry["origin_x"]
-    origin_y = terminal_text_first_row_origin_y(height, pixels, geometry["cell_height"])
-    cell_width = geometry["cell_width"]
-    cell_height = geometry["cell_height"]
-    stats = bar_cursor_stats(
-        pixels,
-        origin_x + cursor["col"] * cell_width,
-        origin_y + cursor["row"] * cell_height,
+    origin_x, origin_y, cell_width, cell_height = captured_grid_geometry_from_result(
+        width,
+        height,
+        result,
+    )
+    cell_x, cell_y, cell_pixel_width, cell_pixel_height = captured_cell_rect(
+        origin_x,
+        origin_y,
         cell_width,
         cell_height,
+        cursor["row"],
+        cursor["col"],
+    )
+    stats = bar_cursor_stats(
+        pixels,
+        cell_x,
+        cell_y,
+        cell_pixel_width,
+        cell_pixel_height,
         cursor["percentage"],
     )
     if stats["bar"] > 8 or stats["outside"] > 8:
@@ -447,19 +533,10 @@ def verify_cursor_blink(width: int, height: int, pixels, result_path: str) -> No
 
     print(
         "native cursor blink verified: "
-        f"{width}x{height} origin={origin_x},{origin_y} "
-        f"cell={cell_width}x{cell_height} cursor={cursor['row']}:{cursor['col']} "
+        f"{width}x{height} origin={origin_x:.2f},{origin_y:.2f} "
+        f"cell={cell_width:.2f}x{cell_height:.2f} "
+        f"cursor={cursor['row']}:{cursor['col']} "
         f"bar={stats['bar']} outside={stats['outside']}"
-    )
-
-
-def cursor_pixel_origin(width: int, height: int, pixels, geometry):
-    content_x, _ = terminal_surface_origin(width, height, pixels)
-    return (
-        content_x + geometry["origin_x"],
-        terminal_text_first_row_origin_y(height, pixels, geometry["cell_height"]),
-        geometry["cell_width"],
-        geometry["cell_height"],
     )
 
 
@@ -480,7 +557,7 @@ def parse_geometry(result: str):
     parts = value.split(":")
     if len(parts) != 4:
         raise SystemExit(f"bad shaped text geometry: {value}")
-    origin_x, origin_y, cell_width, cell_height = (int(float(part)) for part in parts)
+    origin_x, origin_y, cell_width, cell_height = (float(part) for part in parts)
     if cell_width <= 0 or cell_height <= 0:
         raise SystemExit(f"bad shaped text cell size: {value}")
     return {
@@ -489,6 +566,55 @@ def parse_geometry(result: str):
         "cell_width": cell_width,
         "cell_height": cell_height,
     }
+
+
+def parse_viewport(result: str):
+    value = parse_result_field(result, "viewport")
+    parts = value.split(":")
+    if len(parts) != 2:
+        raise SystemExit(f"bad renderer viewport: {value}")
+    width, height = (int(part) for part in parts)
+    if width <= 0 or height <= 0:
+        raise SystemExit(f"bad renderer viewport size: {value}")
+    return {"width": width, "height": height}
+
+
+def captured_grid_geometry(width: int, height: int, geometry, viewport):
+    capture_scale = width / viewport["width"]
+    captured_viewport_height = viewport["height"] * capture_scale
+    titlebar_height = max(0.0, height - captured_viewport_height)
+    return (
+        geometry["origin_x"] * capture_scale,
+        titlebar_height + geometry["origin_y"] * capture_scale,
+        geometry["cell_width"] * capture_scale,
+        geometry["cell_height"] * capture_scale,
+    )
+
+
+def captured_grid_geometry_from_result(width: int, height: int, result: str):
+    return captured_grid_geometry(
+        width,
+        height,
+        parse_geometry(result),
+        parse_viewport(result),
+    )
+
+
+def captured_cell_rect(
+    origin_x: float,
+    origin_y: float,
+    cell_width: float,
+    cell_height: float,
+    row: int,
+    col: int,
+    rows: int = 1,
+    cols: int = 1,
+):
+    left = round(origin_x + col * cell_width)
+    top = round(origin_y + row * cell_height)
+    right = round(origin_x + (col + cols) * cell_width)
+    bottom = round(origin_y + (row + rows) * cell_height)
+    return left, top, max(1, right - left), max(1, bottom - top)
 
 
 def parse_cells(result: str):
@@ -567,57 +693,6 @@ def parse_result_field(result: str, name: str) -> str:
         if field.startswith(prefix):
             return field[len(prefix) :]
     raise SystemExit(f"shaped text result missing {name}: {result}")
-
-
-def terminal_surface_origin(width: int, height: int, pixels):
-    dark_rows = []
-    for y in range(height):
-        dark = sum(1 for r, g, b, a in pixels[y] if is_terminal_background(r, g, b, a))
-        if dark > width * 0.55:
-            dark_rows.append(y)
-    dark_cols = []
-    for x in range(width):
-        dark = 0
-        for y in range(height):
-            r, g, b, a = pixels[y][x]
-            if is_terminal_background(r, g, b, a):
-                dark += 1
-        if dark > height * 0.35:
-            dark_cols.append(x)
-    if not dark_rows or not dark_cols:
-        raise SystemExit("could not locate terminal surface in shaped text screenshot")
-    return min(dark_cols), min(dark_rows)
-
-
-def terminal_text_first_row_origin_y(height: int, pixels, cell_height: int) -> int:
-    groups = bright_row_groups(height, pixels)
-    min_text_y = max(1, height // 10)
-    for start, _, _ in groups:
-        if start > min_text_y:
-            return max(0, start - cell_height // 4)
-    raise SystemExit("could not locate first terminal text row in shaped text screenshot")
-
-
-def bright_row_groups(height: int, pixels):
-    groups = []
-    start = None
-    previous = None
-    total = 0
-    for y in range(height):
-        count = sum(1 for r, g, b, a in pixels[y] if is_glyph_pixel(r, g, b, a))
-        if count <= 5:
-            continue
-        if start is None or y > previous + 1:
-            if start is not None:
-                groups.append((start, previous, total))
-            start = y
-            total = count
-        else:
-            total += count
-        previous = y
-    if start is not None:
-        groups.append((start, previous, total))
-    return groups
 
 
 def is_terminal_background(r: int, g: int, b: int, a: int) -> bool:

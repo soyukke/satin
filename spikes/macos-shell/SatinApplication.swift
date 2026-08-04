@@ -2114,10 +2114,26 @@ final class TerminalTextView: NSView, NSTextInputClient {
     func skiaGeometrySummary() -> String {
         let geometry = skiaRenderGeometry()
         return [
-            Int(geometry.originX.rounded()),
-            Int(geometry.originY.rounded()),
-            Int(geometry.cellWidth.rounded()),
-            Int(geometry.cellHeight.rounded()),
+            geometry.originX,
+            geometry.originY,
+            geometry.cellWidth,
+            geometry.cellHeight,
+        ]
+        .map {
+            String(
+                format: "%.4f",
+                locale: Locale(identifier: "en_US_POSIX"),
+                Double($0)
+            )
+        }
+        .joined(separator: ":")
+    }
+
+    func skiaViewportSummary() -> String {
+        let scale = window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 1
+        return [
+            Int((bounds.width * scale).rounded()),
+            Int((bounds.height * scale).rounded()),
         ]
         .map(String.init)
         .joined(separator: ":")
@@ -5242,6 +5258,7 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate, Te
         }
 
         let geometry = terminalTextView.skiaGeometrySummary()
+        let viewport = terminalTextView.skiaViewportSummary()
         let after = terminalTextView.rendererModelWindowTextSummary()
         let separator = terminalTextView.rendererModelRawTextStartSummary(
             label: "separator",
@@ -5261,6 +5278,7 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate, Te
                 "boundary=\(boundarySummary) occupied=\(occupied) " +
                 "tree-visible=no cursor-parent=\(cursorParentSummary) " +
                 "model-frames=yes skia-frames=\(skiaFrames) geometry=\(geometry) " +
+                "viewport=\(viewport) " +
                 "marker=\(marker) separator=\(separator) " +
                 "before=\(nvimFileTreeCloseSmokeBefore) after=\(after)\n"
             : "failed file-tree-close grid=\(gridSummary) " +
@@ -5269,6 +5287,7 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate, Te
                 "cursor-parent=\(cursorParentSummary) " +
                 "model-frames=\(modelFramesSummary) " +
                 "skia-frames=\(skiaFrames) geometry=\(geometry) " +
+                "viewport=\(viewport) " +
                 "marker=\(marker) separator=\(separator) " +
                 "before=\(nvimFileTreeCloseSmokeBefore) after=\(after)\n"
         try? result.write(toFile: resultPath, atomically: true, encoding: .utf8)
@@ -5529,10 +5548,13 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate, Te
         let missingSummary = missingText.isEmpty ? "none" : missingText.joined(separator: ",")
         let textSummary = "text=\(hasText ? "yes" : "no") missing=\(missingSummary)"
         let geometrySummary = "geometry=\(terminalTextView.skiaGeometrySummary())"
+        let viewportSummary = "viewport=\(terminalTextView.skiaViewportSummary())"
         let cellSummary = "cells=\(terminalTextView.rendererModelCellSummary(expected))"
         let result = ok
-            ? "ok shaped-text \(textSummary) \(rendererSummary) \(geometrySummary) \(cellSummary)\n"
-            : "failed shaped-text \(textSummary) \(rendererSummary) \(geometrySummary) \(cellSummary)\n"
+            ? "ok shaped-text \(textSummary) \(rendererSummary) \(geometrySummary) " +
+                "\(viewportSummary) \(cellSummary)\n"
+            : "failed shaped-text \(textSummary) \(rendererSummary) \(geometrySummary) " +
+                "\(viewportSummary) \(cellSummary)\n"
         try? result.write(toFile: resultPath, atomically: true, encoding: .utf8)
         if ProcessInfo.processInfo.environment["SATIN_NATIVE_SMOKE_KEEP_OPEN"] != "1" {
             NSApp.terminate(nil)
@@ -5570,6 +5592,7 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate, Te
             "count=\(skiaFrames)",
             "text=\(markerCount)",
             "geometry=\(terminalTextView.skiaGeometrySummary())",
+            "viewport=\(terminalTextView.skiaViewportSummary())",
             "marker-cell=\(markerCell)",
         ].joined(separator: " ")
         let result = ok ? "ok nvim-skia \(summary)\n" : "failed nvim-skia \(summary)\n"
@@ -5627,6 +5650,7 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate, Te
             "message-selection=\(nvimMessageSelectionSmoke.replacingOccurrences(of: " ", with: ","))",
             "blend-cells=\(blendCellCount)",
             "geometry=\(terminalTextView.skiaGeometrySummary())",
+            "viewport=\(terminalTextView.skiaViewportSummary())",
             "windows=\(terminalTextView.rendererModelWindowTextSummary(limit: 8))",
             "blend-cell=\(blendCellSummary)",
         ].joined(separator: " ")
@@ -5692,6 +5716,7 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate, Te
             "count=\(skiaFrames)",
             "popup=\(popupCount)",
             "geometry=\(terminalTextView.skiaGeometrySummary())",
+            "viewport=\(terminalTextView.skiaViewportSummary())",
             "popup-cell=\(popupCellSummary)",
         ].joined(separator: " ")
         let result = ok ? "ok popupmenu \(summary)\n" : "failed popupmenu \(summary)\n"
@@ -5790,6 +5815,7 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate, Te
             "skia-frames=\(skiaFrames > 0 ? "yes" : "no")",
             "count=\(skiaFrames)",
             "geometry=\(terminalTextView.skiaGeometrySummary())",
+            "viewport=\(terminalTextView.skiaViewportSummary())",
             "old=17:59",
             "new=\(cursor)",
             "new-text=\(newTextCount)",
@@ -5898,6 +5924,7 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate, Te
             "skia-frames=\(skiaFrames > 0 ? "yes" : "no")",
             "count=\(skiaFrames)",
             "geometry=\(terminalTextView.skiaGeometrySummary())",
+            "viewport=\(terminalTextView.skiaViewportSummary())",
             "cursor=\(cursor)",
             "text=\(textCount)",
             "animation-settled=\(animationSettled ? "yes" : "no")",
