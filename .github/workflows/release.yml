@@ -64,6 +64,8 @@ jobs:
           nix develop --command just native-settings-smoke
           nix develop --command just native-control-smoke
           nix develop --command just native-kitty-smoke
+          nix develop --command just native-tab-bar-actions-smoke
+          nix develop --command just native-home-cwd-smoke
           nix develop --command just native-package-smoke
 
       - name: Attest release provenance
