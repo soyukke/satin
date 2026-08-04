@@ -31,6 +31,26 @@ test "$(
   /usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' \
     "$app_path/Contents/Info.plist"
 )" = "$package_version"
+test "$(
+  /usr/libexec/PlistBuddy -c 'Print :CFBundleDocumentTypes:0:CFBundleTypeRole' \
+    "$app_path/Contents/Info.plist"
+)" = "Editor"
+test "$(
+  /usr/libexec/PlistBuddy -c 'Print :CFBundleDocumentTypes:0:LSItemContentTypes:0' \
+    "$app_path/Contents/Info.plist"
+)" = "public.text"
+test "$(
+  /usr/libexec/PlistBuddy -c 'Print :CFBundleDocumentTypes:1:LSItemContentTypes:0' \
+    "$app_path/Contents/Info.plist"
+)" = "public.directory"
+test "$(
+  /usr/libexec/PlistBuddy -c 'Print :NSServices:0:NSMessage' \
+    "$app_path/Contents/Info.plist"
+)" = "openFilesInEditor"
+test "$(
+  /usr/libexec/PlistBuddy -c 'Print :NSServices:0:NSMenuItem:default' \
+    "$app_path/Contents/Info.plist"
+)" = "Open in Satin Editor"
 
 /usr/bin/codesign --verify --deep --strict --verbose=2 "$app_path"
 /usr/bin/codesign --verify --strict --verbose=2 "$control_executable"

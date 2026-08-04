@@ -1097,6 +1097,74 @@ struct NativeTerminalSpawnConfiguration: Encodable {
     let cwd: String?
     let shell: String?
     let environment: [String: String]
+    let startup_command: [String]
+}
+
+struct NativeFinderEditorLaunch {
+    let paths: [String]
+    let workingDirectory: String
+
+    init?(paths: [String]) {
+        var seen = Set<String>()
+        var normalized: [String] = []
+        var totalBytes = 0
+        for path in paths {
+            guard (path as NSString).isAbsolutePath else {
+                continue
+            }
+            let resolved = URL(fileURLWithPath: path).standardizedFileURL.path
+            guard FileManager.default.fileExists(atPath: resolved),
+                  resolved.unicodeScalars.allSatisfy({
+                      !CharacterSet.controlCharacters.contains($0)
+                  }),
+                  seen.insert(resolved).inserted
+            else {
+                continue
+            }
+            guard normalized.count < 254 else {
+                return nil
+            }
+            totalBytes += resolved.utf8.count
+            guard totalBytes <= 12 * 1_024 else {
+                return nil
+            }
+            normalized.append(resolved)
+        }
+        guard let first = normalized.first else {
+            return nil
+        }
+        var isDirectory: ObjCBool = false
+        _ = FileManager.default.fileExists(atPath: first, isDirectory: &isDirectory)
+        self.paths = normalized
+        self.workingDirectory = isDirectory.boolValue
+            ? first
+            : URL(fileURLWithPath: first).deletingLastPathComponent().path
+    }
+
+    func startupCommand(editor: String) -> [String] {
+        [editor, "--"] + paths
+    }
+
+    static func runSelfTests() -> Bool {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("satin-finder-launch-\(UUID().uuidString)", isDirectory: true)
+        let file = root.appendingPathComponent("file with spaces.txt")
+        do {
+            try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+            try Data("finder launch".utf8).write(to: file)
+            defer { try? FileManager.default.removeItem(at: root) }
+            guard let launch = Self(paths: [file.path, file.path]) else {
+                return false
+            }
+            return launch.paths == [file.path]
+                && launch.workingDirectory == root.path
+                && launch.startupCommand(editor: "nvim") == ["nvim", "--", file.path]
+                && Self(paths: [root.path])?.workingDirectory == root.path
+                && Self(paths: ["relative.txt"]) == nil
+        } catch {
+            return false
+        }
+    }
 }
 
 struct NativeNeovimLaunchConfiguration: Encodable {
@@ -1125,7 +1193,7 @@ enum NativeMouseHandling: Equatable {
     case messageSelection
 }
 
-enum NativePaneMode {
+enum NativePaneMode: Equatable {
     case terminal
     case neovim
 
@@ -1155,12 +1223,14 @@ final class RustTerminalPane: NativePane {
         grid: (rows: Int, cols: Int, widthPixels: Int, heightPixels: Int),
         cwd: String? = nil,
         shell: String? = nil,
-        environment: [String: String] = [:]
+        environment: [String: String] = [:],
+        startupCommand: [String] = []
     ) {
         let configuration = NativeTerminalSpawnConfiguration(
             cwd: cwd,
             shell: shell?.isEmpty == false ? shell : nil,
-            environment: environment
+            environment: environment,
+            startup_command: startupCommand
         )
         guard let data = try? JSONEncoder().encode(configuration),
               let json = String(data: data, encoding: .utf8)
@@ -3152,6 +3222,9 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate, Te
     private var optionAsAltEnabled: Bool
     private var notificationsEnabled: Bool
     private var pendingPaneWorkingDirectory: String?
+    private var pendingPaneStartupCommand: [String]?
+    private var pendingPaneMode: NativePaneMode?
+    private let initialFinderLaunch: NativeFinderEditorLaunch?
     private var activePaneId: Int?
     private var lastSnapshot: TerminalCoreSnapshot?
     private var lastNvimModelScrollShift: OutputScrollShift?
@@ -3173,13 +3246,18 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate, Te
     private var paneStatusWaiters: [Int: [NativeStatusWaiter]] = [:]
     private var nextStatusRevision: UInt64 = 1
 
-    init?(core: RustCore, settings: NativeSettings) {
+    init?(
+        core: RustCore,
+        settings: NativeSettings,
+        initialFinderLaunch: NativeFinderEditorLaunch? = nil
+    ) {
         guard TerminalMetalView.isAvailable() else {
             NativeLog.runtimeError("metal_renderer_create_failed")
             return nil
         }
         self.core = core
         self.settings = settings
+        self.initialFinderLaunch = initialFinderLaunch
         self.optionAsAltEnabled = settings.optionAsAlt
         self.notificationsEnabled = settings.notifications
         self.metalView = TerminalMetalView(frame: .zero)
@@ -3296,8 +3374,22 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate, Te
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        restoreSessionIfNeeded()
+        if let initialFinderLaunch {
+            prepareFinderEditorLaunch(initialFinderLaunch)
+        } else {
+            restoreSessionIfNeeded()
+        }
         syncFromCore()
+    }
+
+    func openFinderItems(_ launch: NativeFinderEditorLaunch) -> Bool {
+        prepareFinderEditorLaunch(launch)
+        core.newTab()
+        syncFromCore()
+        guard let activePaneId, let pane = terminalPanes[activePaneId] else {
+            return false
+        }
+        return pane.kind == .terminal
     }
 
     func focusTerminal() {
@@ -4065,6 +4157,49 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate, Te
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.4) { [weak self] in
             self?.writeTerminalNvimHandoffSmokeResult(resultPath, retries: 16)
         }
+    }
+
+    func applyFinderEditorSmokeScenario(resultPath: String) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+            self?.writeFinderEditorSmokeResult(resultPath, retries: 48)
+        }
+    }
+
+    private func writeFinderEditorSmokeResult(_ resultPath: String, retries: Int) {
+        let marker = "SATIN_FINDER_EDITOR_MARKER"
+        let snapshot = core.snapshot()
+        let oneTab = snapshot?.tabs.count == 1
+        let onePane = snapshot?.tabs.first?.panes.count == 1
+        let actualMode = activePaneMode()
+        let expectedMode = ProcessInfo.processInfo.environment[
+            "SATIN_NATIVE_SMOKE_FINDER_MODE"
+        ] == "terminal" ? NativePaneMode.terminal : .neovim
+        let expectedPaneMode = actualMode == expectedMode
+        let markerCount: Int
+        if actualMode == .terminal,
+           let paneId = activePaneId,
+           let pane = terminalPanes[paneId] {
+            markerCount = pane.controlScreenText().components(separatedBy: marker).count - 1
+        } else {
+            markerCount = terminalTextView.rendererModelTextOccurrences(marker)
+        }
+        let ok = oneTab && onePane && expectedPaneMode && markerCount == 1
+        if !ok, retries > 0 {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
+                self?.writeFinderEditorSmokeResult(resultPath, retries: retries - 1)
+            }
+            return
+        }
+        let summary = [
+            "simple=\(oneTab && onePane ? "yes" : "no")",
+            "mode=\(actualMode.sessionValue)",
+            "marker=\(markerCount)",
+        ].joined(separator: " ")
+        let result = ok
+            ? "ok finder-editor \(summary)\n"
+            : "failed finder-editor \(summary)\n"
+        try? result.write(toFile: resultPath, atomically: true, encoding: .utf8)
+        NSApp.terminate(nil)
     }
 
     func applyShellNvimNativeSmokeScenario(resultPath: String) {
@@ -6348,12 +6483,16 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate, Te
             ?? pendingPaneWorkingDirectory
             ?? nativeWorkingDirectory()
         pendingPaneWorkingDirectory = nil
-        let mode = paneModes[paneId] ?? defaultPaneMode
+        let startupCommand = pendingPaneStartupCommand
+        pendingPaneStartupCommand = nil
+        let mode = paneModes[paneId] ?? pendingPaneMode ?? defaultPaneMode
+        pendingPaneMode = nil
         guard let pane = makePane(
             paneId: paneId,
             grid: paneGridSize(paneId),
             cwd: cwd,
-            mode: mode
+            mode: mode,
+            startupCommand: startupCommand
         ) else {
             return nil
         }
@@ -6375,7 +6514,8 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate, Te
         paneId: Int,
         grid: (rows: Int, cols: Int, widthPixels: Int, heightPixels: Int),
         cwd: String,
-        mode: NativePaneMode
+        mode: NativePaneMode,
+        startupCommand: [String]? = nil
     ) -> NativePane? {
         switch mode {
         case .terminal:
@@ -6383,7 +6523,8 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate, Te
                 grid: grid,
                 cwd: cwd,
                 shell: settings.shellPath,
-                environment: controlEnvironment(paneId: paneId)
+                environment: controlEnvironment(paneId: paneId),
+                startupCommand: startupCommand ?? []
             )
         case .neovim:
             let arguments = ProcessInfo.processInfo.environment["SATIN_NATIVE_SMOKE_CLEAN_NVIM"] == "1"
@@ -6391,6 +6532,22 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate, Te
                 : []
             return RustNeovimPane(grid: grid, cwd: cwd, arguments: arguments)
         }
+    }
+
+    private func prepareFinderEditorLaunch(_ launch: NativeFinderEditorLaunch) {
+        pendingPaneWorkingDirectory = launch.workingDirectory
+        var startupCommand = launch.startupCommand(editor: settings.finderEditorCommand)
+        if settings.finderEditorCommand == "nvim",
+           FileManager.default.isExecutableFile(atPath: nvimLauncherPath) {
+            startupCommand[0] = nvimLauncherPath
+        }
+        if ProcessInfo.processInfo.environment["SATIN_NATIVE_SMOKE_SCENARIO"]
+            == "finder-editor",
+           settings.finderEditorCommand == "nvim" {
+            startupCommand.insert(contentsOf: ["-u", "NONE", "-n"], at: 1)
+        }
+        pendingPaneStartupCommand = startupCommand
+        pendingPaneMode = .terminal
     }
 
     private func controlEnvironment(paneId: Int) -> [String: String] {
@@ -7104,10 +7261,57 @@ final class SatinAppDelegate: NSObject, NSApplicationDelegate {
     private var updateCheckID: UUID?
     private var updateTask: URLSessionDataTask?
     private var updateProgressAlert: NSAlert?
+    private var pendingFinderPaths: [String] = []
+    private var launchedForFinderEditor = false
+
+    func applicationWillFinishLaunching(_ notification: Notification) {
+        NSApp.servicesProvider = self
+    }
+
+    func application(_ sender: NSApplication, openFiles filenames: [String]) {
+        sender.reply(toOpenOrPrint: routeFinderPaths(filenames) ? .success : .failure)
+    }
+
+    @objc func openFilesInEditor(
+        _ pasteboard: NSPasteboard,
+        userData: String?,
+        error: AutoreleasingUnsafeMutablePointer<NSString?>
+    ) {
+        let urls = pasteboard.readObjects(
+            forClasses: [NSURL.self],
+            options: [.urlReadingFileURLsOnly: true]
+        ) as? [URL] ?? []
+        var paths = urls.map(\.path)
+        if paths.isEmpty,
+           let filenames = pasteboard.propertyList(
+               forType: NSPasteboard.PasteboardType("NSFilenamesPboardType")
+           ) as? [String] {
+            paths = filenames
+        }
+        if paths.isEmpty, let text = pasteboard.string(forType: .string) {
+            paths = text.components(separatedBy: .newlines).filter { !$0.isEmpty }
+        }
+        if !routeFinderPaths(paths) {
+            error.pointee = "Satin could not open the selected items." as NSString
+        }
+    }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NativeLog.started()
-        let settings = settingsStore.load()
+        var settings = settingsStore.load()
+        let environment = ProcessInfo.processInfo.environment
+        if environment["SATIN_NATIVE_SMOKE_SCENARIO"] == "finder-editor" {
+            let smokeEditor = environment["SATIN_NATIVE_SMOKE_FINDER_EDITOR"] ?? "nvim"
+            settings.finderEditorCommand = NativeSettingsStore.isValidFinderEditorCommand(
+                smokeEditor
+            ) ? smokeEditor : "nvim"
+            let smokeShell = environment["SATIN_NATIVE_SMOKE_FINDER_SHELL"] ?? "/bin/bash"
+            if NativeSettingsStore.isValidShellPath(smokeShell) {
+                settings.shellPath = smokeShell
+            }
+        }
+        let initialFinderLaunch = NativeFinderEditorLaunch(paths: pendingFinderPaths)
+        launchedForFinderEditor = initialFinderLaunch != nil
         guard let core = RustCore(defaultTheme: settings.defaultTheme) else {
             presentFatalError(
                 title: "Terminal Core Failed",
@@ -7116,7 +7320,11 @@ final class SatinAppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
-        guard let controller = TerminalShellViewController(core: core, settings: settings) else {
+        guard let controller = TerminalShellViewController(
+            core: core,
+            settings: settings,
+            initialFinderLaunch: initialFinderLaunch
+        ) else {
             presentFatalError(
                 title: "Metal Renderer Unavailable",
                 message: "A Metal-capable GPU and the bundled Skia renderer are required."
@@ -7156,6 +7364,7 @@ final class SatinAppDelegate: NSObject, NSApplicationDelegate {
         window.makeKeyAndOrderFront(nil)
         self.window = window
         self.shellController = controller
+        pendingFinderPaths.removeAll()
         let settingsController = NativeSettingsWindowController(store: settingsStore)
         settingsController.onChange = { [weak self] settings in
             self?.shellController?.applySettings(settings)
@@ -7188,9 +7397,21 @@ final class SatinAppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
-        if ProcessInfo.processInfo.environment["SATIN_NATIVE_SMOKE_SCENARIO"] == nil {
+        if ProcessInfo.processInfo.environment["SATIN_NATIVE_SMOKE_SCENARIO"] == nil,
+           !launchedForFinderEditor {
             shellController?.saveSessionState()
         }
+    }
+
+    private func routeFinderPaths(_ paths: [String]) -> Bool {
+        guard let launch = NativeFinderEditorLaunch(paths: paths) else {
+            return false
+        }
+        if let shellController {
+            return shellController.openFinderItems(launch)
+        }
+        pendingFinderPaths.append(contentsOf: launch.paths)
+        return true
     }
 
     @objc func newTab(_ sender: Any?) {
@@ -7446,6 +7667,10 @@ final class SatinAppDelegate: NSObject, NSApplicationDelegate {
         case "terminal-exit-closes-tab":
             if let path = environment["SATIN_NATIVE_SMOKE_RESULT"], !path.isEmpty {
                 controller.applyTerminalExitClosesTabSmokeScenario(resultPath: path)
+            }
+        case "finder-editor":
+            if let path = environment["SATIN_NATIVE_SMOKE_RESULT"], !path.isEmpty {
+                controller.applyFinderEditorSmokeScenario(resultPath: path)
             }
         case "session-schema":
             if let path = environment["SATIN_NATIVE_SMOKE_RESULT"], !path.isEmpty {
@@ -7833,7 +8058,8 @@ struct SatinApplication {
         if ProcessInfo.processInfo.environment["SATIN_UPDATE_SELF_TEST"] == "1" {
             if !AppUpdateChecker.runSelfTests()
                 || !AppUpdateInstaller.runSelfTests()
-                || !NativeSettingsStore.runSelfTests() {
+                || !NativeSettingsStore.runSelfTests()
+                || !NativeFinderEditorLaunch.runSelfTests() {
                 failDiagnostic("update self-test failed")
             }
             print("update self-test passed")

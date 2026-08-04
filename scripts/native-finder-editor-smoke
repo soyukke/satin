@@ -1,0 +1,65 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ -z "${IN_NIX_SHELL:-}" ]]; then
+  exec nix develop --command ./scripts/native-finder-editor-smoke "$@"
+fi
+
+./scripts/native-package
+app_path="$(pwd)/spikes/macos-shell/.build/package/Satin.app"
+smoke_root="$(mktemp -d "${TMPDIR:-/tmp}/satin-finder-editor-smoke.XXXXXX")"
+fixture="$smoke_root/file with spaces.txt"
+
+# shellcheck disable=SC2329 # Invoked indirectly by the EXIT trap.
+cleanup() {
+  rm -rf -- "$smoke_root"
+}
+trap cleanup EXIT INT TERM
+
+printf '%s\n%s\n' \
+  'SATIN_FINDER_EDITOR_MARKER' \
+  'opened through a LaunchServices document event' >"$fixture"
+
+run_editor_case() {
+  local label="$1"
+  local editor="$2"
+  local mode="$3"
+  local result_file="$smoke_root/$label.result"
+  local stdout_log="$smoke_root/$label.stdout.log"
+  local stderr_log="$smoke_root/$label.stderr.log"
+  local socket_path="$smoke_root/$label.sock"
+
+  if ! /usr/bin/open \
+    -n \
+    -W \
+    --stdout "$stdout_log" \
+    --stderr "$stderr_log" \
+    --env "PATH=$PATH" \
+    --env "SATIN_CONTROL_SOCKET=$socket_path" \
+    --env "SATIN_NATIVE_SMOKE_SCENARIO=finder-editor" \
+    --env "SATIN_NATIVE_SMOKE_RESULT=$result_file" \
+    --env "SATIN_NATIVE_SMOKE_CLEAN_NVIM=1" \
+    --env "SATIN_NATIVE_SMOKE_FINDER_EDITOR=$editor" \
+    --env "SATIN_NATIVE_SMOKE_FINDER_MODE=$mode" \
+    --env "SATIN_NATIVE_SMOKE_FINDER_SHELL=/bin/bash" \
+    -a "$app_path" \
+    "$fixture"; then
+    cat "$stdout_log" >&2 || true
+    cat "$stderr_log" >&2 || true
+    echo "Finder editor smoke failed: LaunchServices could not open Satin ($label)" >&2
+    return 1
+  fi
+
+  if ! grep -Fx \
+    "ok finder-editor simple=yes mode=$mode marker=1" \
+    "$result_file"; then
+    cat "$stdout_log" >&2 || true
+    cat "$stderr_log" >&2 || true
+    test ! -f "$result_file" || cat "$result_file" >&2
+    echo "Finder editor smoke failed: editor launch was not observed ($label)" >&2
+    return 1
+  fi
+}
+
+run_editor_case nvim nvim neovim
+run_editor_case vim /usr/bin/vim terminal

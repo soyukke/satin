@@ -46,6 +46,7 @@ jobs:
           nix develop --command just native-control-smoke
           nix develop --command just native-kitty-smoke
           nix develop --command just native-package-smoke
+          nix develop --command just finder-editor-smoke
           nix develop --command just nvim-smoke-ui-surfaces
 
       - name: Run lifecycle, resize, and session smokes

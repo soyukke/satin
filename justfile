@@ -89,6 +89,10 @@ native-smoke:
 native-package-smoke:
     @./scripts/native-package-smoke
 
+# Verify Finder Open With launches one native editor pane through LaunchServices.
+finder-editor-smoke:
+    @./scripts/native-finder-editor-smoke
+
 # Verify a shell nvim command uses native multigrid, scrolls with a terminal split, and resumes the same shell.
 shell-nvim-smoke:
     @if [[ -z "${IN_NIX_SHELL:-}" ]]; then exec nix develop --command just shell-nvim-smoke; else just native-build && ./scripts/native-shell-nvim-smoke; fi
