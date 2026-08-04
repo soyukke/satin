@@ -71,6 +71,8 @@ pub struct TerminalSpawnConfig {
     pub shell: Option<String>,
     #[serde(default)]
     pub environment: BTreeMap<String, String>,
+    #[serde(default)]
+    pub startup_command: Vec<String>,
 }
 
 pub struct NativeTerminalRuntime {
@@ -676,13 +678,18 @@ impl RuntimePty {
         let pty_system = native_pty_system();
         let pair = pty_system.openpty(size.pty_size())?;
         let shell = configured_shell(config.shell.as_deref())?;
+        let startup_input = startup_command_input(&config.startup_command)?;
         let mut cmd = CommandBuilder::new(&shell);
         configure_shell_command(&mut cmd, config, &shell);
 
         let child = pair.slave.spawn_command(cmd)?;
         let process_group_id = child.process_id().and_then(|pid| i32::try_from(pid).ok());
         let mut reader = pair.master.try_clone_reader()?;
-        let writer = pair.master.take_writer()?;
+        let mut writer = pair.master.take_writer()?;
+        if let Some(input) = startup_input {
+            writer.write_all(&input)?;
+            writer.flush()?;
+        }
         let (tx, rx) = mpsc::channel();
         let (wakeup, wakeup_sender) = crate::wakeup::pipe()?;
         let (done_tx, reader_done) = mpsc::channel();
@@ -819,6 +826,48 @@ fn configure_shell_command(cmd: &mut CommandBuilder, config: &TerminalSpawnConfi
     }
     cmd.env("SATIN_SHELL_EXECUTABLE", shell);
     configure_zsh_integration(cmd, config, shell);
+}
+
+fn startup_command_input(arguments: &[String]) -> Result<Option<Vec<u8>>> {
+    const MAX_ARGUMENTS: usize = 256;
+    const MAX_INPUT_BYTES: usize = 64 * 1024;
+
+    if arguments.is_empty() {
+        return Ok(None);
+    }
+    if arguments.len() > MAX_ARGUMENTS
+        || arguments[0].is_empty()
+        || arguments
+            .iter()
+            .any(|argument| argument.chars().any(char::is_control))
+    {
+        bail!("invalid terminal startup command");
+    }
+    let mut input = arguments
+        .iter()
+        .map(|argument| shell_quote(argument))
+        .collect::<Vec<_>>()
+        .join(" ")
+        .into_bytes();
+    input.extend_from_slice(b"; exit $?\r");
+    if input.len() > MAX_INPUT_BYTES {
+        bail!("terminal startup command is too large");
+    }
+    Ok(Some(input))
+}
+
+fn shell_quote(value: &str) -> String {
+    let mut quoted = String::with_capacity(value.len().saturating_add(2));
+    quoted.push('\'');
+    for character in value.chars() {
+        if character == '\'' {
+            quoted.push_str("'\\''");
+        } else {
+            quoted.push(character);
+        }
+    }
+    quoted.push('\'');
+    quoted
 }
 
 fn configure_zsh_integration(cmd: &mut CommandBuilder, config: &TerminalSpawnConfig, shell: &str) {
@@ -1519,6 +1568,7 @@ impl TerminalRendererModel {
             cursor_color: frame.cursor_color,
             cursor: frame.cursor.clone(),
             cursor_parent_grid_id: Some(1),
+            message_selection: None,
             scrollbar: Some(frame.scrollbar.clone()),
             scroll_hint: None,
             windows: vec![
@@ -2410,6 +2460,36 @@ mod tests {
 
         assert!(configured_shell(path.to_str()).is_err());
         std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn startup_command_is_argv_quoted_and_exits_the_shell() {
+        let input = startup_command_input(&[
+            "nvim".to_owned(),
+            "--".to_owned(),
+            "/tmp/file with spaces.txt".to_owned(),
+            "/tmp/it's-safe.txt".to_owned(),
+            "/tmp/$(touch nope);still-safe.txt".to_owned(),
+        ])
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            String::from_utf8(input).unwrap(),
+            concat!(
+                "'nvim' '--' '/tmp/file with spaces.txt' '/tmp/it'\\''s-safe.txt' ",
+                "'/tmp/$(touch nope);still-safe.txt'; exit $?\r"
+            )
+        );
+    }
+
+    #[test]
+    fn startup_command_rejects_invalid_or_oversized_argv() {
+        assert!(startup_command_input(&[]).unwrap().is_none());
+        assert!(startup_command_input(&[String::new()]).is_err());
+        assert!(startup_command_input(&["nvim\0bad".to_owned()]).is_err());
+        assert!(startup_command_input(&["nvim\nbad".to_owned()]).is_err());
+        assert!(startup_command_input(&vec!["x".to_owned(); 257]).is_err());
+        assert!(startup_command_input(&["x".repeat(64 * 1024)]).is_err());
     }
 
     #[test]

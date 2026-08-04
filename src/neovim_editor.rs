@@ -2,9 +2,10 @@ use std::collections::HashMap;
 
 use crate::{
     neovide_render::{
-        NeovideLine, NeovideRenderedWindowCache, NeovideRenderedWindowPlacement,
-        NeovideRenderedWindowSnapshot, NeovideRendererModelSnapshot, NeovideScrollHint,
-        NeovideWindowDrawCommand, NeovideWindowKind,
+        NeovideGridPosition, NeovideLine, NeovideMessageSelection, NeovideRenderedWindowCache,
+        NeovideRenderedWindowPlacement, NeovideRenderedWindowSnapshot,
+        NeovideRendererModelSnapshot, NeovideScrollHint, NeovideWindowDrawCommand,
+        NeovideWindowKind,
     },
     terminal_runtime::{
         TerminalCellSnapshot, TerminalCellStyle, TerminalColor, TerminalCursorSnapshot,
@@ -28,6 +29,13 @@ pub struct NeovimEditor {
     layout_changed: bool,
     rendered_windows: HashMap<i64, NeovideRenderedWindowCache>,
     pending_event_scroll_hints: Vec<NeovideScrollHint>,
+    message_selection: Option<MessageSelectionState>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum NeovimMessageSelectionResult {
+    Updated,
+    Finished(Option<String>),
 }
 
 impl NeovimEditor {
@@ -66,6 +74,7 @@ impl NeovimEditor {
             layout_changed: true,
             rendered_windows,
             pending_event_scroll_hints: Vec::new(),
+            message_selection: None,
         }
     }
 
@@ -132,6 +141,7 @@ impl NeovimEditor {
             cursor_color: self.default_fg,
             cursor: self.cursor_snapshot(),
             cursor_parent_grid_id: self.cursor.map(|cursor| cursor.grid),
+            message_selection: self.message_selection.as_ref().map(|state| state.selection),
             scrollbar: None,
             scroll_hint,
             windows,
@@ -156,6 +166,118 @@ impl NeovimEditor {
         self.rendered_windows
             .values()
             .any(NeovideRenderedWindowCache::has_active_animation)
+    }
+
+    pub fn handle_message_selection(
+        &mut self,
+        button: &str,
+        action: &str,
+        row: i64,
+        col: i64,
+    ) -> Option<NeovimMessageSelectionResult> {
+        if button != "left" {
+            return None;
+        }
+
+        match action {
+            "press" => {
+                self.message_selection = None;
+                let (window, start) = self.message_window_at(row, col)?;
+                self.message_selection = Some(MessageSelectionState {
+                    selection: NeovideMessageSelection {
+                        grid_id: window.grid,
+                        start,
+                        end: start,
+                    },
+                    bounds: window.position,
+                });
+                Some(NeovimMessageSelectionResult::Updated)
+            }
+            "drag" => {
+                let state = self.message_selection.as_mut()?;
+                state.selection.end = local_message_position(state.bounds, row, col);
+                Some(NeovimMessageSelectionResult::Updated)
+            }
+            "release" => {
+                let mut state = self.message_selection.take()?;
+                state.selection.end = local_message_position(state.bounds, row, col);
+                let text = self.message_selection_text(state.selection);
+                Some(NeovimMessageSelectionResult::Finished(text))
+            }
+            _ => None,
+        }
+    }
+
+    fn message_window_at(&self, row: i64, col: i64) -> Option<(NeovimWindow, NeovideGridPosition)> {
+        let row = usize::try_from(row).ok()?;
+        let col = usize::try_from(col).ok()?;
+        let window = self
+            .windows
+            .values()
+            .copied()
+            .filter(|window| !window.hidden && window.position.contains(row, col))
+            .max_by_key(|window| (window.sort.zindex, window.sort.compindex, window.grid))?;
+        let window_order = (window.sort.zindex, window.sort.compindex, window.grid);
+        let popup_blocks_selection = self
+            .popupmenu
+            .as_ref()
+            .and_then(NeovimPopupmenu::visible)
+            .is_some_and(|popupmenu| {
+                self.popupmenu_position(popupmenu).contains(row, col) && (250, 0, -1) > window_order
+            });
+        if popup_blocks_selection || !matches!(window.kind, WindowKind::Message) {
+            return None;
+        }
+        let position = NeovideGridPosition {
+            row: row - window.position.top,
+            col: col - window.position.left,
+        };
+        Some((window, position))
+    }
+
+    fn message_selection_text(&self, selection: NeovideMessageSelection) -> Option<String> {
+        let window = self.windows.get(&selection.grid_id)?;
+        if window.hidden || !matches!(window.kind, WindowKind::Message) {
+            return None;
+        }
+        let rendered = self.rendered_windows.get(&selection.grid_id)?.snapshot(
+            selection.grid_id,
+            self.rendered_window_placement(selection.grid_id),
+        );
+        if rendered.width == 0 || rendered.height == 0 {
+            return None;
+        }
+
+        let max_row = rendered.height - 1;
+        let max_col = rendered.width - 1;
+        let start_row = selection.start.row.min(max_row);
+        let end_row = selection.end.row.min(max_row);
+        let (row_start, row_end) = ordered(start_row, end_row);
+        let start_col = selection.start.col.min(max_col);
+        let end_col = selection.end.col.min(max_col);
+        let (col_start, col_end) = ordered(start_col, end_col);
+        let mut lines = Vec::new();
+        for row in row_start..=row_end {
+            let row_start_col = if row == row_start { col_start } else { 0 };
+            let row_end_col = if row == row_end { col_end } else { max_col };
+            if let Some(line) = rendered.line_text_range(row, row_start_col, row_end_col) {
+                lines.push(line);
+            }
+        }
+        if lines.is_empty() || lines.iter().all(String::is_empty) {
+            return None;
+        }
+        Some(lines.join("\n"))
+    }
+
+    fn clear_message_selection_for_grid(&mut self, grid: i64) {
+        if self
+            .message_selection
+            .as_ref()
+            .is_some_and(|state| state.selection.grid_id == grid)
+        {
+            self.message_selection = None;
+        }
     }
 
     fn handle_default_colors(&mut self, args: &Value) -> bool {
@@ -225,6 +347,7 @@ impl NeovimEditor {
             return false;
         };
         self.queue_window_command(grid, NeovideWindowDrawCommand::Close);
+        self.clear_message_selection_for_grid(grid);
         self.grids.remove(&grid);
         self.windows.remove(&grid);
         self.rendered_windows.remove(&grid);
@@ -437,6 +560,7 @@ impl NeovimEditor {
         };
         self.window_mut(grid).hidden = true;
         self.queue_window_command(grid, NeovideWindowDrawCommand::Hide);
+        self.clear_message_selection_for_grid(grid);
         self.layout_changed = true;
         true
     }
@@ -449,6 +573,7 @@ impl NeovimEditor {
             return false;
         };
         self.queue_window_command(grid, NeovideWindowDrawCommand::Close);
+        self.clear_message_selection_for_grid(grid);
         self.windows.remove(&grid);
         self.rendered_windows.remove(&grid);
         self.layout_changed = true;
@@ -958,6 +1083,11 @@ struct NeovimWindow {
     pending_scroll_rows: isize,
 }
 
+struct MessageSelectionState {
+    selection: NeovideMessageSelection,
+    bounds: WindowPosition,
+}
+
 impl NeovimWindow {
     fn hidden(grid: i64) -> Self {
         Self {
@@ -1035,6 +1165,14 @@ impl WindowPosition {
 
     fn right(self) -> usize {
         self.left.saturating_add(self.width)
+    }
+
+    fn contains(self, row: usize, col: usize) -> bool {
+        self.has_area()
+            && row >= self.top
+            && row < self.bottom()
+            && col >= self.left
+            && col < self.right()
     }
 }
 
@@ -1380,6 +1518,35 @@ fn clamp_scroll_rows(rows: isize, height: usize) -> isize {
     rows.clamp(-max_rows, max_rows)
 }
 
+fn local_message_position(bounds: WindowPosition, row: i64, col: i64) -> NeovideGridPosition {
+    let row = nonnegative_coordinate(row);
+    let col = nonnegative_coordinate(col);
+    NeovideGridPosition {
+        row: row
+            .saturating_sub(bounds.top)
+            .min(bounds.height.saturating_sub(1)),
+        col: col
+            .saturating_sub(bounds.left)
+            .min(bounds.width.saturating_sub(1)),
+    }
+}
+
+fn nonnegative_coordinate(value: i64) -> usize {
+    if value < 0 {
+        0
+    } else {
+        usize::try_from(value).unwrap_or(usize::MAX)
+    }
+}
+
+fn ordered(left: usize, right: usize) -> (usize, usize) {
+    if left <= right {
+        (left, right)
+    } else {
+        (right, left)
+    }
+}
+
 fn position_command(
     position: WindowPosition,
     grid_size: (u16, u16),
@@ -1464,6 +1631,178 @@ fn popupmenu_blank_cell(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn show_test_window(
+        editor: &mut NeovimEditor,
+        grid: i64,
+        position: WindowPosition,
+        kind: WindowKind,
+        sort: WindowSort,
+        rows: &[&str],
+    ) {
+        editor
+            .grid_mut(grid)
+            .resize(position.width as u16, position.height as u16, blank());
+        editor.show_window(grid, position, kind, sort);
+        for (row, text) in rows.iter().enumerate() {
+            set_row(editor.grid_mut(grid), row, text);
+            let line = editor
+                .grids
+                .get(&grid)
+                .and_then(|grid| grid.line(row))
+                .unwrap();
+            editor.queue_window_command(grid, NeovideWindowDrawCommand::DrawLine { row, line });
+        }
+    }
+
+    #[test]
+    fn message_selection_only_intercepts_topmost_message_window() {
+        let mut editor = NeovimEditor::new(12, 6);
+        let position = WindowPosition {
+            top: 1,
+            left: 2,
+            width: 5,
+            height: 2,
+        };
+        show_test_window(
+            &mut editor,
+            2,
+            position,
+            WindowKind::Normal,
+            WindowSort {
+                zindex: 10,
+                compindex: 0,
+            },
+            &["lower", "pane "],
+        );
+        assert_eq!(editor.handle_message_selection("left", "press", 1, 2), None);
+
+        show_test_window(
+            &mut editor,
+            3,
+            position,
+            WindowKind::Message,
+            WindowSort {
+                zindex: 200,
+                compindex: 0,
+            },
+            &["first", "msg  "],
+        );
+        show_test_window(
+            &mut editor,
+            4,
+            position,
+            WindowKind::Message,
+            WindowSort {
+                zindex: 201,
+                compindex: 0,
+            },
+            &["top  ", "msg  "],
+        );
+        show_test_window(
+            &mut editor,
+            5,
+            position,
+            WindowKind::Float,
+            WindowSort {
+                zindex: 300,
+                compindex: 0,
+            },
+            &["float", "pane "],
+        );
+        assert_eq!(editor.handle_message_selection("left", "press", 1, 3), None);
+        editor.window_mut(5).hidden = true;
+        editor.handle_event("popupmenu_show", &popupmenu_show_event(1, 2, 0));
+        assert_eq!(editor.handle_message_selection("left", "press", 1, 3), None);
+        editor.handle_event("popupmenu_hide", &Value::Array(vec![]));
+
+        assert_eq!(
+            editor.handle_message_selection("left", "press", 1, 3),
+            Some(NeovimMessageSelectionResult::Updated)
+        );
+        let selection = editor.renderer_model().message_selection.unwrap();
+        assert_eq!(selection.grid_id, 4);
+        assert_eq!(selection.start, NeovideGridPosition { row: 0, col: 1 });
+        assert_eq!(selection.end, selection.start);
+    }
+
+    #[test]
+    fn message_selection_clamps_drag_and_copies_multiline_text() {
+        let mut editor = NeovimEditor::new(12, 6);
+        show_test_window(
+            &mut editor,
+            7,
+            WindowPosition {
+                top: 1,
+                left: 2,
+                width: 5,
+                height: 2,
+            },
+            WindowKind::Message,
+            WindowSort {
+                zindex: 200,
+                compindex: 0,
+            },
+            &["hello", "world"],
+        );
+
+        assert_eq!(
+            editor.handle_message_selection("left", "press", 1, 3),
+            Some(NeovimMessageSelectionResult::Updated)
+        );
+        assert_eq!(
+            editor.handle_message_selection("left", "drag", -99, -99),
+            Some(NeovimMessageSelectionResult::Updated)
+        );
+        assert_eq!(
+            editor.renderer_model().message_selection.unwrap().end,
+            NeovideGridPosition { row: 0, col: 0 }
+        );
+        assert_eq!(
+            editor.handle_message_selection("left", "drag", 99, 99),
+            Some(NeovimMessageSelectionResult::Updated)
+        );
+        assert_eq!(
+            editor.renderer_model().message_selection.unwrap().end,
+            NeovideGridPosition { row: 1, col: 4 }
+        );
+        assert_eq!(
+            editor.handle_message_selection("left", "release", 99, 99),
+            Some(NeovimMessageSelectionResult::Finished(Some(
+                "ello\nworld".to_owned()
+            )))
+        );
+        assert!(editor.renderer_model().message_selection.is_none());
+    }
+
+    #[test]
+    fn hiding_selected_message_window_clears_overlay() {
+        let mut editor = NeovimEditor::new(12, 6);
+        show_test_window(
+            &mut editor,
+            9,
+            WindowPosition {
+                top: 1,
+                left: 0,
+                width: 5,
+                height: 1,
+            },
+            WindowKind::Message,
+            WindowSort {
+                zindex: 200,
+                compindex: 0,
+            },
+            &["hello"],
+        );
+        assert!(
+            editor
+                .handle_message_selection("left", "press", 1, 0)
+                .is_some()
+        );
+
+        assert!(editor.handle_window_hide(&Value::Array(vec![9.into()])));
+        assert!(editor.renderer_model().message_selection.is_none());
+    }
 
     #[test]
     fn grid_scroll_moves_rows_up() {

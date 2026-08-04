@@ -22,7 +22,9 @@ trap cleanup_auxiliary_files EXIT
 # long enough for AppKit/Metal to present a fresh frame before capturing.
 /usr/bin/caffeinate -u -t 1
 
-if /usr/sbin/screencapture -x -l "$window_id" "$output" 2>/dev/null && [[ -s "$output" ]]; then
+# Exclude the window shadow so capture pixels have a deterministic relationship
+# to the renderer viewport reported by the smoke application.
+if /usr/sbin/screencapture -x -o -l "$window_id" "$output" 2>/dev/null && [[ -s "$output" ]]; then
   exit 0
 fi
 

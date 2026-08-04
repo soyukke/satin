@@ -20,7 +20,7 @@ mod platform {
     use crate::{
         neovide_render::{
             CriticallyDampedSpringAnimation, NeovideRenderedWindowSnapshot,
-            NeovideRendererModelSnapshot,
+            NeovideRendererModelSnapshot, NeovideWindowKind,
         },
         neovide_text::{NeovideTextRenderer, TextGridGeometry},
         neovim_runtime::NativeNeovimRuntime,
@@ -50,6 +50,7 @@ mod platform {
     const CURSOR_ANIMATION_LENGTH_SECONDS: f32 = 0.15;
     const CURSOR_SHORT_ANIMATION_LENGTH_SECONDS: f32 = 0.04;
     const CURSOR_BODY_ALPHA: u8 = 199;
+    const MESSAGE_SELECTION_ALPHA: u8 = 89;
     const MAX_ANIMATION_DT: f32 = 1.0 / 30.0;
 
     pub struct NativeSkiaMetalRenderer {
@@ -326,6 +327,7 @@ mod platform {
             geometry,
             |z| z >= 0,
         );
+        draw_message_selection(canvas, model, geometry);
         text_renderer.cleanup_font_cache();
         draw_cursor(canvas, cursor_animation, cursor_visible, model);
         canvas.restore();
@@ -500,6 +502,76 @@ mod platform {
             inner.end..window.height,
             geometry,
         );
+    }
+
+    fn draw_message_selection(
+        canvas: &Canvas,
+        model: &NeovideRendererModelSnapshot,
+        geometry: SkiaRenderGeometry,
+    ) {
+        let Some(selection) = model.message_selection else {
+            return;
+        };
+        let Some(window) = model.windows.iter().find(|window| {
+            window.grid_id == selection.grid_id
+                && !window.hidden
+                && window.window_kind == NeovideWindowKind::Message
+        }) else {
+            return;
+        };
+        if window.width == 0 || window.height == 0 {
+            return;
+        }
+
+        let (row_start, row_end) = ordered(
+            selection.start.row.min(window.height - 1),
+            selection.end.row.min(window.height - 1),
+        );
+        let (col_start, col_end) = ordered(
+            selection.start.col.min(window.width - 1),
+            selection.end.col.min(window.width - 1),
+        );
+        let window_rect = Rect::from_xywh(
+            geometry.origin_x + window.left as f32 * geometry.cell_width,
+            geometry.origin_y + window.top as f32 * geometry.cell_height,
+            window.width as f32 * geometry.cell_width,
+            window.height as f32 * geometry.cell_height,
+        );
+        let mut paint = Paint::default();
+        paint.set_anti_alias(false);
+        paint.set_color(color_with_alpha(
+            model.cursor_color,
+            MESSAGE_SELECTION_ALPHA,
+        ));
+
+        canvas.save();
+        canvas.clip_rect(window_rect, None, Some(false));
+        for row in row_start..=row_end {
+            let start_col = if row == row_start { col_start } else { 0 };
+            let end_col = if row == row_end {
+                col_end
+            } else {
+                window.width - 1
+            };
+            canvas.draw_rect(
+                Rect::from_xywh(
+                    geometry.origin_x + (window.left + start_col) as f32 * geometry.cell_width,
+                    geometry.origin_y + (window.top + row) as f32 * geometry.cell_height,
+                    (end_col - start_col + 1) as f32 * geometry.cell_width,
+                    geometry.cell_height,
+                ),
+                &paint,
+            );
+        }
+        canvas.restore();
+    }
+
+    fn ordered(left: usize, right: usize) -> (usize, usize) {
+        if left <= right {
+            (left, right)
+        } else {
+            (right, left)
+        }
     }
 
     fn fill_window_background(
@@ -1196,6 +1268,7 @@ mod platform {
                 cursor_color: background,
                 cursor: None,
                 cursor_parent_grid_id: None,
+                message_selection: None,
                 scrollbar: None,
                 scroll_hint: None,
                 windows: vec![root, foreground],
@@ -1231,6 +1304,79 @@ mod platform {
 
             let pixels = surface.peek_pixels().unwrap();
             assert_eq!(pixels.get_color((5, 5)), color(background));
+        }
+
+        #[test]
+        fn message_selection_overlay_only_covers_selected_cells() {
+            let background = TerminalColor { r: 0, g: 0, b: 0 };
+            let foreground = TerminalColor {
+                r: 255,
+                g: 255,
+                b: 255,
+            };
+            let window = crate::neovide_render::NeovideRenderedWindowCache::new(4, 2).snapshot(
+                2,
+                crate::neovide_render::NeovideRenderedWindowPlacement {
+                    top: 0,
+                    left: 0,
+                    width: 4,
+                    height: 2,
+                    window_kind: NeovideWindowKind::Message,
+                    zindex: 200,
+                    compindex: 0,
+                    hidden: false,
+                },
+            );
+            let model = NeovideRendererModelSnapshot {
+                schema_version: 1,
+                background,
+                cursor_color: foreground,
+                cursor: None,
+                cursor_parent_grid_id: None,
+                message_selection: Some(crate::neovide_render::NeovideMessageSelection {
+                    grid_id: 2,
+                    start: crate::neovide_render::NeovideGridPosition { row: 0, col: 1 },
+                    end: crate::neovide_render::NeovideGridPosition { row: 1, col: 2 },
+                }),
+                scrollbar: None,
+                scroll_hint: None,
+                windows: vec![window],
+            };
+            let geometry = SkiaRenderGeometry {
+                width: 40,
+                height: 20,
+                origin_x: 0.0,
+                origin_y: 0.0,
+                content_width: 40.0,
+                content_height: 20.0,
+                cell_width: 10.0,
+                cell_height: 10.0,
+            };
+            let mut surface = skia_safe::surfaces::raster_n32_premul((40, 20)).unwrap();
+            let mut text_renderer = NeovideTextRenderer::new();
+            let mut images = HashMap::new();
+
+            draw_model(
+                surface.canvas(),
+                &mut text_renderer,
+                &CursorAnimationState::default(),
+                false,
+                &model,
+                geometry,
+                ModelRenderOptions {
+                    clear: true,
+                    kitty_placements: &[],
+                    kitty_images: &mut images,
+                    runtime_id: 1,
+                },
+            );
+
+            let pixels = surface.peek_pixels().unwrap();
+            assert_eq!(pixels.get_color((5, 5)), color(background));
+            assert_ne!(pixels.get_color((15, 5)), color(background));
+            assert_ne!(pixels.get_color((5, 15)), color(background));
+            assert_ne!(pixels.get_color((25, 15)), color(background));
+            assert_eq!(pixels.get_color((35, 15)), color(background));
         }
 
         #[test]
@@ -1369,6 +1515,7 @@ mod platform {
                 cursor_color: TerminalColor { r: 0, g: 0, b: 0 },
                 cursor: None,
                 cursor_parent_grid_id: None,
+                message_selection: None,
                 scrollbar: None,
                 scroll_hint: None,
                 windows: vec![

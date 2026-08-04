@@ -36,12 +36,14 @@ settings, and input translation.
 - Native tabs, recursive splits, working-directory inheritance, and session
   restore.
 - Neovide-style animated cursor movement and retained smooth scrolling.
-- Native copy/paste, IME, rectangular selection, scrollback search, clickable
-  links, and a scroll indicator.
+- Native copy/paste, IME, terminal rectangular selection, Neovim message-area
+  drag selection, scrollback search, clickable links, and a scroll indicator.
 - A native Settings window for appearance, shell, startup directory,
   keybindings, session behavior, and signed updates.
 - A unified native Neovim UI backed by `nvim --embed`, `ext_multigrid`, and the
   same Skia/Metal renderer whether it is opened from the shell or Command-N.
+- Finder Open With, Dock drops, and a macOS Service for opening files or folders
+  directly in a focused editor tab without restoring the normal workspace.
 - Kitty graphics support and an owner-only `satinctl` automation interface.
 - Publisher-signed in-app updates distributed through GitHub Releases.
 
@@ -64,6 +66,21 @@ not currently notarized with an Apple Developer ID. On first launch, macOS may
 require Control-clicking the app and choosing Open, or allowing it from
 System Settings → Privacy & Security. Later releases can be installed from
 Help → Check for Updates… → Update and Restart.
+
+## Open files from Finder
+
+After Satin is installed in `/Applications`, select a file or folder in Finder
+and choose Open With → Satin, drag it onto Satin in the Dock, or use Services →
+Open in Satin Editor. When this launches Satin, it opens one tab and one pane,
+starts the configured editor immediately, and leaves the saved terminal session
+untouched. If Satin is already running, the selection opens in a new tab.
+
+The default Finder editor is `nvim`. Interactive Neovim uses Satin's native
+multigrid compositor; choosing `vim` or another terminal editor keeps it in the
+PTY terminal. Change the executable name or absolute path under Satin →
+Settings… → Terminal → Finder editor. The field accepts an executable only, not
+shell arguments; every selected path is passed as a separate protected argv
+item.
 
 ## Build from source
 
@@ -208,9 +225,9 @@ events use macOS unified logging.
 - Stores font size, Option-as-Alt, bell attention, session-restore preferences,
   and versioned recursive tab/pane session metadata in macOS `UserDefaults`.
 - Provides a native Settings window for general behavior, font and theme,
-  shell and startup directory, conflict-checked keybindings, and signed-update
-  frequency. Live-safe settings apply immediately; shell and directory changes
-  apply to newly created panes.
+  shell, startup directory, Finder editor, conflict-checked keybindings, and
+  signed-update frequency. Live-safe settings apply immediately; launch
+  settings apply to newly created panes.
 - Bundles `satinctl`, a versioned local control CLI for reading visible pane
   text, sending input and keys, creating and naming tabs/splits, changing
   themes, and coordinating agent status.
@@ -242,9 +259,10 @@ Open Satin → Settings… or press `Command-,`.
 - General controls Option-as-Alt, bell attention, and session restore.
 - Appearance selects a fixed-pitch font, font size, and the default theme for
   new tabs.
-- Terminal selects an executable absolute shell path and an existing startup
-  directory for new panes. Empty values use the login shell and inherit the
-  active working directory.
+- Terminal selects an executable absolute shell path, an existing startup
+  directory for new panes, and the executable opened by Finder document events.
+  Empty shell and directory values use the login shell and inherit the active
+  working directory; the Finder editor defaults to `nvim`.
 - Keybindings customizes session, pane, Neovim, zoom, and update commands.
   Invalid, duplicate, and standard app-reserved shortcuts are rejected.
 - Updates enables signed checks and selects every-launch, daily, or weekly
@@ -356,7 +374,10 @@ Skia/Metal cursor body is hidden during the configured blink off phase without
 requiring continuous redraw.
 `nvim-smoke-ui-surfaces` also captures the Skia/Metal surface and verifies that
 floating-window highlight `blend` values become alpha-composited background
-pixels instead of opaque cells.
+pixels instead of opaque cells. The same smoke drags across a Neovim message
+window through the AppKit/FFI input path, verifies that the retained selection
+overlay is present, and checks the copied text before restoring the previous
+macOS pasteboard contents.
 `nvim-smoke-popupmenu` drives command-line completion through Neovim
 `ext_popupmenu`, then checks both the retained popupmenu model and captured
 Skia/Metal glyph pixels.
@@ -366,10 +387,13 @@ The smoke recipes require Skia frames; `native-smoke` also checks
 
 ## Remaining Direction
 
-The Neovim compositor can continue toward deeper Neovide parity,
-including externalized windows and richer editor-side drag selection. Those
-renderer extensions remain event-driven; terminal behavior stays owned by
-`libghostty-vt`.
+The Neovim compositor can continue toward deeper Neovide parity. “Externalized
+windows” means promoting eligible floating or message grids to independent
+macOS windows; it does not mean turning ordinary Neovim splits or file-tree
+panes into separate windows. That feature is not implemented yet. Normal editor
+dragging remains Neovim-owned, while message-area dragging uses Satin's retained
+selection overlay and copies on release. Future renderer extensions remain
+event-driven; terminal behavior stays owned by `libghostty-vt`.
 
 ## Contributing
 

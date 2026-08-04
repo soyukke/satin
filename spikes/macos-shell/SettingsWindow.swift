@@ -16,6 +16,7 @@ enum NativePreferenceKey {
     static let defaultTheme = "defaultTheme"
     static let shellPath = "shellPath"
     static let startupDirectory = "startupDirectory"
+    static let finderEditorCommand = "finderEditorCommand"
     static let automaticUpdateChecks = "automaticUpdateChecks"
     static let updateCheckIntervalHours = "updateCheckIntervalHours"
     static let lastUpdateCheck = "lastUpdateCheck"
@@ -32,6 +33,7 @@ enum NativePreferenceKey {
         defaultTheme,
         shellPath,
         startupDirectory,
+        finderEditorCommand,
         automaticUpdateChecks,
         updateCheckIntervalHours,
         lastUpdateCheck,
@@ -135,6 +137,7 @@ struct NativeSettings: Equatable {
     var defaultTheme: String
     var shellPath: String
     var startupDirectory: String
+    var finderEditorCommand: String
     var automaticUpdateChecks: Bool
     var updateCheckIntervalHours: Double
     var keyBindings: [String: String]
@@ -194,6 +197,9 @@ final class NativeSettingsStore {
             startupDirectory: validStartupDirectory(
                 defaults.string(forKey: NativePreferenceKey.startupDirectory) ?? ""
             ),
+            finderEditorCommand: validFinderEditorCommand(
+                defaults.string(forKey: NativePreferenceKey.finderEditorCommand) ?? "nvim"
+            ),
             automaticUpdateChecks: preferredBool(
                 NativePreferenceKey.automaticUpdateChecks,
                 defaultValue: true
@@ -222,6 +228,10 @@ final class NativeSettingsStore {
             forKey: NativePreferenceKey.startupDirectory
         )
         defaults.set(
+            validFinderEditorCommand(settings.finderEditorCommand),
+            forKey: NativePreferenceKey.finderEditorCommand
+        )
+        defaults.set(
             settings.automaticUpdateChecks,
             forKey: NativePreferenceKey.automaticUpdateChecks
         )
@@ -248,6 +258,7 @@ final class NativeSettingsStore {
             NativePreferenceKey.defaultTheme,
             NativePreferenceKey.shellPath,
             NativePreferenceKey.startupDirectory,
+            NativePreferenceKey.finderEditorCommand,
             NativePreferenceKey.automaticUpdateChecks,
             NativePreferenceKey.updateCheckIntervalHours,
             NativePreferenceKey.keyBindings,
@@ -316,6 +327,7 @@ final class NativeSettingsStore {
               initial.sessionRestore,
               initial.automaticUpdateChecks,
               initial.defaultTheme == "Graphite",
+              initial.finderEditorCommand == "nvim",
               initial.fontSize == nativeDefaultFontSize,
               NativeCommandID.allCases.allSatisfy({
                   NativeKeyShortcut.parse($0.defaultShortcut) != nil
@@ -327,6 +339,7 @@ final class NativeSettingsStore {
         changed.fontFamily = "Menlo"
         changed.fontSize = 19
         changed.defaultTheme = "Harbor"
+        changed.finderEditorCommand = "vim"
         changed.automaticUpdateChecks = false
         changed.keyBindings[NativeCommandID.newTab.rawValue] = "cmd+shift+t"
         store.save(changed)
@@ -337,6 +350,7 @@ final class NativeSettingsStore {
         }
         defaults.set("/not/a/real/shell", forKey: NativePreferenceKey.shellPath)
         defaults.set("/not/a/real/directory", forKey: NativePreferenceKey.startupDirectory)
+        defaults.set("nvim --clean", forKey: NativePreferenceKey.finderEditorCommand)
         defaults.set(
             [
                 NativeCommandID.newTab.rawValue: "cmd+q",
@@ -347,6 +361,7 @@ final class NativeSettingsStore {
         let repaired = store.load()
         guard repaired.shellPath.isEmpty,
               repaired.startupDirectory.isEmpty,
+              repaired.finderEditorCommand == "nvim",
               repaired.keyBindings == store.defaultKeyBindings()
         else {
             return false
@@ -415,6 +430,10 @@ final class NativeSettingsStore {
         Self.isValidStartupDirectory(value) ? value : ""
     }
 
+    private func validFinderEditorCommand(_ value: String) -> String {
+        Self.isValidFinderEditorCommand(value) ? value : "nvim"
+    }
+
     private func validKeyBindings(_ values: [String: String]) -> [String: String] {
         var seen = Set<String>()
         let reserved = Set(
@@ -459,6 +478,30 @@ final class NativeSettingsStore {
         return FileManager.default.fileExists(atPath: value, isDirectory: &isDirectory)
             && isDirectory.boolValue
     }
+
+    static func isValidFinderEditorCommand(_ value: String) -> Bool {
+        guard !value.isEmpty,
+              value.utf8.count <= 1_024,
+              value.unicodeScalars.allSatisfy({
+                  !CharacterSet.controlCharacters.contains($0)
+              })
+        else {
+            return false
+        }
+        if value.contains("/") {
+            return (value as NSString).isAbsolutePath
+                && FileManager.default.isExecutableFile(atPath: value)
+        }
+        guard value != ".", value != ".." else {
+            return false
+        }
+        return value.unicodeScalars.allSatisfy { scalar in
+            scalar.isASCII && (
+                CharacterSet.alphanumerics.contains(scalar)
+                    || "._+-".unicodeScalars.contains(scalar)
+            )
+        }
+    }
 }
 
 final class NativeSettingsWindowController: NSWindowController, NSTextFieldDelegate {
@@ -477,6 +520,7 @@ final class NativeSettingsWindowController: NSWindowController, NSTextFieldDeleg
     private var sessionRestoreButton: NSButton?
     private var shellField: NSTextField?
     private var directoryField: NSTextField?
+    private var finderEditorField: NSTextField?
     private let terminalErrorLabel = NSTextField(labelWithString: "")
     private var automaticUpdatesButton: NSButton?
     private var updateIntervalPopup: NSPopUpButton?
@@ -556,6 +600,9 @@ final class NativeSettingsWindowController: NSWindowController, NSTextFieldDeleg
         let startupDirectory = directoryField?.stringValue.trimmingCharacters(
             in: .whitespacesAndNewlines
         ) ?? ""
+        let finderEditorCommand = finderEditorField?.stringValue.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        ) ?? ""
         guard NativeSettingsStore.isValidShellPath(shellPath) else {
             terminalErrorLabel.stringValue =
                 "Shell must be an executable file at an absolute path."
@@ -566,9 +613,15 @@ final class NativeSettingsWindowController: NSWindowController, NSTextFieldDeleg
                 "Startup directory must be an existing absolute directory."
             return
         }
+        guard NativeSettingsStore.isValidFinderEditorCommand(finderEditorCommand) else {
+            terminalErrorLabel.stringValue =
+                "Finder editor must be a command name or an executable absolute path."
+            return
+        }
         terminalErrorLabel.stringValue = ""
         settings.shellPath = shellPath
         settings.startupDirectory = startupDirectory
+        settings.finderEditorCommand = finderEditorCommand
         commit()
     }
 
@@ -702,14 +755,22 @@ final class NativeSettingsWindowController: NSWindowController, NSTextFieldDeleg
         let directoryRow = NSStackView(views: [directory, choose])
         directoryRow.orientation = .horizontal
         directoryRow.spacing = 8
+
+        let finderEditor = NSTextField()
+        finderEditor.placeholderString = "nvim"
+        finderEditor.target = self
+        finderEditor.action = #selector(terminalPathChanged(_:))
+        finderEditor.delegate = self
+        finderEditorField = finderEditor
         terminalErrorLabel.textColor = .systemRed
         terminalErrorLabel.maximumNumberOfLines = 2
         return formView(
             title: "Terminal",
-            description: "Shell and startup directory changes apply to newly created panes.",
+            description: "Shell, startup directory, and Finder editor changes apply to new panes.",
             rows: [
                 ("Shell", shell),
                 ("Startup directory", directoryRow),
+                ("Finder editor", finderEditor),
             ],
             footer: terminalErrorLabel
         )
@@ -778,7 +839,7 @@ final class NativeSettingsWindowController: NSWindowController, NSTextFieldDeleg
         guard let field = notification.object as? NSTextField else {
             return
         }
-        if field === shellField || field === directoryField {
+        if field === shellField || field === directoryField || field === finderEditorField {
             terminalPathChanged(field)
         } else if field.identifier != nil {
             shortcutChanged(field)
@@ -838,6 +899,7 @@ final class NativeSettingsWindowController: NSWindowController, NSTextFieldDeleg
         themePopup?.selectItem(withTitle: settings.defaultTheme)
         shellField?.stringValue = settings.shellPath
         directoryField?.stringValue = settings.startupDirectory
+        finderEditorField?.stringValue = settings.finderEditorCommand
         terminalErrorLabel.stringValue = ""
         automaticUpdatesButton?.state = settings.automaticUpdateChecks ? .on : .off
         updateIntervalPopup?.selectItem(

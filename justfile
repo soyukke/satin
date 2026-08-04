@@ -89,6 +89,10 @@ native-smoke:
 native-package-smoke:
     @./scripts/native-package-smoke
 
+# Verify Finder Open With launches one native editor pane through LaunchServices.
+finder-editor-smoke:
+    @./scripts/native-finder-editor-smoke
+
 # Verify a shell nvim command uses native multigrid, scrolls with a terminal split, and resumes the same shell.
 shell-nvim-smoke:
     @if [[ -z "${IN_NIX_SHELL:-}" ]]; then exec nix develop --command just shell-nvim-smoke; else just native-build && ./scripts/native-shell-nvim-smoke; fi
@@ -363,7 +367,7 @@ secrets:
 
 # Lint release/smoke shell scripts and GitHub Actions workflows.
 ops-lint:
-    @if [[ -z "${IN_NIX_SHELL:-}" ]]; then exec nix develop --command just ops-lint; else shellcheck scripts/apply-update scripts/license-audit scripts/native-build scripts/native-control-smoke scripts/native-kitty-smoke scripts/native-package scripts/native-package-smoke scripts/native-notarize scripts/native-release scripts/native-resize-smoke scripts/native-session-smoke scripts/native-settings-smoke scripts/native-shell-nvim-smoke scripts/native-smoke scripts/native-soak scripts/native-update-install-smoke scripts/native-update-release-smoke && zsh -n scripts/shell-integration/zsh/.zshenv scripts/shell-integration/zsh/.zprofile scripts/shell-integration/zsh/.zshrc scripts/shell-integration/zsh/.zlogin scripts/shell-integration/zsh/.zlogout && actionlint .github/workflows/*.yml; fi
+    @if [[ -z "${IN_NIX_SHELL:-}" ]]; then exec nix develop --command just ops-lint; else mapfile -t shell_scripts < <(rg -l '^#!.*(bash|/sh)' scripts --glob '*' | sort); shellcheck "${shell_scripts[@]}" && zsh -n scripts/shell-integration/zsh/.zshenv scripts/shell-integration/zsh/.zprofile scripts/shell-integration/zsh/.zshrc scripts/shell-integration/zsh/.zlogin scripts/shell-integration/zsh/.zlogout && actionlint .github/workflows/*.yml; fi
 
 # Configure this clone to use the repository-managed Git hooks.
 install-hooks:

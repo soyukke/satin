@@ -436,9 +436,23 @@ pub struct NeovideRendererModelSnapshot {
     pub cursor_color: TerminalColor,
     pub cursor: Option<TerminalCursorSnapshot>,
     pub cursor_parent_grid_id: Option<i64>,
+    pub message_selection: Option<NeovideMessageSelection>,
     pub scrollbar: Option<crate::terminal_runtime::ScrollbarSnapshot>,
     pub scroll_hint: Option<NeovideScrollHint>,
     pub windows: Vec<NeovideRenderedWindowSnapshot>,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
+pub struct NeovideMessageSelection {
+    pub grid_id: i64,
+    pub start: NeovideGridPosition,
+    pub end: NeovideGridPosition,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
+pub struct NeovideGridPosition {
+    pub row: usize,
+    pub col: usize,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
@@ -485,6 +499,28 @@ impl NeovideRenderedWindowSnapshot {
             .bottom
             .min(self.height.saturating_sub(top));
         top..self.height.saturating_sub(bottom_margin)
+    }
+
+    pub fn line_text_range(&self, row: usize, start_col: usize, end_col: usize) -> Option<String> {
+        let cells = &self.lines.get(row)?.as_ref()?.cells;
+        if cells.is_empty() {
+            return Some(String::new());
+        }
+
+        let max_col = cells.len().saturating_sub(1);
+        let start = start_col.min(max_col);
+        let end = end_col.min(max_col);
+        let (start, end) = if start <= end {
+            (start, end)
+        } else {
+            (end, start)
+        };
+        let mut text = cells[start..=end]
+            .iter()
+            .map(|cell| cell.text.as_str())
+            .collect::<String>();
+        text.truncate(text.trim_end_matches(' ').len());
+        Some(text)
     }
 }
 

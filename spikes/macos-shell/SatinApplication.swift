@@ -704,6 +704,11 @@ func satin_nvim_mouse(
     _ col: Int64
 ) -> UInt8
 
+@_silgen_name("satin_nvim_take_message_selection_text")
+func satin_nvim_take_message_selection_text(
+    _ handle: UnsafeMutableRawPointer?
+) -> UnsafeMutablePointer<CChar>?
+
 @_silgen_name("satin_nvim_command")
 func satin_nvim_command(
     _ handle: UnsafeMutableRawPointer?,
@@ -889,9 +894,21 @@ struct NeovideRendererModelSnapshot: Decodable {
     let background: TerminalColorSnapshot
     let cursor: TerminalCursorSnapshot?
     let cursor_parent_grid_id: Int?
+    let message_selection: NeovideMessageSelectionSnapshot?
     let scrollbar: ScrollbarSnapshot?
     let scroll_hint: FrameScrollHint?
     let windows: [NeovideRenderedWindowSnapshot]
+}
+
+struct NeovideMessageSelectionSnapshot: Decodable {
+    let grid_id: Int
+    let start: NeovideGridPositionSnapshot
+    let end: NeovideGridPositionSnapshot
+}
+
+struct NeovideGridPositionSnapshot: Decodable {
+    let row: Int
+    let col: Int
 }
 
 struct ScrollbarSnapshot: Decodable {
@@ -1080,6 +1097,74 @@ struct NativeTerminalSpawnConfiguration: Encodable {
     let cwd: String?
     let shell: String?
     let environment: [String: String]
+    let startup_command: [String]
+}
+
+struct NativeFinderEditorLaunch {
+    let paths: [String]
+    let workingDirectory: String
+
+    init?(paths: [String]) {
+        var seen = Set<String>()
+        var normalized: [String] = []
+        var totalBytes = 0
+        for path in paths {
+            guard (path as NSString).isAbsolutePath else {
+                continue
+            }
+            let resolved = URL(fileURLWithPath: path).standardizedFileURL.path
+            guard FileManager.default.fileExists(atPath: resolved),
+                  resolved.unicodeScalars.allSatisfy({
+                      !CharacterSet.controlCharacters.contains($0)
+                  }),
+                  seen.insert(resolved).inserted
+            else {
+                continue
+            }
+            guard normalized.count < 254 else {
+                return nil
+            }
+            totalBytes += resolved.utf8.count
+            guard totalBytes <= 12 * 1_024 else {
+                return nil
+            }
+            normalized.append(resolved)
+        }
+        guard let first = normalized.first else {
+            return nil
+        }
+        var isDirectory: ObjCBool = false
+        _ = FileManager.default.fileExists(atPath: first, isDirectory: &isDirectory)
+        self.paths = normalized
+        self.workingDirectory = isDirectory.boolValue
+            ? first
+            : URL(fileURLWithPath: first).deletingLastPathComponent().path
+    }
+
+    func startupCommand(editor: String) -> [String] {
+        [editor, "--"] + paths
+    }
+
+    static func runSelfTests() -> Bool {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("satin-finder-launch-\(UUID().uuidString)", isDirectory: true)
+        let file = root.appendingPathComponent("file with spaces.txt")
+        do {
+            try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+            try Data("finder launch".utf8).write(to: file)
+            defer { try? FileManager.default.removeItem(at: root) }
+            guard let launch = Self(paths: [file.path, file.path]) else {
+                return false
+            }
+            return launch.paths == [file.path]
+                && launch.workingDirectory == root.path
+                && launch.startupCommand(editor: "nvim") == ["nvim", "--", file.path]
+                && Self(paths: [root.path])?.workingDirectory == root.path
+                && Self(paths: ["relative.txt"]) == nil
+        } catch {
+            return false
+        }
+    }
 }
 
 struct NativeNeovimLaunchConfiguration: Encodable {
@@ -1102,7 +1187,13 @@ struct NativeMouseInput {
     var cellHeight: UInt32 = 1
 }
 
-enum NativePaneMode {
+enum NativeMouseHandling: Equatable {
+    case unhandled
+    case handled
+    case messageSelection
+}
+
+enum NativePaneMode: Equatable {
     case terminal
     case neovim
 
@@ -1132,12 +1223,14 @@ final class RustTerminalPane: NativePane {
         grid: (rows: Int, cols: Int, widthPixels: Int, heightPixels: Int),
         cwd: String? = nil,
         shell: String? = nil,
-        environment: [String: String] = [:]
+        environment: [String: String] = [:],
+        startupCommand: [String] = []
     ) {
         let configuration = NativeTerminalSpawnConfiguration(
             cwd: cwd,
             shell: shell?.isEmpty == false ? shell : nil,
-            environment: environment
+            environment: environment,
+            startup_command: startupCommand
         )
         guard let data = try? JSONEncoder().encode(configuration),
               let json = String(data: data, encoding: .utf8)
@@ -1408,8 +1501,8 @@ final class RustNeovimPane: NativePane {
         }
     }
 
-    func mouse(_ input: NativeMouseInput) -> Bool {
-        input.button.withCString { button in
+    func mouse(_ input: NativeMouseInput) -> NativeMouseHandling {
+        let result = input.button.withCString { button in
             input.action.withCString { action in
                 input.modifier.withCString { modifier in
                     satin_nvim_mouse(
@@ -1420,10 +1513,22 @@ final class RustNeovimPane: NativePane {
                         input.grid,
                         input.row,
                         input.col
-                    ) != 0
+                    )
                 }
             }
         }
+        switch result {
+        case 2:
+            return .messageSelection
+        case 1:
+            return .handled
+        default:
+            return .unhandled
+        }
+    }
+
+    func takeMessageSelectionText() -> String? {
+        ownedRustString(satin_nvim_take_message_selection_text(handle))
     }
 
     func runCommand(_ command: String) -> Bool {
@@ -1525,7 +1630,7 @@ final class TerminalTextView: NSView, NSTextInputClient {
     var onInput: ((Data) -> Void)?
     var onKeyEvent: ((NSEvent, Bool) -> Bool)?
     var onTextInput: ((String) -> Void)?
-    var onMouseInput: ((NativeMouseInput) -> Bool)?
+    var onMouseInput: ((NativeMouseInput) -> NativeMouseHandling)?
     var onSelectionChanged: (((row: Int, col: Int), (row: Int, col: Int), Bool) -> Void)?
     var onHyperlinkRequested: (((row: Int, col: Int)) -> Bool)?
     var onCopyRequested: (() -> Bool)?
@@ -1562,6 +1667,7 @@ final class TerminalTextView: NSView, NSTextInputClient {
     private var markedSelection = NSRange(location: 0, length: 0)
     private var interpretingKeyEvent: NSEvent?
     private var selectionAnchor: (row: Int, col: Int)?
+    private var messageSelectionActive = false
     private var terminalKeysDown = Set<UInt16>()
 
     override init(frame frameRect: NSRect) {
@@ -1678,7 +1784,7 @@ final class TerminalTextView: NSView, NSTextInputClient {
         guard let input = mouseInput(button: "left", action: "press", event: event, point: point) else {
             return
         }
-        if onMouseInput?(input) == true {
+        if handleMouseInput(input) {
             selectionAnchor = nil
             return
         }
@@ -1689,10 +1795,16 @@ final class TerminalTextView: NSView, NSTextInputClient {
 
     override func mouseUp(with event: NSEvent) {
         let point = convert(event.locationInWindow, from: nil)
-        guard let input = mouseInput(button: "left", action: "release", event: event, point: point) else {
+        guard let input = mouseInput(
+            button: "left",
+            action: "release",
+            event: event,
+            point: point,
+            clampToGrid: messageSelectionActive
+        ) else {
             return
         }
-        if onMouseInput?(input) == true {
+        if handleMouseInput(input) {
             selectionAnchor = nil
             return
         }
@@ -1708,10 +1820,16 @@ final class TerminalTextView: NSView, NSTextInputClient {
 
     override func mouseDragged(with event: NSEvent) {
         let point = convert(event.locationInWindow, from: nil)
-        guard let input = mouseInput(button: "left", action: "drag", event: event, point: point) else {
+        guard let input = mouseInput(
+            button: "left",
+            action: "drag",
+            event: event,
+            point: point,
+            clampToGrid: messageSelectionActive
+        ) else {
             return
         }
-        if onMouseInput?(input) == true {
+        if handleMouseInput(input) {
             selectionAnchor = nil
             return
         }
@@ -1727,7 +1845,7 @@ final class TerminalTextView: NSView, NSTextInputClient {
     override func rightMouseDown(with event: NSEvent) {
         let point = convert(event.locationInWindow, from: nil)
         if let input = mouseInput(button: "right", action: "press", event: event, point: point),
-           onMouseInput?(input) == true {
+           handleMouseInput(input) {
             return
         }
         onContextMenuRequested?(tabIndex(at: point), event, self)
@@ -1743,7 +1861,7 @@ final class TerminalTextView: NSView, NSTextInputClient {
         ) else {
             return
         }
-        _ = onMouseInput?(input)
+        _ = handleMouseInput(input)
     }
 
     override func otherMouseDown(with event: NSEvent) {
@@ -1756,7 +1874,7 @@ final class TerminalTextView: NSView, NSTextInputClient {
         ) else {
             return
         }
-        _ = onMouseInput?(input)
+        _ = handleMouseInput(input)
     }
 
     override func otherMouseUp(with event: NSEvent) {
@@ -1769,7 +1887,7 @@ final class TerminalTextView: NSView, NSTextInputClient {
         ) else {
             return
         }
-        _ = onMouseInput?(input)
+        _ = handleMouseInput(input)
     }
 
     override func scrollWheel(with event: NSEvent) {
@@ -1996,10 +2114,26 @@ final class TerminalTextView: NSView, NSTextInputClient {
     func skiaGeometrySummary() -> String {
         let geometry = skiaRenderGeometry()
         return [
-            Int(geometry.originX.rounded()),
-            Int(geometry.originY.rounded()),
-            Int(geometry.cellWidth.rounded()),
-            Int(geometry.cellHeight.rounded()),
+            geometry.originX,
+            geometry.originY,
+            geometry.cellWidth,
+            geometry.cellHeight,
+        ]
+        .map {
+            String(
+                format: "%.4f",
+                locale: Locale(identifier: "en_US_POSIX"),
+                Double($0)
+            )
+        }
+        .joined(separator: ":")
+    }
+
+    func skiaViewportSummary() -> String {
+        let scale = window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 1
+        return [
+            Int((bounds.width * scale).rounded()),
+            Int((bounds.height * scale).rounded()),
         ]
         .map(String.init)
         .joined(separator: ":")
@@ -2091,6 +2225,19 @@ final class TerminalTextView: NSView, NSTextInputClient {
             }
             counts[window.window_kind, default: 0] += 1
         }
+    }
+
+    func rendererModelMessageSelectionSummary() -> String {
+        guard let selection = rendererModelSnapshot?.message_selection else {
+            return "none"
+        }
+        return [
+            selection.grid_id,
+            selection.start.row,
+            selection.start.col,
+            selection.end.row,
+            selection.end.col,
+        ].map(String.init).joined(separator: ":")
     }
 
     func rendererModelCursorSummary() -> String {
@@ -2595,9 +2742,10 @@ final class TerminalTextView: NSView, NSTextInputClient {
         button: String,
         action: String,
         event: NSEvent,
-        point: NSPoint
+        point: NSPoint,
+        clampToGrid: Bool = false
     ) -> NativeMouseInput? {
-        guard let position = mouseGridPosition(point) else {
+        guard let position = mouseGridPosition(point, clampToGrid: clampToGrid) else {
             return nil
         }
         let textRect = terminalTextRect()
@@ -2617,6 +2765,17 @@ final class TerminalTextView: NSView, NSTextInputClient {
         )
     }
 
+    private func handleMouseInput(_ input: NativeMouseInput) -> Bool {
+        let handling = onMouseInput?(input) ?? .unhandled
+        if handling == .messageSelection {
+            messageSelectionActive = input.action != "release"
+        } else if input.button == "left" &&
+            (input.action == "press" || input.action == "release") {
+            messageSelectionActive = false
+        }
+        return handling != .unhandled
+    }
+
     private func sendWheelMouseInput(for event: NSEvent, at point: NSPoint) -> Bool {
         let rows = scrollRows(for: event)
         guard rows != 0 else {
@@ -2626,21 +2785,24 @@ final class TerminalTextView: NSView, NSTextInputClient {
         guard let input = mouseInput(button: "wheel", action: action, event: event, point: point) else {
             return false
         }
-        guard onMouseInput?(input) == true else {
+        guard handleMouseInput(input) else {
             return false
         }
         let repeats = min(6, max(1, Int(abs(rows).rounded(.up))))
         if repeats > 1 {
             for _ in 1..<repeats {
-                _ = onMouseInput?(input)
+                _ = handleMouseInput(input)
             }
         }
         return true
     }
 
-    private func mouseGridPosition(_ point: NSPoint) -> (row: Int, col: Int)? {
+    private func mouseGridPosition(
+        _ point: NSPoint,
+        clampToGrid: Bool = false
+    ) -> (row: Int, col: Int)? {
         let textRect = terminalTextRect()
-        guard textRect.contains(point) else {
+        guard clampToGrid || textRect.contains(point) else {
             return nil
         }
         let cellSize = terminalCellSize()
@@ -3076,6 +3238,9 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate, Te
     private var optionAsAltEnabled: Bool
     private var notificationsEnabled: Bool
     private var pendingPaneWorkingDirectory: String?
+    private var pendingPaneStartupCommand: [String]?
+    private var pendingPaneMode: NativePaneMode?
+    private let initialFinderLaunch: NativeFinderEditorLaunch?
     private var activePaneId: Int?
     private var lastSnapshot: TerminalCoreSnapshot?
     private var lastNvimModelScrollShift: OutputScrollShift?
@@ -3084,6 +3249,7 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate, Te
     private var nvimFileTreeCloseSmokeGrid: Int?
     private var nvimFileTreeCloseSmokeBoundary: Int?
     private var nvimFileTreeCloseSmokeBefore = "none"
+    private var nvimMessageSelectionSmoke = "overlay=no copied=no"
     private var paneWakeupSources: [Int: DispatchSourceRead] = [:]
     private var suspendedPaneWakeupSources: [Int: DispatchSourceRead] = [:]
     private var syncingTabs = false
@@ -3096,13 +3262,18 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate, Te
     private var paneStatusWaiters: [Int: [NativeStatusWaiter]] = [:]
     private var nextStatusRevision: UInt64 = 1
 
-    init?(core: RustCore, settings: NativeSettings) {
+    init?(
+        core: RustCore,
+        settings: NativeSettings,
+        initialFinderLaunch: NativeFinderEditorLaunch? = nil
+    ) {
         guard TerminalMetalView.isAvailable() else {
             NativeLog.runtimeError("metal_renderer_create_failed")
             return nil
         }
         self.core = core
         self.settings = settings
+        self.initialFinderLaunch = initialFinderLaunch
         self.optionAsAltEnabled = settings.optionAsAlt
         self.notificationsEnabled = settings.notifications
         self.metalView = TerminalMetalView(frame: .zero)
@@ -3136,7 +3307,7 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate, Te
             self?.writeTextToActivePane(text)
         }
         self.terminalTextView.onMouseInput = { [weak self] input in
-            self?.sendMouseInputToActivePane(input) ?? false
+            self?.sendMouseInputToActivePane(input) ?? .unhandled
         }
         self.terminalTextView.onSelectionChanged = { [weak self] start, end, rectangular in
             self?.selectTerminalText(start: start, end: end, rectangular: rectangular)
@@ -3219,8 +3390,22 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate, Te
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        restoreSessionIfNeeded()
+        if let initialFinderLaunch {
+            prepareFinderEditorLaunch(initialFinderLaunch)
+        } else {
+            restoreSessionIfNeeded()
+        }
         syncFromCore()
+    }
+
+    func openFinderItems(_ launch: NativeFinderEditorLaunch) -> Bool {
+        prepareFinderEditorLaunch(launch)
+        core.newTab()
+        syncFromCore()
+        guard let activePaneId, let pane = terminalPanes[activePaneId] else {
+            return false
+        }
+        return pane.kind == .terminal
     }
 
     func focusTerminal() {
@@ -3990,6 +4175,49 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate, Te
         }
     }
 
+    func applyFinderEditorSmokeScenario(resultPath: String) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+            self?.writeFinderEditorSmokeResult(resultPath, retries: 48)
+        }
+    }
+
+    private func writeFinderEditorSmokeResult(_ resultPath: String, retries: Int) {
+        let marker = "SATIN_FINDER_EDITOR_MARKER"
+        let snapshot = core.snapshot()
+        let oneTab = snapshot?.tabs.count == 1
+        let onePane = snapshot?.tabs.first?.panes.count == 1
+        let actualMode = activePaneMode()
+        let expectedMode = ProcessInfo.processInfo.environment[
+            "SATIN_NATIVE_SMOKE_FINDER_MODE"
+        ] == "terminal" ? NativePaneMode.terminal : .neovim
+        let expectedPaneMode = actualMode == expectedMode
+        let markerCount: Int
+        if actualMode == .terminal,
+           let paneId = activePaneId,
+           let pane = terminalPanes[paneId] {
+            markerCount = pane.controlScreenText().components(separatedBy: marker).count - 1
+        } else {
+            markerCount = terminalTextView.rendererModelTextOccurrences(marker)
+        }
+        let ok = oneTab && onePane && expectedPaneMode && markerCount == 1
+        if !ok, retries > 0 {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
+                self?.writeFinderEditorSmokeResult(resultPath, retries: retries - 1)
+            }
+            return
+        }
+        let summary = [
+            "simple=\(oneTab && onePane ? "yes" : "no")",
+            "mode=\(actualMode.sessionValue)",
+            "marker=\(markerCount)",
+        ].joined(separator: " ")
+        let result = ok
+            ? "ok finder-editor \(summary)\n"
+            : "failed finder-editor \(summary)\n"
+        try? result.write(toFile: resultPath, atomically: true, encoding: .utf8)
+        NSApp.terminate(nil)
+    }
+
     func applyShellNvimNativeSmokeScenario(resultPath: String) {
         let fixture = "/tmp/satin-shell-nvim-native-smoke.txt"
         let before = "/tmp/satin-shell-nvim-native-before.txt"
@@ -4365,7 +4593,11 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate, Te
             )
         }
 
-        DispatchQueue.main.asyncAfter(deadline: .now() + 4.5) { [weak self] in
+        DispatchQueue.main.asyncAfter(deadline: .now() + 4.45) { [weak self] in
+            self?.exerciseNvimMessageSelectionSmoke()
+        }
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 4.7) { [weak self] in
             self?.writeNvimUiSurfacesSmokeResult(resultPath, retries: 12)
         }
     }
@@ -5026,6 +5258,7 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate, Te
         }
 
         let geometry = terminalTextView.skiaGeometrySummary()
+        let viewport = terminalTextView.skiaViewportSummary()
         let after = terminalTextView.rendererModelWindowTextSummary()
         let separator = terminalTextView.rendererModelRawTextStartSummary(
             label: "separator",
@@ -5045,6 +5278,7 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate, Te
                 "boundary=\(boundarySummary) occupied=\(occupied) " +
                 "tree-visible=no cursor-parent=\(cursorParentSummary) " +
                 "model-frames=yes skia-frames=\(skiaFrames) geometry=\(geometry) " +
+                "viewport=\(viewport) " +
                 "marker=\(marker) separator=\(separator) " +
                 "before=\(nvimFileTreeCloseSmokeBefore) after=\(after)\n"
             : "failed file-tree-close grid=\(gridSummary) " +
@@ -5053,6 +5287,7 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate, Te
                 "cursor-parent=\(cursorParentSummary) " +
                 "model-frames=\(modelFramesSummary) " +
                 "skia-frames=\(skiaFrames) geometry=\(geometry) " +
+                "viewport=\(viewport) " +
                 "marker=\(marker) separator=\(separator) " +
                 "before=\(nvimFileTreeCloseSmokeBefore) after=\(after)\n"
         try? result.write(toFile: resultPath, atomically: true, encoding: .utf8)
@@ -5313,10 +5548,13 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate, Te
         let missingSummary = missingText.isEmpty ? "none" : missingText.joined(separator: ",")
         let textSummary = "text=\(hasText ? "yes" : "no") missing=\(missingSummary)"
         let geometrySummary = "geometry=\(terminalTextView.skiaGeometrySummary())"
+        let viewportSummary = "viewport=\(terminalTextView.skiaViewportSummary())"
         let cellSummary = "cells=\(terminalTextView.rendererModelCellSummary(expected))"
         let result = ok
-            ? "ok shaped-text \(textSummary) \(rendererSummary) \(geometrySummary) \(cellSummary)\n"
-            : "failed shaped-text \(textSummary) \(rendererSummary) \(geometrySummary) \(cellSummary)\n"
+            ? "ok shaped-text \(textSummary) \(rendererSummary) \(geometrySummary) " +
+                "\(viewportSummary) \(cellSummary)\n"
+            : "failed shaped-text \(textSummary) \(rendererSummary) \(geometrySummary) " +
+                "\(viewportSummary) \(cellSummary)\n"
         try? result.write(toFile: resultPath, atomically: true, encoding: .utf8)
         if ProcessInfo.processInfo.environment["SATIN_NATIVE_SMOKE_KEEP_OPEN"] != "1" {
             NSApp.terminate(nil)
@@ -5354,6 +5592,7 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate, Te
             "count=\(skiaFrames)",
             "text=\(markerCount)",
             "geometry=\(terminalTextView.skiaGeometrySummary())",
+            "viewport=\(terminalTextView.skiaViewportSummary())",
             "marker-cell=\(markerCell)",
         ].joined(separator: " ")
         let result = ok ? "ok nvim-skia \(summary)\n" : "failed nvim-skia \(summary)\n"
@@ -5385,8 +5624,10 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate, Te
         let hasFloat = (counts["float"] ?? 0) >= 1 && floatCount == 1
         let hasFixedSurfaces = messageCount == 1
         let hasBlend = blendCellCount > 0 && blendCellSummary != "none"
+        let hasMessageSelection = nvimMessageSelectionSmoke.contains("overlay=yes") &&
+            nvimMessageSelectionSmoke.contains("copied=yes")
         let ok = hasModelFrames && skiaFrames > 0 &&
-            hasSplit && hasFloat && hasFixedSurfaces && hasBlend
+            hasSplit && hasFloat && hasFixedSurfaces && hasBlend && hasMessageSelection
         if !ok, retries > 0 {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
                 self?.writeNvimUiSurfacesSmokeResult(resultPath, retries: retries - 1)
@@ -5406,8 +5647,10 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate, Te
             "status=\(statusCount)",
             "status-raw=\(statusRaw)",
             "message=\(messageCount)",
+            "message-selection=\(nvimMessageSelectionSmoke.replacingOccurrences(of: " ", with: ","))",
             "blend-cells=\(blendCellCount)",
             "geometry=\(terminalTextView.skiaGeometrySummary())",
+            "viewport=\(terminalTextView.skiaViewportSummary())",
             "windows=\(terminalTextView.rendererModelWindowTextSummary(limit: 8))",
             "blend-cell=\(blendCellSummary)",
         ].joined(separator: " ")
@@ -5473,6 +5716,7 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate, Te
             "count=\(skiaFrames)",
             "popup=\(popupCount)",
             "geometry=\(terminalTextView.skiaGeometrySummary())",
+            "viewport=\(terminalTextView.skiaViewportSummary())",
             "popup-cell=\(popupCellSummary)",
         ].joined(separator: " ")
         let result = ok ? "ok popupmenu \(summary)\n" : "failed popupmenu \(summary)\n"
@@ -5571,6 +5815,7 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate, Te
             "skia-frames=\(skiaFrames > 0 ? "yes" : "no")",
             "count=\(skiaFrames)",
             "geometry=\(terminalTextView.skiaGeometrySummary())",
+            "viewport=\(terminalTextView.skiaViewportSummary())",
             "old=17:59",
             "new=\(cursor)",
             "new-text=\(newTextCount)",
@@ -5679,6 +5924,7 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate, Te
             "skia-frames=\(skiaFrames > 0 ? "yes" : "no")",
             "count=\(skiaFrames)",
             "geometry=\(terminalTextView.skiaGeometrySummary())",
+            "viewport=\(terminalTextView.skiaViewportSummary())",
             "cursor=\(cursor)",
             "text=\(textCount)",
             "animation-settled=\(animationSettled ? "yes" : "no")",
@@ -5760,6 +6006,68 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate, Te
         )
         _ = sendMouseInputToActivePane(press)
         _ = sendMouseInputToActivePane(release)
+    }
+
+    private func exerciseNvimMessageSelectionSmoke() {
+        guard let position = terminalTextView.rendererModelTextStartPosition("MSGBOX") else {
+            nvimMessageSelectionSmoke = "overlay=no copied=no reason=missing-message"
+            return
+        }
+        let pasteboard = NSPasteboard.general
+        let previousItems: [NSPasteboardItem] = pasteboard.pasteboardItems?.map { source in
+            let copy = NSPasteboardItem()
+            for type in source.types {
+                if let data = source.data(forType: type) {
+                    copy.setData(data, forType: type)
+                }
+            }
+            return copy
+        } ?? []
+        defer {
+            pasteboard.clearContents()
+            if !previousItems.isEmpty {
+                pasteboard.writeObjects(previousItems)
+            }
+        }
+
+        let start = NativeMouseInput(
+            button: "left",
+            action: "press",
+            modifier: "",
+            grid: 0,
+            row: Int64(position.row),
+            col: Int64(position.col)
+        )
+        let endCol = Int64(position.col + "MSGBOX".count - 1)
+        let drag = NativeMouseInput(
+            button: "left",
+            action: "drag",
+            modifier: "",
+            grid: 0,
+            row: Int64(position.row),
+            col: endCol
+        )
+        let release = NativeMouseInput(
+            button: "left",
+            action: "release",
+            modifier: "",
+            grid: 0,
+            row: Int64(position.row),
+            col: endCol
+        )
+        let pressHandling = sendMouseInputToActivePane(start)
+        let dragHandling = sendMouseInputToActivePane(drag)
+        let overlay = terminalTextView.rendererModelMessageSelectionSummary()
+        let releaseHandling = sendMouseInputToActivePane(release)
+        let copied = pasteboard.string(forType: .string) == "MSGBOX"
+        let handled = pressHandling == .messageSelection &&
+            dragHandling == .messageSelection &&
+            releaseHandling == .messageSelection
+        nvimMessageSelectionSmoke = [
+            "overlay=\(handled && overlay != "none" ? "yes" : "no")",
+            "copied=\(copied ? "yes" : "no")",
+            "selection=\(overlay)",
+        ].joined(separator: " ")
     }
 
     private func configureNvimCursorSmokeTab(marker: String, cursorRow: Int, cursorCol: Int) {
@@ -6202,12 +6510,16 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate, Te
             ?? pendingPaneWorkingDirectory
             ?? nativeWorkingDirectory()
         pendingPaneWorkingDirectory = nil
-        let mode = paneModes[paneId] ?? defaultPaneMode
+        let startupCommand = pendingPaneStartupCommand
+        pendingPaneStartupCommand = nil
+        let mode = paneModes[paneId] ?? pendingPaneMode ?? defaultPaneMode
+        pendingPaneMode = nil
         guard let pane = makePane(
             paneId: paneId,
             grid: paneGridSize(paneId),
             cwd: cwd,
-            mode: mode
+            mode: mode,
+            startupCommand: startupCommand
         ) else {
             return nil
         }
@@ -6229,7 +6541,8 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate, Te
         paneId: Int,
         grid: (rows: Int, cols: Int, widthPixels: Int, heightPixels: Int),
         cwd: String,
-        mode: NativePaneMode
+        mode: NativePaneMode,
+        startupCommand: [String]? = nil
     ) -> NativePane? {
         switch mode {
         case .terminal:
@@ -6237,7 +6550,8 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate, Te
                 grid: grid,
                 cwd: cwd,
                 shell: settings.shellPath,
-                environment: controlEnvironment(paneId: paneId)
+                environment: controlEnvironment(paneId: paneId),
+                startupCommand: startupCommand ?? []
             )
         case .neovim:
             let arguments = ProcessInfo.processInfo.environment["SATIN_NATIVE_SMOKE_CLEAN_NVIM"] == "1"
@@ -6245,6 +6559,22 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate, Te
                 : []
             return RustNeovimPane(grid: grid, cwd: cwd, arguments: arguments)
         }
+    }
+
+    private func prepareFinderEditorLaunch(_ launch: NativeFinderEditorLaunch) {
+        pendingPaneWorkingDirectory = launch.workingDirectory
+        var startupCommand = launch.startupCommand(editor: settings.finderEditorCommand)
+        if settings.finderEditorCommand == "nvim",
+           FileManager.default.isExecutableFile(atPath: nvimLauncherPath) {
+            startupCommand[0] = nvimLauncherPath
+        }
+        if ProcessInfo.processInfo.environment["SATIN_NATIVE_SMOKE_SCENARIO"]
+            == "finder-editor",
+           settings.finderEditorCommand == "nvim" {
+            startupCommand.insert(contentsOf: ["-u", "NONE", "-n"], at: 1)
+        }
+        pendingPaneStartupCommand = startupCommand
+        pendingPaneMode = .terminal
     }
 
     private func controlEnvironment(paneId: Int) -> [String: String] {
@@ -6339,22 +6669,32 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate, Te
         drainTerminalPanes()
     }
 
-    private func sendMouseInputToActivePane(_ input: NativeMouseInput) -> Bool {
+    private func sendMouseInputToActivePane(_ input: NativeMouseInput) -> NativeMouseHandling {
         guard let paneId = activePaneId, let pane = terminalPanes[paneId] else {
-            return false
+            return .unhandled
         }
-        let handled = if let terminal = pane as? RustTerminalPane {
-            terminal.mouse(input)
+        let handling = if let terminal = pane as? RustTerminalPane {
+            terminal.mouse(input) ? NativeMouseHandling.handled : .unhandled
         } else if let neovim = pane as? RustNeovimPane {
             neovim.mouse(input)
         } else {
-            false
+            NativeMouseHandling.unhandled
         }
-        guard handled else {
-            return false
+        guard handling != .unhandled else {
+            return .unhandled
         }
         drainTerminalPanes()
-        return true
+        if handling == .messageSelection {
+            if let neovim = pane as? RustNeovimPane,
+               let text = neovim.takeMessageSelectionText(),
+               !text.isEmpty {
+                let pasteboard = NSPasteboard.general
+                pasteboard.clearContents()
+                pasteboard.setString(text, forType: .string)
+            }
+            updateActiveFrame()
+        }
+        return handling
     }
 
     private func setTerminalFocus(_ focused: Bool) {
@@ -6948,10 +7288,57 @@ final class SatinAppDelegate: NSObject, NSApplicationDelegate {
     private var updateCheckID: UUID?
     private var updateTask: URLSessionDataTask?
     private var updateProgressAlert: NSAlert?
+    private var pendingFinderPaths: [String] = []
+    private var launchedForFinderEditor = false
+
+    func applicationWillFinishLaunching(_ notification: Notification) {
+        NSApp.servicesProvider = self
+    }
+
+    func application(_ sender: NSApplication, openFiles filenames: [String]) {
+        sender.reply(toOpenOrPrint: routeFinderPaths(filenames) ? .success : .failure)
+    }
+
+    @objc func openFilesInEditor(
+        _ pasteboard: NSPasteboard,
+        userData: String?,
+        error: AutoreleasingUnsafeMutablePointer<NSString?>
+    ) {
+        let urls = pasteboard.readObjects(
+            forClasses: [NSURL.self],
+            options: [.urlReadingFileURLsOnly: true]
+        ) as? [URL] ?? []
+        var paths = urls.map(\.path)
+        if paths.isEmpty,
+           let filenames = pasteboard.propertyList(
+               forType: NSPasteboard.PasteboardType("NSFilenamesPboardType")
+           ) as? [String] {
+            paths = filenames
+        }
+        if paths.isEmpty, let text = pasteboard.string(forType: .string) {
+            paths = text.components(separatedBy: .newlines).filter { !$0.isEmpty }
+        }
+        if !routeFinderPaths(paths) {
+            error.pointee = "Satin could not open the selected items." as NSString
+        }
+    }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NativeLog.started()
-        let settings = settingsStore.load()
+        var settings = settingsStore.load()
+        let environment = ProcessInfo.processInfo.environment
+        if environment["SATIN_NATIVE_SMOKE_SCENARIO"] == "finder-editor" {
+            let smokeEditor = environment["SATIN_NATIVE_SMOKE_FINDER_EDITOR"] ?? "nvim"
+            settings.finderEditorCommand = NativeSettingsStore.isValidFinderEditorCommand(
+                smokeEditor
+            ) ? smokeEditor : "nvim"
+            let smokeShell = environment["SATIN_NATIVE_SMOKE_FINDER_SHELL"] ?? "/bin/bash"
+            if NativeSettingsStore.isValidShellPath(smokeShell) {
+                settings.shellPath = smokeShell
+            }
+        }
+        let initialFinderLaunch = NativeFinderEditorLaunch(paths: pendingFinderPaths)
+        launchedForFinderEditor = initialFinderLaunch != nil
         guard let core = RustCore(defaultTheme: settings.defaultTheme) else {
             presentFatalError(
                 title: "Terminal Core Failed",
@@ -6960,7 +7347,11 @@ final class SatinAppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
-        guard let controller = TerminalShellViewController(core: core, settings: settings) else {
+        guard let controller = TerminalShellViewController(
+            core: core,
+            settings: settings,
+            initialFinderLaunch: initialFinderLaunch
+        ) else {
             presentFatalError(
                 title: "Metal Renderer Unavailable",
                 message: "A Metal-capable GPU and the bundled Skia renderer are required."
@@ -7000,6 +7391,7 @@ final class SatinAppDelegate: NSObject, NSApplicationDelegate {
         window.makeKeyAndOrderFront(nil)
         self.window = window
         self.shellController = controller
+        pendingFinderPaths.removeAll()
         let settingsController = NativeSettingsWindowController(store: settingsStore)
         settingsController.onChange = { [weak self] settings in
             self?.shellController?.applySettings(settings)
@@ -7032,9 +7424,21 @@ final class SatinAppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
-        if ProcessInfo.processInfo.environment["SATIN_NATIVE_SMOKE_SCENARIO"] == nil {
+        if ProcessInfo.processInfo.environment["SATIN_NATIVE_SMOKE_SCENARIO"] == nil,
+           !launchedForFinderEditor {
             shellController?.saveSessionState()
         }
+    }
+
+    private func routeFinderPaths(_ paths: [String]) -> Bool {
+        guard let launch = NativeFinderEditorLaunch(paths: paths) else {
+            return false
+        }
+        if let shellController {
+            return shellController.openFinderItems(launch)
+        }
+        pendingFinderPaths.append(contentsOf: launch.paths)
+        return true
     }
 
     @objc func newTab(_ sender: Any?) {
@@ -7290,6 +7694,10 @@ final class SatinAppDelegate: NSObject, NSApplicationDelegate {
         case "terminal-exit-closes-tab":
             if let path = environment["SATIN_NATIVE_SMOKE_RESULT"], !path.isEmpty {
                 controller.applyTerminalExitClosesTabSmokeScenario(resultPath: path)
+            }
+        case "finder-editor":
+            if let path = environment["SATIN_NATIVE_SMOKE_RESULT"], !path.isEmpty {
+                controller.applyFinderEditorSmokeScenario(resultPath: path)
             }
         case "session-schema":
             if let path = environment["SATIN_NATIVE_SMOKE_RESULT"], !path.isEmpty {
@@ -7677,7 +8085,8 @@ struct SatinApplication {
         if ProcessInfo.processInfo.environment["SATIN_UPDATE_SELF_TEST"] == "1" {
             if !AppUpdateChecker.runSelfTests()
                 || !AppUpdateInstaller.runSelfTests()
-                || !NativeSettingsStore.runSelfTests() {
+                || !NativeSettingsStore.runSelfTests()
+                || !NativeFinderEditorLaunch.runSelfTests() {
                 failDiagnostic("update self-test failed")
             }
             print("update self-test passed")

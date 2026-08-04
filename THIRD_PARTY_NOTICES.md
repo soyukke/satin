@@ -4,14 +4,19 @@
 
 Portions of the Neovim rendering command model, retained window line cache,
 scrollback animation structure, font shaping/cache structure, and critically
-damped spring animation are adapted from Neovide.
+damped spring animation are adapted from Neovide. Message-area pointer
+selection, copied-text range construction, and the retained selection overlay
+also follow Neovide's structure.
 
 - Source: https://github.com/neovide/neovide
 - Audited source revision:
   https://github.com/neovide/neovide/commit/618605b79d70577f4b7ec92b50b3b9b5bf482c1a
+- Message-selection source revision:
+  https://github.com/neovide/neovide/commit/7f90c1276c4daafc60923bb1be3f175b504969d0
 - Adapted source areas:
   `src/renderer/animation_utils.rs`, `src/renderer/rendered_window.rs`,
-  `src/renderer/fonts/`, and `src/renderer/metal.rs`
+  `src/renderer/fonts/`, `src/renderer/metal.rs`, `src/renderer/mod.rs`,
+  `src/window/mouse_manager.rs`, and `src/window/window_wrapper.rs`
 - License: MIT
 
 ```text
