@@ -150,8 +150,8 @@ Pushing a tag that exactly matches the Cargo package version publishes a GitHub
 Release after the full verification and packaged-application smoke gates pass:
 
 ```sh
-git tag v0.2.2
-git push origin v0.2.2
+git tag v0.2.3
+git push origin v0.2.3
 ```
 
 The tag workflow runs on GitHub's Apple Silicon runner, attaches the arm64 ZIP
