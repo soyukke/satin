@@ -791,9 +791,20 @@ pub extern "C" fn satin_nvim_mouse(
     let Some(modifier) = c_string(modifier) else {
         return 0;
     };
-    runtime
-        .mouse_input(&button, &action, &modifier, grid, row, col)
-        .is_ok() as u8
+    match runtime.mouse_input(&button, &action, &modifier, grid, row, col) {
+        Ok(true) => 2,
+        Ok(false) => 1,
+        Err(_) => 0,
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn satin_nvim_take_message_selection_text(
+    handle: *mut NativeNeovimRuntime,
+) -> *mut c_char {
+    nvim_mut(handle)
+        .and_then(NativeNeovimRuntime::take_message_selection_text)
+        .map_or(ptr::null_mut(), string_ptr)
 }
 
 #[unsafe(no_mangle)]

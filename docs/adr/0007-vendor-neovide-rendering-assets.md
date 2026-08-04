@@ -56,6 +56,16 @@ retained windows, flush Skia, and let the Swift `MTKView` present the drawable.
 The AppKit row bridge and cursor overlay have been removed; cursor rendering
 lives in the Rust Skia/Metal adapter.
 
+Message-area drag selection follows Neovide's client-overlay boundary. A left
+press is consumed only when the topmost retained window is a message window;
+normal editor, split, floating, and file-tree input continues to Neovim. Rust
+retains the selected message grid and local cell range, clamps drags to the
+window, draws a 35%-alpha foreground overlay in Skia, and extracts trimmed
+multi-line text on release. AppKit owns only pointer routing and the macOS
+pasteboard write. Hiding, closing, or destroying the selected message grid
+clears the overlay. This preserves the event-origin compositor and avoids an
+AppKit cell-renderer selection path.
+
 The retained model now includes viewport margins, scrollback line source, scroll
 position, and event-origin scroll hint metadata. The Rust Skia/Metal adapter
 clips each window's scrollable inner region and uses that retained scrollback
@@ -109,7 +119,10 @@ the expected cursor body. The cursor-blink smoke captures the configured off
 phase and verifies that no cursor body pixels remain visible.
 The UI-surfaces smoke captures the Skia/Metal surface as well, verifies split,
 float, statusline, and message surfaces in the retained model, and checks that a
-blended floating-window cell is rendered near the expected composited color.
+blended floating-window cell is rendered near the expected composited color. It
+also drives message selection through AppKit and the FFI boundary, verifies the
+retained overlay, and checks the copied text while preserving the existing
+pasteboard contents.
 The popupmenu smoke enables Neovim `ext_popupmenu`, drives command-line
 completion through the normal input path, and verifies that the retained
 popupmenu model maps to visible Skia/Metal glyph pixels.
@@ -139,6 +152,12 @@ terminal-split scrolling plus same-shell restoration.
 
 Neovide MIT attribution and bundled font OFL attribution are tracked in
 `THIRD_PARTY_NOTICES.md`.
+
+Externalized windows remain a separate future decision. In this context the
+term means mapping eligible floating or message grids to independent macOS
+windows, not externalizing normal splits or file-tree panes. Implementing that
+requires explicit focus, lifecycle, placement, and session semantics and is not
+implied by multigrid rendering alone.
 
 ## Consequences
 

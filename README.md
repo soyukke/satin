@@ -36,8 +36,8 @@ settings, and input translation.
 - Native tabs, recursive splits, working-directory inheritance, and session
   restore.
 - Neovide-style animated cursor movement and retained smooth scrolling.
-- Native copy/paste, IME, rectangular selection, scrollback search, clickable
-  links, and a scroll indicator.
+- Native copy/paste, IME, terminal rectangular selection, Neovim message-area
+  drag selection, scrollback search, clickable links, and a scroll indicator.
 - A native Settings window for appearance, shell, startup directory,
   keybindings, session behavior, and signed updates.
 - A unified native Neovim UI backed by `nvim --embed`, `ext_multigrid`, and the
@@ -356,7 +356,10 @@ Skia/Metal cursor body is hidden during the configured blink off phase without
 requiring continuous redraw.
 `nvim-smoke-ui-surfaces` also captures the Skia/Metal surface and verifies that
 floating-window highlight `blend` values become alpha-composited background
-pixels instead of opaque cells.
+pixels instead of opaque cells. The same smoke drags across a Neovim message
+window through the AppKit/FFI input path, verifies that the retained selection
+overlay is present, and checks the copied text before restoring the previous
+macOS pasteboard contents.
 `nvim-smoke-popupmenu` drives command-line completion through Neovim
 `ext_popupmenu`, then checks both the retained popupmenu model and captured
 Skia/Metal glyph pixels.
@@ -366,10 +369,13 @@ The smoke recipes require Skia frames; `native-smoke` also checks
 
 ## Remaining Direction
 
-The Neovim compositor can continue toward deeper Neovide parity,
-including externalized windows and richer editor-side drag selection. Those
-renderer extensions remain event-driven; terminal behavior stays owned by
-`libghostty-vt`.
+The Neovim compositor can continue toward deeper Neovide parity. “Externalized
+windows” means promoting eligible floating or message grids to independent
+macOS windows; it does not mean turning ordinary Neovim splits or file-tree
+panes into separate windows. That feature is not implemented yet. Normal editor
+dragging remains Neovim-owned, while message-area dragging uses Satin's retained
+selection overlay and copies on release. Future renderer extensions remain
+event-driven; terminal behavior stays owned by `libghostty-vt`.
 
 ## Contributing
 

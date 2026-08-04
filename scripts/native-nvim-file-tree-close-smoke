@@ -22,6 +22,7 @@ SATIN_NATIVE_PANE=nvim \
   "$app" &
 app_pid=$!
 
+# shellcheck disable=SC2329 # Invoked indirectly by the EXIT trap.
 cleanup() {
   if kill -0 "$app_pid" 2>/dev/null; then
     kill "$app_pid" 2>/dev/null || true

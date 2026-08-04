@@ -1519,6 +1519,7 @@ impl TerminalRendererModel {
             cursor_color: frame.cursor_color,
             cursor: frame.cursor.clone(),
             cursor_parent_grid_id: Some(1),
+            message_selection: None,
             scrollbar: Some(frame.scrollbar.clone()),
             scroll_hint: None,
             windows: vec![

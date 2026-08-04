@@ -19,7 +19,7 @@ use rmpv::{Value, decode::read_value, encode::write_value};
 
 use crate::{
     neovide_render::NeovideRendererModelSnapshot,
-    neovim_editor::NeovimEditor,
+    neovim_editor::{NeovimEditor, NeovimMessageSelectionResult},
     terminal_runtime::TerminalGridSize,
     wakeup::{WakeupReceiver, WakeupSender},
 };
@@ -32,6 +32,7 @@ pub struct NativeNeovimRuntime {
     rx: Receiver<Value>,
     next_msg_id: u64,
     editor: NeovimEditor,
+    pending_message_selection_text: Option<String>,
     exited: bool,
     exit_code: Option<i32>,
 }
@@ -75,6 +76,7 @@ impl NativeNeovimRuntime {
             rx,
             next_msg_id: 1,
             editor: NeovimEditor::new(size.cols, size.rows),
+            pending_message_selection_text: None,
             exited: false,
             exit_code: None,
         };
@@ -109,7 +111,19 @@ impl NativeNeovimRuntime {
         grid: i64,
         row: i64,
         col: i64,
-    ) -> Result<()> {
+    ) -> Result<bool> {
+        if button == "left" && action == "press" {
+            self.pending_message_selection_text = None;
+        }
+        if let Some(result) = self
+            .editor
+            .handle_message_selection(button, action, row, col)
+        {
+            if let NeovimMessageSelectionResult::Finished(text) = result {
+                self.pending_message_selection_text = text;
+            }
+            return Ok(true);
+        }
         self.request(
             "nvim_input_mouse",
             vec![
@@ -120,7 +134,12 @@ impl NativeNeovimRuntime {
                 row.into(),
                 col.into(),
             ],
-        )
+        )?;
+        Ok(false)
+    }
+
+    pub fn take_message_selection_text(&mut self) -> Option<String> {
+        self.pending_message_selection_text.take()
     }
 
     pub fn command(&mut self, command: &str) -> Result<()> {

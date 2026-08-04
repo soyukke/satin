@@ -704,6 +704,11 @@ func satin_nvim_mouse(
     _ col: Int64
 ) -> UInt8
 
+@_silgen_name("satin_nvim_take_message_selection_text")
+func satin_nvim_take_message_selection_text(
+    _ handle: UnsafeMutableRawPointer?
+) -> UnsafeMutablePointer<CChar>?
+
 @_silgen_name("satin_nvim_command")
 func satin_nvim_command(
     _ handle: UnsafeMutableRawPointer?,
@@ -889,9 +894,21 @@ struct NeovideRendererModelSnapshot: Decodable {
     let background: TerminalColorSnapshot
     let cursor: TerminalCursorSnapshot?
     let cursor_parent_grid_id: Int?
+    let message_selection: NeovideMessageSelectionSnapshot?
     let scrollbar: ScrollbarSnapshot?
     let scroll_hint: FrameScrollHint?
     let windows: [NeovideRenderedWindowSnapshot]
+}
+
+struct NeovideMessageSelectionSnapshot: Decodable {
+    let grid_id: Int
+    let start: NeovideGridPositionSnapshot
+    let end: NeovideGridPositionSnapshot
+}
+
+struct NeovideGridPositionSnapshot: Decodable {
+    let row: Int
+    let col: Int
 }
 
 struct ScrollbarSnapshot: Decodable {
@@ -1100,6 +1117,12 @@ struct NativeMouseInput {
     var surfaceY: Float = 0
     var cellWidth: UInt32 = 1
     var cellHeight: UInt32 = 1
+}
+
+enum NativeMouseHandling: Equatable {
+    case unhandled
+    case handled
+    case messageSelection
 }
 
 enum NativePaneMode {
@@ -1408,8 +1431,8 @@ final class RustNeovimPane: NativePane {
         }
     }
 
-    func mouse(_ input: NativeMouseInput) -> Bool {
-        input.button.withCString { button in
+    func mouse(_ input: NativeMouseInput) -> NativeMouseHandling {
+        let result = input.button.withCString { button in
             input.action.withCString { action in
                 input.modifier.withCString { modifier in
                     satin_nvim_mouse(
@@ -1420,10 +1443,22 @@ final class RustNeovimPane: NativePane {
                         input.grid,
                         input.row,
                         input.col
-                    ) != 0
+                    )
                 }
             }
         }
+        switch result {
+        case 2:
+            return .messageSelection
+        case 1:
+            return .handled
+        default:
+            return .unhandled
+        }
+    }
+
+    func takeMessageSelectionText() -> String? {
+        ownedRustString(satin_nvim_take_message_selection_text(handle))
     }
 
     func runCommand(_ command: String) -> Bool {
@@ -1525,7 +1560,7 @@ final class TerminalTextView: NSView, NSTextInputClient {
     var onInput: ((Data) -> Void)?
     var onKeyEvent: ((NSEvent, Bool) -> Bool)?
     var onTextInput: ((String) -> Void)?
-    var onMouseInput: ((NativeMouseInput) -> Bool)?
+    var onMouseInput: ((NativeMouseInput) -> NativeMouseHandling)?
     var onSelectionChanged: (((row: Int, col: Int), (row: Int, col: Int), Bool) -> Void)?
     var onHyperlinkRequested: (((row: Int, col: Int)) -> Bool)?
     var onCopyRequested: (() -> Bool)?
@@ -1562,6 +1597,7 @@ final class TerminalTextView: NSView, NSTextInputClient {
     private var markedSelection = NSRange(location: 0, length: 0)
     private var interpretingKeyEvent: NSEvent?
     private var selectionAnchor: (row: Int, col: Int)?
+    private var messageSelectionActive = false
     private var terminalKeysDown = Set<UInt16>()
 
     override init(frame frameRect: NSRect) {
@@ -1678,7 +1714,7 @@ final class TerminalTextView: NSView, NSTextInputClient {
         guard let input = mouseInput(button: "left", action: "press", event: event, point: point) else {
             return
         }
-        if onMouseInput?(input) == true {
+        if handleMouseInput(input) {
             selectionAnchor = nil
             return
         }
@@ -1689,10 +1725,16 @@ final class TerminalTextView: NSView, NSTextInputClient {
 
     override func mouseUp(with event: NSEvent) {
         let point = convert(event.locationInWindow, from: nil)
-        guard let input = mouseInput(button: "left", action: "release", event: event, point: point) else {
+        guard let input = mouseInput(
+            button: "left",
+            action: "release",
+            event: event,
+            point: point,
+            clampToGrid: messageSelectionActive
+        ) else {
             return
         }
-        if onMouseInput?(input) == true {
+        if handleMouseInput(input) {
             selectionAnchor = nil
             return
         }
@@ -1708,10 +1750,16 @@ final class TerminalTextView: NSView, NSTextInputClient {
 
     override func mouseDragged(with event: NSEvent) {
         let point = convert(event.locationInWindow, from: nil)
-        guard let input = mouseInput(button: "left", action: "drag", event: event, point: point) else {
+        guard let input = mouseInput(
+            button: "left",
+            action: "drag",
+            event: event,
+            point: point,
+            clampToGrid: messageSelectionActive
+        ) else {
             return
         }
-        if onMouseInput?(input) == true {
+        if handleMouseInput(input) {
             selectionAnchor = nil
             return
         }
@@ -1727,7 +1775,7 @@ final class TerminalTextView: NSView, NSTextInputClient {
     override func rightMouseDown(with event: NSEvent) {
         let point = convert(event.locationInWindow, from: nil)
         if let input = mouseInput(button: "right", action: "press", event: event, point: point),
-           onMouseInput?(input) == true {
+           handleMouseInput(input) {
             return
         }
         onContextMenuRequested?(tabIndex(at: point), event, self)
@@ -1743,7 +1791,7 @@ final class TerminalTextView: NSView, NSTextInputClient {
         ) else {
             return
         }
-        _ = onMouseInput?(input)
+        _ = handleMouseInput(input)
     }
 
     override func otherMouseDown(with event: NSEvent) {
@@ -1756,7 +1804,7 @@ final class TerminalTextView: NSView, NSTextInputClient {
         ) else {
             return
         }
-        _ = onMouseInput?(input)
+        _ = handleMouseInput(input)
     }
 
     override func otherMouseUp(with event: NSEvent) {
@@ -1769,7 +1817,7 @@ final class TerminalTextView: NSView, NSTextInputClient {
         ) else {
             return
         }
-        _ = onMouseInput?(input)
+        _ = handleMouseInput(input)
     }
 
     override func scrollWheel(with event: NSEvent) {
@@ -2091,6 +2139,19 @@ final class TerminalTextView: NSView, NSTextInputClient {
             }
             counts[window.window_kind, default: 0] += 1
         }
+    }
+
+    func rendererModelMessageSelectionSummary() -> String {
+        guard let selection = rendererModelSnapshot?.message_selection else {
+            return "none"
+        }
+        return [
+            selection.grid_id,
+            selection.start.row,
+            selection.start.col,
+            selection.end.row,
+            selection.end.col,
+        ].map(String.init).joined(separator: ":")
     }
 
     func rendererModelCursorSummary() -> String {
@@ -2595,9 +2656,10 @@ final class TerminalTextView: NSView, NSTextInputClient {
         button: String,
         action: String,
         event: NSEvent,
-        point: NSPoint
+        point: NSPoint,
+        clampToGrid: Bool = false
     ) -> NativeMouseInput? {
-        guard let position = mouseGridPosition(point) else {
+        guard let position = mouseGridPosition(point, clampToGrid: clampToGrid) else {
             return nil
         }
         let textRect = terminalTextRect()
@@ -2617,6 +2679,17 @@ final class TerminalTextView: NSView, NSTextInputClient {
         )
     }
 
+    private func handleMouseInput(_ input: NativeMouseInput) -> Bool {
+        let handling = onMouseInput?(input) ?? .unhandled
+        if handling == .messageSelection {
+            messageSelectionActive = input.action != "release"
+        } else if input.button == "left" &&
+            (input.action == "press" || input.action == "release") {
+            messageSelectionActive = false
+        }
+        return handling != .unhandled
+    }
+
     private func sendWheelMouseInput(for event: NSEvent, at point: NSPoint) -> Bool {
         let rows = scrollRows(for: event)
         guard rows != 0 else {
@@ -2626,21 +2699,24 @@ final class TerminalTextView: NSView, NSTextInputClient {
         guard let input = mouseInput(button: "wheel", action: action, event: event, point: point) else {
             return false
         }
-        guard onMouseInput?(input) == true else {
+        guard handleMouseInput(input) else {
             return false
         }
         let repeats = min(6, max(1, Int(abs(rows).rounded(.up))))
         if repeats > 1 {
             for _ in 1..<repeats {
-                _ = onMouseInput?(input)
+                _ = handleMouseInput(input)
             }
         }
         return true
     }
 
-    private func mouseGridPosition(_ point: NSPoint) -> (row: Int, col: Int)? {
+    private func mouseGridPosition(
+        _ point: NSPoint,
+        clampToGrid: Bool = false
+    ) -> (row: Int, col: Int)? {
         let textRect = terminalTextRect()
-        guard textRect.contains(point) else {
+        guard clampToGrid || textRect.contains(point) else {
             return nil
         }
         let cellSize = terminalCellSize()
@@ -3084,6 +3160,7 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate, Te
     private var nvimFileTreeCloseSmokeGrid: Int?
     private var nvimFileTreeCloseSmokeBoundary: Int?
     private var nvimFileTreeCloseSmokeBefore = "none"
+    private var nvimMessageSelectionSmoke = "overlay=no copied=no"
     private var paneWakeupSources: [Int: DispatchSourceRead] = [:]
     private var suspendedPaneWakeupSources: [Int: DispatchSourceRead] = [:]
     private var syncingTabs = false
@@ -3136,7 +3213,7 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate, Te
             self?.writeTextToActivePane(text)
         }
         self.terminalTextView.onMouseInput = { [weak self] input in
-            self?.sendMouseInputToActivePane(input) ?? false
+            self?.sendMouseInputToActivePane(input) ?? .unhandled
         }
         self.terminalTextView.onSelectionChanged = { [weak self] start, end, rectangular in
             self?.selectTerminalText(start: start, end: end, rectangular: rectangular)
@@ -4365,7 +4442,11 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate, Te
             )
         }
 
-        DispatchQueue.main.asyncAfter(deadline: .now() + 4.5) { [weak self] in
+        DispatchQueue.main.asyncAfter(deadline: .now() + 4.45) { [weak self] in
+            self?.exerciseNvimMessageSelectionSmoke()
+        }
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 4.7) { [weak self] in
             self?.writeNvimUiSurfacesSmokeResult(resultPath, retries: 12)
         }
     }
@@ -5385,8 +5466,10 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate, Te
         let hasFloat = (counts["float"] ?? 0) >= 1 && floatCount == 1
         let hasFixedSurfaces = messageCount == 1
         let hasBlend = blendCellCount > 0 && blendCellSummary != "none"
+        let hasMessageSelection = nvimMessageSelectionSmoke.contains("overlay=yes") &&
+            nvimMessageSelectionSmoke.contains("copied=yes")
         let ok = hasModelFrames && skiaFrames > 0 &&
-            hasSplit && hasFloat && hasFixedSurfaces && hasBlend
+            hasSplit && hasFloat && hasFixedSurfaces && hasBlend && hasMessageSelection
         if !ok, retries > 0 {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
                 self?.writeNvimUiSurfacesSmokeResult(resultPath, retries: retries - 1)
@@ -5406,6 +5489,7 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate, Te
             "status=\(statusCount)",
             "status-raw=\(statusRaw)",
             "message=\(messageCount)",
+            "message-selection=\(nvimMessageSelectionSmoke.replacingOccurrences(of: " ", with: ","))",
             "blend-cells=\(blendCellCount)",
             "geometry=\(terminalTextView.skiaGeometrySummary())",
             "windows=\(terminalTextView.rendererModelWindowTextSummary(limit: 8))",
@@ -5760,6 +5844,68 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate, Te
         )
         _ = sendMouseInputToActivePane(press)
         _ = sendMouseInputToActivePane(release)
+    }
+
+    private func exerciseNvimMessageSelectionSmoke() {
+        guard let position = terminalTextView.rendererModelTextStartPosition("MSGBOX") else {
+            nvimMessageSelectionSmoke = "overlay=no copied=no reason=missing-message"
+            return
+        }
+        let pasteboard = NSPasteboard.general
+        let previousItems: [NSPasteboardItem] = pasteboard.pasteboardItems?.map { source in
+            let copy = NSPasteboardItem()
+            for type in source.types {
+                if let data = source.data(forType: type) {
+                    copy.setData(data, forType: type)
+                }
+            }
+            return copy
+        } ?? []
+        defer {
+            pasteboard.clearContents()
+            if !previousItems.isEmpty {
+                pasteboard.writeObjects(previousItems)
+            }
+        }
+
+        let start = NativeMouseInput(
+            button: "left",
+            action: "press",
+            modifier: "",
+            grid: 0,
+            row: Int64(position.row),
+            col: Int64(position.col)
+        )
+        let endCol = Int64(position.col + "MSGBOX".count - 1)
+        let drag = NativeMouseInput(
+            button: "left",
+            action: "drag",
+            modifier: "",
+            grid: 0,
+            row: Int64(position.row),
+            col: endCol
+        )
+        let release = NativeMouseInput(
+            button: "left",
+            action: "release",
+            modifier: "",
+            grid: 0,
+            row: Int64(position.row),
+            col: endCol
+        )
+        let pressHandling = sendMouseInputToActivePane(start)
+        let dragHandling = sendMouseInputToActivePane(drag)
+        let overlay = terminalTextView.rendererModelMessageSelectionSummary()
+        let releaseHandling = sendMouseInputToActivePane(release)
+        let copied = pasteboard.string(forType: .string) == "MSGBOX"
+        let handled = pressHandling == .messageSelection &&
+            dragHandling == .messageSelection &&
+            releaseHandling == .messageSelection
+        nvimMessageSelectionSmoke = [
+            "overlay=\(handled && overlay != "none" ? "yes" : "no")",
+            "copied=\(copied ? "yes" : "no")",
+            "selection=\(overlay)",
+        ].joined(separator: " ")
     }
 
     private func configureNvimCursorSmokeTab(marker: String, cursorRow: Int, cursorCol: Int) {
@@ -6339,22 +6485,32 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate, Te
         drainTerminalPanes()
     }
 
-    private func sendMouseInputToActivePane(_ input: NativeMouseInput) -> Bool {
+    private func sendMouseInputToActivePane(_ input: NativeMouseInput) -> NativeMouseHandling {
         guard let paneId = activePaneId, let pane = terminalPanes[paneId] else {
-            return false
+            return .unhandled
         }
-        let handled = if let terminal = pane as? RustTerminalPane {
-            terminal.mouse(input)
+        let handling = if let terminal = pane as? RustTerminalPane {
+            terminal.mouse(input) ? NativeMouseHandling.handled : .unhandled
         } else if let neovim = pane as? RustNeovimPane {
             neovim.mouse(input)
         } else {
-            false
+            NativeMouseHandling.unhandled
         }
-        guard handled else {
-            return false
+        guard handling != .unhandled else {
+            return .unhandled
         }
         drainTerminalPanes()
-        return true
+        if handling == .messageSelection {
+            if let neovim = pane as? RustNeovimPane,
+               let text = neovim.takeMessageSelectionText(),
+               !text.isEmpty {
+                let pasteboard = NSPasteboard.general
+                pasteboard.clearContents()
+                pasteboard.setString(text, forType: .string)
+            }
+            updateActiveFrame()
+        }
+        return handling
     }
 
     private func setTerminalFocus(_ focused: Bool) {
