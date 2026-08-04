@@ -53,6 +53,8 @@ jobs:
         run: |
           nix develop --command just native-resize-smoke
           nix develop --command just native-session-smoke
+          nix develop --command just native-tab-bar-actions-smoke
+          nix develop --command just native-home-cwd-smoke
           nix develop --command just terminal-exit-closes-tab-smoke
 
       - name: Upload release archive

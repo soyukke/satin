@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$PWD"
+app="$repo_root/spikes/macos-shell/.build/SatinApplication"
+smoke_root="$(mktemp -d "${TMPDIR:-/tmp}/satin-home-cwd-smoke.XXXXXX")"
+result_file="$smoke_root/result"
+log_file="$smoke_root/app.log"
+
+cleanup() {
+  rm -rf -- "$smoke_root"
+}
+trap cleanup EXIT INT TERM
+
+(
+  cd /
+  SATIN_NATIVE_SMOKE_SCENARIO=home-cwd \
+    SATIN_NATIVE_SMOKE_RESULT="$result_file" \
+    "$app" >"$log_file" 2>&1
+)
+
+if [[ ! -s "$result_file" ]]; then
+  echo "home working directory smoke failed before result was written" >&2
+  sed -n '1,160p' "$log_file" >&2 || true
+  exit 1
+fi
+
+result="$(cat "$result_file")"
+printf '%s\n' "$result"
+[[ "$result" == ok\ home-cwd* ]]

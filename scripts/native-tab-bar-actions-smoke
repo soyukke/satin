@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+app="spikes/macos-shell/.build/SatinApplication"
+result_file="spikes/macos-shell/.build/native-tab-bar-actions.result"
+log_file="/tmp/satin-tab-bar-actions.log"
+
+rm -f -- "$result_file" "$log_file"
+SATIN_NATIVE_SMOKE_SCENARIO=tab-bar-actions \
+  SATIN_NATIVE_SMOKE_RESULT="$result_file" \
+  "$app" >"$log_file" 2>&1
+
+if [[ ! -s "$result_file" ]]; then
+  echo "tab bar actions smoke failed before result was written" >&2
+  sed -n '1,160p' "$log_file" >&2 || true
+  exit 1
+fi
+
+result="$(cat "$result_file")"
+printf '%s\n' "$result"
+[[ "$result" == ok\ tab-bar-actions* ]]

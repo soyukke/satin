@@ -109,6 +109,14 @@ terminal-exit-closes-tab-smoke:
 native-session-smoke:
     @if [[ -z "${IN_NIX_SHELL:-}" ]]; then exec nix develop --command just native-session-smoke; else just native-build && ./scripts/native-session-smoke; fi
 
+# Verify tab-bar buttons create a tab and both split axes through their click actions.
+native-tab-bar-actions-smoke:
+    @if [[ -z "${IN_NIX_SHELL:-}" ]]; then exec nix develop --command just native-tab-bar-actions-smoke; else just native-build && ./scripts/native-tab-bar-actions-smoke; fi
+
+# Verify an empty startup-directory setting resolves to the macOS user home.
+native-home-cwd-smoke:
+    @if [[ -z "${IN_NIX_SHELL:-}" ]]; then exec nix develop --command just native-home-cwd-smoke; else just native-build && ./scripts/native-home-cwd-smoke; fi
+
 # Verify native window changes resize terminal pane grids.
 native-resize-smoke:
     @if [[ -z "${IN_NIX_SHELL:-}" ]]; then exec nix develop --command just native-resize-smoke; else just native-build && ./scripts/native-resize-smoke; fi

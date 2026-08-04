@@ -745,7 +745,7 @@ final class NativeSettingsWindowController: NSWindowController, NSTextFieldDeleg
         shellField = shell
 
         let directory = NSTextField()
-        directory.placeholderString = "Inherit current directory"
+        directory.placeholderString = "User home directory"
         directory.target = self
         directory.action = #selector(terminalPathChanged(_:))
         directory.delegate = self

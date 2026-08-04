@@ -1626,6 +1626,16 @@ final class RenameTextField: NSTextField, NSTextFieldDelegate {
     }
 }
 
+private enum TabBarMetrics {
+    static let height: CGFloat = 30
+    static let leadingInset: CGFloat = 12
+    static let trailingInset: CGFloat = 8
+    static let tabSpacing: CGFloat = 6
+    static let controlsSpacing: CGFloat = 3
+    static let controlsGap: CGFloat = 8
+    static let buttonSize: CGFloat = 24
+}
+
 final class TerminalTextView: NSView, NSTextInputClient {
     var onInput: ((Data) -> Void)?
     var onKeyEvent: ((NSEvent, Bool) -> Bool)?
@@ -1640,6 +1650,9 @@ final class TerminalTextView: NSView, NSTextInputClient {
     var onScroll: ((CGFloat) -> Void)?
     var onTabSelected: ((Int) -> Void)?
     var onPaneSelected: ((Int) -> Void)?
+    var onNewTabRequested: (() -> Void)?
+    var onSplitVerticalRequested: (() -> Void)?
+    var onSplitHorizontalRequested: (() -> Void)?
     var onFocusChanged: ((Bool) -> Void)?
     var onContextMenuRequested: ((Int?, NSEvent, NSView) -> Void)?
     var onGeometryChanged: (() -> Void)?
@@ -1669,6 +1682,9 @@ final class TerminalTextView: NSView, NSTextInputClient {
     private var selectionAnchor: (row: Int, col: Int)?
     private var messageSelectionActive = false
     private var terminalKeysDown = Set<UInt16>()
+    private let newTabButton = NSButton(frame: .zero)
+    private let splitVerticalButton = NSButton(frame: .zero)
+    private let splitHorizontalButton = NSButton(frame: .zero)
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -1678,6 +1694,12 @@ final class TerminalTextView: NSView, NSTextInputClient {
     private func configure() {
         wantsLayer = true
         layer?.backgroundColor = NSColor.clear.cgColor
+        configureTabBarButtons()
+    }
+
+    override func layout() {
+        super.layout()
+        layoutTabBarButtons()
     }
 
     override var acceptsFirstResponder: Bool {
@@ -1736,6 +1758,23 @@ final class TerminalTextView: NSView, NSTextInputClient {
         if changed {
             onGeometryChanged?()
         }
+    }
+
+    func performTabBarActionSmokeClicks() -> Bool {
+        layoutSubtreeIfNeeded()
+        let buttons = tabBarButtons
+        let controlsReady = buttons.allSatisfy {
+            $0.superview === self
+                && $0.image != nil
+                && $0.frame.width == TabBarMetrics.buttonSize
+                && bounds.contains($0.frame)
+        }
+        let tabsAvoidControls = tabRects().allSatisfy { $0.maxX <= tabBarTabsMaxX }
+        guard controlsReady, tabsAvoidControls else {
+            return false
+        }
+        buttons.forEach { $0.performClick(nil) }
+        return true
     }
 
     override func keyDown(with event: NSEvent) {
@@ -2357,7 +2396,7 @@ final class TerminalTextView: NSView, NSTextInputClient {
     private func drawTabStrip() {
         NSColor(calibratedRed: 34.0 / 255.0, green: 36.0 / 255.0, blue: 46.0 / 255.0, alpha: 1.0)
             .setFill()
-        NSRect(x: 0, y: 0, width: bounds.width, height: 30).fill()
+        NSRect(x: 0, y: 0, width: bounds.width, height: TabBarMetrics.height).fill()
 
         for (idx, rect) in tabRects().enumerated() {
             let theme = idx < tabThemes.count ? tabThemes[idx] : nil
@@ -2409,15 +2448,20 @@ final class TerminalTextView: NSView, NSTextInputClient {
         tabColor(theme: theme, active: active).setFill()
         NSBezierPath(roundedRect: rect, xRadius: 7, yRadius: 7).fill()
 
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.alignment = .center
+        paragraph.lineBreakMode = .byTruncatingTail
         let attributes: [NSAttributedString.Key: Any] = [
             .font: tabFont,
             .foregroundColor: NSColor.white,
+            .paragraphStyle: paragraph,
         ]
         let size = (title as NSString).size(withAttributes: attributes)
+        let horizontalInset = min(8, rect.width * 0.25)
         let textRect = NSRect(
-            x: rect.midX - size.width * 0.5,
+            x: rect.minX + horizontalInset,
             y: rect.midY - size.height * 0.5,
-            width: size.width,
+            width: max(0, rect.width - horizontalInset * 2),
             height: size.height
         )
         (title as NSString).draw(in: textRect, withAttributes: attributes)
@@ -2512,12 +2556,25 @@ final class TerminalTextView: NSView, NSTextInputClient {
     }
 
     private func tabRects() -> [NSRect] {
+        guard !tabTitles.isEmpty else {
+            return []
+        }
+        let availableWidth = tabBarTabsMaxX - TabBarMetrics.leadingInset
+        guard availableWidth > 0 else {
+            return []
+        }
+
+        let preferredWidths = tabTitles.map(tabWidth)
+        let preferredSpacing = TabBarMetrics.tabSpacing * CGFloat(max(0, tabTitles.count - 1))
+        let preferredTotal = preferredWidths.reduce(0, +) + preferredSpacing
+        let scale = preferredTotal > availableWidth ? availableWidth / preferredTotal : 1
+        let spacing = TabBarMetrics.tabSpacing * scale
         var rects: [NSRect] = []
-        var x: CGFloat = 12
-        for title in tabTitles {
-            let width = tabWidth(title)
+        var x = TabBarMetrics.leadingInset
+        for preferredWidth in preferredWidths {
+            let width = preferredWidth * scale
             rects.append(NSRect(x: x, y: 5, width: width, height: 20))
-            x += width + 6
+            x += width + spacing
         }
         return rects
     }
@@ -2525,6 +2582,98 @@ final class TerminalTextView: NSView, NSTextInputClient {
     private func tabWidth(_ title: String) -> CGFloat {
         let size = (title as NSString).size(withAttributes: [.font: tabFont])
         return min(max(size.width + 24, 92), 170)
+    }
+
+    private var tabBarButtons: [NSButton] {
+        [newTabButton, splitVerticalButton, splitHorizontalButton]
+    }
+
+    private var tabBarControlsWidth: CGFloat {
+        let buttonCount = CGFloat(tabBarButtons.count)
+        return buttonCount * TabBarMetrics.buttonSize
+            + max(0, buttonCount - 1) * TabBarMetrics.controlsSpacing
+    }
+
+    private var tabBarControlsLeadingX: CGFloat {
+        max(0, bounds.width - TabBarMetrics.trailingInset - tabBarControlsWidth)
+    }
+
+    private var tabBarTabsMaxX: CGFloat {
+        max(TabBarMetrics.leadingInset, tabBarControlsLeadingX - TabBarMetrics.controlsGap)
+    }
+
+    private func configureTabBarButtons() {
+        configureTabBarButton(
+            newTabButton,
+            symbolName: "plus",
+            label: "New Tab",
+            toolTip: "New Tab (Command-T)",
+            action: #selector(newTabButtonClicked(_:))
+        )
+        configureTabBarButton(
+            splitVerticalButton,
+            symbolName: "rectangle.split.2x1",
+            label: "Split Left and Right",
+            toolTip: "Split Left and Right (Command-D)",
+            action: #selector(splitVerticalButtonClicked(_:))
+        )
+        configureTabBarButton(
+            splitHorizontalButton,
+            symbolName: "rectangle.split.1x2",
+            label: "Split Top and Bottom",
+            toolTip: "Split Top and Bottom (Command-Shift-D)",
+            action: #selector(splitHorizontalButtonClicked(_:))
+        )
+        tabBarButtons.forEach(addSubview)
+    }
+
+    private func configureTabBarButton(
+        _ button: NSButton,
+        symbolName: String,
+        label: String,
+        toolTip: String,
+        action: Selector
+    ) {
+        button.title = ""
+        button.bezelStyle = .inline
+        button.setButtonType(.momentaryPushIn)
+        button.image = NSImage(
+            systemSymbolName: symbolName,
+            accessibilityDescription: label
+        )
+        button.imagePosition = .imageOnly
+        button.imageScaling = .scaleProportionallyDown
+        button.contentTintColor = .secondaryLabelColor
+        button.focusRingType = .none
+        button.toolTip = toolTip
+        button.setAccessibilityLabel(label)
+        button.target = self
+        button.action = action
+    }
+
+    private func layoutTabBarButtons() {
+        var x = tabBarControlsLeadingX
+        for button in tabBarButtons {
+            button.frame = NSRect(
+                x: x,
+                y: (TabBarMetrics.height - TabBarMetrics.buttonSize) * 0.5,
+                width: TabBarMetrics.buttonSize,
+                height: TabBarMetrics.buttonSize
+            )
+            x += TabBarMetrics.buttonSize + TabBarMetrics.controlsSpacing
+        }
+    }
+
+    @objc private func newTabButtonClicked(_ sender: NSButton) {
+        onNewTabRequested?()
+    }
+
+    @objc private func splitVerticalButtonClicked(_ sender: NSButton) {
+        onSplitVerticalRequested?()
+    }
+
+    @objc private func splitHorizontalButtonClicked(_ sender: NSButton) {
+        onSplitHorizontalRequested?()
     }
 
     private func handleCommandKey(_ event: NSEvent) -> Bool {
@@ -3284,6 +3433,27 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate, Te
         }
         self.terminalTextView.onPaneSelected = { [weak self] paneId in
             self?.selectPane(paneId)
+        }
+        self.terminalTextView.onNewTabRequested = { [weak self] in
+            guard let self else {
+                return
+            }
+            self.newTab(nil)
+            self.focusTerminal()
+        }
+        self.terminalTextView.onSplitVerticalRequested = { [weak self] in
+            guard let self else {
+                return
+            }
+            self.splitVertical(nil)
+            self.focusTerminal()
+        }
+        self.terminalTextView.onSplitHorizontalRequested = { [weak self] in
+            guard let self else {
+                return
+            }
+            self.splitHorizontal(nil)
+            self.focusTerminal()
         }
         self.terminalTextView.onFocusChanged = { [weak self] focused in
             self?.setTerminalFocus(focused)
@@ -4082,6 +4252,48 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate, Te
         )
     }
 
+    func applyTabBarActionsSmokeScenario(resultPath: String) {
+        let controlsReady = terminalTextView.performTabBarActionSmokeClicks()
+        guard let snapshot = core.snapshot(),
+              let activeTab = snapshot.tabs.first(where: { $0.index == snapshot.active_tab })
+        else {
+            writeSessionSmokeResult(resultPath, result: "failed tab-bar-actions snapshot=missing\n")
+            return
+        }
+        let metrics = paneLayoutMetrics(activeTab.layout)
+        let axes = metrics.axes.sorted()
+        let ok = controlsReady
+            && snapshot.tabs.count == 2
+            && snapshot.active_tab == 1
+            && metrics.leaves == 3
+            && metrics.splits == 2
+            && axes == ["horizontal", "vertical"]
+        let status = ok ? "ok" : "failed"
+        writeSessionSmokeResult(
+            resultPath,
+            result: "\(status) tab-bar-actions controls=\(controlsReady ? "ready" : "invalid") "
+                + "tabs=\(snapshot.tabs.count) active=\(snapshot.active_tab) "
+                + "leaves=\(metrics.leaves) splits=\(metrics.splits) "
+                + "axes=\(axes.joined(separator: ","))\n"
+        )
+    }
+
+    func applyHomeWorkingDirectorySmokeScenario(resultPath: String) {
+        let expected = FileManager.default.homeDirectoryForCurrentUser.standardizedFileURL.path
+        let actual = activeWorkingDirectory()
+        let processDirectory = FileManager.default.currentDirectoryPath
+        let ok = settings.startupDirectory.isEmpty
+            && processDirectory == "/"
+            && actual == expected
+        let status = ok ? "ok" : "failed"
+        writeSessionSmokeResult(
+            resultPath,
+            result: "\(status) home-cwd startup=default "
+                + "process=\(processDirectory == "/" ? "root" : "other") "
+                + "pane=\(actual == expected ? "home" : "other")\n"
+        )
+    }
+
     func applyTerminalResizeSmokeScenario(resultPath: String) {
         guard let window = view.window else {
             writeSessionSmokeResult(resultPath, result: "failed terminal-resize no-window\n")
@@ -4126,6 +4338,26 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate, Te
             first.leaves + second.leaves,
             first.splits + second.splits + 1,
             first.activeLeaves + second.activeLeaves
+        )
+    }
+
+    private func paneLayoutMetrics(
+        _ pane: PaneLayoutSnapshot
+    ) -> (leaves: Int, splits: Int, axes: Set<String>) {
+        if pane.kind == "leaf" {
+            return (1, 0, [])
+        }
+        let empty = (leaves: 0, splits: 0, axes: Set<String>())
+        let first = pane.first.map(paneLayoutMetrics) ?? empty
+        let second = pane.second.map(paneLayoutMetrics) ?? empty
+        var axes = first.axes.union(second.axes)
+        if let axis = pane.axis {
+            axes.insert(axis)
+        }
+        return (
+            first.leaves + second.leaves,
+            first.splits + second.splits + 1,
+            axes
         )
     }
 
@@ -7011,6 +7243,11 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate, Te
            isDirectory.boolValue {
             return configured
         }
+        let home = FileManager.default.homeDirectoryForCurrentUser.standardizedFileURL.path
+        if FileManager.default.fileExists(atPath: home, isDirectory: &isDirectory),
+           isDirectory.boolValue {
+            return home
+        }
         return FileManager.default.currentDirectoryPath
     }
 
@@ -7702,6 +7939,14 @@ final class SatinAppDelegate: NSObject, NSApplicationDelegate {
         case "session-schema":
             if let path = environment["SATIN_NATIVE_SMOKE_RESULT"], !path.isEmpty {
                 controller.applySessionSchemaSmokeScenario(resultPath: path)
+            }
+        case "tab-bar-actions":
+            if let path = environment["SATIN_NATIVE_SMOKE_RESULT"], !path.isEmpty {
+                controller.applyTabBarActionsSmokeScenario(resultPath: path)
+            }
+        case "home-cwd":
+            if let path = environment["SATIN_NATIVE_SMOKE_RESULT"], !path.isEmpty {
+                controller.applyHomeWorkingDirectorySmokeScenario(resultPath: path)
             }
         case "terminal-resize":
             if let path = environment["SATIN_NATIVE_SMOKE_RESULT"], !path.isEmpty {
