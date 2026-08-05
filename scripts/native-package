@@ -10,8 +10,8 @@ build_number="${SATIN_BUILD_NUMBER:-$(git rev-list --count HEAD 2>/dev/null || p
 package_root="spikes/macos-shell/.build/package"
 app_path="$package_root/Satin.app"
 contents="$app_path/Contents"
-binary="$contents/MacOS/satin"
-control_binary="$contents/MacOS/satinctl"
+binary="$contents/MacOS/satin-app"
+control_binary="$contents/MacOS/satin"
 nvim_launcher="$contents/MacOS/satin-nvim"
 plist_template="spikes/macos-shell/Info.plist.in"
 entitlements="spikes/macos-shell/Satin.entitlements"
@@ -59,7 +59,7 @@ for flag in "${inherited_ldflags[@]}"; do
 done
 NIX_LDFLAGS="${portable_ldflags[*]}" \
   MACOSX_DEPLOYMENT_TARGET="$minimum_macos" \
-  cargo build --release --lib --bin satinctl --bin satin-nvim
+  cargo build --release --lib --bin satin --bin satin-nvim
 tmp_binary="$package_root/satin.$$"
 trap 'rm -f "$tmp_binary"' EXIT INT TERM
 
@@ -84,7 +84,7 @@ env -u SDKROOT -u DEVELOPER_DIR \
   -lc++ \
   -o "$tmp_binary"
 mv -f "$tmp_binary" "$binary"
-/usr/bin/ditto target/release/satinctl "$control_binary"
+/usr/bin/ditto target/release/satin "$control_binary"
 /usr/bin/ditto target/release/satin-nvim "$nvim_launcher"
 chmod 755 "$control_binary"
 chmod 755 "$nvim_launcher"

@@ -6,7 +6,7 @@ if [[ -z "${IN_NIX_SHELL:-}" ]]; then
 fi
 
 app="${SATIN_NATIVE_EXECUTABLE:-spikes/macos-shell/.build/SatinApplication}"
-cli="${SATIN_CONTROL_EXECUTABLE:-target/debug/satinctl}"
+cli="${SATIN_CONTROL_EXECUTABLE:-target/debug/satin}"
 cli="$(cd "$(dirname "$cli")" && pwd)/$(basename "$cli")"
 app_arguments=()
 if [[ -n "${SATIN_CONTROL_SMOKE_SHELL:-}" ]]; then
@@ -48,9 +48,16 @@ fi
 
 list="$("$cli" --socket "$socket" --json list)"
 jq -e '.ok and .result.activeTab == 1 and (.result.panes | length) == 1' <<<"$list" >/dev/null
+identify="$({
+  SATIN_SOCKET="$socket" SATIN_TAB_ID=1 SATIN_PANE_ID=1 \
+    "$cli" --json identify
+})"
+jq -e \
+  '.ok and .result.tab.id == 1 and .result.pane.id == 1 and .result.pane.tab == 1' \
+  <<<"$identify" >/dev/null
 
 "$cli" --socket "$socket" send --pane 1 \
-  "resolved_satinctl=\$(command -v satinctl 2>/dev/null || true); printf 'CONTROL_ENV:%s:%s:%s:%s:%s\\n' \"\$SATIN_TAB_ID\" \"\$SATIN_PANE_ID\" \"\$SATIN_SOCKET\" \"\$SATINCTL\" \"\$resolved_satinctl\"; if [ \"\$SATIN_TAB_ID:\$SATIN_PANE_ID:\$SATIN_SOCKET:\$SATINCTL\" = \"1:1:$socket:$cli\" ] && [ \"\$resolved_satinctl\" = \"\$SATINCTL\" ]; then echo CONTROL_READY:OK; else echo CONTROL_READY:BAD; fi" \
+  "resolved_satin=\$(command -v satin 2>/dev/null || true); printf 'CONTROL_ENV:%s:%s:%s:%s:%s\\n' \"\$SATIN_TAB_ID\" \"\$SATIN_PANE_ID\" \"\$SATIN_SOCKET\" \"\$SATIN_CLI\" \"\$resolved_satin\"; if [ \"\$SATIN_TAB_ID:\$SATIN_PANE_ID:\$SATIN_SOCKET:\$SATIN_CLI\" = \"1:1:$socket:$cli\" ] && [ \"\$resolved_satin\" = \"\$SATIN_CLI\" ]; then echo CONTROL_READY:OK; else echo CONTROL_READY:BAD; fi" \
   >/dev/null
 "$cli" --socket "$socket" key --pane 1 Enter >/dev/null
 for _ in {1..100}; do
@@ -67,12 +74,53 @@ if ! grep -Fq -- "CONTROL_READY:OK" <<<"${screen:-}"; then
   exit 1
 fi
 
-new_tab="$("$cli" --socket "$socket" --json new-tab --cwd "$smoke_root")"
+new_tab="$("$cli" --socket "$socket" --json new-tab \
+  --cwd "$smoke_root" --title controlled --background)"
 jq -e '.result.tab == 2 and .result.pane == 2' <<<"$new_tab" >/dev/null
-"$cli" --socket "$socket" rename-tab --tab 2 controlled >/dev/null
+background_tab="$("$cli" --socket "$socket" --json list)"
+jq -e '
+  .result.activeTab == 1
+    and (.result.tabs[] | select(.id == 2) | .title == "controlled" and (.active | not))
+' <<<"$background_tab" >/dev/null
 "$cli" --socket "$socket" set-theme --tab 2 Harbor >/dev/null
-split="$("$cli" --socket "$socket" --json split --pane 2 --horizontal --cwd "$smoke_root")"
+"$cli" --socket "$socket" select-tab --tab 2 >/dev/null
+
+split="$("$cli" --socket "$socket" --json split \
+  --pane 2 --horizontal --cwd "$smoke_root" --background)"
 jq -e '.result.tab == 2 and .result.pane == 3' <<<"$split" >/dev/null
+background_split="$("$cli" --socket "$socket" --json list)"
+jq -e '
+  .result.activeTab == 2
+    and (.result.tabs[] | select(.id == 2) | .activePane == 2)
+' <<<"$background_split" >/dev/null
+"$cli" --socket "$socket" select-pane --pane 3 >/dev/null
+"$cli" --socket "$socket" move-tab --tab 2 --index 0 >/dev/null
+moved="$("$cli" --socket "$socket" --json list)"
+jq -e '
+  .result.activeTab == 2
+    and .result.tabs[0].id == 2
+    and (.result.tabs[] | select(.id == 2) | .activePane == 3)
+' <<<"$moved" >/dev/null
+
+"$cli" --socket "$socket" send --pane 3 \
+  "printf 'NEW_CONTEXT:%s:%s:%s\\n' \"\$SATIN_TAB_ID\" \"\$SATIN_PANE_ID\" \"\$SATIN_CLI\"; \"\$SATIN_CLI\" --json identify" \
+  >/dev/null
+"$cli" --socket "$socket" key --pane 3 Enter >/dev/null
+for _ in {1..100}; do
+  new_screen="$("$cli" --socket "$socket" read-screen --pane 3)"
+  if grep -Fq -- "NEW_CONTEXT:2:3:$cli" <<<"$new_screen" &&
+    grep -Fq -- '"id": 3' <<<"$new_screen"; then
+    break
+  fi
+  sleep 0.05
+done
+if ! grep -Fq -- "NEW_CONTEXT:2:3:$cli" <<<"${new_screen:-}" ||
+  ! grep -Fq -- '"id": 3' <<<"${new_screen:-}"; then
+  printf '%s\n' "${new_screen:-<empty screen>}" >&2
+  cat "$app_log" >&2
+  echo "control smoke failed: split pane identity mismatch" >&2
+  exit 1
+fi
 "$cli" --socket "$socket" status set --pane 3 running "integration smoke" >/dev/null
 
 "$cli" --socket "$socket" --json status wait --pane 3 --timeout 5 >"$smoke_root/wait.json" &
@@ -83,13 +131,47 @@ wait "$wait_pid"
 jq -e '.ok and .result.status == "done" and .result.summary == "control complete"' \
   "$smoke_root/wait.json" >/dev/null
 
+"$cli" --socket "$socket" close-pane --pane 3 >/dev/null
+closed_pane="$("$cli" --socket "$socket" --json list)"
+jq -e '
+  (.result.panes | all(.id != 3))
+    and (.result.tabs[] | select(.id == 2) | .activePane == 2)
+' <<<"$closed_pane" >/dev/null
+
+disposable="$("$cli" --socket "$socket" --json new-tab \
+  --cwd "$smoke_root" --title disposable --background)"
+jq -e '.result.tab == 3 and .result.pane == 4' <<<"$disposable" >/dev/null
+"$cli" --socket "$socket" close-tab --tab 3 >/dev/null
+
 final="$("$cli" --socket "$socket" --json list)"
 jq -e '
   .ok
+    and .result.activeTab == 2
     and (.result.tabs | length) == 2
-    and (.result.panes | length) == 3
+    and (.result.panes | length) == 2
+    and .result.tabs[0].id == 2
     and (.result.tabs[] | select(.id == 2) | .title == "controlled" and .theme == "Harbor")
-    and (.result.panes[] | select(.id == 3) | .status.status == "done")
+    and (.result.tabs | all(.id != 3))
+    and (.result.panes | all(.id != 3 and .id != 4))
 ' <<<"$final" >/dev/null
+"$cli" --socket "$socket" close-tab --tab 1 >/dev/null
+if "$cli" --socket "$socket" close-tab --tab 2 >"$smoke_root/final-tab.out" 2>&1; then
+  echo "control smoke failed: final tab close unexpectedly succeeded" >&2
+  exit 1
+fi
+grep -F "final_tab" "$smoke_root/final-tab.out" >/dev/null
+if "$cli" --socket "$socket" close-pane --pane 2 >"$smoke_root/final-pane.out" 2>&1; then
+  echo "control smoke failed: final pane close unexpectedly succeeded" >&2
+  exit 1
+fi
+grep -F "final_pane" "$smoke_root/final-pane.out" >/dev/null
+safe_final="$("$cli" --socket "$socket" --json list)"
+jq -e '
+  .result.activeTab == 2
+    and (.result.tabs | length) == 1
+    and (.result.panes | length) == 1
+    and .result.tabs[0].id == 2
+' <<<"$safe_final" >/dev/null
+
 
 echo "native control smoke passed"

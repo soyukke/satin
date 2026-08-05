@@ -70,11 +70,32 @@ pub enum ControlCommand {
     },
     NewTab {
         cwd: Option<String>,
+        title: Option<String>,
+        #[serde(default)]
+        background: bool,
     },
     Split {
         pane: usize,
         axis: ControlSplitAxis,
         cwd: Option<String>,
+        #[serde(default)]
+        background: bool,
+    },
+    SelectTab {
+        tab: usize,
+    },
+    MoveTab {
+        tab: usize,
+        index: usize,
+    },
+    CloseTab {
+        tab: usize,
+    },
+    SelectPane {
+        pane: usize,
+    },
+    ClosePane {
+        pane: usize,
     },
     OpenNeovim {
         pane: usize,
@@ -508,6 +529,25 @@ mod tests {
             request
         );
         assert!(json.contains("\"command\":\"status-set\""));
+    }
+
+    #[test]
+    fn protocol_defaults_new_tab_fields_for_existing_v1_clients() {
+        let request = serde_json::from_value::<ControlRequest>(serde_json::json!({
+            "version": 1,
+            "command": "new-tab",
+            "cwd": "/tmp/project"
+        }))
+        .unwrap();
+
+        assert_eq!(
+            request.command,
+            ControlCommand::NewTab {
+                cwd: Some("/tmp/project".to_owned()),
+                title: None,
+                background: false,
+            }
+        );
     }
 
     #[test]

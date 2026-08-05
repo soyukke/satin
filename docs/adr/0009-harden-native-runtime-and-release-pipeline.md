@@ -31,9 +31,11 @@ targets Apple Silicon only.
   schema-versioned SHA-256 manifest. Without Apple credentials it is explicitly
   a development artifact; with both signing and notary credentials it is a
   notarized production artifact.
+- The bundle's private GUI executable is `satin-app`, leaving `satin` as the
+  single public CLI name without a second `satinctl` compatibility command.
 - Packaged Mach-O executables link macOS compatibility libraries through the
   Xcode SDK rather than the Nix store. Packaging rejects any `/nix/store`
-  dynamic dependency, and package smoke launches the nested `satinctl`
+  dynamic dependency, and package smoke launches the nested `satin` CLI
   executable with a minimal environment so development-machine libraries
   cannot mask a non-portable release.
 - A `v<package-version>` tag runs the arm64 production gate and package smoke,

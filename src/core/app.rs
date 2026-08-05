@@ -74,6 +74,25 @@ impl TerminalCore {
         true
     }
 
+    pub fn move_tab(&mut self, tab_id: usize, target_index: usize) -> bool {
+        if target_index >= self.tabs.len() {
+            return false;
+        }
+        let Some(source_index) = self.tab_index_for_id(tab_id) else {
+            return false;
+        };
+        if source_index == target_index {
+            return true;
+        }
+        let active_tab_id = self.tabs.get(self.active_tab).map(|tab| tab.id);
+        let tab = self.tabs.remove(source_index);
+        self.tabs.insert(target_index, tab);
+        if let Some(active_tab_id) = active_tab_id {
+            self.active_tab = self.tab_index_for_id(active_tab_id).unwrap_or(0);
+        }
+        true
+    }
+
     pub fn select_pane(&mut self, pane_id: usize) -> bool {
         let pane_id = PaneId(pane_id);
         let Some(tab) = self.active_tab_mut() else {
@@ -334,5 +353,32 @@ mod tests {
         assert_eq!(snapshot.tabs.len(), 1);
         assert_eq!(snapshot.active_tab, 0);
         assert_eq!(snapshot.tabs[0].active_pane, 1);
+    }
+
+    #[test]
+    fn moving_a_tab_preserves_the_active_tab_identity() {
+        let mut core = TerminalCore::new();
+        core.new_tab();
+        core.new_tab();
+
+        assert!(core.move_tab(1, 2));
+        let snapshot = core.snapshot();
+
+        assert_eq!(
+            snapshot.tabs.iter().map(|tab| tab.id).collect::<Vec<_>>(),
+            vec![2, 3, 1]
+        );
+        assert_eq!(snapshot.tabs[snapshot.active_tab].id, 3);
+    }
+
+    #[test]
+    fn moving_a_tab_rejects_unknown_ids_and_out_of_range_indexes() {
+        let mut core = TerminalCore::new();
+        core.new_tab();
+        let before = core.snapshot();
+
+        assert!(!core.move_tab(99, 0));
+        assert!(!core.move_tab(1, 2));
+        assert_eq!(core.snapshot(), before);
     }
 }

@@ -8,7 +8,7 @@ fi
 release_root="spikes/macos-shell/.build/release"
 manifest="$release_root/latest.json"
 app_path="spikes/macos-shell/.build/package/Satin.app"
-executable="$app_path/Contents/MacOS/satin"
+executable="$app_path/Contents/MacOS/satin-app"
 test -f "$manifest"
 test -x "$executable"
 jq -e '

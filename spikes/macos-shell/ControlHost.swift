@@ -29,6 +29,8 @@ struct NativeControlRequest: Decodable {
     let command: String
     let pane: Int?
     let tab: Int?
+    let index: Int?
+    let background: Bool?
     let text: String?
     let key: String?
     let status: String?
@@ -204,7 +206,7 @@ enum NativeControlEnvironment {
     static func cliPath() -> String {
         let bundled = Bundle.main.executableURL?
             .deletingLastPathComponent()
-            .appendingPathComponent("satinctl")
+            .appendingPathComponent("satin")
         if let bundled, FileManager.default.isExecutableFile(atPath: bundled.path) {
             return bundled.path
         }
@@ -212,7 +214,7 @@ enum NativeControlEnvironment {
             fileURLWithPath: FileManager.default.currentDirectoryPath,
             isDirectory: true
         )
-        .appendingPathComponent("target/debug/satinctl")
+        .appendingPathComponent("target/debug/satin")
         .path
     }
 
