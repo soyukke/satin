@@ -103,19 +103,17 @@ jq -e '
 ' <<<"$moved" >/dev/null
 
 "$cli" --socket "$socket" send --pane 3 \
-  "printf 'NEW_CONTEXT:%s:%s:%s\\n' \"\$SATIN_TAB_ID\" \"\$SATIN_PANE_ID\" \"\$SATIN_CLI\"; \"\$SATIN_CLI\" --json identify" \
+  "if [ \"\$SATIN_TAB_ID:\$SATIN_PANE_ID:\$SATIN_CLI\" = \"2:3:$cli\" ] && \"\$SATIN_CLI\" --json identify >/dev/null; then echo NEW_CONTEXT:OK; else echo NEW_CONTEXT:BAD; fi" \
   >/dev/null
 "$cli" --socket "$socket" key --pane 3 Enter >/dev/null
 for _ in {1..100}; do
   new_screen="$("$cli" --socket "$socket" read-screen --pane 3)"
-  if grep -Fq -- "NEW_CONTEXT:2:3:$cli" <<<"$new_screen" &&
-    grep -Fq -- '"id": 3' <<<"$new_screen"; then
+  if grep -Fq -- "NEW_CONTEXT:OK" <<<"$new_screen"; then
     break
   fi
   sleep 0.05
 done
-if ! grep -Fq -- "NEW_CONTEXT:2:3:$cli" <<<"${new_screen:-}" ||
-  ! grep -Fq -- '"id": 3' <<<"${new_screen:-}"; then
+if ! grep -Fq -- "NEW_CONTEXT:OK" <<<"${new_screen:-}"; then
   printf '%s\n' "${new_screen:-<empty screen>}" >&2
   cat "$app_log" >&2
   echo "control smoke failed: split pane identity mismatch" >&2
