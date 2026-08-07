@@ -6,7 +6,7 @@ if [[ -z "${IN_NIX_SHELL:-}" ]]; then
 fi
 
 app="${SATIN_NATIVE_EXECUTABLE:-spikes/macos-shell/.build/SatinApplication}"
-cli="${SATIN_CONTROL_EXECUTABLE:-target/debug/satinctl}"
+cli="${SATIN_CONTROL_EXECUTABLE:-target/debug/satin}"
 cli="$(cd "$(dirname "$cli")" && pwd)/$(basename "$cli")"
 smoke_root="$(mktemp -d "${TMPDIR:-/tmp}/satin-kitty-smoke.XXXXXX")"
 socket="$smoke_root/control.sock"

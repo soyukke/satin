@@ -892,11 +892,7 @@ fn configure_zsh_integration(cmd: &mut CommandBuilder, config: &TerminalSpawnCon
 }
 
 fn allowed_terminal_environment_key(key: &str) -> bool {
-    key.starts_with("SATIN_")
-        || key.starts_with("NVTERM_")
-        || key == "SATINCTL"
-        || key == "NVTERMCTL"
-        || key == "PATH"
+    key.starts_with("SATIN_") || key.starts_with("NVTERM_") || key == "PATH"
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -2495,9 +2491,8 @@ mod tests {
     #[test]
     fn terminal_environment_allows_control_discovery_without_arbitrary_injection() {
         assert!(allowed_terminal_environment_key("SATIN_SOCKET"));
-        assert!(allowed_terminal_environment_key("SATINCTL"));
+        assert!(allowed_terminal_environment_key("SATIN_CLI"));
         assert!(allowed_terminal_environment_key("NVTERM_SOCKET"));
-        assert!(allowed_terminal_environment_key("NVTERMCTL"));
         assert!(allowed_terminal_environment_key("PATH"));
         assert!(!allowed_terminal_environment_key("HOME"));
         assert!(!allowed_terminal_environment_key("DYLD_INSERT_LIBRARIES"));

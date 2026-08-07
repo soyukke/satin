@@ -76,6 +76,15 @@ pub extern "C" fn satin_core_select_tab(handle: *mut TerminalCore, index: usize)
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn satin_core_move_tab(
+    handle: *mut TerminalCore,
+    tab_id: usize,
+    index: usize,
+) -> u8 {
+    core_mut(handle).is_some_and(|core| core.move_tab(tab_id, index)) as u8
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn satin_core_select_pane(handle: *mut TerminalCore, pane_id: usize) -> u8 {
     core_mut(handle).is_some_and(|core| core.select_pane(pane_id)) as u8
 }

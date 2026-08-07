@@ -44,7 +44,7 @@ settings, and input translation.
   same Skia/Metal renderer whether it is opened from the shell or Command-N.
 - Finder Open With, Dock drops, and a macOS Service for opening files or folders
   directly in a focused editor tab without restoring the normal workspace.
-- Kitty graphics support and an owner-only `satinctl` automation interface.
+- Kitty graphics support and an owner-only `satin` automation interface.
 - Publisher-signed in-app updates distributed through GitHub Releases.
 
 ## Requirements
@@ -228,9 +228,10 @@ events use macOS unified logging.
   shell, startup directory, Finder editor, conflict-checked keybindings, and
   signed-update frequency. Live-safe settings apply immediately; launch
   settings apply to newly created panes.
-- Bundles `satinctl`, a versioned local control CLI for reading visible pane
-  text, sending input and keys, creating and naming tabs/splits, changing
-  themes, and coordinating agent status.
+- Bundles `satin`, a versioned local control CLI for reading visible pane
+  text, sending input and keys, creating, selecting, naming, reordering, and
+  closing tabs or panes, opening cwd-scoped project workspaces without stealing
+  focus, changing themes, and coordinating agent status.
 - Uses runtime wakeup descriptors and renderer animation deadlines instead of
   permanent 60 Hz polling, and tears down PTY process groups and reader threads
   when panes close.
@@ -274,22 +275,31 @@ safe defaults during load so preferences cannot prevent startup.
 ## Local control API
 
 Every pane receives `SATIN_SOCKET`, `SATIN_TAB_ID`, `SATIN_PANE_ID`, and
-`SATINCTL`, and can invoke:
+`SATIN_CLI`, and can invoke:
 
 ```sh
-"$SATINCTL" list
-"$SATINCTL" read-screen
-"$SATINCTL" split --vertical
-"$SATINCTL" status set running "working"
-"$SATINCTL" status wait --timeout 300
+"$SATIN_CLI" skill
+"$SATIN_CLI" identify --json
+"$SATIN_CLI" list --json
+"$SATIN_CLI" read-screen
+"$SATIN_CLI" new-tab --cwd "$PWD" --title project --background
+"$SATIN_CLI" split --vertical --background
+"$SATIN_CLI" select-tab --tab 2
+"$SATIN_CLI" move-tab --tab 2 --index 0
+"$SATIN_CLI" close-pane --pane 3
+"$SATIN_CLI" status set running "working"
+"$SATIN_CLI" status wait --timeout 300
 ```
 
-The app bundle also contains `Contents/MacOS/satinctl` for external scripts.
-Its directory is prepended to the pane's initial `PATH`; use `$SATINCTL` when
-a shell startup file replaces `PATH`.
+The app bundle also contains `Contents/MacOS/satin` for external scripts.
+Its directory is prepended to the pane's initial `PATH`; use `$SATIN_CLI` when
+a shell startup file replaces `PATH`. Targets use stable IDs from `list`, while
+tab movement alone uses its zero-based presentation index. `--background`
+creates and starts a tab or split and then restores the previously selected
+tab and pane.
 The Unix socket is owner-only, verifies the peer UID, and has bounded request,
 client, and timeout limits; it is not a remote-control interface. See
-[`docs/satinctl.md`](docs/satinctl.md) for commands, JSON behavior, and the
+[`docs/satin-cli.md`](docs/satin-cli.md) for commands, JSON behavior, and the
 security boundary.
 
 ## Native Shortcuts

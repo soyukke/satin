@@ -459,6 +459,9 @@ func satin_core_close_pane(_ handle: UnsafeMutableRawPointer?, _ paneId: Int) ->
 @_silgen_name("satin_core_select_tab")
 func satin_core_select_tab(_ handle: UnsafeMutableRawPointer?, _ index: Int) -> UInt8
 
+@_silgen_name("satin_core_move_tab")
+func satin_core_move_tab(_ handle: UnsafeMutableRawPointer?, _ tabId: Int, _ index: Int) -> UInt8
+
 @_silgen_name("satin_core_select_pane")
 func satin_core_select_pane(_ handle: UnsafeMutableRawPointer?, _ paneId: Int) -> UInt8
 
@@ -1038,6 +1041,10 @@ final class RustCore {
 
     func selectTab(_ index: Int) -> Bool {
         satin_core_select_tab(handle, index) != 0
+    }
+
+    func moveTab(_ tabId: Int, to index: Int) -> Bool {
+        satin_core_move_tab(handle, tabId, index) != 0
     }
 
     func selectPane(_ paneId: Int) -> Bool {
@@ -3637,6 +3644,16 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate, Te
             handleControlNewTab(request, reply: reply)
         case "split":
             handleControlSplit(request, reply: reply)
+        case "select-tab":
+            handleControlSelectTab(request, reply: reply)
+        case "move-tab":
+            handleControlMoveTab(request, reply: reply)
+        case "close-tab":
+            handleControlCloseTab(request, reply: reply)
+        case "select-pane":
+            handleControlSelectPane(request, reply: reply)
+        case "close-pane":
+            handleControlClosePane(request, reply: reply)
         case "open-neovim":
             handleControlOpenNeovim(request, reply: reply)
         case "rename-tab":
@@ -3851,28 +3868,71 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate, Te
         }
     }
 
+    private func discardPaneState(_ paneId: Int) {
+        removeControlState(paneId)
+        discardSuspendedTerminalSession(paneId)
+        removePaneRuntime(paneId)
+        scrollRemainders.removeValue(forKey: paneId)
+        paneWorkingDirectories.removeValue(forKey: paneId)
+        paneModes.removeValue(forKey: paneId)
+        paneTitles.removeValue(forKey: paneId)
+    }
+
+    private func restoreControlContext(tabId: Int?, paneId: Int?) {
+        guard let tabId,
+              let tab = lastSnapshot?.tabs.first(where: { $0.id == tabId })
+        else {
+            return
+        }
+        _ = core.selectTab(tab.index)
+        if let paneId, tab.panes.contains(paneId) {
+            _ = core.selectPane(paneId)
+        }
+        syncFromCore()
+    }
+
     private func handleControlNewTab(
         _ request: NativeControlRequest,
         reply: @escaping NativeControlReply
     ) {
+        let title = request.title?.trimmingCharacters(in: .whitespacesAndNewlines)
+        if request.title != nil && (title?.isEmpty ?? true) {
+            reply(controlFailure("invalid_title", "The tab title cannot be empty."))
+            return
+        }
+        let previousTabId = lastSnapshot.flatMap { snapshot in
+            snapshot.tabs.first(where: { $0.index == snapshot.active_tab })?.id
+        }
+        let previousPaneId = activePaneId
         guard let cwd = validatedControlDirectory(request.cwd) else {
             reply(controlFailure("invalid_cwd", "The working directory is invalid."))
             return
         }
         pendingPaneWorkingDirectory = cwd
         let index = core.newTab()
+        if let title {
+            core.renameTab(index, title: title)
+        }
         syncFromCore()
         guard let tab = lastSnapshot?.tabs.first(where: { $0.index == index }) else {
             reply(controlFailure("core_error", "The new tab was not created."))
             return
         }
-        reply(.success(["tab": tab.id, "pane": tab.active_pane]))
+        let result = ["tab": tab.id, "pane": tab.active_pane]
+        if request.background == true {
+            restoreControlContext(tabId: previousTabId, paneId: previousPaneId)
+        }
+        reply(.success(result))
     }
 
     private func handleControlSplit(
         _ request: NativeControlRequest,
         reply: @escaping NativeControlReply
     ) {
+        let previousTabId = lastSnapshot.flatMap { snapshot in
+            snapshot.tabs.first(where: { $0.index == snapshot.active_tab })?.id
+        }
+        let previousPaneId = activePaneId
         guard let paneId = request.pane,
               let tab = lastSnapshot?.tabs.first(where: { $0.panes.contains(paneId) }),
               let cwd = validatedControlDirectory(request.cwd),
@@ -3890,7 +3950,116 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate, Te
             return
         }
         syncFromCore()
-        reply(.success(["tab": tab.id, "pane": newPane]))
+        let result = ["tab": tab.id, "pane": newPane]
+        if request.background == true {
+            restoreControlContext(tabId: previousTabId, paneId: previousPaneId)
+        }
+        reply(.success(result))
+    }
+
+    private func handleControlSelectTab(
+        _ request: NativeControlRequest,
+        reply: @escaping NativeControlReply
+    ) {
+        guard let tabId = request.tab,
+              let tab = lastSnapshot?.tabs.first(where: { $0.id == tabId }),
+              core.selectTab(tab.index)
+        else {
+            reply(controlFailure("tab_not_found", "The requested tab does not exist."))
+            return
+        }
+        syncFromCore()
+        focusTerminal()
+        reply(.success(["tab": tabId]))
+    }
+
+    private func handleControlMoveTab(
+        _ request: NativeControlRequest,
+        reply: @escaping NativeControlReply
+    ) {
+        guard let tabId = request.tab,
+              let index = request.index,
+              let snapshot = lastSnapshot,
+              index < snapshot.tabs.count,
+              snapshot.tabs.contains(where: { $0.id == tabId }),
+              core.moveTab(tabId, to: index)
+        else {
+            reply(controlFailure("invalid_tab_index", "The tab or destination index is invalid."))
+            return
+        }
+        syncFromCore()
+        reply(.success(["tab": tabId, "index": index]))
+    }
+
+    private func handleControlCloseTab(
+        _ request: NativeControlRequest,
+        reply: @escaping NativeControlReply
+    ) {
+        guard let tabId = request.tab,
+              let snapshot = lastSnapshot,
+              let tab = snapshot.tabs.first(where: { $0.id == tabId })
+        else {
+            reply(controlFailure("tab_not_found", "The requested tab does not exist."))
+            return
+        }
+        guard snapshot.tabs.count > 1 else {
+            reply(controlFailure("final_tab", "The final tab cannot be closed by automation."))
+            return
+        }
+        for paneId in tab.panes {
+            guard core.closePane(paneId) else {
+                reply(controlFailure("core_error", "The tab could not be closed."))
+                return
+            }
+            discardPaneState(paneId)
+        }
+        syncFromCore()
+        reply(.success(["tab": tabId, "closedPanes": tab.panes]))
+    }
+
+    private func handleControlSelectPane(
+        _ request: NativeControlRequest,
+        reply: @escaping NativeControlReply
+    ) {
+        guard let paneId = request.pane,
+              let tab = lastSnapshot?.tabs.first(where: { $0.panes.contains(paneId) }),
+              core.selectTab(tab.index),
+              core.selectPane(paneId)
+        else {
+            reply(controlFailure("pane_not_found", "The requested pane does not exist."))
+            return
+        }
+        syncFromCore()
+        focusTerminal()
+        reply(.success(["tab": tab.id, "pane": paneId]))
+    }
+
+    private func handleControlClosePane(
+        _ request: NativeControlRequest,
+        reply: @escaping NativeControlReply
+    ) {
+        guard let paneId = request.pane,
+              let snapshot = lastSnapshot,
+              let tab = snapshot.tabs.first(where: { $0.panes.contains(paneId) })
+        else {
+            reply(controlFailure("pane_not_found", "The requested pane does not exist."))
+            return
+        }
+        guard snapshot.tabs.count > 1 || tab.panes.count > 1 else {
+            reply(controlFailure("final_pane", "The final pane cannot be closed by automation."))
+            return
+        }
+        guard core.closePane(paneId) else {
+            reply(controlFailure("core_error", "The pane could not be closed."))
+            return
+        }
+        discardPaneState(paneId)
+        syncFromCore()
+        reply(.success([
+            "tab": tab.id,
+            "pane": paneId,
+            "tabClosed": tab.panes.count == 1,
+        ]))
     }
 
     private func handleControlRenameTab(
@@ -4014,13 +4183,7 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate, Te
         guard let paneId = activePaneId, core.closePane(paneId) else {
             return
         }
-        removeControlState(paneId)
-        discardSuspendedTerminalSession(paneId)
-        removePaneRuntime(paneId)
-        scrollRemainders.removeValue(forKey: paneId)
-        paneWorkingDirectories.removeValue(forKey: paneId)
-        paneModes.removeValue(forKey: paneId)
-        paneTitles.removeValue(forKey: paneId)
+        discardPaneState(paneId)
         guard let snapshot = core.snapshot(), !snapshot.tabs.isEmpty else {
             NSApp.terminate(nil)
             return
@@ -6823,8 +6986,7 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate, Te
             "NVTERM_PANE_ID": String(paneId),
         ]
         if !controlCliPath.isEmpty {
-            environment["SATINCTL"] = controlCliPath
-            environment["NVTERMCTL"] = controlCliPath
+            environment["SATIN_CLI"] = controlCliPath
             let cliDirectory = URL(fileURLWithPath: controlCliPath)
                 .deletingLastPathComponent()
                 .path

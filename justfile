@@ -73,7 +73,7 @@ native-update-release-smoke:
 native-settings-smoke:
     @if [[ -z "${IN_NIX_SHELL:-}" ]]; then exec nix develop --command just native-settings-smoke; else just native-build && ./scripts/native-settings-smoke; fi
 
-# Verify the owner-only control socket and every satinctl command end to end.
+# Verify the owner-only control socket and every satin CLI command end to end.
 native-control-smoke:
     @if [[ -z "${IN_NIX_SHELL:-}" ]]; then exec nix develop --command just native-control-smoke; else just native-build && ./scripts/native-control-smoke; fi
 

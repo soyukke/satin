@@ -7,8 +7,8 @@ fi
 
 ./scripts/native-package
 app_path="spikes/macos-shell/.build/package/Satin.app"
-executable="$app_path/Contents/MacOS/satin"
-control_executable="$app_path/Contents/MacOS/satinctl"
+executable="$app_path/Contents/MacOS/satin-app"
+control_executable="$app_path/Contents/MacOS/satin"
 nvim_launcher="$app_path/Contents/MacOS/satin-nvim"
 package_version="$(
   sed -nE 's/^version = "([^"]+)"$/\1/p' Cargo.toml |
@@ -22,7 +22,7 @@ test "$(
 test "$(
   /usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' \
     "$app_path/Contents/Info.plist"
-)" = "satin"
+)" = "satin-app"
 test "$(
   /usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' \
     "$app_path/Contents/Info.plist"
@@ -72,6 +72,7 @@ grep -F "Third Party Licenses" \
 test -x "$app_path/Contents/Resources/apply-update"
 test -x "$control_executable"
 test -x "$nvim_launcher"
+test ! -e "$app_path/Contents/MacOS/satinctl"
 test -s "$app_path/Contents/Resources/ShellIntegration/zsh/.zshrc"
 for packaged_executable in "$executable" "$control_executable" "$nvim_launcher"; do
   if /usr/bin/otool -L "$packaged_executable" |
@@ -96,7 +97,8 @@ test "$(
     awk '/minos/ {print $2; exit}'
 )" = "14.0"
 env -i PATH=/usr/bin:/bin "$control_executable" --version |
-  grep -Fx "satinctl $package_version"
+  grep -Fx "satin $package_version"
+cmp <(env -i PATH=/usr/bin:/bin "$control_executable" skill) skills/satin/SKILL.md
 env -i PATH=/usr/bin:/bin "$nvim_launcher" --satin-launcher-version |
   grep -Fx "satin-nvim $package_version"
 

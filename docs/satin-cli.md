@@ -1,9 +1,18 @@
-# satinctl
+# Satin CLI
 
-`satinctl` controls a running Satin instance through its local Unix-domain
-socket. The executable is bundled inside `Satin.app` and is also prepended to
-the initial `PATH` of every terminal pane. Use the absolute `$SATINCTL` value
+`satin` controls a running Satin instance through its local Unix-domain socket.
+The executable is bundled inside `Satin.app` and its directory is prepended to
+the initial `PATH` of every terminal pane. Use the absolute `$SATIN_CLI` value
 when a shell startup file replaces `PATH`.
+
+## Agent guide
+
+```sh
+satin skill
+```
+
+This prints the release-matched `skills/satin/SKILL.md` embedded in the CLI.
+It does not require a running application or modify an agent's configuration.
 
 ## Discovery
 
@@ -13,8 +22,17 @@ Inside a pane, these variables are available:
 SATIN_SOCKET   absolute path to the current control socket
 SATIN_TAB_ID   stable ID of the pane's tab
 SATIN_PANE_ID  stable ID of the pane
-SATINCTL       absolute path to the bundled CLI
+SATIN_CLI      absolute path to the bundled CLI
 ```
+
+Confirm the calling context before automation:
+
+```sh
+satin identify --json
+```
+
+`identify` requires the pane environment, connects to the current socket, and
+verifies that both identifiers still belong to the same live context.
 
 Outside the application, pass `--socket PATH`. If it is omitted, the CLI checks
 `SATIN_SOCKET` and then the default path under
@@ -23,22 +41,28 @@ Outside the application, pass `--socket PATH`. If it is omitted, the CLI checks
 ## Commands
 
 ```sh
-"$SATINCTL" list
-"$SATINCTL" read-screen --pane 1
-"$SATINCTL" send --pane 1 "printf 'hello\n'"
-"$SATINCTL" send --pane 1 - < input.txt
-"$SATINCTL" key --pane 1 Enter
-"$SATINCTL" key --pane 1 Ctrl+C
+satin list
+satin read-screen --pane 1
+satin send --pane 1 "printf 'hello\n'"
+satin send --pane 1 - < input.txt
+satin key --pane 1 Enter
+satin key --pane 1 Ctrl+C
 
-"$SATINCTL" new-tab --cwd /path/to/project
-"$SATINCTL" split --pane 1 --vertical --cwd /path/to/project
-"$SATINCTL" split --pane 1 --horizontal
-"$SATINCTL" rename-tab --tab 1 "build"
-"$SATINCTL" set-theme --tab 1 Harbor
+satin new-tab --cwd /path/to/project --title project
+satin new-tab --cwd /path/to/project --title project --background
+satin split --pane 1 --vertical --cwd /path/to/project --background
+satin split --pane 1 --horizontal
+satin select-tab --tab 2
+satin move-tab --tab 2 --index 0
+satin rename-tab --tab 2 "project"
+satin close-tab --tab 2
+satin select-pane --pane 3
+satin close-pane --pane 3
+satin set-theme --tab 2 Harbor
 
-"$SATINCTL" status set --pane 1 running "running tests"
-"$SATINCTL" status wait --pane 1 --timeout 300
-"$SATINCTL" status set --pane 1 done "tests passed"
+satin status set --pane 1 running "running tests"
+satin status wait --pane 1 --timeout 300
+satin status set --pane 1 done "tests passed"
 ```
 
 `--pane` defaults to `SATIN_PANE_ID`, and `--tab` defaults to
@@ -46,6 +70,12 @@ Outside the application, pass `--socket PATH`. If it is omitted, the CLI checks
 `read-screen` returns the current visible terminal rows with trailing spaces
 removed. `send` writes text to the pane's PTY; use `key` for Enter, Escape,
 arrows, navigation keys, or `Ctrl+A` through `Ctrl+Z`.
+
+Tab and pane targets use stable IDs from `list`; only `move-tab --index` uses
+the current zero-based presentation index. A new tab can set its cwd and title
+atomically. `--background` creates and starts the requested tab or split, then
+restores the previously active tab and pane. The final tab and final pane cannot
+be closed through automation.
 
 The former `NVTERM_*` environment names remain accepted as one-way
 compatibility aliases for existing shell scripts. New integrations should use
@@ -56,8 +86,8 @@ Statuses are one of `idle`, `running`, `waiting`, `done`, `failed`, or
 blocks until the next status update or the requested timeout.
 
 The bundled `satin-nvim` launcher also uses a protocol-private `open-neovim`
-request. It is not a general `satinctl` command: the launcher validates that it
-is a direct interactive shell invocation, supplies the resolved real Neovim
+request. It is not a general `satin` command: the launcher validates that it is
+a direct interactive shell invocation, supplies the resolved real Neovim
 executable and invocation context, and waits until that native session exits.
 
 ## Protocol and security

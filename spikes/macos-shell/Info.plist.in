@@ -7,7 +7,7 @@
   <key>CFBundleDisplayName</key>
   <string>Satin</string>
   <key>CFBundleExecutable</key>
-  <string>satin</string>
+  <string>satin-app</string>
   <key>CFBundleIdentifier</key>
   <string>dev.soyukke.satin</string>
   <key>CFBundleIconFile</key>

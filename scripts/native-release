@@ -24,7 +24,7 @@ release_root="spikes/macos-shell/.build/release"
 version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app_path/Contents/Info.plist")"
 build_number="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$app_path/Contents/Info.plist")"
 minimum_macos="$(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' "$app_path/Contents/Info.plist")"
-architecture="$(/usr/bin/lipo -archs "$app_path/Contents/MacOS/satin")"
+architecture="$(/usr/bin/lipo -archs "$app_path/Contents/MacOS/satin-app")"
 if [[ "$architecture" != "arm64" ]]; then
   echo "unsupported release architecture: $architecture (expected arm64)" >&2
   exit 65

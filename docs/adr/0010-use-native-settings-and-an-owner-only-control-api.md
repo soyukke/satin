@@ -32,18 +32,24 @@ state without polling the screen.
   the current tab index.
 - Local automation uses versioned, newline-delimited JSON over one Unix-domain
   socket. Version 1 supports listing tabs and panes, reading the visible screen,
-  sending input and named keys, creating tabs and splits, renaming tabs,
-  selecting themes, and setting or waiting for bounded agent status.
+  sending input and named keys, creating cwd-scoped named tabs and splits,
+  selecting, reordering, renaming, and closing tabs or panes, selecting themes,
+  and setting or waiting for bounded agent status. Creation can restore the
+  previous focus after the new terminal is started; automation cannot close the
+  final tab or pane.
 - The bundled Neovim launcher uses an internal `open-neovim` request carrying
   the resolved executable, cwd, arguments, and invocation environment. Its
   response remains open until native Neovim exits so the foreground shell
   command can preserve blocking and exit-status semantics.
-- The bundled `satinctl` executable is the supported client. Each terminal
+- The bundled `satin` executable is the supported client. Each terminal
   pane receives `SATIN_SOCKET`, `SATIN_TAB_ID`, `SATIN_PANE_ID`, and
-  `SATINCTL`; the bundled CLI directory is prepended to that pane's initial
-  `PATH`. The absolute `SATINCTL` value remains authoritative when a shell
+  `SATIN_CLI`; the bundled CLI directory is prepended to that pane's initial
+  `PATH`. The absolute `SATIN_CLI` value remains authoritative when a shell
   startup file replaces `PATH`. The former `NVTERM_*` names remain accepted as
   migration aliases but are no longer documented as the primary interface.
+- The CLI embeds `skills/satin/SKILL.md` and prints that exact release-matched
+  agent guide with `satin skill`. `satin identify --json` verifies that the
+  inherited tab and pane identifiers still belong to the connected session.
 - The socket parent must already be owner-only or is created owner-only. The
   socket is mode `0600`, stale paths are replaced only when they are sockets
   owned by the current user and are no longer accepting connections. A live

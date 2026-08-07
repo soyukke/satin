@@ -1,0 +1,4 @@
+interface:
+  display_name: "Satin"
+  short_description: "Organize Satin and open development workspaces"
+  default_prompt: "Use $satin to organize my tabs or open and prepare a development workspace."
