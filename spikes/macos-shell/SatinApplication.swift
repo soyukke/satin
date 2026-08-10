@@ -4109,6 +4109,8 @@ final class TerminalMetalView: MTKView, CAMetalDisplayLinkDelegate, MTKViewDeleg
     private var nextFrameWorkItem: DispatchWorkItem?
     private var frameDisplayLink: CAMetalDisplayLink?
     private var displayRefreshInterval: CFTimeInterval?
+    private var lastRenderedTextureSize: (width: Int, height: Int)?
+    private var rejectedDrawableCount = 0
 
     required init(coder: NSCoder) {
         fatalError("init(coder:) is not supported")
@@ -4130,10 +4132,10 @@ final class TerminalMetalView: MTKView, CAMetalDisplayLinkDelegate, MTKViewDeleg
         super.init(frame: frameRect, device: device)
         colorPixelFormat = .bgra8Unorm
         clearColor = MTLClearColor(red: 0.078, green: 0.086, blue: 0.102, alpha: 1.0)
+        delegate = self
         if usesSmokeFrameFallback {
             enableSetNeedsDisplay = true
             isPaused = true
-            delegate = self
             needsDisplay = true
             return
         }
@@ -4214,7 +4216,13 @@ final class TerminalMetalView: MTKView, CAMetalDisplayLinkDelegate, MTKViewDeleg
         )
     }
 
-    func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {}
+    func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {
+        if let metalLayer = view.layer as? CAMetalLayer,
+           roundedSize(metalLayer.drawableSize) != roundedSize(size) {
+            metalLayer.drawableSize = size
+        }
+        requestFrame()
+    }
 
     func draw(in view: MTKView) {
         guard usesSmokeFrameFallback, let drawable = currentDrawable else {
@@ -4234,6 +4242,10 @@ final class TerminalMetalView: MTKView, CAMetalDisplayLinkDelegate, MTKViewDeleg
         targetTimestamp: CFTimeInterval?,
         targetPresentationTimestamp: CFTimeInterval?
     ) {
+        guard prepareDrawableForRendering(drawable.texture) else {
+            requestFrame()
+            return
+        }
         let performanceRecorder = NativePerformanceRecorder.shared
         let frameStartedAt = performanceRecorder.isEnabled ? CACurrentMediaTime() : 0
         let performanceToken = performanceRecorder.beginFrame(
@@ -4300,6 +4312,37 @@ final class TerminalMetalView: MTKView, CAMetalDisplayLinkDelegate, MTKViewDeleg
         skiaFrameCount = 0
     }
 
+    func resetResizeDiagnostics() {
+        lastRenderedTextureSize = nil
+        rejectedDrawableCount = 0
+    }
+
+    func resizeDiagnosticsSummary() -> String {
+        let viewSize = expectedDrawableSize()
+        let mtkSize = roundedSize(drawableSize)
+        let layerSize = roundedSize((layer as? CAMetalLayer)?.drawableSize ?? .zero)
+        let textureSize = lastRenderedTextureSize ?? (0, 0)
+        return "view=\(viewSize.width)x\(viewSize.height) "
+            + "mtk=\(mtkSize.width)x\(mtkSize.height) "
+            + "layer=\(layerSize.width)x\(layerSize.height) "
+            + "texture=\(textureSize.width)x\(textureSize.height) "
+            + "rejected=\(rejectedDrawableCount)"
+    }
+
+    func drawableSizesMatchView() -> Bool {
+        guard let lastRenderedTextureSize else {
+            return false
+        }
+        let expected = expectedDrawableSize()
+        guard roundedSize(drawableSize) == expected,
+              let metalLayer = layer as? CAMetalLayer
+        else {
+            return false
+        }
+        return roundedSize(metalLayer.drawableSize) == expected
+            && lastRenderedTextureSize == expected
+    }
+
     func hasPendingSkiaFrame() -> Bool {
         satin_skia_metal_needs_animation_frame(skiaRenderer) != 0
     }
@@ -4357,6 +4400,28 @@ final class TerminalMetalView: MTKView, CAMetalDisplayLinkDelegate, MTKViewDeleg
             deadline: .now() + .milliseconds(milliseconds),
             execute: workItem
         )
+    }
+
+    private func prepareDrawableForRendering(_ texture: MTLTexture) -> Bool {
+        let textureSize = (texture.width, texture.height)
+        if textureSize != expectedDrawableSize() {
+            rejectedDrawableCount += 1
+            return false
+        }
+        lastRenderedTextureSize = textureSize
+        return true
+    }
+
+    private func expectedDrawableSize() -> (width: Int, height: Int) {
+        let scale = window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 1
+        return (
+            max(1, Int((bounds.width * scale).rounded())),
+            max(1, Int((bounds.height * scale).rounded()))
+        )
+    }
+
+    private func roundedSize(_ size: CGSize) -> (width: Int, height: Int) {
+        (max(1, Int(size.width.rounded())), max(1, Int(size.height.rounded())))
     }
 }
 
@@ -6206,7 +6271,10 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
         core.setTheme("Harbor", tab: 1)
         _ = core.splitActive(axis: ffiSplitVertical)
         syncFromCore()
-        writeToActivePane(Data("printf 'native pty view ready\\n'\r".utf8))
+        writeToActivePane(Data((
+            "printf 'native pty view ready: renderer text marker\\n"
+                + "native pty view ready: second text marker\\n'\r"
+        ).utf8))
         guard let resultPath, !resultPath.isEmpty else {
             return
         }
@@ -7363,6 +7431,7 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
                 return
             }
             let initial = terminalTextView.terminalGridSize()
+            metalView.resetResizeDiagnostics()
             window.setContentSize(NSSize(width: 1120, height: 760))
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
                 guard let self else {
@@ -7373,11 +7442,13 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
                 let ok = resized.rows > initial.rows
                     && resized.cols > initial.cols
                     && terminalPanes[activePaneId ?? -1] != nil
+                    && metalView.drawableSizesMatchView()
                 let status = ok ? "ok" : "failed"
                 writeSessionSmokeResult(
                     resultPath,
                     result: "\(status) terminal-resize " +
-                        "from=\(initial.cols)x\(initial.rows) to=\(resized.cols)x\(resized.rows)\n"
+                        "from=\(initial.cols)x\(initial.rows) to=\(resized.cols)x\(resized.rows) " +
+                        "\(metalView.resizeDiagnosticsSummary())\n"
                 )
             }
         }
