@@ -7,6 +7,8 @@ fi
 
 expected_fira_hash="f6ce2df86c65720b6aa0b1c948bcc63b16ce21a441488e61fb3b5e8b56486b3a"
 expected_last_resort_hash="2cdfa3f7d70ee06c32e9bb37c94634cecd54ba018e5a8110e853b394e0f91f01"
+expected_neovide_revision="618605b79d70577f4b7ec92b50b3b9b5bf482c1a"
+expected_message_selection_revision="7f90c1276c4daafc60923bb1be3f175b504969d0"
 actual_fira_hash="$(shasum -a 256 assets/fonts/FiraCodeNerdFont-Regular.ttf | awk '{print $1}')"
 actual_last_resort_hash="$(shasum -a 256 assets/fonts/LastResort-Regular.ttf | awk '{print $1}')"
 test "$actual_fira_hash" = "$expected_fira_hash"
@@ -16,7 +18,8 @@ grep -F "Copyright (c) 2023 Neovide Contributors" THIRD_PARTY_NOTICES.md >/dev/n
 grep -F "Copyright (c) 2023 Neovide Contributors" src/neovide_render.rs >/dev/null
 grep -F "Copyright (c) 2023 Neovide Contributors" src/neovide_text.rs >/dev/null
 grep -F "Copyright (c) 2023 Neovide Contributors" src/skia_metal.rs >/dev/null
-grep -F "618605b79d70577f4b7ec92b50b3b9b5bf482c1a" THIRD_PARTY_NOTICES.md >/dev/null
+grep -F "$expected_neovide_revision" THIRD_PARTY_NOTICES.md >/dev/null
+grep -F "$expected_message_selection_revision" THIRD_PARTY_NOTICES.md >/dev/null
 grep -F "$expected_fira_hash" THIRD_PARTY_NOTICES.md >/dev/null
 grep -F "$expected_last_resort_hash" THIRD_PARTY_NOTICES.md >/dev/null
 grep -F "Copyright 2014-2021 The Fira Code Project Authors" assets/fonts/LICENSE >/dev/null
