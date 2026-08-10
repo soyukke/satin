@@ -14,7 +14,14 @@ if [[ -n "${APPLE_SIGNING_IDENTITY:-}" || -n "${APPLE_NOTARY_PROFILE:-}" ]]; the
   release_channel="production"
   notarized=true
 else
-  ./scripts/native-package
+  case "${SATIN_USE_PREBUILT_PACKAGE:-0}" in
+    0) ./scripts/native-package ;;
+    1) test -d "spikes/macos-shell/.build/package/Satin.app" ;;
+    *)
+      echo "SATIN_USE_PREBUILT_PACKAGE must be 0 or 1" >&2
+      exit 64
+      ;;
+  esac
   release_channel="development"
   notarized=false
 fi

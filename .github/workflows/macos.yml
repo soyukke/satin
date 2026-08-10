@@ -3,9 +3,6 @@ name: macOS production gate
 on:
   pull_request:
   workflow_dispatch:
-  push:
-    branches:
-      - main
 
 permissions:
   contents: read
@@ -15,9 +12,46 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  verify:
+  scope:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      full: ${{ steps.classify.outputs.full }}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Classify changes
+        id: classify
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          full=true
+          if [[ "$EVENT_NAME" == pull_request ]]; then
+            full=false
+            while IFS= read -r path; do
+              case "$path" in
+                README.md | docs/* | assets/satin-demo.* | assets/satin-artifact-demo.*)
+                  ;;
+                *)
+                  full=true
+                  break
+                  ;;
+              esac
+            done < <(git diff --name-only "$BASE_SHA" "$HEAD_SHA")
+          fi
+          echo "full=$full" >>"$GITHUB_OUTPUT"
+          echo "Full production gate: $full" >>"$GITHUB_STEP_SUMMARY"
+
+  production:
+    needs: scope
+    if: needs.scope.outputs.full == 'true'
     runs-on: macos-15
-    timeout-minutes: 45
+    timeout-minutes: 30
     steps:
       - name: Check out source
         uses: actions/checkout@v7
@@ -28,35 +62,11 @@ jobs:
       - name: Verify Rust
         run: nix develop --command just verify
 
-      - name: Build native host
-        run: nix develop --command just native-build
-
-      - name: Test update discovery
-        run: |
-          nix develop --command just native-update-test
-          nix develop --command just native-update-install-smoke
-
-      - name: Build application bundle
-        run: nix develop --command just native-release
+      - name: Build native artifacts once
+        run: nix develop --command just native-ci-build
 
       - name: Run native smoke
-        run: |
-          nix develop --command just native-smoke
-          nix develop --command just native-settings-smoke
-          nix develop --command just native-control-smoke
-          nix develop --command just native-artifact-smoke
-          nix develop --command just native-kitty-smoke
-          nix develop --command just native-package-smoke
-          nix develop --command just finder-editor-smoke
-          nix develop --command just nvim-smoke-ui-surfaces
-
-      - name: Run lifecycle, resize, and session smokes
-        run: |
-          nix develop --command just native-resize-smoke
-          nix develop --command just native-session-smoke
-          nix develop --command just native-tab-bar-actions-smoke
-          nix develop --command just native-home-cwd-smoke
-          nix develop --command just terminal-exit-closes-tab-smoke
+        run: nix develop --command just native-ci-smoke
 
       - name: Upload release archive
         uses: actions/upload-artifact@v7
@@ -66,3 +76,24 @@ jobs:
             spikes/macos-shell/.build/release/Satin-*-macOS-arm64.zip
             spikes/macos-shell/.build/release/latest.json
           if-no-files-found: error
+
+  verify:
+    if: always()
+    needs:
+      - scope
+      - production
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require selected gates
+        env:
+          FULL: ${{ needs.scope.outputs.full }}
+          SCOPE_RESULT: ${{ needs.scope.result }}
+          PRODUCTION_RESULT: ${{ needs.production.result }}
+        run: |
+          test "$SCOPE_RESULT" = success
+          if [[ "$FULL" == true ]]; then
+            test "$PRODUCTION_RESULT" = success
+          else
+            test "$PRODUCTION_RESULT" = skipped
+          fi

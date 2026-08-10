@@ -5,7 +5,14 @@ if [[ -z "${IN_NIX_SHELL:-}" ]]; then
   exec nix develop --command ./scripts/native-finder-editor-smoke "$@"
 fi
 
-./scripts/native-package
+case "${SATIN_USE_PREBUILT_PACKAGE:-0}" in
+  0) ./scripts/native-package ;;
+  1) test -d "spikes/macos-shell/.build/package/Satin.app" ;;
+  *)
+    echo "SATIN_USE_PREBUILT_PACKAGE must be 0 or 1" >&2
+    exit 64
+    ;;
+esac
 app_path="$(pwd)/spikes/macos-shell/.build/package/Satin.app"
 smoke_root="$(mktemp -d "${TMPDIR:-/tmp}/satin-finder-editor-smoke.XXXXXX")"
 fixture="$smoke_root/file with spaces.txt"
