@@ -253,6 +253,10 @@ nvim-smoke-all:
         just _nvim-smoke-cursor-switch; \
     fi
 
+# Measure native Neovim diff scrolling and write a JSON artifact.
+nvim-perf label="current" workload="synthetic":
+    @if [[ -z "${IN_NIX_SHELL:-}" ]]; then exec nix develop --command just nvim-perf "{{label}}" "{{workload}}"; else just native-build && ./scripts/native-nvim-performance spikes/macos-shell/.build/SatinApplication "{{label}}" "{{workload}}"; fi
+
 # Verify Ctrl-D style Neovim scroll animation.
 nvim-smoke-scroll:
     @if [[ -z "${IN_NIX_SHELL:-}" ]]; then \

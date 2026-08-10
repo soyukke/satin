@@ -41,3 +41,14 @@ todo = "deny"
 too_many_lines = "deny"
 undocumented_unsafe_blocks = "deny"
 unimplemented = "deny"
+
+# The native development app is exercised interactively, including at 60 Hz.
+# Match the optimized runtime behavior users see in the packaged application.
+# Incremental and debug artifacts are disabled to bound worktree cache growth.
+[profile.dev]
+opt-level = 3
+debug = 0
+debug-assertions = false
+overflow-checks = false
+codegen-units = 16
+incremental = false

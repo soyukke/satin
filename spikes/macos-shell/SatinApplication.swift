@@ -4108,6 +4108,7 @@ final class TerminalMetalView: MTKView, CAMetalDisplayLinkDelegate, MTKViewDeleg
     private var skiaFrameCount = 0
     private var nextFrameWorkItem: DispatchWorkItem?
     private var frameDisplayLink: CAMetalDisplayLink?
+    private var displayRefreshInterval: CFTimeInterval?
 
     required init(coder: NSCoder) {
         fatalError("init(coder:) is not supported")
@@ -4181,6 +4182,7 @@ final class TerminalMetalView: MTKView, CAMetalDisplayLinkDelegate, MTKViewDeleg
         }
         let displayRate = min(120, max(30, window.screen?.maximumFramesPerSecond ?? 60))
         let rate = Float(displayRate)
+        displayRefreshInterval = 1 / CFTimeInterval(displayRate)
         frameDisplayLink?.preferredFrameRateRange = CAFrameRateRange(
             minimum: rate,
             maximum: rate,
@@ -4204,7 +4206,12 @@ final class TerminalMetalView: MTKView, CAMetalDisplayLinkDelegate, MTKViewDeleg
         _ link: CAMetalDisplayLink,
         needsUpdate update: CAMetalDisplayLink.Update
     ) {
-        renderFrame(update.drawable, displayLink: link)
+        renderFrame(
+            update.drawable,
+            displayLink: link,
+            targetTimestamp: update.targetTimestamp,
+            targetPresentationTimestamp: update.targetPresentationTimestamp
+        )
     }
 
     func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {}
@@ -4213,13 +4220,28 @@ final class TerminalMetalView: MTKView, CAMetalDisplayLinkDelegate, MTKViewDeleg
         guard usesSmokeFrameFallback, let drawable = currentDrawable else {
             return
         }
-        renderFrame(drawable, displayLink: nil)
+        renderFrame(
+            drawable,
+            displayLink: nil,
+            targetTimestamp: nil,
+            targetPresentationTimestamp: nil
+        )
     }
 
     private func renderFrame(
         _ drawable: CAMetalDrawable,
-        displayLink: CAMetalDisplayLink?
+        displayLink: CAMetalDisplayLink?,
+        targetTimestamp: CFTimeInterval?,
+        targetPresentationTimestamp: CFTimeInterval?
     ) {
+        let performanceRecorder = NativePerformanceRecorder.shared
+        let frameStartedAt = performanceRecorder.isEnabled ? CACurrentMediaTime() : 0
+        let performanceToken = performanceRecorder.beginFrame(
+            at: frameStartedAt,
+            targetTimestamp: targetTimestamp,
+            targetPresentationTimestamp: targetPresentationTimestamp,
+            expectedInterval: displayRefreshInterval
+        )
         guard let commandBuffer = commandQueue.makeCommandBuffer() else {
             displayLink?.isPaused = true
             return
@@ -4236,12 +4258,27 @@ final class TerminalMetalView: MTKView, CAMetalDisplayLinkDelegate, MTKViewDeleg
             let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: descriptor)
             encoder?.endEncoding()
         }
+        let rendererFinishedAt = performanceToken == nil ? 0 : CACurrentMediaTime()
         updateFrameScheduling(commandBuffer)
         commandBuffer.present(drawable)
+        let committedAt = performanceToken == nil ? 0 : CACurrentMediaTime()
+        performanceRecorder.observeCommandBuffer(
+            commandBuffer,
+            drawable: drawable,
+            token: performanceToken,
+            committedAt: committedAt
+        )
         commandBuffer.commit()
+        let submissionFinishedAt = performanceToken == nil ? 0 : CACurrentMediaTime()
+        performanceRecorder.recordFrameSubmission(
+            performanceToken,
+            rendererFinishedAt: rendererFinishedAt,
+            committedAt: submissionFinishedAt
+        )
     }
 
     func requestFrame() {
+        NativePerformanceRecorder.shared.recordFrameRequest()
         nextFrameWorkItem?.cancel()
         nextFrameWorkItem = nil
         if usesSmokeFrameFallback {
@@ -10182,9 +10219,17 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
                 startupCommand: startupCommand ?? []
             )
         case .neovim:
-            let arguments = ProcessInfo.processInfo.environment["SATIN_NATIVE_SMOKE_CLEAN_NVIM"] == "1"
+            let environment = ProcessInfo.processInfo.environment
+            var arguments = environment["SATIN_NATIVE_SMOKE_CLEAN_NVIM"] == "1"
                 ? ["-u", "NONE", "-n"]
                 : []
+            if let benchmarkInit = environment["SATIN_NATIVE_PERF_NVIM_INIT"],
+               !benchmarkInit.isEmpty {
+                arguments.append(contentsOf: [
+                    "--cmd",
+                    "lua dofile(vim.env.SATIN_NATIVE_PERF_NVIM_INIT)",
+                ])
+            }
             return RustNeovimPane(grid: grid, cwd: cwd, arguments: arguments)
         }
     }
@@ -10774,13 +10819,30 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
     }
 
     private func drainTerminalPanes() {
+        let performanceRecorder = NativePerformanceRecorder.shared
+        let measurePerformance = performanceRecorder.isEnabled
+        let drainStartedAt = measurePerformance ? CACurrentMediaTime() : 0
+        defer {
+            if measurePerformance {
+                performanceRecorder.recordMainDrain(
+                    milliseconds: (CACurrentMediaTime() - drainStartedAt) * 1_000
+                )
+            }
+        }
         var activePaneChanged = false
         var visiblePaneChanged = false
         var exitedNvimPanes: [Int] = []
         var exitedTerminalPanes: [Int] = []
         var tmuxEvents: [(paneId: Int, pane: RustTerminalPane, event: TmuxControlEvent)] = []
         for (paneId, pane) in terminalPanes {
+            let paneDrainStartedAt = measurePerformance ? CACurrentMediaTime() : 0
             let changed = pane.drain()
+            if measurePerformance, pane.kind == .neovim {
+                performanceRecorder.recordNvimDrain(
+                    milliseconds: (CACurrentMediaTime() - paneDrainStartedAt) * 1_000,
+                    changed: changed
+                )
+            }
             activePaneChanged = activePaneChanged || (changed && paneId == activePaneId)
             visiblePaneChanged = visiblePaneChanged
                 || (changed && visiblePaneFrames[paneId] != nil)
@@ -11293,6 +11355,10 @@ final class SatinAppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidat
         NativeLog.started()
         var settings = settingsStore.load()
         let environment = ProcessInfo.processInfo.environment
+        if let value = environment["SATIN_NATIVE_PERF_FONT_SIZE"],
+           let fontSize = Double(value), fontSize.isFinite {
+            settings.fontSize = min(max(fontSize, nativeMinimumFontSize), nativeMaximumFontSize)
+        }
         if environment["SATIN_NATIVE_SMOKE_SCENARIO"] == "finder-editor" {
             let smokeEditor = environment["SATIN_NATIVE_SMOKE_FINDER_EDITOR"] ?? "nvim"
             settings.finderEditorCommand = NativeSettingsStore.isValidFinderEditorCommand(
