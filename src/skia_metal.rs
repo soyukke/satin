@@ -176,9 +176,7 @@ mod platform {
             retain_visible_kitty_images(&mut self.kitty_images, runtime_id, &placements);
             let state = self.runtime_states.entry(runtime_id).or_default();
             let dt = state.animation_dt();
-            state.scroll_animation_active =
-                runtime.advance_renderer_animations(dt) || runtime.has_active_renderer_animation();
-            let Ok(model) = runtime.renderer_model() else {
+            let Some(model) = prepare_terminal_renderer_model(state, runtime, dt) else {
                 return false;
             };
             state.cursor_animation.update(&model, geometry, dt);
@@ -281,6 +279,20 @@ mod platform {
                 (None, None) => None,
             }
         }
+    }
+
+    fn prepare_terminal_renderer_model(
+        state: &mut RuntimeRenderState,
+        runtime: &mut NativeTerminalRuntime,
+        dt: f32,
+    ) -> Option<NeovideRendererModelSnapshot> {
+        _ = runtime.advance_renderer_animations(dt);
+        // Terminal VT scroll commands are retained until renderer_model builds
+        // this frame. Check animation state afterwards so an otherwise idle TUI
+        // always schedules the frames needed to finish the scroll spring.
+        let model = runtime.renderer_model().ok()?;
+        state.scroll_animation_active = runtime.has_active_renderer_animation();
+        Some(model)
     }
 
     fn model_has_blink(model: &NeovideRendererModelSnapshot) -> bool {
@@ -1259,6 +1271,31 @@ mod platform {
     #[cfg(test)]
     mod tests {
         use super::*;
+
+        #[test]
+        fn terminal_vt_scroll_schedules_its_own_animation_frames() {
+            let mut runtime =
+                NativeTerminalRuntime::external(crate::terminal_runtime::TerminalGridSize {
+                    rows: 8,
+                    cols: 16,
+                    pixel_width: 160,
+                    pixel_height: 160,
+                })
+                .unwrap();
+            runtime.feed_tmux_projection(b"\x1b[?1049h").unwrap();
+            let mut state = RuntimeRenderState::default();
+            let _ = prepare_terminal_renderer_model(&mut state, &mut runtime, 0.0).unwrap();
+            assert!(!state.scroll_animation_active);
+
+            runtime
+                .feed_tmux_projection(b"\x1b[1;7r\x1b[H\x1b[M\x1b[r")
+                .unwrap();
+            let model = prepare_terminal_renderer_model(&mut state, &mut runtime, 0.0).unwrap();
+
+            assert_eq!(model.windows[0].scroll_position, -1.0);
+            assert!(state.scroll_animation_active);
+            assert_eq!(state.next_frame_delay_ms(), Some(0));
+        }
 
         #[test]
         fn foreground_window_background_masks_stale_root_grid_cells() {
