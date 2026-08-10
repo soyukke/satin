@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ -z "${IN_NIX_SHELL:-}" ]]; then
+  exec nix develop --command ./scripts/source-size-lint "$@"
+fi
+
+default_limit=1000
+
+limit_for() {
+  case "$1" in
+    spikes/macos-shell/SatinApplication.swift) printf '12229\n' ;;
+    src/terminal_runtime.rs) printf '3377\n' ;;
+    src/artifact.rs) printf '2790\n' ;;
+    src/neovim_editor.rs) printf '2731\n' ;;
+    src/tmux_control.rs) printf '1882\n' ;;
+    src/skia_metal.rs) printf '1669\n' ;;
+    src/ffi.rs) printf '1542\n' ;;
+    src/artifact/markdown.rs) printf '1225\n' ;;
+    spikes/macos-shell/SettingsWindow.swift) printf '1049\n' ;;
+    *) printf '%s\n' "$default_limit" ;;
+  esac
+}
+
+failures=0
+mapfile -t source_files < <(
+  rg --files src spikes/macos-shell -g '*.rs' -g '*.swift' | sort
+)
+
+for source_file in "${source_files[@]}"; do
+  lines=$(awk 'END { print NR }' "$source_file")
+  limit=$(limit_for "$source_file")
+  if ((lines > limit)); then
+    printf '%s: %d lines exceeds the %d-line limit\n' \
+      "$source_file" "$lines" "$limit" >&2
+    failures=$((failures + 1))
+  fi
+done
+
+if ((failures > 0)); then
+  printf 'source size lint failed: %d oversized file(s)\n' "$failures" >&2
+  exit 1
+fi
+
+printf 'source size lint passed: %d files, default limit %d lines\n' \
+  "${#source_files[@]}" "$default_limit"

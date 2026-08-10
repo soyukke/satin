@@ -440,13 +440,13 @@ check:
 test:
     @if [[ -z "${IN_NIX_SHELL:-}" ]]; then exec nix develop --command just test; else cargo test; fi
 
-# Run the zero-debt Rust lint gate.
+# Run source, repository, and operations lint gates.
 lint:
-    @if [[ -z "${IN_NIX_SHELL:-}" ]]; then exec nix develop --command just lint; else cargo clippy --all-targets --all-features -- -D warnings; fi
+    @if [[ -z "${IN_NIX_SHELL:-}" ]]; then exec nix develop --command just lint; else cargo clippy --all-targets --all-features -- -D warnings && just repo-lint && just ops-lint; fi
 
 # Run the checks enforced by the Git pre-commit hook.
 precommit:
-    @if [[ -z "${IN_NIX_SHELL:-}" ]]; then exec nix develop --command just precommit; else just secrets-staged && cargo fmt -- --check && cargo clippy --all-targets --all-features -- -D warnings && cargo test && just license-audit && just ops-lint; fi
+    @if [[ -z "${IN_NIX_SHELL:-}" ]]; then exec nix develop --command just precommit; else just secrets-staged && just verify; fi
 
 # Scan staged changes before a commit without printing detected values.
 secrets-staged:
@@ -465,9 +465,13 @@ secrets:
     @just secrets-history
     @just secrets-worktree
 
+# Lint repository metadata, documentation, spelling, and Nix expressions.
+repo-lint:
+    @if [[ -z "${IN_NIX_SHELL:-}" ]]; then exec nix develop --command just repo-lint; else mapfile -d '' -t markdown_files < <(git ls-files --cached --others --exclude-standard -z -- '*.md'); markdownlint-cli2 "${markdown_files[@]}" && typos && deadnix --fail flake.nix && ./scripts/source-size-lint; fi
+
 # Lint release/smoke shell scripts and GitHub Actions workflows.
 ops-lint:
-    @if [[ -z "${IN_NIX_SHELL:-}" ]]; then exec nix develop --command just ops-lint; else mapfile -t shell_scripts < <(rg -l '^#!.*(bash|/sh)' scripts --glob '*' | sort); shellcheck "${shell_scripts[@]}" && zsh -n scripts/shell-integration/zsh/.zshenv scripts/shell-integration/zsh/.zprofile scripts/shell-integration/zsh/.zshrc scripts/shell-integration/zsh/.zlogin scripts/shell-integration/zsh/.zlogout && actionlint .github/workflows/*.yml; fi
+    @if [[ -z "${IN_NIX_SHELL:-}" ]]; then exec nix develop --command just ops-lint; else mapfile -t shell_scripts < <(rg -l '^#!.*(bash|/sh)' scripts --glob '*' | sort); shellcheck "${shell_scripts[@]}" && zsh -n scripts/shell-integration/zsh/.zshenv scripts/shell-integration/zsh/.zprofile scripts/shell-integration/zsh/.zshrc scripts/shell-integration/zsh/.zlogin scripts/shell-integration/zsh/.zlogout && actionlint .github/workflows/*.yml && zizmor --offline --strict-collection .github; fi
 
 # Configure this clone to use the repository-managed Git hooks.
 install-hooks:
@@ -475,13 +479,30 @@ install-hooks:
     @chmod +x .githooks/pre-commit
     @echo "Git hooks installed from .githooks"
 
-# Format Rust sources.
+# Format Rust, Swift, shell, and Nix sources.
 fmt:
-    @if [[ -z "${IN_NIX_SHELL:-}" ]]; then exec nix develop --command just fmt; else cargo fmt; fi
+    @if [[ -z "${IN_NIX_SHELL:-}" ]]; then exec nix develop --command just fmt; else cargo fmt; swift-format format --in-place --recursive --configuration .swift-format spikes/macos-shell; mapfile -t shell_scripts < <(rg -l '^#!.*(bash|/sh)' scripts --glob '*' | sort); shfmt -w -i 2 -ci "${shell_scripts[@]}"; nixfmt flake.nix; fi
+
+# Verify formatting without changing files.
+fmt-check:
+    @if [[ -z "${IN_NIX_SHELL:-}" ]]; then exec nix develop --command just fmt-check; else cargo fmt -- --check; swift-format lint --strict --recursive --configuration .swift-format spikes/macos-shell; mapfile -t shell_scripts < <(rg -l '^#!.*(bash|/sh)' scripts --glob '*' | sort); shfmt -d -i 2 -ci "${shell_scripts[@]}"; nixfmt --check flake.nix; fi
 
 # Verify formatting, type checking, linting, and tests.
 verify:
-    @if [[ -z "${IN_NIX_SHELL:-}" ]]; then exec nix develop --command just verify; else cargo fmt -- --check && cargo check && cargo clippy --all-targets --all-features -- -D warnings && cargo test && just license-audit && just ops-lint; fi
+    @if [[ -z "${IN_NIX_SHELL:-}" ]]; then exec nix develop --command just verify; else just fmt-check && cargo check && just lint && cargo test && just license-audit; fi
+
+# Check Rust dependencies against the current RustSec advisory database.
+audit:
+    @if [[ -z "${IN_NIX_SHELL:-}" ]]; then exec nix develop --command just audit; else cargo audit; fi
+
+# Run the publication-grade local quality gate, including native behavior.
+quality:
+    @just verify
+    @just audit
+    @just secrets-worktree
+    @just native-build
+    @just native-update-test
+    @just native-smoke
 
 # Verify third-party attribution, exact bundled font provenance, and Cargo licenses.
 license-audit:

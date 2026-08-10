@@ -27,10 +27,21 @@ version, for example `vX.Y.Z`, and points at the current `main` commit. Pull
 request CI owns the full source and packaged-app verification gates. The tag
 workflow builds the release bundle once, signs it, verifies the archive and its
 installability, publishes the archive and schema-2 manifest, generates release
-notes, and records GitHub build provenance.
+notes, and records GitHub build provenance. It also attaches
+`Satin-<version>-provenance.intoto.jsonl` so the provenance can be verified
+without fetching it from GitHub's attestation API.
 
 The workflow reads `UPDATE_SIGNING_PRIVATE_KEY_B64` from GitHub Actions Secrets.
 Signing credentials and notary secrets must never be stored in the repository.
+
+Verify a downloaded archive against GitHub's stored attestation with:
+
+```sh
+gh attestation verify Satin-<version>-macOS-arm64.zip --repo soyukke/satin
+```
+
+For offline verification, download the matching provenance bundle and pass it
+with `--bundle`. The verifier still needs an appropriate trusted Sigstore root.
 
 ## Update trust boundary
 

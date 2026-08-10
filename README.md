@@ -240,14 +240,15 @@ logs.
 
 Run `just` to list the build, test, smoke, release, and maintenance recipes in
 the repository [`justfile`](justfile). Before publishing a change, run
-`just precommit`; the stricter full gate is `just verify`. Install the bundled
-pre-commit hook once per clone with `just install-hooks`.
+`just precommit`; the publication-grade native gate is `just quality`. Install
+the bundled pre-commit hook once per clone with `just install-hooks`.
 
 Architecture Decision Records live in [`docs/adr`](docs/adr). Current renderer
 behavior and its visual smoke matrix are in
 [`docs/renderer.md`](docs/renderer.md); release packaging, signing, and update
 operations are in [`docs/release.md`](docs/release.md). Native AppKit host code
-lives in [`spikes/macos-shell`](spikes/macos-shell).
+lives in [`spikes/macos-shell`](spikes/macos-shell). The enforced OSS quality
+and security baseline is documented in [`docs/quality.md`](docs/quality.md).
 
 Report vulnerabilities through GitHub's private vulnerability reporting flow,
 as described in [`SECURITY.md`](SECURITY.md), rather than a public issue.
@@ -257,9 +258,10 @@ as described in [`SECURITY.md`](SECURITY.md), rather than a public issue.
 Bug reports and focused feature requests are welcome through GitHub Issues.
 Accepted pull requests are currently limited to repository maintainers;
 external pull requests are closed automatically without checking out or
-executing their contents. Before publishing a change, run `just precommit`;
-renderer changes should also run the relevant native terminal or Neovim smoke
-recipes.
+executing their contents. See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the
+issue-first contribution process, development setup, test policy, and required
+checks. Community participation is governed by the
+[`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md).
 
 ## License
 

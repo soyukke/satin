@@ -6,9 +6,7 @@ on:
       - "v*"
 
 permissions:
-  contents: write
-  id-token: write
-  attestations: write
+  contents: read
 
 concurrency:
   group: release-${{ github.ref }}
@@ -18,11 +16,16 @@ jobs:
   release:
     runs-on: macos-15
     timeout-minutes: 60
+    permissions:
+      attestations: write
+      contents: write
+      id-token: write
     steps:
       - name: Check out tagged source
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Validate release ref and architecture
         run: |
@@ -37,7 +40,7 @@ jobs:
           test "$tagged_commit" = "$(git rev-parse origin/main)"
 
       - name: Install Nix
-        uses: DeterminateSystems/determinate-nix-action@v3
+        uses: DeterminateSystems/determinate-nix-action@61cbfe2efc2d4e7a8a6d56967c3c1058e846c858 # v3
 
       - name: Build and verify signed arm64 release
         env:
@@ -45,11 +48,22 @@ jobs:
         run: nix develop --command just native-signed-release
 
       - name: Attest release provenance
-        uses: actions/attest-build-provenance@v4
+        id: attest
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4
         with:
           subject-path: |
             spikes/macos-shell/.build/release/Satin-*-macOS-arm64.zip
             spikes/macos-shell/.build/release/latest.json
+
+      - name: Stage offline provenance bundle
+        env:
+          ATTESTATION_BUNDLE: ${{ steps.attest.outputs.bundle-path }}
+        run: |
+          test -s "$ATTESTATION_BUNDLE"
+          version="${GITHUB_REF_NAME#v}"
+          provenance="spikes/macos-shell/.build/release/Satin-$version-provenance.intoto.jsonl"
+          cp "$ATTESTATION_BUNDLE" "$provenance"
+          test -s "$provenance"
 
       - name: Publish GitHub Release
         env:
@@ -63,4 +77,5 @@ jobs:
             --generate-notes \
             --notes "Apple Silicon only. The archive is signed for in-app updates but is not Apple-notarized; macOS may require approval in Privacy & Security on first launch." \
             spikes/macos-shell/.build/release/Satin-*-macOS-arm64.zip \
-            spikes/macos-shell/.build/release/latest.json
+            spikes/macos-shell/.build/release/latest.json \
+            spikes/macos-shell/.build/release/*.intoto.jsonl

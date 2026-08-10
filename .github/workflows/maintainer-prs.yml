@@ -1,7 +1,9 @@
 name: maintainer pull request policy
 
 on:
-  pull_request_target:
+  pull_request_target: # zizmor: ignore[dangerous-triggers] no PR code is checked out or run
+    branches:
+      - main
     types:
       - opened
       - reopened
@@ -9,19 +11,21 @@ on:
 
 permissions:
   contents: read
-  pull-requests: write
 
 jobs:
   enforce:
     if: >-
+      github.repository == 'soyukke/satin' &&
       github.event.pull_request.author_association != 'OWNER' &&
       github.event.pull_request.author_association != 'MEMBER' &&
       github.event.pull_request.author_association != 'COLLABORATOR' &&
       github.actor != 'dependabot[bot]'
     runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
     steps:
       - name: Close external pull request
-        uses: actions/github-script@v9
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
         with:
           script: |
             const pull = context.payload.pull_request;
