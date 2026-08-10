@@ -5,7 +5,8 @@
 <h1 align="center">Satin</h1>
 
 <p align="center">
-  A native macOS terminal with tabs, splits, animated cursor movement, and smooth scrolling.
+  A native macOS terminal built around AI and tmux, designed to make Neovim
+  workflows feel great.
 </p>
 
 <p align="center">
@@ -32,35 +33,65 @@
   scrolling. Click for the 17-second MP4.</sub>
 </p>
 
-Satin combines a Rust terminal core and Neovide-derived Skia/Metal
-renderer with a native AppKit shell. Terminal bytes flow through a real PTY and
-`libghostty-vt`, while AppKit owns the macOS window, menus, tabs, pane layout,
-settings, and input translation.
+## Why Satin
+
+Satin assumes a terminal workflow where AI agents work alongside you, tmux
+keeps sessions alive, and Neovim remains at the center of editing.
+
+It brings those workflows into a native macOS workspace without asking Neovim
+users to give up the way they work. Motion is part of that experience: it
+should feel good, look good, and help the eye follow cursor movement, scrolling,
+and changes across the workspace.
 
 ## Highlights
 
-- Native tabs, recursive splits, working-directory inheritance, and session
-  restore.
-- Neovide-style animated cursor movement and retained smooth scrolling.
-- Native copy/paste, IME, terminal rectangular selection, Neovim message-area
-  drag selection, scrollback search, clickable links, and a scroll indicator.
-- A native Settings window for appearance, shell, startup directory,
-  keybindings, session behavior, and signed updates.
+- A real PTY and `libghostty-vt`-backed terminal core, with AppKit owning the
+  macOS window, menus, tabs, pane layout, settings, and input translation.
+- Neovide-style animated cursor movement and retained smooth scrolling,
+  designed to feel good, look good, and make movement easier to follow.
 - A unified native Neovim UI backed by `nvim --embed`, `ext_multigrid`, and the
   same Skia/Metal renderer whether it is opened from the shell or Command-N.
-- Finder Open With, Dock drops, and a macOS Service for opening files or folders
-  directly in a focused editor tab without restoring the normal workspace.
-- Kitty graphics in terminal panes and image.nvim-backed native Neovim panes,
-  plus an owner-only `satin` automation interface.
-- Bounded, versioned Markdown reports with a native recent-artifact popover.
-  The terminal viewer renders GFM tables, inline emphasis, syntax-highlighted
-  fenced code, and snapshotted relative PNG images without an embedded browser.
 - Explicit local `tmux -CC` integration that projects tmux windows, panes, zoom,
   history, alternate screens, terminal modes, and bells as native tabs and
   splits, then reattaches that projection after a clean Satin restart. A native
   session picker switches, creates, attaches, and detaches local sessions;
   ordinary `tmux attach` remains a terminal TUI.
+- A release-matched skill, available through `satin skill`, that lets terminal
+  AIs identify their pane and operate tabs, splits, input, status, and artifacts
+  through an owner-only local control socket.
+- Experimental bounded, versioned Markdown artifacts with a native
+  recent-artifact popover. The terminal viewer renders GFM tables, inline
+  emphasis, syntax-highlighted fenced code, and snapshotted relative PNG images
+  without an embedded browser.
+- Native tabs, recursive splits, working-directory inheritance, and session
+  restore.
+- Native copy/paste, IME, terminal rectangular selection, Neovim message-area
+  drag selection, scrollback search, clickable links, and a scroll indicator.
+- A native Settings window for appearance, shell, startup directory,
+  keybindings, session behavior, and signed updates.
+- Finder Open With, Dock drops, and a macOS Service for opening files or folders
+  directly in a focused editor tab without restoring the normal workspace.
+- Kitty graphics in terminal panes and image.nvim-backed native Neovim panes.
 - Publisher-signed in-app updates distributed through GitHub Releases.
+
+## Experimental: AI artifacts
+
+Artifacts are experimental. Ask a terminal AI to use Satin's embedded skill and
+it can turn a response into a bounded Markdown artifact, then open the snapshot
+beside its working pane as a native split. The release-matched skill is exposed
+by Satin itself, so there is no separate plugin to install.
+
+<p align="center">
+  <a href="assets/satin-artifact-demo.mp4">
+    <img src="assets/satin-artifact-demo.gif" width="880"
+      alt="An AI creating a Satin artifact and opening it in a native split">
+  </a>
+</p>
+
+<p align="center">
+  <sub>One prompt becomes a Markdown report with a table, highlighted code, and
+  a snapshotted image. Click for the 27-second MP4.</sub>
+</p>
 
 ## Requirements
 
