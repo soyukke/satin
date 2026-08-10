@@ -19,8 +19,8 @@ struct AppSemanticVersion: Comparable {
             omittingEmptySubsequences: false
         )
         guard !buildParts[0].isEmpty,
-              buildParts.count == 1
-                  || Self.validIdentifiers(buildParts[1], rejectNumericLeadingZeroes: false)
+            buildParts.count == 1
+                || Self.validIdentifiers(buildParts[1], rejectNumericLeadingZeroes: false)
         else {
             return nil
         }
@@ -32,19 +32,21 @@ struct AppSemanticVersion: Comparable {
         )
         let core = versionParts[0].split(separator: ".", omittingEmptySubsequences: false)
         guard core.count == 3,
-              let major = Self.numericComponent(core[0]),
-              let minor = Self.numericComponent(core[1]),
-              let patch = Self.numericComponent(core[2])
+            let major = Self.numericComponent(core[0]),
+            let minor = Self.numericComponent(core[1]),
+            let patch = Self.numericComponent(core[2])
         else {
             return nil
         }
 
         let prerelease: [String]
         if versionParts.count == 2 {
-            guard Self.validIdentifiers(
-                versionParts[1],
-                rejectNumericLeadingZeroes: true
-            ) else {
+            guard
+                Self.validIdentifiers(
+                    versionParts[1],
+                    rejectNumericLeadingZeroes: true
+                )
+            else {
                 return nil
             }
             prerelease = versionParts[1].split(separator: ".").map(String.init)
@@ -90,8 +92,8 @@ struct AppSemanticVersion: Comparable {
 
     private static func numericComponent(_ value: Substring) -> Int? {
         guard !value.isEmpty,
-              value.allSatisfy(\.isNumber),
-              value.count == 1 || value.first != "0"
+            value.allSatisfy(\.isNumber),
+            value.count == 1 || value.first != "0"
         else {
             return nil
         }
@@ -116,7 +118,8 @@ struct AppSemanticVersion: Comparable {
                     || (97...122).contains(character)
                     || character == 45
             }
-            let numericLeadingZero = rejectNumericLeadingZeroes
+            let numericLeadingZero =
+                rejectNumericLeadingZeroes
                 && identifier.count > 1
                 && identifier.first == "0"
                 && identifier.allSatisfy(\.isNumber)
@@ -187,10 +190,10 @@ final class AppUpdateChecker {
         completion: @escaping (Result<AppUpdateResult, Error>) -> Void
     ) -> URLSessionDataTask? {
         guard endpoint.scheme == "https",
-              endpoint.host == "github.com",
-              endpoint.path == Self.repositoryPath + "/releases/latest/download/latest.json",
-              endpoint.query == nil,
-              endpoint.fragment == nil
+            endpoint.host == "github.com",
+            endpoint.path == Self.repositoryPath + "/releases/latest/download/latest.json",
+            endpoint.query == nil,
+            endpoint.fragment == nil
         else {
             completion(.failure(AppUpdateError.invalidEndpoint))
             return nil
@@ -214,8 +217,8 @@ final class AppUpdateChecker {
                 return
             }
             guard response.url?.scheme == "https",
-                  let responseHost = response.url?.host,
-                  responseHost == "github.com"
+                let responseHost = response.url?.host,
+                responseHost == "github.com"
                     || responseHost == "release-assets.githubusercontent.com"
             else {
                 completion(.failure(AppUpdateError.invalidResponse))
@@ -261,11 +264,13 @@ final class AppUpdateChecker {
         let version = manifest.version
         let tagName = "v\(version)"
         let expectedAssetName = "Satin-\(version)-macOS-arm64.zip"
-        let expectedAssetPath = Self.repositoryPath
+        let expectedAssetPath =
+            Self.repositoryPath
             + "/releases/download/\(tagName)/\(expectedAssetName)"
-        guard let expectedDownloadURL = URL(
-            string: "https://github.com\(expectedAssetPath)"
-        ),
+        guard
+            let expectedDownloadURL = URL(
+                string: "https://github.com\(expectedAssetPath)"
+            ),
             let manifestURL = URL(
                 string: "https://github.com\(Self.repositoryPath)"
                     + "/releases/download/\(tagName)/latest.json"
@@ -278,20 +283,20 @@ final class AppUpdateChecker {
             throw AppUpdateError.invalidRelease
         }
         guard manifest.schemaVersion == 2,
-              !manifest.build.isEmpty,
-              manifest.channel == "development" || manifest.channel == "production",
-              manifest.architecture == "arm64",
-              manifest.archive == expectedAssetName,
-              manifest.archiveSize > 0,
-              manifest.archiveSize <= 536_870_912,
-              manifest.downloadURL == expectedDownloadURL,
-              manifest.sha256.range(
-                  of: "^[0-9a-f]{64}$",
-                  options: .regularExpression
-              ) != nil,
-              manifest.signature.algorithm == "ed25519",
-              !manifest.signature.keyID.isEmpty,
-              Data(base64Encoded: manifest.signature.value)?.count == 64
+            !manifest.build.isEmpty,
+            manifest.channel == "development" || manifest.channel == "production",
+            manifest.architecture == "arm64",
+            manifest.archive == expectedAssetName,
+            manifest.archiveSize > 0,
+            manifest.archiveSize <= 536_870_912,
+            manifest.downloadURL == expectedDownloadURL,
+            manifest.sha256.range(
+                of: "^[0-9a-f]{64}$",
+                options: .regularExpression
+            ) != nil,
+            manifest.signature.algorithm == "ed25519",
+            !manifest.signature.keyID.isEmpty,
+            Data(base64Encoded: manifest.signature.value)?.count == 64
         else {
             throw AppUpdateError.invalidRelease
         }
@@ -312,54 +317,54 @@ final class AppUpdateChecker {
 
     static func runSelfTests() -> Bool {
         guard let prerelease = AppSemanticVersion("1.2.3-beta.2"),
-              let laterPrerelease = AppSemanticVersion("1.2.3-beta.11"),
-              let release = AppSemanticVersion("v1.2.3"),
-              let nextPatch = AppSemanticVersion("1.2.4"),
-              prerelease < laterPrerelease,
-              laterPrerelease < release,
-              release < nextPatch,
-              AppSemanticVersion("01.2.3") == nil,
-              AppSemanticVersion("1.2.3-beta.01") == nil
+            let laterPrerelease = AppSemanticVersion("1.2.3-beta.11"),
+            let release = AppSemanticVersion("v1.2.3"),
+            let nextPatch = AppSemanticVersion("1.2.4"),
+            prerelease < laterPrerelease,
+            laterPrerelease < release,
+            release < nextPatch,
+            AppSemanticVersion("01.2.3") == nil,
+            AppSemanticVersion("1.2.3-beta.01") == nil
         else {
             return false
         }
 
         let response = """
-        {
-          "schemaVersion": 2,
-          "version": "1.2.4",
-          "build": "1",
-          "channel": "development",
-          "minimumMacOS": "14.0",
-          "architecture": "arm64",
-          "archive": "Satin-1.2.4-macOS-arm64.zip",
-          "archiveSize": 1024,
-          "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
-          "downloadURL": "https://github.com/soyukke/satin/releases/download/v1.2.4/Satin-1.2.4-macOS-arm64.zip",
-          "notarized": false,
-          "signature": {
-            "algorithm": "ed25519",
-            "keyID": "self-test",
-            "value": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=="
-          }
-        }
-        """
+            {
+              "schemaVersion": 2,
+              "version": "1.2.4",
+              "build": "1",
+              "channel": "development",
+              "minimumMacOS": "14.0",
+              "architecture": "arm64",
+              "archive": "Satin-1.2.4-macOS-arm64.zip",
+              "archiveSize": 1024,
+              "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+              "downloadURL": "https://github.com/soyukke/satin/releases/download/v1.2.4/Satin-1.2.4-macOS-arm64.zip",
+              "notarized": false,
+              "signature": {
+                "algorithm": "ed25519",
+                "keyID": "self-test",
+                "value": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=="
+              }
+            }
+            """
         let invalidResponse = response.replacingOccurrences(
             of: "https://github.com/soyukke/satin/releases/download/",
             with: "https://example.com/soyukke/satin/releases/download/"
         )
         guard let data = response.data(using: .utf8),
-              let invalidData = invalidResponse.data(using: .utf8),
-              case let .available(update) = try? evaluate(
-                  data: data,
-                  currentVersion: "1.2.3"
-              ),
-              update.version == "1.2.4",
-              update.archiveSize == 1024,
-              update.manifestURL.path
+            let invalidData = invalidResponse.data(using: .utf8),
+            case let .available(update) = try? evaluate(
+                data: data,
+                currentVersion: "1.2.3"
+            ),
+            update.version == "1.2.4",
+            update.archiveSize == 1024,
+            update.manifestURL.path
                 == "/soyukke/satin/releases/download/v1.2.4/latest.json",
-              case .current = try? evaluate(data: data, currentVersion: "1.2.4"),
-              case nil = try? evaluate(data: invalidData, currentVersion: "1.2.3")
+            case .current = try? evaluate(data: data, currentVersion: "1.2.4"),
+            case nil = try? evaluate(data: invalidData, currentVersion: "1.2.3")
         else {
             return false
         }
@@ -386,7 +391,7 @@ final class AppUpdateChecker {
             semaphore.signal()
         }
         guard task != nil,
-              semaphore.wait(timeout: .now() + 30) == .success
+            semaphore.wait(timeout: .now() + 30) == .success
         else {
             task?.cancel()
             fputs("update live smoke timed out\n", stderr)

@@ -18,7 +18,10 @@ mode=$7
 
 case "$current" in
   */Neovide\ Tabs.app | */Satin.app) ;;
-  *) echo "refusing unexpected current application path: $current" >&2; exit 64 ;;
+  *)
+    echo "refusing unexpected current application path: $current" >&2
+    exit 64
+    ;;
 esac
 if [ "$destination_parent" != "$parent" ] || [ "$destination" != "$parent/Satin.app" ]; then
   echo "refusing unexpected destination application path: $destination" >&2
@@ -26,36 +29,57 @@ if [ "$destination_parent" != "$parent" ] || [ "$destination" != "$parent/Satin.
 fi
 case "$staged" in
   "$parent"/.Satin.update.*.app) ;;
-  *) echo "refusing unexpected staged application path: $staged" >&2; exit 64 ;;
+  *)
+    echo "refusing unexpected staged application path: $staged" >&2
+    exit 64
+    ;;
 esac
 case "$current" in
   */Neovide\ Tabs.app)
     case "$backup" in
       "$parent"/.Neovide\ Tabs.previous.*.app) ;;
-      *) echo "refusing unexpected backup application path: $backup" >&2; exit 64 ;;
+      *)
+        echo "refusing unexpected backup application path: $backup" >&2
+        exit 64
+        ;;
     esac
     case "$trash" in
       */.Trash/Neovide\ Tabs.previous.*.app) ;;
-      *) echo "refusing unexpected Trash path: $trash" >&2; exit 64 ;;
+      *)
+        echo "refusing unexpected Trash path: $trash" >&2
+        exit 64
+        ;;
     esac
     ;;
   */Satin.app)
     case "$backup" in
       "$parent"/.Satin.previous.*.app) ;;
-      *) echo "refusing unexpected backup application path: $backup" >&2; exit 64 ;;
+      *)
+        echo "refusing unexpected backup application path: $backup" >&2
+        exit 64
+        ;;
     esac
     case "$trash" in
       */.Trash/Satin.previous.*.app) ;;
-      *) echo "refusing unexpected Trash path: $trash" >&2; exit 64 ;;
+      *)
+        echo "refusing unexpected Trash path: $trash" >&2
+        exit 64
+        ;;
     esac
     ;;
 esac
 case "$pid" in
-  '' | *[!0-9]*) echo "invalid application pid: $pid" >&2; exit 64 ;;
+  '' | *[!0-9]*)
+    echo "invalid application pid: $pid" >&2
+    exit 64
+    ;;
 esac
 case "$mode" in
   launch | smoke) ;;
-  *) echo "invalid update mode: $mode" >&2; exit 64 ;;
+  *)
+    echo "invalid update mode: $mode" >&2
+    exit 64
+    ;;
 esac
 
 test -d "$current"

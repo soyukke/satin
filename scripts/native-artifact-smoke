@@ -157,11 +157,11 @@ fi
 for _ in {1..100}; do
   rich_screen="$($cli --socket "$socket" read-screen --pane "$rich_pane")"
   state="$($cli --socket "$socket" --json list)"
-  if grep -Fq "リッチレポート" <<<"$rich_screen" \
-    && grep -Fq "Check" <<<"$rich_screen" \
-    && grep -Fq "rust" <<<"$rich_screen" \
-    && grep -Fq "cargo test" <<<"$rich_screen" \
-    && jq -e --argjson pane "$rich_pane" '
+  if grep -Fq "リッチレポート" <<<"$rich_screen" &&
+    grep -Fq "Check" <<<"$rich_screen" &&
+    grep -Fq "rust" <<<"$rich_screen" &&
+    grep -Fq "cargo test" <<<"$rich_screen" &&
+    jq -e --argjson pane "$rich_pane" '
       any(.result.panes[]; .id == $pane and .kittyImages == 1)
     ' <<<"$state" >/dev/null; then
     break
@@ -180,8 +180,8 @@ jq -e --argjson pane "$rich_pane" '
 
 sleep 0.5
 for _ in {1..40}; do
-  if ./scripts/native-window-capture "$window_id" "$rich_markdown_shot" \
-    && [[ -s "$rich_markdown_shot" ]]; then
+  if ./scripts/native-window-capture "$window_id" "$rich_markdown_shot" &&
+    [[ -s "$rich_markdown_shot" ]]; then
     break
   fi
   sleep 0.15

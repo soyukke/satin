@@ -89,7 +89,8 @@ struct NativeKeyShortcut: Equatable {
     let modifiers: NSEvent.ModifierFlags
 
     static func parse(_ value: String) -> NativeKeyShortcut? {
-        let parts = value
+        let parts =
+            value
             .lowercased()
             .split(separator: "+", omittingEmptySubsequences: false)
             .map(String.init)
@@ -144,8 +145,13 @@ struct NativeSettings: Equatable {
 
     func shortcut(for command: NativeCommandID) -> NativeKeyShortcut {
         let value = keyBindings[command.rawValue] ?? command.defaultShortcut
-        return NativeKeyShortcut.parse(value)
-            ?? NativeKeyShortcut.parse(command.defaultShortcut)!
+        guard
+            let shortcut = NativeKeyShortcut.parse(value)
+                ?? NativeKeyShortcut.parse(command.defaultShortcut)
+        else {
+            preconditionFailure("invalid built-in shortcut for \(command.rawValue)")
+        }
+        return shortcut
     }
 }
 
@@ -275,9 +281,9 @@ final class NativeSettingsStore {
             return false
         }
         guard settings.updateCheckIntervalHours > 0,
-              let lastCheck = defaults.object(
-                  forKey: NativePreferenceKey.lastUpdateCheck
-              ) as? Date
+            let lastCheck = defaults.object(
+                forKey: NativePreferenceKey.lastUpdateCheck
+            ) as? Date
         else {
             return true
         }
@@ -315,23 +321,23 @@ final class NativeSettingsStore {
             into: migrationDefaults
         )
         guard migrationDefaults.double(forKey: NativePreferenceKey.fontSize) == 17.0,
-              migrationDefaults.string(forKey: NativePreferenceKey.defaultTheme) == "Rose",
-              migrationDefaults.data(forKey: NativePreferenceKey.sessionState) == migratedSession
+            migrationDefaults.string(forKey: NativePreferenceKey.defaultTheme) == "Rose",
+            migrationDefaults.data(forKey: NativePreferenceKey.sessionState) == migratedSession
         else {
             return false
         }
         let store = NativeSettingsStore(defaults: defaults)
         let initial = store.load()
         guard initial.optionAsAlt,
-              initial.notifications,
-              initial.sessionRestore,
-              initial.automaticUpdateChecks,
-              initial.defaultTheme == "Graphite",
-              initial.finderEditorCommand == "nvim",
-              initial.fontSize == nativeDefaultFontSize,
-              NativeCommandID.allCases.allSatisfy({
-                  NativeKeyShortcut.parse($0.defaultShortcut) != nil
-              })
+            initial.notifications,
+            initial.sessionRestore,
+            initial.automaticUpdateChecks,
+            initial.defaultTheme == "Graphite",
+            initial.finderEditorCommand == "nvim",
+            initial.fontSize == nativeDefaultFontSize,
+            NativeCommandID.allCases.allSatisfy({
+                NativeKeyShortcut.parse($0.defaultShortcut) != nil
+            })
         else {
             return false
         }
@@ -344,7 +350,7 @@ final class NativeSettingsStore {
         changed.keyBindings[NativeCommandID.newTab.rawValue] = "cmd+shift+t"
         store.save(changed)
         guard store.load() == changed,
-              !store.shouldAutomaticallyCheckForUpdates()
+            !store.shouldAutomaticallyCheckForUpdates()
         else {
             return false
         }
@@ -360,9 +366,9 @@ final class NativeSettingsStore {
         )
         let repaired = store.load()
         guard repaired.shellPath.isEmpty,
-              repaired.startupDirectory.isEmpty,
-              repaired.finderEditorCommand == "nvim",
-              repaired.keyBindings == store.defaultKeyBindings()
+            repaired.startupDirectory.isEmpty,
+            repaired.finderEditorCommand == "nvim",
+            repaired.keyBindings == store.defaultKeyBindings()
         else {
             return false
         }
@@ -375,7 +381,7 @@ final class NativeSettingsStore {
         into defaults: UserDefaults
     ) {
         for key in NativePreferenceKey.migratedKeys
-            where defaults.object(forKey: key) == nil {
+        where defaults.object(forKey: key) == nil {
             guard let value = legacyValues[key] else {
                 continue
             }
@@ -391,9 +397,11 @@ final class NativeSettingsStore {
     }
 
     private func storedKeyBindings() -> [String: String] {
-        guard let stored = defaults.dictionary(
-            forKey: NativePreferenceKey.keyBindings
-        ) as? [String: String] else {
+        guard
+            let stored = defaults.dictionary(
+                forKey: NativePreferenceKey.keyBindings
+            ) as? [String: String]
+        else {
             return defaultKeyBindings()
         }
         return defaultKeyBindings().merging(stored) { _, saved in saved }
@@ -443,13 +451,14 @@ final class NativeSettingsStore {
         )
         var normalized: [String: String] = [:]
         for command in NativeCommandID.allCases {
-            let value = values[command.rawValue]?
+            let value =
+                values[command.rawValue]?
                 .lowercased()
                 .replacingOccurrences(of: " ", with: "")
                 ?? command.defaultShortcut
             guard let shortcut = NativeKeyShortcut.parse(value),
-                  !reserved.contains(shortcut.identity),
-                  seen.insert(shortcut.identity).inserted
+                !reserved.contains(shortcut.identity),
+                seen.insert(shortcut.identity).inserted
             else {
                 return defaultKeyBindings()
             }
@@ -481,10 +490,10 @@ final class NativeSettingsStore {
 
     static func isValidFinderEditorCommand(_ value: String) -> Bool {
         guard !value.isEmpty,
-              value.utf8.count <= 1_024,
-              value.unicodeScalars.allSatisfy({
-                  !CharacterSet.controlCharacters.contains($0)
-              })
+            value.utf8.count <= 1_024,
+            value.unicodeScalars.allSatisfy({
+                !CharacterSet.controlCharacters.contains($0)
+            })
         else {
             return false
         }
@@ -496,10 +505,9 @@ final class NativeSettingsStore {
             return false
         }
         return value.unicodeScalars.allSatisfy { scalar in
-            scalar.isASCII && (
-                CharacterSet.alphanumerics.contains(scalar)
-                    || "._+-".unicodeScalars.contains(scalar)
-            )
+            scalar.isASCII
+                && (CharacterSet.alphanumerics.contains(scalar)
+                    || "._+-".unicodeScalars.contains(scalar))
         }
     }
 }
@@ -544,7 +552,8 @@ final class NativeSettingsWindowController: NSWindowController, NSTextFieldDeleg
         tabs.addTabViewItem(tab(title: "Appearance", symbol: "paintbrush", view: appearanceView()))
         tabs.addTabViewItem(tab(title: "Terminal", symbol: "terminal", view: terminalView()))
         tabs.addTabViewItem(tab(title: "Keybindings", symbol: "keyboard", view: keybindingsView()))
-        tabs.addTabViewItem(tab(title: "Updates", symbol: "arrow.triangle.2.circlepath", view: updatesView()))
+        tabs.addTabViewItem(
+            tab(title: "Updates", symbol: "arrow.triangle.2.circlepath", view: updatesView()))
         tabs.title = "\(nativeApplicationName) Settings"
         window.title = "\(nativeApplicationName) Settings"
         refreshControls()
@@ -557,8 +566,9 @@ final class NativeSettingsWindowController: NSWindowController, NSTextFieldDeleg
     func present() {
         refreshControls()
         if let requestedTab = ProcessInfo.processInfo.environment["SATIN_SETTINGS_TAB"],
-           let index = ["general", "appearance", "terminal", "keybindings", "updates"]
-           .firstIndex(of: requestedTab.lowercased()) {
+            let index = ["general", "appearance", "terminal", "keybindings", "updates"]
+                .firstIndex(of: requestedTab.lowercased())
+        {
             tabController.selectedTabViewItemIndex = index
         }
         showWindow(nil)
@@ -577,7 +587,8 @@ final class NativeSettingsWindowController: NSWindowController, NSTextFieldDeleg
     }
 
     @objc private func fontChanged(_ sender: NSPopUpButton) {
-        settings.fontFamily = sender.titleOfSelectedItem == "Bundled Default"
+        settings.fontFamily =
+            sender.titleOfSelectedItem == "Bundled Default"
             ? ""
             : sender.titleOfSelectedItem ?? ""
         commit()
@@ -598,15 +609,18 @@ final class NativeSettingsWindowController: NSWindowController, NSTextFieldDeleg
     }
 
     @objc private func terminalPathChanged(_ sender: NSTextField) {
-        let shellPath = shellField?.stringValue.trimmingCharacters(
-            in: .whitespacesAndNewlines
-        ) ?? ""
-        let startupDirectory = directoryField?.stringValue.trimmingCharacters(
-            in: .whitespacesAndNewlines
-        ) ?? ""
-        let finderEditorCommand = finderEditorField?.stringValue.trimmingCharacters(
-            in: .whitespacesAndNewlines
-        ) ?? ""
+        let shellPath =
+            shellField?.stringValue.trimmingCharacters(
+                in: .whitespacesAndNewlines
+            ) ?? ""
+        let startupDirectory =
+            directoryField?.stringValue.trimmingCharacters(
+                in: .whitespacesAndNewlines
+            ) ?? ""
+        let finderEditorCommand =
+            finderEditorField?.stringValue.trimmingCharacters(
+                in: .whitespacesAndNewlines
+            ) ?? ""
         guard NativeSettingsStore.isValidShellPath(shellPath) else {
             terminalErrorLabel.stringValue =
                 "Shell must be an executable file at an absolute path."
@@ -648,7 +662,8 @@ final class NativeSettingsWindowController: NSWindowController, NSTextFieldDeleg
     }
 
     @objc private func updateIntervalChanged(_ sender: NSPopUpButton) {
-        settings.updateCheckIntervalHours = sender.selectedItem?.tag == 0
+        settings.updateCheckIntervalHours =
+            sender.selectedItem?.tag == 0
             ? 0
             : Double(sender.selectedItem?.tag ?? 24)
         commit()
@@ -656,7 +671,7 @@ final class NativeSettingsWindowController: NSWindowController, NSTextFieldDeleg
 
     @objc private func shortcutChanged(_ sender: NSTextField) {
         guard let identifier = sender.identifier?.rawValue,
-              let command = NativeCommandID(rawValue: identifier)
+            let command = NativeCommandID(rawValue: identifier)
         else {
             return
         }
@@ -676,7 +691,8 @@ final class NativeSettingsWindowController: NSWindowController, NSTextFieldDeleg
     private func generalView() -> NSView {
         let option = checkbox("Use Option as Alt", action: #selector(booleanChanged(_:)))
         let notifications = checkbox("Bell notifications", action: #selector(booleanChanged(_:)))
-        let restore = checkbox("Restore tabs and panes on launch", action: #selector(booleanChanged(_:)))
+        let restore = checkbox(
+            "Restore tabs and panes on launch", action: #selector(booleanChanged(_:)))
         optionAsAltButton = option
         notificationButton = notifications
         sessionRestoreButton = restore
@@ -755,7 +771,8 @@ final class NativeSettingsWindowController: NSWindowController, NSTextFieldDeleg
         directory.delegate = self
         directoryField = directory
 
-        let choose = NSButton(title: "Choose…", target: self, action: #selector(chooseDirectory(_:)))
+        let choose = NSButton(
+            title: "Choose…", target: self, action: #selector(chooseDirectory(_:)))
         let directoryRow = NSStackView(views: [directory, choose])
         directoryRow.orientation = .horizontal
         directoryRow.spacing = 8
@@ -1015,12 +1032,14 @@ final class NativeSettingsWindowController: NSWindowController, NSTextFieldDeleg
         let manager = NSFontManager.shared
         return manager.availableFontFamilies
             .filter { family in
-                guard let font = manager.font(
-                    withFamily: family,
-                    traits: [],
-                    weight: 5,
-                    size: nativeDefaultFontSize
-                ) else {
+                guard
+                    let font = manager.font(
+                        withFamily: family,
+                        traits: [],
+                        weight: 5,
+                        size: nativeDefaultFontSize
+                    )
+                else {
                     return false
                 }
                 return manager.traits(of: font).contains(.fixedPitchFontMask)

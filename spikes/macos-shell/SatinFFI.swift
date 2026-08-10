@@ -415,7 +415,9 @@ func satin_nvim_wakeup_fd(_ handle: UnsafeMutableRawPointer?) -> Int32
 func satin_nvim_kitty_placement_count(_ handle: UnsafeMutableRawPointer?) -> Int
 
 @_silgen_name("satin_nvim_renderer_model_json")
-func satin_nvim_renderer_model_json(_ handle: UnsafeMutableRawPointer?) -> UnsafeMutablePointer<CChar>?
+func satin_nvim_renderer_model_json(_ handle: UnsafeMutableRawPointer?) -> UnsafeMutablePointer<
+    CChar
+>?
 
 @_silgen_name("satin_nvim_ui_state_json")
 func satin_nvim_ui_state_json(_ handle: UnsafeMutableRawPointer?) -> UnsafeMutablePointer<CChar>?

@@ -99,13 +99,13 @@ enum UpdateArchiveVerifier {
             throw AppUpdateInstallError.invalidSigningKey
         }
         guard key.schemaVersion == 1,
-              key.algorithm == "ed25519",
-              manifest.signature.algorithm == key.algorithm,
-              manifest.signature.keyID == key.keyID,
-              let publicKeyData = Data(base64Encoded: key.publicKey),
-              publicKeyData.count == 32,
-              let signature = Data(base64Encoded: manifest.signature.value),
-              signature.count == 64
+            key.algorithm == "ed25519",
+            manifest.signature.algorithm == key.algorithm,
+            manifest.signature.keyID == key.keyID,
+            let publicKeyData = Data(base64Encoded: key.publicKey),
+            publicKeyData.count == 32,
+            let signature = Data(base64Encoded: manifest.signature.value),
+            signature.count == 64
         else {
             throw AppUpdateInstallError.invalidSigningKey
         }
@@ -147,13 +147,14 @@ final class AppUpdateInstaller {
     static func runSelfTests() -> Bool {
         let archive = Data("signed-update-self-test".utf8)
         let privateKey = Curve25519.Signing.PrivateKey()
-        guard let signature = try? privateKey.signature(for: archive),
-              let signingKeyData = try? JSONSerialization.data(withJSONObject: [
-                  "schemaVersion": 1,
-                  "algorithm": "ed25519",
-                  "keyID": "self-test",
-                  "publicKey": privateKey.publicKey.rawRepresentation.base64EncodedString(),
-              ])
+        guard let downloadURL = URL(string: "https://github.com/example/update.zip"),
+            let signature = try? privateKey.signature(for: archive),
+            let signingKeyData = try? JSONSerialization.data(withJSONObject: [
+                "schemaVersion": 1,
+                "algorithm": "ed25519",
+                "keyID": "self-test",
+                "publicKey": privateKey.publicKey.rawRepresentation.base64EncodedString(),
+            ])
         else {
             return false
         }
@@ -169,7 +170,7 @@ final class AppUpdateInstaller {
             archive: "Satin-1.2.3-macOS-arm64.zip",
             archiveSize: Int64(archive.count),
             sha256: sha256,
-            downloadURL: URL(string: "https://github.com/example/update.zip")!,
+            downloadURL: downloadURL,
             notarized: false,
             signature: UpdateManifest.Signature(
                 algorithm: "ed25519",
@@ -199,21 +200,21 @@ final class AppUpdateInstaller {
     static func verifyRelease(at root: URL) -> Bool {
         let manifestURL = root.appendingPathComponent("latest.json")
         guard let manifestData = try? Data(contentsOf: manifestURL),
-              let manifest = try? JSONDecoder().decode(
-                  UpdateManifest.self,
-                  from: manifestData
-              ),
-              let keyURL = Bundle.main.url(
-                  forResource: "update-signing-public-key",
-                  withExtension: "json"
-              ),
-              let signingKeyData = try? Data(contentsOf: keyURL)
+            let manifest = try? JSONDecoder().decode(
+                UpdateManifest.self,
+                from: manifestData
+            ),
+            let keyURL = Bundle.main.url(
+                forResource: "update-signing-public-key",
+                withExtension: "json"
+            ),
+            let signingKeyData = try? Data(contentsOf: keyURL)
         else {
             return false
         }
         let archiveURL = root.appendingPathComponent(manifest.archive)
         guard let archive = try? Data(contentsOf: archiveURL, options: .mappedIfSafe),
-              Int64(archive.count) == manifest.archiveSize
+            Int64(archive.count) == manifest.archiveSize
         else {
             return false
         }
@@ -232,21 +233,21 @@ final class AppUpdateInstaller {
     static func verifyInstallableRelease(at root: URL) -> Bool {
         let manifestURL = root.appendingPathComponent("latest.json")
         guard let manifestData = try? Data(contentsOf: manifestURL),
-              let manifest = try? JSONDecoder().decode(
-                  UpdateManifest.self,
-                  from: manifestData
-              ),
-              let keyURL = Bundle.main.url(
-                  forResource: "update-signing-public-key",
-                  withExtension: "json"
-              ),
-              let signingKeyData = try? Data(contentsOf: keyURL)
+            let manifest = try? JSONDecoder().decode(
+                UpdateManifest.self,
+                from: manifestData
+            ),
+            let keyURL = Bundle.main.url(
+                forResource: "update-signing-public-key",
+                withExtension: "json"
+            ),
+            let signingKeyData = try? Data(contentsOf: keyURL)
         else {
             return false
         }
         let archiveURL = root.appendingPathComponent(manifest.archive)
         guard let archive = try? Data(contentsOf: archiveURL, options: .mappedIfSafe),
-              Int64(archive.count) == manifest.archiveSize
+            Int64(archive.count) == manifest.archiveSize
         else {
             return false
         }
@@ -265,12 +266,14 @@ final class AppUpdateInstaller {
                 at: extractionRoot,
                 withIntermediateDirectories: false
             )
-            try run("/usr/bin/ditto", [
-                "-x",
-                "-k",
-                archiveURL.path,
-                extractionRoot.path,
-            ])
+            try run(
+                "/usr/bin/ditto",
+                [
+                    "-x",
+                    "-k",
+                    archiveURL.path,
+                    extractionRoot.path,
+                ])
             try validateApplication(
                 extractionRoot.appendingPathComponent(
                     targetAppName,
@@ -289,7 +292,7 @@ final class AppUpdateInstaller {
         completion: @escaping (Result<PreparedAppUpdate, Error>) -> Void
     ) {
         guard update.archiveSize > 0,
-              update.archiveSize <= Self.maximumArchiveBytes
+            update.archiveSize <= Self.maximumArchiveBytes
         else {
             completion(.failure(AppUpdateInstallError.archiveTooLarge))
             return
@@ -348,11 +351,11 @@ final class AppUpdateInstaller {
 
     func launch(_ prepared: PreparedAppUpdate) throws {
         guard prepared.currentApplication == Bundle.main.bundleURL.standardizedFileURL,
-              prepared.destinationApplication.deletingLastPathComponent()
+            prepared.destinationApplication.deletingLastPathComponent()
                 == prepared.currentApplication.deletingLastPathComponent(),
-              prepared.destinationApplication.lastPathComponent == Self.targetAppName,
-              FileManager.default.fileExists(atPath: prepared.stagedApplication.path),
-              FileManager.default.fileExists(atPath: prepared.helper.path)
+            prepared.destinationApplication.lastPathComponent == Self.targetAppName,
+            FileManager.default.fileExists(atPath: prepared.stagedApplication.path),
+            FileManager.default.fileExists(atPath: prepared.helper.path)
         else {
             throw AppUpdateInstallError.invalidApplication
         }
@@ -376,10 +379,10 @@ final class AppUpdateInstaller {
     func discard(_ prepared: PreparedAppUpdate) {
         let parent = prepared.currentApplication.deletingLastPathComponent()
         guard prepared.stagedApplication.deletingLastPathComponent() == parent,
-              prepared.stagedApplication.lastPathComponent.hasPrefix(
+            prepared.stagedApplication.lastPathComponent.hasPrefix(
                 ".Satin.update."
-              ),
-              prepared.stagedApplication.pathExtension == "app"
+            ),
+            prepared.stagedApplication.pathExtension == "app"
         else {
             return
         }
@@ -403,9 +406,9 @@ final class AppUpdateInstaller {
                 return
             }
             guard let response = response as? HTTPURLResponse,
-                  response.statusCode == 200,
-                  let data,
-                  data.count <= Self.maximumManifestBytes
+                response.statusCode == 200,
+                let data,
+                data.count <= Self.maximumManifestBytes
             else {
                 completion(.failure(AppUpdateInstallError.downloadFailed))
                 return
@@ -434,9 +437,9 @@ final class AppUpdateInstaller {
         request.setValue("Satin/\(update.version)", forHTTPHeaderField: "User-Agent")
         session.downloadTask(with: request) { temporaryURL, response, error in
             guard error == nil,
-                  let response = response as? HTTPURLResponse,
-                  response.statusCode == 200,
-                  let temporaryURL
+                let response = response as? HTTPURLResponse,
+                response.statusCode == 200,
+                let temporaryURL
             else {
                 completion(.failure(AppUpdateInstallError.downloadFailed))
                 return
@@ -461,10 +464,12 @@ final class AppUpdateInstaller {
         archiveURL: URL,
         workRoot: URL
     ) throws -> PreparedAppUpdate {
-        guard let keyURL = Bundle.main.url(
-            forResource: "update-signing-public-key",
-            withExtension: "json"
-        ) else {
+        guard
+            let keyURL = Bundle.main.url(
+                forResource: "update-signing-public-key",
+                withExtension: "json"
+            )
+        else {
             throw AppUpdateInstallError.invalidSigningKey
         }
         let archive = try Data(contentsOf: archiveURL, options: .mappedIfSafe)
@@ -494,12 +499,11 @@ final class AppUpdateInstaller {
         let userApplications = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Applications", isDirectory: true)
             .standardizedFileURL
-        guard (
-            currentApp.lastPathComponent == Self.legacyAppName
-                || currentApp.lastPathComponent == Self.targetAppName
-        ),
-              currentApp.pathExtension == "app",
-              parent == systemApplications || parent == userApplications
+        guard
+            (currentApp.lastPathComponent == Self.legacyAppName
+                || currentApp.lastPathComponent == Self.targetAppName),
+            currentApp.pathExtension == "app",
+            parent == systemApplications || parent == userApplications
         else {
             throw AppUpdateInstallError.unsupportedInstallLocation
         }
@@ -514,10 +518,9 @@ final class AppUpdateInstaller {
             Self.targetAppName,
             isDirectory: true
         )
-        guard (
-            currentApp == destination
-                || !FileManager.default.fileExists(atPath: destination.path)
-        )
+        guard
+            (currentApp == destination
+                || !FileManager.default.fileExists(atPath: destination.path))
         else {
             throw AppUpdateInstallError.invalidApplication
         }
@@ -538,8 +541,8 @@ final class AppUpdateInstaller {
             isDirectory: true
         )
         guard !FileManager.default.fileExists(atPath: staged.path),
-              !FileManager.default.fileExists(atPath: backup.path),
-              !FileManager.default.fileExists(atPath: trashBackup.path)
+            !FileManager.default.fileExists(atPath: backup.path),
+            !FileManager.default.fileExists(atPath: trashBackup.path)
         else {
             throw AppUpdateInstallError.invalidApplication
         }
@@ -570,20 +573,20 @@ final class AppUpdateInstaller {
             throw AppUpdateInstallError.invalidManifest
         }
         guard manifest.schemaVersion == 2,
-              manifest.version == update.version,
-              !manifest.build.isEmpty,
-              manifest.channel == "development" || manifest.channel == "production",
-              manifest.architecture == "arm64",
-              manifest.archive == update.archiveName,
-              manifest.archiveSize == update.archiveSize,
-              manifest.downloadURL == update.downloadURL,
-              manifest.sha256.range(
-                  of: "^[0-9a-f]{64}$",
-                  options: .regularExpression
-              ) != nil,
-              manifest.signature.algorithm == "ed25519",
-              !manifest.signature.keyID.isEmpty,
-              Data(base64Encoded: manifest.signature.value)?.count == 64
+            manifest.version == update.version,
+            !manifest.build.isEmpty,
+            manifest.channel == "development" || manifest.channel == "production",
+            manifest.architecture == "arm64",
+            manifest.archive == update.archiveName,
+            manifest.archiveSize == update.archiveSize,
+            manifest.downloadURL == update.downloadURL,
+            manifest.sha256.range(
+                of: "^[0-9a-f]{64}$",
+                options: .regularExpression
+            ) != nil,
+            manifest.signature.algorithm == "ed25519",
+            !manifest.signature.keyID.isEmpty,
+            Data(base64Encoded: manifest.signature.value)?.count == 64
         else {
             throw AppUpdateInstallError.invalidManifest
         }
@@ -597,12 +600,12 @@ final class AppUpdateInstaller {
     ) -> OperatingSystemVersion? {
         let components = rawValue.split(separator: ".", omittingEmptySubsequences: false)
         guard components.count == 2 || components.count == 3,
-              let major = Int(components[0]),
-              let minor = Int(components[1]),
-              let patch = components.count == 3 ? Int(components[2]) : 0,
-              major >= 0,
-              minor >= 0,
-              patch >= 0
+            let major = Int(components[0]),
+            let minor = Int(components[1]),
+            let patch = components.count == 3 ? Int(components[2]) : 0,
+            major >= 0,
+            minor >= 0,
+            patch >= 0
         else {
             return nil
         }
@@ -622,32 +625,35 @@ final class AppUpdateInstaller {
             .isSymbolicLinkKey,
         ])
         guard values.isDirectory == true,
-              values.isSymbolicLink != true,
-              let bundle = Bundle(url: app),
-              bundle.bundleIdentifier == targetBundleIdentifier,
-              bundle.object(
-                  forInfoDictionaryKey: "CFBundleShortVersionString"
-              ) as? String == manifest.version,
-              bundle.object(forInfoDictionaryKey: "CFBundleVersion")
-                  as? String == manifest.build,
-              bundle.object(forInfoDictionaryKey: "LSMinimumSystemVersion")
-                  as? String == manifest.minimumMacOS,
-              let executable = bundle.executableURL
+            values.isSymbolicLink != true,
+            let bundle = Bundle(url: app),
+            bundle.bundleIdentifier == targetBundleIdentifier,
+            bundle.object(
+                forInfoDictionaryKey: "CFBundleShortVersionString"
+            ) as? String == manifest.version,
+            bundle.object(forInfoDictionaryKey: "CFBundleVersion")
+                as? String == manifest.build,
+            bundle.object(forInfoDictionaryKey: "LSMinimumSystemVersion")
+                as? String == manifest.minimumMacOS,
+            let executable = bundle.executableURL
         else {
             throw AppUpdateInstallError.invalidApplication
         }
         let architectures = try run("/usr/bin/lipo", ["-archs", executable.path])
-        guard String(decoding: architectures, as: UTF8.self)
-            .trimmingCharacters(in: .whitespacesAndNewlines) == "arm64"
+        guard
+            String(decoding: architectures, as: UTF8.self)
+                .trimmingCharacters(in: .whitespacesAndNewlines) == "arm64"
         else {
             throw AppUpdateInstallError.invalidApplication
         }
-        try run("/usr/bin/codesign", [
-            "--verify",
-            "--deep",
-            "--strict",
-            app.path,
-        ])
+        try run(
+            "/usr/bin/codesign",
+            [
+                "--verify",
+                "--deep",
+                "--strict",
+                app.path,
+            ])
     }
 
     @discardableResult

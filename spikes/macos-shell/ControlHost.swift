@@ -101,10 +101,12 @@ final class NativeControlServer {
             guard let data = json.data(using: .utf8) else {
                 continue
             }
-            guard let request = try? JSONDecoder().decode(
-                NativeControlRequest.self,
-                from: data
-            ) else {
+            guard
+                let request = try? JSONDecoder().decode(
+                    NativeControlRequest.self,
+                    from: data
+                )
+            else {
                 if let envelope = try? JSONDecoder().decode(
                     NativeControlEnvelope.self,
                     from: data
@@ -166,8 +168,8 @@ final class NativeControlServer {
             ]
         }
         guard JSONSerialization.isValidJSONObject(object),
-              let data = try? JSONSerialization.data(withJSONObject: object),
-              let json = String(data: data, encoding: .utf8)
+            let data = try? JSONSerialization.data(withJSONObject: object),
+            let json = String(data: data, encoding: .utf8)
         else {
             return
         }
@@ -181,7 +183,8 @@ enum NativeControlEnvironment {
     static func socketPath() -> String {
         if let override = ProcessInfo.processInfo.environment["SATIN_CONTROL_SOCKET"]
             ?? ProcessInfo.processInfo.environment["NVTERM_CONTROL_SOCKET"],
-           !override.isEmpty {
+            !override.isEmpty
+        {
             return override
         }
         if ProcessInfo.processInfo.environment["SATIN_NATIVE_SMOKE_SCENARIO"] != nil {
@@ -193,11 +196,13 @@ enum NativeControlEnvironment {
                 .appendingPathComponent("control.sock")
                 .path
         }
-        let base = FileManager.default.urls(
-            for: .applicationSupportDirectory,
-            in: .userDomainMask
-        ).first ?? FileManager.default.homeDirectoryForCurrentUser
-        let runDirectory = base
+        let base =
+            FileManager.default.urls(
+                for: .applicationSupportDirectory,
+                in: .userDomainMask
+            ).first ?? FileManager.default.homeDirectoryForCurrentUser
+        let runDirectory =
+            base
             .appendingPathComponent(nativeApplicationDataDirectoryName, isDirectory: true)
             .appendingPathComponent("run", isDirectory: true)
         return runDirectory.appendingPathComponent("control.sock").path
@@ -238,7 +243,8 @@ enum NativeControlEnvironment {
             .appendingPathComponent("ShellIntegration", isDirectory: true)
             .appendingPathComponent("zsh", isDirectory: true)
         if let bundled,
-           FileManager.default.fileExists(atPath: bundled.appendingPathComponent(".zshrc").path) {
+            FileManager.default.fileExists(atPath: bundled.appendingPathComponent(".zshrc").path)
+        {
             return bundled.path
         }
         return URL(

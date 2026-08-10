@@ -171,5 +171,4 @@ jq -e '
     and .result.tabs[0].id == 2
 ' <<<"$safe_final" >/dev/null
 
-
 echo "native control smoke passed"
