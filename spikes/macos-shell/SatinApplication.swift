@@ -4,6 +4,7 @@ import Darwin
 import Foundation
 import MetalKit
 import OSLog
+import QuartzCore
 
 let nativeApplicationName = Bundle.main.object(
     forInfoDictionaryKey: "CFBundleDisplayName"
@@ -856,6 +857,9 @@ func satin_nvim_kitty_placement_count(_ handle: UnsafeMutableRawPointer?) -> Int
 @_silgen_name("satin_nvim_renderer_model_json")
 func satin_nvim_renderer_model_json(_ handle: UnsafeMutableRawPointer?) -> UnsafeMutablePointer<CChar>?
 
+@_silgen_name("satin_nvim_ui_state_json")
+func satin_nvim_ui_state_json(_ handle: UnsafeMutableRawPointer?) -> UnsafeMutablePointer<CChar>?
+
 @_silgen_name("satin_string_free")
 func satin_string_free(_ value: UnsafeMutablePointer<CChar>?)
 
@@ -1399,6 +1403,11 @@ struct NeovideRendererModelSnapshot: Decodable {
     let scrollbar: ScrollbarSnapshot?
     let scroll_hint: FrameScrollHint?
     let windows: [NeovideRenderedWindowSnapshot]
+}
+
+struct NeovideUiStateSnapshot: Decodable {
+    let cursor: TerminalCursorSnapshot?
+    let scroll_hint: FrameScrollHint?
 }
 
 struct NeovideMessageSelectionSnapshot: Decodable {
@@ -2347,6 +2356,10 @@ final class RustNeovimPane: NativePane {
 
     func rendererModel() -> NeovideRendererModelSnapshot? {
         decode(satin_nvim_renderer_model_json(handle), as: NeovideRendererModelSnapshot.self)
+    }
+
+    func uiState() -> NeovideUiStateSnapshot? {
+        decode(satin_nvim_ui_state_json(handle), as: NeovideUiStateSnapshot.self)
     }
 
     func renderHandle() -> UnsafeMutableRawPointer? {
@@ -4082,13 +4095,19 @@ protocol TerminalContextMenuProvider: AnyObject {
     func terminalContextMenu(tabIndex: Int?) -> NSMenu
 }
 
-final class TerminalMetalView: MTKView, MTKViewDelegate {
+final class TerminalMetalView: MTKView, CAMetalDisplayLinkDelegate, MTKViewDelegate {
     weak var contextMenuProvider: TerminalContextMenuProvider?
     var renderProvider: ((MTLTexture, UnsafeMutableRawPointer?) -> Bool)?
 
     private let commandQueue: MTLCommandQueue
+    private let usesSmokeFrameFallback: Bool = {
+        let scenario = ProcessInfo.processInfo.environment["SATIN_NATIVE_SMOKE_SCENARIO"]
+        return scenario?.hasPrefix("nvim-cursor-") == true
+    }()
     private var skiaRenderer: UnsafeMutableRawPointer?
     private var skiaFrameCount = 0
+    private var nextFrameWorkItem: DispatchWorkItem?
+    private var frameDisplayLink: CAMetalDisplayLink?
 
     required init(coder: NSCoder) {
         fatalError("init(coder:) is not supported")
@@ -4110,11 +4129,24 @@ final class TerminalMetalView: MTKView, MTKViewDelegate {
         super.init(frame: frameRect, device: device)
         colorPixelFormat = .bgra8Unorm
         clearColor = MTLClearColor(red: 0.078, green: 0.086, blue: 0.102, alpha: 1.0)
-        enableSetNeedsDisplay = true
+        if usesSmokeFrameFallback {
+            enableSetNeedsDisplay = true
+            isPaused = true
+            delegate = self
+            needsDisplay = true
+            return
+        }
+        enableSetNeedsDisplay = false
         isPaused = true
-        preferredFramesPerSecond = 120
-        delegate = self
-        needsDisplay = true
+        guard let metalLayer = layer as? CAMetalLayer else {
+            fatalError("MTKView did not create a CAMetalLayer")
+        }
+        let displayLink = CAMetalDisplayLink(metalLayer: metalLayer)
+        displayLink.delegate = self
+        displayLink.preferredFrameLatency = 1
+        displayLink.isPaused = true
+        displayLink.add(to: .main, forMode: .common)
+        frameDisplayLink = displayLink
     }
 
     static func isAvailable() -> Bool {
@@ -4132,7 +4164,29 @@ final class TerminalMetalView: MTKView, MTKViewDelegate {
     }
 
     deinit {
+        nextFrameWorkItem?.cancel()
+        frameDisplayLink?.invalidate()
         satin_skia_metal_destroy(skiaRenderer)
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if usesSmokeFrameFallback {
+            requestFrame()
+            return
+        }
+        guard let window else {
+            frameDisplayLink?.isPaused = true
+            return
+        }
+        let displayRate = min(120, max(30, window.screen?.maximumFramesPerSecond ?? 60))
+        let rate = Float(displayRate)
+        frameDisplayLink?.preferredFrameRateRange = CAFrameRateRange(
+            minimum: rate,
+            maximum: rate,
+            preferred: rate
+        )
+        requestFrame()
     }
 
     override var acceptsFirstResponder: Bool {
@@ -4146,30 +4200,55 @@ final class TerminalMetalView: MTKView, MTKViewDelegate {
         NSMenu.popUpContextMenu(menu, with: event, for: self)
     }
 
+    func metalDisplayLink(
+        _ link: CAMetalDisplayLink,
+        needsUpdate update: CAMetalDisplayLink.Update
+    ) {
+        renderFrame(update.drawable, displayLink: link)
+    }
+
     func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {}
 
     func draw(in view: MTKView) {
-        guard let drawable = currentDrawable,
-              let commandBuffer = commandQueue.makeCommandBuffer()
-        else {
+        guard usesSmokeFrameFallback, let drawable = currentDrawable else {
+            return
+        }
+        renderFrame(drawable, displayLink: nil)
+    }
+
+    private func renderFrame(
+        _ drawable: CAMetalDrawable,
+        displayLink: CAMetalDisplayLink?
+    ) {
+        guard let commandBuffer = commandQueue.makeCommandBuffer() else {
+            displayLink?.isPaused = true
             return
         }
 
         if renderProvider?(drawable.texture, skiaRenderer) == true {
             skiaFrameCount += 1
-            requestNextSkiaFrameIfNeeded(commandBuffer)
-            commandBuffer.present(drawable)
-            commandBuffer.commit()
-            return
+        } else {
+            let descriptor = MTLRenderPassDescriptor()
+            descriptor.colorAttachments[0].texture = drawable.texture
+            descriptor.colorAttachments[0].loadAction = .clear
+            descriptor.colorAttachments[0].storeAction = .store
+            descriptor.colorAttachments[0].clearColor = clearColor
+            let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: descriptor)
+            encoder?.endEncoding()
         }
-
-        guard let descriptor = currentRenderPassDescriptor else {
-            return
-        }
-        let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: descriptor)
-        encoder?.endEncoding()
+        updateFrameScheduling(commandBuffer)
         commandBuffer.present(drawable)
         commandBuffer.commit()
+    }
+
+    func requestFrame() {
+        nextFrameWorkItem?.cancel()
+        nextFrameWorkItem = nil
+        if usesSmokeFrameFallback {
+            needsDisplay = true
+            return
+        }
+        frameDisplayLink?.isPaused = false
     }
 
     func hasSkiaFrames() -> Bool {
@@ -4188,6 +4267,10 @@ final class TerminalMetalView: MTKView, MTKViewDelegate {
         satin_skia_metal_needs_animation_frame(skiaRenderer) != 0
     }
 
+    func pendingSkiaFrameDelayMs() -> UInt64 {
+        satin_skia_metal_next_frame_delay_ms(skiaRenderer)
+    }
+
     func forgetRuntime(_ runtime: UnsafeMutableRawPointer?) {
         satin_skia_metal_forget_runtime(skiaRenderer, runtime)
     }
@@ -4196,20 +4279,47 @@ final class TerminalMetalView: MTKView, MTKViewDelegate {
         family.withCString { value in
             _ = satin_skia_metal_set_font_family(skiaRenderer, value)
         }
-        needsDisplay = true
+        requestFrame()
     }
 
-    private func requestNextSkiaFrameIfNeeded(_ commandBuffer: MTLCommandBuffer) {
+    private func updateFrameScheduling(_ commandBuffer: MTLCommandBuffer) {
+        nextFrameWorkItem?.cancel()
+        nextFrameWorkItem = nil
         let delayMs = satin_skia_metal_next_frame_delay_ms(skiaRenderer)
         guard delayMs != UInt64.max else {
+            if !usesSmokeFrameFallback {
+                frameDisplayLink?.isPaused = true
+            }
             return
         }
-        commandBuffer.addCompletedHandler { [weak self] _ in
-            let deadline = DispatchTime.now() + .milliseconds(Int(min(delayMs, UInt64(Int.max))))
-            DispatchQueue.main.asyncAfter(deadline: deadline) {
-                self?.needsDisplay = true
+        if usesSmokeFrameFallback {
+            commandBuffer.addCompletedHandler { [weak self] _ in
+                let milliseconds = Int(min(delayMs, UInt64(Int.max)))
+                DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(milliseconds)) {
+                    self?.requestFrame()
+                }
             }
+            return
         }
+        guard delayMs > 0 else {
+            requestFrame()
+            return
+        }
+
+        frameDisplayLink?.isPaused = true
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self else {
+                return
+            }
+            self.nextFrameWorkItem = nil
+            self.requestFrame()
+        }
+        nextFrameWorkItem = workItem
+        let milliseconds = Int(min(delayMs, UInt64(Int.max)))
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + .milliseconds(milliseconds),
+            execute: workItem
+        )
     }
 }
 
@@ -4463,6 +4573,11 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
     private let metalView: TerminalMetalView
     private let terminalTextView = TerminalTextView(frame: .zero)
     private let defaultPaneMode = NativePaneMode.current()
+    private let capturesNvimRendererModels: Bool = {
+        let environment = ProcessInfo.processInfo.environment
+        return environment["SATIN_NATIVE_SMOKE_SCENARIO"] != nil
+            && environment["SATIN_NATIVE_SMOKE_CAPTURE_RENDERER_MODEL"] != "0"
+    }()
     private var terminalPanes: [Int: NativePane] = [:]
     private var scrollRemainders: [Int: CGFloat] = [:]
     private var paneWorkingDirectories: [Int: String] = [:]
@@ -8863,7 +8978,7 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
         )
         let ok = hasModelFrames && skiaFrames > 0 && popupCount == 1 && popupCellSummary != "none"
         if ok && settleFrames > 0 {
-            metalView.needsDisplay = true
+            metalView.requestFrame()
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
                 self?.writeNvimPopupmenuSmokeResult(
                     resultPath,
@@ -9061,7 +9176,7 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
         let animationSettled = !requireSettledAnimation || !metalView.hasPendingSkiaFrame()
         let modelReady = hasModelFrames && skiaFrames > 0 && cursor == expected && textCount == 1
         if modelReady && animationSettled && settleFrames > 0 {
-            metalView.needsDisplay = true
+            metalView.requestFrame()
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
                 self?.writeNvimCursorDetailSmokeResult(
                     resultPath,
@@ -9104,6 +9219,7 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
             "cursor=\(cursor)",
             "text=\(textCount)",
             "animation-settled=\(animationSettled ? "yes" : "no")",
+            "next-frame-delay-ms=\(metalView.pendingSkiaFrameDelayMs())",
         ].joined(separator: " ")
         let result = ok ? "ok \(label) \(summary)\n" : "failed \(label) \(summary)\n"
         try? result.write(toFile: resultPath, atomically: true, encoding: .utf8)
@@ -10697,7 +10813,7 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
         if activePaneChanged {
             updateActiveFrame()
         } else if visiblePaneChanged {
-            metalView.needsDisplay = true
+            metalView.requestFrame()
         }
     }
 
@@ -11042,19 +11158,30 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
             return
         }
 
-        if let pane = pane as? RustNeovimPane, let model = pane.rendererModel() {
-            if let scrollHint = model.scroll_hint {
-                lastNvimModelScrollShift = scrollHint.outputShift
+        if let pane = pane as? RustNeovimPane {
+            if capturesNvimRendererModels, let model = pane.rendererModel() {
+                if let scrollHint = model.scroll_hint {
+                    lastNvimModelScrollShift = scrollHint.outputShift
+                }
+                terminalTextView.setTerminalCursor(nil)
+                terminalTextView.setRendererModel(model)
+            } else {
+                let state = pane.uiState()
+                if let scrollHint = state?.scroll_hint {
+                    lastNvimModelScrollShift = scrollHint.outputShift
+                }
+                terminalTextView.setRendererModel(nil)
+                terminalTextView.setTerminalCursor(
+                    state?.cursor.map { (x: Int($0.x), y: Int($0.y)) }
+                )
             }
-            terminalTextView.setTerminalCursor(nil)
-            terminalTextView.setRendererModel(model)
-            metalView.needsDisplay = true
+            metalView.requestFrame()
             return
         }
 
         terminalTextView.setRendererModel(nil)
         terminalTextView.setTerminalCursor((pane as? RustTerminalPane)?.cursorPosition())
-        metalView.needsDisplay = true
+        metalView.requestFrame()
     }
 
     private func renderActiveMetalFrame(

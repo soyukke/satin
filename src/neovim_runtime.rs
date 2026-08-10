@@ -18,7 +18,7 @@ use anyhow::{Result, anyhow};
 use rmpv::{Value, decode::read_value, encode::write_value};
 
 use crate::{
-    neovide_render::NeovideRendererModelSnapshot,
+    neovide_render::{NeovideRendererModelSnapshot, NeovideUiStateSnapshot},
     neovim_editor::{NeovimEditor, NeovimMessageSelectionResult},
     terminal_runtime::{KittyGraphicsBridge, KittyImagePlacementSnapshot, TerminalGridSize},
     wakeup::{WakeupReceiver, WakeupSender},
@@ -193,6 +193,10 @@ impl NativeNeovimRuntime {
 
     pub fn renderer_model_with_pending_scroll(&mut self) -> NeovideRendererModelSnapshot {
         self.editor.renderer_model_with_pending_scroll()
+    }
+
+    pub fn ui_state_with_pending_scroll(&mut self) -> NeovideUiStateSnapshot {
+        self.editor.ui_state_with_pending_scroll()
     }
 
     pub fn kitty_placements(&self) -> Result<Vec<KittyImagePlacementSnapshot>> {

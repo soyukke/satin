@@ -1,4 +1,5 @@
 use serde::Serialize;
+use std::sync::Arc;
 
 use crate::terminal_runtime::{TerminalCellSnapshot, TerminalColor, TerminalCursorSnapshot};
 
@@ -60,14 +61,77 @@ pub enum NeovideWindowKind {
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 pub struct NeovideLine {
-    pub text: String,
-    pub cells: Vec<TerminalCellSnapshot>,
+    pub text: Arc<str>,
+    pub cells: Arc<[TerminalCellSnapshot]>,
+    #[serde(skip)]
+    background_runs: Arc<[NeovideBackgroundRun]>,
+    #[serde(skip)]
+    has_blink: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct NeovideBackgroundRun {
+    pub start_col: usize,
+    pub end_col: usize,
+    pub background: TerminalColor,
+    pub blend: u8,
 }
 
 impl NeovideLine {
     pub fn from_cells(cells: Vec<TerminalCellSnapshot>) -> Self {
-        let text = cells.iter().map(|cell| cell.text.as_str()).collect();
-        Self { text, cells }
+        Self::from_shared_cells(cells.into())
+    }
+
+    pub fn from_shared_cells(cells: Arc<[TerminalCellSnapshot]>) -> Self {
+        let mut text = String::new();
+        let mut background_runs = Vec::new();
+        let mut current_background = None;
+        let mut has_blink = false;
+
+        for (col, cell) in cells.iter().enumerate() {
+            text.push_str(&cell.text);
+            has_blink |= cell.style.blink;
+
+            let next_background = cell.bg.map(|background| (background, cell.blend));
+            if next_background
+                == current_background.map(|(_, background, blend)| (background, blend))
+            {
+                continue;
+            }
+            if let Some((start_col, background, blend)) = current_background {
+                background_runs.push(NeovideBackgroundRun {
+                    start_col,
+                    end_col: col,
+                    background,
+                    blend,
+                });
+            }
+            current_background =
+                next_background.map(|(background, blend)| (col, background, blend));
+        }
+        if let Some((start_col, background, blend)) = current_background {
+            background_runs.push(NeovideBackgroundRun {
+                start_col,
+                end_col: cells.len(),
+                background,
+                blend,
+            });
+        }
+
+        Self {
+            text: text.into(),
+            cells,
+            background_runs: background_runs.into(),
+            has_blink,
+        }
+    }
+
+    pub(crate) fn background_runs(&self) -> &[NeovideBackgroundRun] {
+        &self.background_runs
+    }
+
+    pub(crate) fn has_blink(&self) -> bool {
+        self.has_blink
     }
 }
 
@@ -446,6 +510,12 @@ pub struct NeovideRendererModelSnapshot {
     pub windows: Vec<NeovideRenderedWindowSnapshot>,
 }
 
+#[derive(Clone, Debug, Serialize, PartialEq)]
+pub struct NeovideUiStateSnapshot {
+    pub cursor: Option<TerminalCursorSnapshot>,
+    pub scroll_hint: Option<NeovideScrollHint>,
+}
+
 #[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
 pub struct NeovideMessageSelection {
     pub grid_id: i64,
@@ -569,6 +639,69 @@ mod tests {
     use crate::terminal_runtime::{TerminalCellStyle, TerminalColor};
 
     #[test]
+    fn retained_line_prepares_background_runs_and_blink_metadata() {
+        let red = TerminalColor {
+            r: 200,
+            g: 20,
+            b: 30,
+        };
+        let blue = TerminalColor {
+            r: 10,
+            g: 40,
+            b: 180,
+        };
+        let mut cells = vec![
+            background_cell(None, 0),
+            background_cell(Some(red), 0),
+            background_cell(Some(red), 0),
+            background_cell(Some(red), 20),
+            background_cell(None, 0),
+            background_cell(Some(blue), 0),
+        ];
+        cells[3].style.blink = true;
+
+        let line = NeovideLine::from_cells(cells);
+
+        assert_eq!(
+            line.background_runs(),
+            [
+                NeovideBackgroundRun {
+                    start_col: 1,
+                    end_col: 3,
+                    background: red,
+                    blend: 0,
+                },
+                NeovideBackgroundRun {
+                    start_col: 3,
+                    end_col: 4,
+                    background: red,
+                    blend: 20,
+                },
+                NeovideBackgroundRun {
+                    start_col: 5,
+                    end_col: 6,
+                    background: blue,
+                    blend: 0,
+                },
+            ]
+        );
+        assert!(line.has_blink());
+    }
+
+    #[test]
+    fn retained_line_metadata_does_not_change_serialized_protocol() {
+        let line = NeovideLine::from_cells(vec![background_cell(
+            Some(TerminalColor { r: 1, g: 2, b: 3 }),
+            10,
+        )]);
+
+        let value = serde_json::to_value(line).unwrap();
+
+        assert!(value.get("background_runs").is_none());
+        assert!(value.get("has_blink").is_none());
+    }
+
+    #[test]
     fn rendered_window_keeps_line_cache_and_scrolls_like_neovide() {
         let mut window = NeovideRenderedWindowCache::new(3, 3);
         window.apply(&NeovideWindowDrawCommand::DrawLine {
@@ -593,9 +726,9 @@ mod tests {
             cols: 0,
         });
 
-        assert_eq!(window.line(0).map(|line| line.text.as_str()), Some("bbb"));
-        assert_eq!(window.line(1).map(|line| line.text.as_str()), Some("ccc"));
-        assert_eq!(window.line(2).map(|line| line.text.as_str()), Some("aaa"));
+        assert_eq!(window.line(0).map(|line| line.text.as_ref()), Some("bbb"));
+        assert_eq!(window.line(1).map(|line| line.text.as_ref()), Some("ccc"));
+        assert_eq!(window.line(2).map(|line| line.text.as_ref()), Some("aaa"));
     }
 
     #[test]
@@ -623,19 +756,19 @@ mod tests {
 
         assert_eq!(snapshot.scroll_position, -1.0);
         assert_eq!(
-            snapshot.scrollback_line(-1).map(|line| line.text.as_str()),
+            snapshot.scrollback_line(-1).map(|line| line.text.as_ref()),
             Some("aaa")
         );
         assert_eq!(
-            snapshot.scrollback_line(0).map(|line| line.text.as_str()),
+            snapshot.scrollback_line(0).map(|line| line.text.as_ref()),
             Some("bbb")
         );
         assert_eq!(
-            snapshot.scrollback_line(1).map(|line| line.text.as_str()),
+            snapshot.scrollback_line(1).map(|line| line.text.as_ref()),
             Some("ccc")
         );
         assert_eq!(
-            snapshot.scrollback_line(2).map(|line| line.text.as_str()),
+            snapshot.scrollback_line(2).map(|line| line.text.as_ref()),
             Some("ddd")
         );
     }
@@ -671,7 +804,7 @@ mod tests {
             .map(|signed_row| {
                 snapshot
                     .scrollback_line(signed_row)
-                    .map(|line| line.text.as_str())
+                    .map(|line| line.text.as_ref())
             })
             .collect::<Vec<_>>();
         assert_eq!(
@@ -708,7 +841,7 @@ mod tests {
 
         assert_eq!(snapshot.scroll_position, -1.0);
         assert_eq!(
-            snapshot.scrollback_line(0).map(|line| line.text.as_str()),
+            snapshot.scrollback_line(0).map(|line| line.text.as_ref()),
             Some("aaa")
         );
     }
@@ -768,11 +901,11 @@ mod tests {
         assert_eq!(snapshot.inner_row_range(), 1..3);
         assert!(snapshot.scrollback_line(-1).is_none());
         assert_eq!(
-            snapshot.scrollback_line(0).map(|line| line.text.as_str()),
+            snapshot.scrollback_line(0).map(|line| line.text.as_ref()),
             Some("aaa")
         );
         assert_eq!(
-            snapshot.scrollback_line(1).map(|line| line.text.as_str()),
+            snapshot.scrollback_line(1).map(|line| line.text.as_ref()),
             Some("bbb")
         );
         assert!(snapshot.scrollback_line(2).is_none());
@@ -804,9 +937,14 @@ mod tests {
         assert_eq!(snapshot.width, 3);
         assert_eq!(snapshot.height, 2);
         assert_eq!(
-            snapshot.lines[1].as_ref().map(|line| line.text.as_str()),
+            snapshot.lines[1].as_ref().map(|line| line.text.as_ref()),
             Some("abc")
         );
+        let second = window.snapshot(7, NeovideRenderedWindowPlacement::main(3, 2));
+        assert!(Arc::ptr_eq(
+            &snapshot.lines[1].as_ref().unwrap().cells,
+            &second.lines[1].as_ref().unwrap().cells,
+        ));
     }
 
     fn row(text: &str) -> Vec<TerminalCellSnapshot> {
@@ -819,6 +957,16 @@ mod tests {
                 style: TerminalCellStyle::default(),
             })
             .collect()
+    }
+
+    fn background_cell(bg: Option<TerminalColor>, blend: u8) -> TerminalCellSnapshot {
+        TerminalCellSnapshot {
+            text: " ".to_owned(),
+            fg: TerminalColor { r: 0, g: 0, b: 0 },
+            bg,
+            blend,
+            style: TerminalCellStyle::default(),
+        }
     }
 
     fn set_window_rows<const N: usize>(window: &mut NeovideRenderedWindowCache, rows: [&str; N]) {

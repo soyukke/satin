@@ -55,6 +55,12 @@ the current drawable texture as a Skia Metal backend render target, draw the
 retained windows, flush Skia, and let the Swift `MTKView` present the drawable.
 The AppKit row bridge and cursor overlay have been removed; cursor rendering
 lives in the Rust Skia/Metal adapter.
+Normal AppKit frame updates do not serialize that retained cell model. Swift
+receives only a compact cursor and pending scroll-hint snapshot for input-method
+placement and smoke metadata; the complete JSON model remains available to
+explicit smoke and control reads. This keeps the Rust retained model as the
+rendering authority without duplicating every highlighted cell across the FFI
+boundary before Metal can draw it.
 
 Message-area drag selection follows Neovide's client-overlay boundary. A left
 press is consumed only when the topmost retained window is a message window;
@@ -81,6 +87,21 @@ the renderer snapshot is taken, the cursor destination and its four corner
 springs advance from that same post-animation window state, and the result is
 drawn. A normal one-line cursor move therefore deforms only the cursor polygon;
 it does not translate the editor window.
+The AppKit Metal host uses `CAMetalDisplayLink`, whose callback supplies an
+available drawable at the attached display's cadence. The link runs only while
+Rust reports an immediately active animation, then pauses again at rest. Future
+cursor or text-blink deadlines use one replaceable timer, while input resumes
+the link for one frame. Rendering therefore neither spins a zero-delay dispatch
+loop nor blocks the main thread in `CAMetalLayer.nextDrawable()`.
+Native pixel-smoke processes are the exception: the test runner can execute
+while `loginwindow` is frontmost, in which case macOS suppresses display-link
+callbacks even though the Rust renderer still requests an immediate frame.
+The delayed cursor-shape pixel-smoke processes are the exception: they use
+`MTKView` one-shot invalidation with the same Skia renderer so their cursor and
+blink animations remain testable under a locked compositor. Other smoke cases
+continue to exercise the display link. Remove this fallback when the smoke
+runner guarantees an active display, or replace it with an offscreen drawable
+path; it must not be enabled in the packaged application.
 Like Neovide's per-window surface draw, each visible retained window clears its
 entire grid rectangle to the default background before cached lines are drawn.
 This lets a resized foreground grid cover stale root-grid separators after a
@@ -100,6 +121,30 @@ text runs can choose coarse font style and draw grid-aligned decorations without
 inventing a second style channel. Neovim highlight `blend` is retained on cells
 and the Skia/Metal adapter applies it as alpha-composited background paint for
 floating-window transparency.
+The mutable Neovim grid and retained line snapshots share copy-on-write cell-row
+storage; retained snapshots also share their immutable line text. Above the word
+shape cache, the text renderer keeps a bounded prepared-line cache keyed by the
+shared cell-row identity and clipped width. A prepared line owns its shaped
+`TextBlob`s, colors, styles, and grid spans, so unchanged scrollback lines reuse
+glyph work throughout cursor and scroll animation instead of cloning cells,
+rebuilding runs, and re-entering the shape cache on every Metal frame. A changed
+line gets a new identity; the lower word cache can still reuse glyphs after
+background-only changes. Cell-size or font-family changes clear the prepared
+cache before the next draw.
+Contiguous cells with the same background color and `blend` are emitted as one
+Skia rectangle. Diff highlights commonly cover most of a row, so this preserves
+cell semantics while avoiding one GPU draw operation per highlighted cell.
+Those background runs and the presence of blinking text are derived once when
+an immutable retained line is created, then shared with every snapshot clone.
+They are renderer-only state and are omitted from the serialized control/smoke
+protocol. Metal frames therefore iterate the small run list instead of scanning
+every visible cell again, while changed rows remain the only invalidation
+boundary.
+Neovim `grid_scroll` updates reuse the mutable grid storage as well: full-width
+vertical movement rotates row buffers, horizontal movement rotates cell slices,
+and partial two-axis movement copies only the affected rows from a copy-on-write
+row snapshot. Scrolling no longer deep-clones the complete grid and every cell
+string before retained draw commands are applied.
 Neovim `mode_info_set` and `mode_change` cursor metadata are retained on the
 cursor snapshot as shape, cell percentage, and blink timings; the Skia/Metal
 cursor body uses the mode cell percentage for vertical and horizontal cursor
@@ -131,9 +176,9 @@ then verifies that the grid is no longer visible and that no separator pixels
 remain in a captured Skia/Metal frame. A raster renderer regression test also
 checks that an empty foreground window masks populated root-grid cells.
 
-The native nvim path reads scroll metadata from the retained model. The older
-JSON frame output and AppKit cell renderer were removed after the Skia/Metal
-path became mandatory.
+The native nvim path consumes scroll metadata from the compact UI state while
+the Rust renderer reads retained windows directly. The older per-update JSON
+cell frame and AppKit cell renderer are not part of the production frame path.
 
 The normal terminal pane now uses the same Rust Skia/Metal adapter. The
 `libghostty-vt` frame is converted into a single retained normal window, terminal
@@ -163,6 +208,12 @@ implied by multigrid rendering alone.
 
 This makes the Neovim pane closer to Neovide's quality and performance model,
 but adds Skia/Metal renderer complexity and MIT attribution requirements.
+
+Neovide's per-line Skia `Picture` recording was evaluated for this Metal path
+but is not retained: Ganesh picture replay still entered the text/glyph path and
+increased end-to-end work in the diff-scroll benchmark. Reconsider it only with
+backend-specific frame and glyph-cache measurements; retained line metadata and
+prepared `TextBlob`s remain the smaller cache boundary for now.
 
 Short-term AppKit drawing optimizations are allowed only as stopgaps. New
 Neovim-specific rendering behavior should be added to the Neovide-derived

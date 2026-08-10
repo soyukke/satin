@@ -17,6 +17,8 @@ pub struct SkiaRenderGeometry {
 #[cfg(target_os = "macos")]
 mod platform {
     use super::SkiaRenderGeometry;
+    #[cfg(test)]
+    use crate::terminal_runtime::TerminalCellSnapshot;
     use crate::{
         neovide_render::{
             CriticallyDampedSpringAnimation, NeovideRenderedWindowSnapshot,
@@ -25,8 +27,8 @@ mod platform {
         neovide_text::{NeovideTextRenderer, TextGridGeometry},
         neovim_runtime::NativeNeovimRuntime,
         terminal_runtime::{
-            KittyImagePlacementSnapshot, NativeTerminalRuntime, TerminalCellSnapshot,
-            TerminalColor, TerminalCursorSnapshot,
+            KittyImagePlacementSnapshot, NativeTerminalRuntime, TerminalColor,
+            TerminalCursorSnapshot,
         },
     };
     use skia_safe::{
@@ -296,13 +298,10 @@ mod platform {
     }
 
     fn model_has_blink(model: &NeovideRendererModelSnapshot) -> bool {
-        model.windows.iter().any(|window| {
-            window
-                .lines
-                .iter()
-                .flatten()
-                .any(|line| line.cells.iter().any(|cell| cell.style.blink))
-        })
+        model
+            .windows
+            .iter()
+            .any(|window| window.lines.iter().flatten().any(|line| line.has_blink()))
     }
 
     struct ModelRenderOptions<'a> {
@@ -694,10 +693,8 @@ mod platform {
         window: &NeovideRenderedWindowSnapshot,
         geometry: SkiaRenderGeometry,
     ) {
-        for (col, cell) in line.cells.iter().take(window.width).enumerate() {
-            draw_cell_background_if_needed(canvas, cell, row, window.left + col, geometry);
-        }
-        text_renderer.draw_line(canvas, &line.cells, row, window.left, window.width);
+        draw_line_backgrounds(canvas, line, row, window.left, window.width, geometry);
+        text_renderer.draw_line(canvas, line, row, window.left, window.width);
     }
 
     fn scroll_clip_rect(
@@ -713,34 +710,46 @@ mod platform {
         )
     }
 
-    fn draw_cell_background_if_needed(
+    fn draw_line_backgrounds(
         canvas: &Canvas,
-        cell: &TerminalCellSnapshot,
+        line: &crate::neovide_render::NeovideLine,
         row: f32,
-        col: usize,
+        window_left: usize,
+        width: usize,
         geometry: SkiaRenderGeometry,
     ) {
-        let x = geometry.origin_x + col as f32 * geometry.cell_width;
         let y = geometry.origin_y + row * geometry.cell_height;
-        if let Some(background) = cell.bg {
-            draw_cell_background(canvas, background, cell.blend, x, y, geometry);
+        for run in line.background_runs() {
+            let start_col = run.start_col.min(width);
+            let end_col = run.end_col.min(width);
+            if start_col >= end_col {
+                continue;
+            }
+            let x = geometry.origin_x + (window_left + start_col) as f32 * geometry.cell_width;
+            draw_background_run(
+                canvas,
+                run.background,
+                run.blend,
+                x,
+                y,
+                (end_col - start_col) as f32 * geometry.cell_width,
+                geometry.cell_height,
+            );
         }
     }
 
-    fn draw_cell_background(
+    fn draw_background_run(
         canvas: &Canvas,
         background: TerminalColor,
         blend: u8,
         x: f32,
         y: f32,
-        geometry: SkiaRenderGeometry,
+        width: f32,
+        height: f32,
     ) {
         let mut paint = Paint::default();
         paint.set_color(color_with_blend(background, blend));
-        canvas.draw_rect(
-            Rect::from_xywh(x, y, geometry.cell_width, geometry.cell_height),
-            &paint,
-        );
+        canvas.draw_rect(Rect::from_xywh(x, y, width, height), &paint);
     }
 
     fn draw_cursor(

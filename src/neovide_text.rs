@@ -2,8 +2,11 @@
 // MIT-licensed renderer. Copyright (c) 2023 Neovide Contributors.
 // See THIRD_PARTY_NOTICES.md for the audited source revision and license.
 
-use crate::terminal_runtime::{
-    TerminalCellSnapshot, TerminalCellStyle, TerminalColor, TerminalUnderlineStyle,
+use crate::{
+    neovide_render::NeovideLine,
+    terminal_runtime::{
+        TerminalCellSnapshot, TerminalCellStyle, TerminalColor, TerminalUnderlineStyle,
+    },
 };
 use lru::LruCache;
 use skia_safe::{
@@ -15,8 +18,10 @@ use skia_safe::{
 use std::{
     collections::HashSet,
     env, fs,
+    hash::{Hash, Hasher},
     num::NonZeroUsize,
     rc::Rc,
+    sync::Arc,
     time::{SystemTime, UNIX_EPOCH},
 };
 use swash::{
@@ -32,6 +37,7 @@ const DEFAULT_FONT: &[u8] = include_bytes!("../assets/fonts/FiraCodeNerdFont-Reg
 const LAST_RESORT_FONT: &[u8] = include_bytes!("../assets/fonts/LastResort-Regular.ttf");
 const FONT_CACHE_SIZE: usize = 8 * 1024 * 1024;
 const SHAPE_CACHE_ENTRIES: usize = 10_000;
+const PREPARED_LINE_CACHE_ENTRIES: usize = 1_024;
 const FONT_SIZE_RATIO: f32 = 0.82;
 const FLOAT_EPSILON: f32 = 0.01;
 
@@ -46,6 +52,7 @@ pub struct TextGridGeometry {
 pub struct NeovideTextRenderer {
     shaper: CachingShaper,
     geometry: TextGridGeometry,
+    prepared_lines: LruCache<PreparedLineKey, Vec<PreparedTextRun>>,
 }
 
 impl NeovideTextRenderer {
@@ -53,105 +60,152 @@ impl NeovideTextRenderer {
         Self {
             shaper: CachingShaper::new(),
             geometry: TextGridGeometry::default(),
+            prepared_lines: LruCache::new(NonZeroUsize::new(PREPARED_LINE_CACHE_ENTRIES).unwrap()),
         }
     }
 
     pub fn update_geometry(&mut self, geometry: TextGridGeometry) {
+        let grid_changed = !same_float(self.geometry.cell_width, geometry.cell_width)
+            || !same_float(self.geometry.cell_height, geometry.cell_height);
         self.geometry = geometry;
         self.shaper
             .update_grid(font_size(geometry), geometry.cell_width);
+        if grid_changed {
+            self.prepared_lines.clear();
+        }
     }
 
     pub fn set_primary_font_family(&mut self, family: Option<&str>) {
-        self.shaper.set_primary_font_family(family);
+        if self.shaper.set_primary_font_family(family) {
+            self.prepared_lines.clear();
+        }
     }
 
     pub fn draw_line(
         &mut self,
         canvas: &Canvas,
-        cells: &[TerminalCellSnapshot],
+        line: &NeovideLine,
         row: f32,
         window_left: usize,
         width: usize,
     ) {
-        for run in collect_text_runs(cells, width) {
-            self.draw_run(canvas, &run, row, window_left);
+        let key = PreparedLineKey::new(line, width);
+        let baseline = self.shaper.baseline_offset();
+        let geometry = self.geometry;
+        if let Some(runs) = self.prepared_lines.get(&key) {
+            for run in runs {
+                Self::draw_run(canvas, run, row, window_left, baseline, geometry);
+            }
+            return;
         }
+
+        let prepared = self.prepare_line(&line.cells, key.width);
+        for run in &prepared {
+            Self::draw_run(canvas, run, row, window_left, baseline, geometry);
+        }
+        self.prepared_lines.put(key, prepared);
     }
 
     pub fn cleanup_font_cache(&self) {
         self.shaper.cleanup_font_cache();
     }
 
-    fn draw_run(&mut self, canvas: &Canvas, run: &TextRun, row: f32, window_left: usize) {
+    fn prepare_line(
+        &mut self,
+        cells: &[TerminalCellSnapshot],
+        width: usize,
+    ) -> Vec<PreparedTextRun> {
+        collect_text_runs(cells, width)
+            .into_iter()
+            .map(|run| {
+                let cell_count = run.key.cells.len();
+                let blobs = self.shaper.shape_cached(&run.key);
+                PreparedTextRun {
+                    start_col: run.start_col,
+                    foreground: run.foreground,
+                    style: run.style,
+                    cell_count,
+                    blobs,
+                }
+            })
+            .collect()
+    }
+
+    fn draw_run(
+        canvas: &Canvas,
+        run: &PreparedTextRun,
+        row: f32,
+        window_left: usize,
+        baseline: f32,
+        geometry: TextGridGeometry,
+    ) {
         if run.style.blink && !blink_text_visible() {
             return;
         }
-        let baseline = self.shaper.baseline_offset();
-        let origin = self.run_origin(row, window_left + run.start_col, baseline);
+        let origin = Self::run_origin(geometry, row, window_left + run.start_col, baseline);
         let mut paint = Paint::default();
         paint.set_anti_alias(false);
         paint.set_color(color(run.foreground));
-        for blob in self.shaper.shape_cached(&run.key) {
+        for blob in run.blobs.iter() {
             canvas.draw_text_blob(blob, origin, &paint);
         }
-        self.draw_decorations(canvas, run, row, window_left, &paint);
+        Self::draw_decorations(canvas, run, row, window_left, &paint, geometry);
     }
 
-    fn run_origin(&self, row: f32, col: usize, baseline: f32) -> Point {
+    fn run_origin(geometry: TextGridGeometry, row: f32, col: usize, baseline: f32) -> Point {
         Point::new(
-            self.geometry.origin_x + col as f32 * self.geometry.cell_width,
-            self.geometry.origin_y + row * self.geometry.cell_height + baseline,
+            geometry.origin_x + col as f32 * geometry.cell_width,
+            geometry.origin_y + row * geometry.cell_height + baseline,
         )
     }
 
     fn draw_decorations(
-        &self,
         canvas: &Canvas,
-        run: &TextRun,
+        run: &PreparedTextRun,
         row: f32,
         left: usize,
         paint: &Paint,
+        geometry: TextGridGeometry,
     ) {
         if !run.style.underline && !run.style.strikethrough && !run.style.overline {
             return;
         }
-        let start_x =
-            self.geometry.origin_x + (left + run.start_col) as f32 * self.geometry.cell_width;
-        let end_x = start_x + run.key.cells.len() as f32 * self.geometry.cell_width;
+        let start_x = geometry.origin_x + (left + run.start_col) as f32 * geometry.cell_width;
+        let end_x = start_x + run.cell_count as f32 * geometry.cell_width;
         if run.style.underline {
-            let y = self.decoration_y(row, 0.86);
+            let y = Self::decoration_y(geometry, row, 0.86);
             let mut underline_paint = paint.clone();
             if let Some(underline_color) = run.style.underline_color {
                 underline_paint.set_color(color(underline_color));
             }
-            self.draw_underline(
+            Self::draw_underline(
                 canvas,
                 start_x,
                 end_x,
                 y,
                 run.style.underline_style,
                 &underline_paint,
+                geometry,
             );
         }
         if run.style.strikethrough {
-            let y = self.decoration_y(row, 0.54);
+            let y = Self::decoration_y(geometry, row, 0.54);
             canvas.draw_line((start_x, y), (end_x, y), paint);
         }
         if run.style.overline {
-            let y = self.decoration_y(row, 0.12);
+            let y = Self::decoration_y(geometry, row, 0.12);
             canvas.draw_line((start_x, y), (end_x, y), paint);
         }
     }
 
     fn draw_underline(
-        &self,
         canvas: &Canvas,
         start_x: f32,
         end_x: f32,
         y: f32,
         style: TerminalUnderlineStyle,
         paint: &Paint,
+        geometry: TextGridGeometry,
     ) {
         match style {
             TerminalUnderlineStyle::Double => {
@@ -159,7 +213,7 @@ impl NeovideTextRenderer {
                 canvas.draw_line((start_x, y + 1.5), (end_x, y + 1.5), paint);
             }
             TerminalUnderlineStyle::Curly => {
-                let step = (self.geometry.cell_width / 3.0).max(2.0);
+                let step = (geometry.cell_width / 3.0).max(2.0);
                 let mut x = start_x;
                 let mut up = true;
                 while x < end_x {
@@ -192,8 +246,8 @@ impl NeovideTextRenderer {
         }
     }
 
-    fn decoration_y(&self, row: f32, ratio: f32) -> f32 {
-        self.geometry.origin_y + (row + ratio) * self.geometry.cell_height
+    fn decoration_y(geometry: TextGridGeometry, row: f32, ratio: f32) -> f32 {
+        geometry.origin_y + (row + ratio) * geometry.cell_height
     }
 }
 
@@ -223,6 +277,44 @@ struct TextRun {
     foreground: TerminalColor,
     style: TerminalCellStyle,
     key: ShapeKey,
+}
+
+#[derive(Clone, Debug)]
+struct PreparedLineKey {
+    cells: Arc<[TerminalCellSnapshot]>,
+    width: usize,
+}
+
+impl PreparedLineKey {
+    fn new(line: &NeovideLine, width: usize) -> Self {
+        Self {
+            cells: Arc::clone(&line.cells),
+            width: width.min(line.cells.len()),
+        }
+    }
+}
+
+impl Hash for PreparedLineKey {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        (Arc::as_ptr(&self.cells) as *const TerminalCellSnapshot).hash(state);
+        self.width.hash(state);
+    }
+}
+
+impl PartialEq for PreparedLineKey {
+    fn eq(&self, other: &Self) -> bool {
+        self.width == other.width && Arc::ptr_eq(&self.cells, &other.cells)
+    }
+}
+
+impl Eq for PreparedLineKey {}
+
+struct PreparedTextRun {
+    start_col: usize,
+    foreground: TerminalColor,
+    style: TerminalCellStyle,
+    cell_count: usize,
+    blobs: Arc<[TextBlob]>,
 }
 
 fn collect_text_runs(cells: &[TerminalCellSnapshot], width: usize) -> Vec<TextRun> {
@@ -309,7 +401,7 @@ struct CachingShaper {
     primary_font_family: Option<String>,
     primary_font_path: Option<String>,
     font_loader: FontLoader,
-    blob_cache: LruCache<ShapeKey, Vec<TextBlob>>,
+    blob_cache: LruCache<ShapeKey, Arc<[TextBlob]>>,
     shape_context: ShapeContext,
     font_size: f32,
     cell_width: f32,
@@ -342,16 +434,17 @@ impl CachingShaper {
         self.reset_font_loader();
     }
 
-    fn set_primary_font_family(&mut self, family: Option<&str>) {
+    fn set_primary_font_family(&mut self, family: Option<&str>) -> bool {
         let family = family
             .map(str::trim)
             .filter(|value| !value.is_empty())
             .map(str::to_owned);
         if self.primary_font_family == family {
-            return;
+            return false;
         }
         self.primary_font_family = family;
         self.reset_font_loader();
+        true
     }
 
     fn baseline_offset(&mut self) -> f32 {
@@ -360,12 +453,13 @@ impl CachingShaper {
         })
     }
 
-    fn shape_cached(&mut self, key: &ShapeKey) -> &Vec<TextBlob> {
-        if !self.blob_cache.contains(key) {
-            let blobs = self.shape(key);
-            self.blob_cache.put(key.clone(), blobs);
+    fn shape_cached(&mut self, key: &ShapeKey) -> Arc<[TextBlob]> {
+        if let Some(blobs) = self.blob_cache.get(key) {
+            return Arc::clone(blobs);
         }
-        self.blob_cache.get(key).unwrap()
+        let blobs: Arc<[TextBlob]> = self.shape(key).into();
+        self.blob_cache.put(key.clone(), Arc::clone(&blobs));
+        blobs
     }
 
     fn cleanup_font_cache(&self) {
@@ -852,6 +946,35 @@ mod tests {
         assert_eq!(runs.len(), 2);
         assert_eq!(runs[0].key.style, CoarseStyle::default());
         assert_eq!(runs[1].key.style, CoarseStyle::from_cell_style(bold()));
+    }
+
+    #[test]
+    fn prepared_lines_are_reused_and_invalidated_with_grid_geometry() {
+        let cells = vec![cell("a", red()), styled_cell("b", blue(), bold())];
+        let first = NeovideLine::from_cells(cells);
+        let equivalent = first.clone();
+        let mut renderer = NeovideTextRenderer::new();
+        renderer.update_geometry(TextGridGeometry {
+            origin_x: 0.0,
+            origin_y: 0.0,
+            cell_width: 8.0,
+            cell_height: 16.0,
+        });
+        let mut surface = skia_safe::surfaces::raster_n32_premul((80, 32)).unwrap();
+
+        renderer.draw_line(surface.canvas(), &first, 0.0, 0, 2);
+        renderer.draw_line(surface.canvas(), &equivalent, 1.0, 0, 2);
+
+        assert_eq!(renderer.prepared_lines.len(), 1);
+
+        renderer.update_geometry(TextGridGeometry {
+            origin_x: 0.0,
+            origin_y: 0.0,
+            cell_width: 9.0,
+            cell_height: 18.0,
+        });
+
+        assert!(renderer.prepared_lines.is_empty());
     }
 
     #[test]

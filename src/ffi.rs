@@ -1145,6 +1145,14 @@ pub extern "C" fn satin_nvim_renderer_model_json(handle: *mut NativeNeovimRuntim
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn satin_nvim_ui_state_json(handle: *mut NativeNeovimRuntime) -> *mut c_char {
+    let Some(runtime) = nvim_mut(handle) else {
+        return ptr::null_mut();
+    };
+    json_ptr(&runtime.ui_state_with_pending_scroll())
+}
+
+#[unsafe(no_mangle)]
 /// # Safety
 ///
 /// `device` and `command_queue` must be live Metal protocol object pointers.
