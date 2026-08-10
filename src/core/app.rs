@@ -3,7 +3,10 @@ use std::collections::HashSet;
 use anyhow::{Result, bail};
 use serde::{Deserialize, Serialize};
 
-use super::layout::{PaneId, PaneLayout, PaneLayoutInput, PaneLayoutSnapshot, SplitAxis};
+use super::layout::{
+    MAX_SPLIT_RATIO, MIN_SPLIT_RATIO, PaneId, PaneLayout, PaneLayoutInput, PaneLayoutSnapshot,
+    SplitAxis,
+};
 
 const DEFAULT_THEME_NAME: &str = "Graphite";
 
@@ -54,6 +57,25 @@ impl TerminalCore {
         let pane_id = self.alloc_pane_id();
         self.active_tab_mut()?.split_active(pane_id, axis);
         Some(pane_id.0)
+    }
+
+    pub fn resize_split(
+        &mut self,
+        first_pane_id: usize,
+        second_pane_id: usize,
+        ratio: f64,
+    ) -> bool {
+        if first_pane_id == second_pane_id
+            || !ratio.is_finite()
+            || !(MIN_SPLIT_RATIO..=MAX_SPLIT_RATIO).contains(&ratio)
+        {
+            return false;
+        }
+        let Some(tab) = self.active_tab_mut() else {
+            return false;
+        };
+        tab.layout
+            .set_split_ratio(PaneId(first_pane_id), PaneId(second_pane_id), ratio)
     }
 
     pub fn close_pane(&mut self, pane_id: usize) -> bool {
@@ -391,6 +413,37 @@ mod tests {
                 "second": {"kind": "leaf", "pane_id": 2}
             })
         );
+    }
+
+    #[test]
+    fn resizing_a_nested_split_updates_only_the_marked_boundary() {
+        let mut core = TerminalCore::new();
+        assert_eq!(core.split_active(SplitAxis::Vertical), Some(2));
+        assert_eq!(core.split_active(SplitAxis::Horizontal), Some(3));
+
+        assert!(core.resize_split(2, 3, 0.7));
+        let snapshot = core.snapshot();
+        let root = &snapshot.tabs[0].layout;
+        assert_eq!(root.ratio, Some(0.5));
+        assert_eq!(
+            root.second.as_ref().and_then(|layout| layout.ratio),
+            Some(0.7)
+        );
+
+        assert!(core.resize_split(1, 2, 0.35));
+        assert_eq!(core.snapshot().tabs[0].layout.ratio, Some(0.35));
+    }
+
+    #[test]
+    fn resizing_a_split_rejects_invalid_markers_and_ratios() {
+        let mut core = TerminalCore::new();
+        assert_eq!(core.split_active(SplitAxis::Vertical), Some(2));
+        let before = core.snapshot();
+
+        assert!(!core.resize_split(1, 99, 0.4));
+        assert!(!core.resize_split(1, 2, f64::NAN));
+        assert!(!core.resize_split(1, 2, 0.01));
+        assert_eq!(core.snapshot(), before);
     }
 
     #[test]

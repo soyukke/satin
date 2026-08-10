@@ -1,6 +1,9 @@
 use anyhow::{Result, bail};
 use serde::{Deserialize, Serialize};
 
+pub(crate) const MIN_SPLIT_RATIO: f64 = 0.05;
+pub(crate) const MAX_SPLIT_RATIO: f64 = 0.95;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) struct PaneId(pub usize);
 
@@ -83,6 +86,29 @@ impl PaneLayout {
         }
     }
 
+    pub(crate) fn set_split_ratio(
+        &mut self,
+        first_marker: PaneId,
+        second_marker: PaneId,
+        new_ratio: f64,
+    ) -> bool {
+        let Self::Split {
+            ratio,
+            first,
+            second,
+            ..
+        } = self
+        else {
+            return false;
+        };
+        if first.contains_leaf(first_marker) && second.contains_leaf(second_marker) {
+            *ratio = new_ratio;
+            return true;
+        }
+        first.set_split_ratio(first_marker, second_marker, new_ratio)
+            || second.set_split_ratio(first_marker, second_marker, new_ratio)
+    }
+
     pub(crate) fn without_leaf(self, target: PaneId) -> Option<Self> {
         match self {
             Self::Leaf(id) if id == target => None,
@@ -124,7 +150,7 @@ impl PaneLayout {
                     bail!("split layout omitted second child");
                 };
                 let ratio = input.ratio.unwrap_or(0.5);
-                if !ratio.is_finite() || !(0.05..=0.95).contains(&ratio) {
+                if !ratio.is_finite() || !(MIN_SPLIT_RATIO..=MAX_SPLIT_RATIO).contains(&ratio) {
                     bail!("split ratio must be finite and between 0.05 and 0.95");
                 }
                 Ok(Self::Split {
@@ -152,6 +178,15 @@ impl PaneLayout {
         match self {
             Self::Leaf(id) => Some(*id),
             Self::Split { first, .. } => first.first_leaf(),
+        }
+    }
+
+    fn contains_leaf(&self, target: PaneId) -> bool {
+        match self {
+            Self::Leaf(id) => *id == target,
+            Self::Split { first, second, .. } => {
+                first.contains_leaf(target) || second.contains_leaf(target)
+            }
         }
     }
 }

@@ -464,6 +464,14 @@ func satin_core_new_tab(_ handle: UnsafeMutableRawPointer?) -> Int
 @_silgen_name("satin_core_split_active")
 func satin_core_split_active(_ handle: UnsafeMutableRawPointer?, _ axis: UInt32) -> Int
 
+@_silgen_name("satin_core_resize_split")
+func satin_core_resize_split(
+    _ handle: UnsafeMutableRawPointer?,
+    _ firstPaneId: Int,
+    _ secondPaneId: Int,
+    _ ratio: Double
+) -> UInt8
+
 @_silgen_name("satin_core_close_pane")
 func satin_core_close_pane(_ handle: UnsafeMutableRawPointer?, _ paneId: Int) -> UInt8
 
@@ -1267,6 +1275,7 @@ struct NativeSessionTab: Codable {
 final class NativeSessionPane: Codable {
     let kind: String
     let axis: String?
+    let ratio: Double?
     let paneMode: String?
     let cwd: String
     let active: Bool
@@ -1276,6 +1285,7 @@ final class NativeSessionPane: Codable {
     init(
         kind: String,
         axis: String? = nil,
+        ratio: Double? = nil,
         paneMode: String? = nil,
         cwd: String = "",
         active: Bool = false,
@@ -1284,6 +1294,7 @@ final class NativeSessionPane: Codable {
     ) {
         self.kind = kind
         self.axis = axis
+        self.ratio = ratio
         self.paneMode = paneMode
         self.cwd = cwd
         self.active = active
@@ -1551,6 +1562,10 @@ final class RustCore {
     func splitActive(axis: UInt32) -> Int? {
         let paneId = satin_core_split_active(handle, axis)
         return paneId >= 0 ? paneId : nil
+    }
+
+    func resizeSplit(firstPaneId: Int, secondPaneId: Int, ratio: Double) -> Bool {
+        satin_core_resize_split(handle, firstPaneId, secondPaneId, ratio) != 0
     }
 
     func closePane(_ paneId: Int) -> Bool {
@@ -2450,6 +2465,147 @@ final class RenameTextField: NSTextField, NSTextFieldDelegate {
     }
 }
 
+final class NativeTabControl: NSSegmentedControl {
+    var onRenameRequested: ((Int) -> Void)?
+    var onContextMenuRequested: ((Int, NSEvent, NSView) -> Void)?
+
+    override func mouseDown(with event: NSEvent) {
+        super.mouseDown(with: event)
+        handleCompletedClick(clickCount: event.clickCount, segment: selectedSegment)
+    }
+
+    fileprivate func simulateDoubleClickForSmoke(segment: Int) {
+        handleCompletedClick(clickCount: 2, segment: segment)
+    }
+
+    private func handleCompletedClick(clickCount: Int, segment: Int) {
+        guard clickCount == 2, segment >= 0, segment < segmentCount else {
+            return
+        }
+        onRenameRequested?(segment)
+    }
+
+    override func rightMouseDown(with event: NSEvent) {
+        let point = convert(event.locationInWindow, from: nil)
+        guard let segment = segmentIndex(at: point) else {
+            super.rightMouseDown(with: event)
+            return
+        }
+        selectedSegment = segment
+        onContextMenuRequested?(segment, event, self)
+    }
+
+    private func segmentIndex(at point: NSPoint) -> Int? {
+        guard bounds.contains(point), segmentCount > 0 else {
+            return nil
+        }
+        let widths = (0..<segmentCount).map { width(forSegment: $0) }
+        let contentWidth = widths.reduce(0, +)
+        let leadingInset = max(0, (bounds.width - contentWidth) / 2)
+        let position = point.x - bounds.minX - leadingInset
+        guard position >= 0 else {
+            return 0
+        }
+        var trailingEdge: CGFloat = 0
+        for (segment, width) in widths.enumerated() {
+            trailingEdge += width
+            if position <= trailingEdge {
+                return segment
+            }
+        }
+        return segmentCount - 1
+    }
+}
+
+enum NativePaneDividerAxis: String {
+    case vertical
+    case horizontal
+
+    var cursor: NSCursor {
+        switch self {
+        case .vertical:
+            .resizeLeftRight
+        case .horizontal:
+            .resizeUpDown
+        }
+    }
+}
+
+fileprivate struct NativePaneDivider {
+    private static let hitWidth: CGFloat = 10
+    private static let indicatorWidth: CGFloat = 2
+    private static let minimumPaneLength: CGFloat = 80
+
+    let axis: NativePaneDividerAxis
+    let containerRect: NSRect
+    let firstPaneId: Int
+    let secondPaneId: Int
+    var ratio: CGFloat
+
+    var hitRect: NSRect {
+        dividerRect(width: Self.hitWidth)
+    }
+
+    var indicatorRect: NSRect {
+        dividerRect(width: Self.indicatorWidth)
+    }
+
+    func ratio(at point: NSPoint) -> CGFloat {
+        let length = axis == .vertical ? containerRect.width : containerRect.height
+        guard length > 0 else {
+            return ratio
+        }
+        let offset = axis == .vertical
+            ? point.x - containerRect.minX
+            : point.y - containerRect.minY
+        let minimumRatio = min(0.45, max(0.05, Self.minimumPaneLength / length))
+        return min(max(offset / length, minimumRatio), 1 - minimumRatio)
+    }
+
+    func cellDelta(
+        from previousRatio: CGFloat,
+        to nextRatio: CGFloat,
+        cellSize: NSSize
+    ) -> Int {
+        let length = axis == .vertical ? containerRect.width : containerRect.height
+        let cellLength = axis == .vertical ? cellSize.width : cellSize.height
+        guard length > 0, cellLength > 0 else {
+            return 0
+        }
+        return Int((((nextRatio - previousRatio) * length) / cellLength).rounded(.towardZero))
+    }
+
+    func ratio(
+        afterCellDelta delta: Int,
+        from previousRatio: CGFloat,
+        cellSize: NSSize
+    ) -> CGFloat {
+        let length = axis == .vertical ? containerRect.width : containerRect.height
+        let cellLength = axis == .vertical ? cellSize.width : cellSize.height
+        guard length > 0, cellLength > 0 else {
+            return previousRatio
+        }
+        return previousRatio + CGFloat(delta) * cellLength / length
+    }
+
+    private func dividerRect(width: CGFloat) -> NSRect {
+        if axis == .vertical {
+            return NSRect(
+                x: containerRect.minX + floor(containerRect.width * ratio) - width / 2,
+                y: containerRect.minY,
+                width: width,
+                height: containerRect.height
+            )
+        }
+        return NSRect(
+            x: containerRect.minX,
+            y: containerRect.minY + floor(containerRect.height * ratio) - width / 2,
+            width: containerRect.width,
+            height: width
+        )
+    }
+}
+
 final class TerminalTextView: NSView, NSTextInputClient {
     var onInput: ((Data) -> Void)?
     var onKeyEvent: ((NSEvent, Bool) -> Bool)?
@@ -2463,6 +2619,7 @@ final class TerminalTextView: NSView, NSTextInputClient {
     var onFindRequested: (() -> Bool)?
     var onScroll: ((CGFloat) -> Void)?
     var onPaneSelected: ((Int) -> Void)?
+    var onSplitResize: ((Int, Int, NativePaneDividerAxis, CGFloat, Int) -> Void)?
     var onFocusChanged: ((Bool) -> Void)?
     var onContextMenuRequested: ((Int?, NSEvent, NSView) -> Void)?
     var onGeometryChanged: (() -> Void)?
@@ -2480,6 +2637,9 @@ final class TerminalTextView: NSView, NSTextInputClient {
     private var rendererModelFrameCount = 0
     private var activePaneId: Int?
     private var paneFrames: [Int: NSRect] = [:]
+    private var paneDividers: [NativePaneDivider] = []
+    private var activeDividerDrag: NativePaneDivider?
+    private var activeDividerCommandRatio: CGFloat?
     private var terminalFontSize = defaultTerminalFontSize
     private var terminalFont = NSFont.monospacedSystemFont(ofSize: defaultTerminalFontSize, weight: .regular)
     private var terminalFontFamily = ""
@@ -2514,8 +2674,19 @@ final class TerminalTextView: NSView, NSTextInputClient {
 
     override func draw(_ dirtyRect: NSRect) {
         drawPaneBorders()
+        drawSplitDividerFeedback()
         drawScrollbar()
         drawMarkedText()
+    }
+
+    override func resetCursorRects() {
+        super.resetCursorRects()
+        for divider in paneDividers {
+            let rect = divider.hitRect.intersection(bounds)
+            if !rect.isNull, !rect.isEmpty {
+                addCursorRect(rect, cursor: divider.axis.cursor)
+            }
+        }
     }
 
     override func becomeFirstResponder() -> Bool {
@@ -2547,7 +2718,8 @@ final class TerminalTextView: NSView, NSTextInputClient {
     }
 
     override func accessibilityHelp() -> String? {
-        "Interactive terminal. Command-click links, and use Command-F to search scrollback."
+        "Interactive terminal. Drag split borders to resize panes, Command-click links, "
+            + "and use Command-F to search scrollback."
     }
 
     override func setFrameSize(_ newSize: NSSize) {
@@ -2586,6 +2758,14 @@ final class TerminalTextView: NSView, NSTextInputClient {
 
     override func mouseDown(with event: NSEvent) {
         let point = convert(event.locationInWindow, from: nil)
+        if let divider = divider(at: point) {
+            activeDividerDrag = divider
+            activeDividerCommandRatio = divider.ratio
+            selectionAnchor = nil
+            divider.axis.cursor.set()
+            needsDisplay = true
+            return
+        }
         if let paneId = paneFrames.first(where: { $0.value.contains(point) })?.key,
            paneId != activePaneId {
             activePaneId = paneId
@@ -2611,6 +2791,13 @@ final class TerminalTextView: NSView, NSTextInputClient {
     }
 
     override func mouseUp(with event: NSEvent) {
+        if activeDividerDrag != nil {
+            activeDividerDrag = nil
+            activeDividerCommandRatio = nil
+            window?.invalidateCursorRects(for: self)
+            needsDisplay = true
+            return
+        }
         let point = convert(event.locationInWindow, from: nil)
         guard let input = mouseInput(
             button: "left",
@@ -2637,6 +2824,35 @@ final class TerminalTextView: NSView, NSTextInputClient {
 
     override func mouseDragged(with event: NSEvent) {
         let point = convert(event.locationInWindow, from: nil)
+        if var divider = activeDividerDrag {
+            let nextRatio = divider.ratio(at: point)
+            let previousCommandRatio = activeDividerCommandRatio ?? divider.ratio
+            let cellSize = terminalCellSize()
+            let cellDelta = divider.cellDelta(
+                from: previousCommandRatio,
+                to: nextRatio,
+                cellSize: cellSize
+            )
+            if cellDelta != 0 {
+                activeDividerCommandRatio = divider.ratio(
+                    afterCellDelta: cellDelta,
+                    from: previousCommandRatio,
+                    cellSize: cellSize
+                )
+            }
+            divider.ratio = nextRatio
+            activeDividerDrag = divider
+            divider.axis.cursor.set()
+            onSplitResize?(
+                divider.firstPaneId,
+                divider.secondPaneId,
+                divider.axis,
+                divider.ratio,
+                cellDelta
+            )
+            needsDisplay = true
+            return
+        }
         guard let input = mouseInput(
             button: "left",
             action: "drag",
@@ -3092,11 +3308,62 @@ final class TerminalTextView: NSView, NSTextInputClient {
         .joined(separator: ":")
     }
 
-    func updatePaneFrames(_ frames: [Int: NSRect], activePaneId: Int?) {
+    fileprivate func updatePaneFrames(
+        _ frames: [Int: NSRect],
+        activePaneId: Int?,
+        dividers: [NativePaneDivider] = []
+    ) {
         paneFrames = frames
+        paneDividers = dividers
         self.activePaneId = activePaneId
         invalidateInputCoordinates()
+        window?.invalidateCursorRects(for: self)
         needsDisplay = true
+    }
+
+    fileprivate func splitDividerCount(for axis: NativePaneDividerAxis) -> Int {
+        paneDividers.count { $0.axis == axis }
+    }
+
+    fileprivate func splitDividerUsesResizeCursor(for axis: NativePaneDividerAxis) -> Bool {
+        guard let divider = paneDividers.first(where: { $0.axis == axis }) else {
+            return false
+        }
+        let expected = axis == .vertical ? NSCursor.resizeLeftRight : NSCursor.resizeUpDown
+        return divider.axis.cursor === expected
+    }
+
+    fileprivate func resizeFirstDividerForSmoke(
+        axis: NativePaneDividerAxis,
+        ratio: CGFloat
+    ) -> Bool {
+        guard var divider = paneDividers.first(where: { $0.axis == axis }) else {
+            return false
+        }
+        let point = axis == .vertical
+            ? NSPoint(
+                x: divider.containerRect.minX + divider.containerRect.width * ratio,
+                y: divider.containerRect.midY
+            )
+            : NSPoint(
+                x: divider.containerRect.midX,
+                y: divider.containerRect.minY + divider.containerRect.height * ratio
+            )
+        let previousRatio = divider.ratio
+        divider.ratio = divider.ratio(at: point)
+        let cellDelta = divider.cellDelta(
+            from: previousRatio,
+            to: divider.ratio,
+            cellSize: terminalCellSize()
+        )
+        onSplitResize?(
+            divider.firstPaneId,
+            divider.secondPaneId,
+            divider.axis,
+            divider.ratio,
+            cellDelta
+        )
+        return true
     }
 
     @discardableResult
@@ -3190,6 +3457,18 @@ final class TerminalTextView: NSView, NSTextInputClient {
             ).setStroke()
             path.stroke()
         }
+    }
+
+    private func drawSplitDividerFeedback() {
+        guard let activeDividerDrag else {
+            return
+        }
+        NSColor.controlAccentColor.withAlphaComponent(0.9).setFill()
+        activeDividerDrag.indicatorRect.fill()
+    }
+
+    private func divider(at point: NSPoint) -> NativePaneDivider? {
+        paneDividers.reversed().first { $0.hitRect.contains(point) }
     }
 
     private func drawScrollbar() {
@@ -4109,6 +4388,8 @@ final class TerminalMetalView: MTKView, CAMetalDisplayLinkDelegate, MTKViewDeleg
     private var nextFrameWorkItem: DispatchWorkItem?
     private var frameDisplayLink: CAMetalDisplayLink?
     private var displayRefreshInterval: CFTimeInterval?
+    private var lastRenderedTextureSize: (width: Int, height: Int)?
+    private var rejectedDrawableCount = 0
 
     required init(coder: NSCoder) {
         fatalError("init(coder:) is not supported")
@@ -4130,10 +4411,10 @@ final class TerminalMetalView: MTKView, CAMetalDisplayLinkDelegate, MTKViewDeleg
         super.init(frame: frameRect, device: device)
         colorPixelFormat = .bgra8Unorm
         clearColor = MTLClearColor(red: 0.078, green: 0.086, blue: 0.102, alpha: 1.0)
+        delegate = self
         if usesSmokeFrameFallback {
             enableSetNeedsDisplay = true
             isPaused = true
-            delegate = self
             needsDisplay = true
             return
         }
@@ -4214,7 +4495,13 @@ final class TerminalMetalView: MTKView, CAMetalDisplayLinkDelegate, MTKViewDeleg
         )
     }
 
-    func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {}
+    func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {
+        if let metalLayer = view.layer as? CAMetalLayer,
+           roundedSize(metalLayer.drawableSize) != roundedSize(size) {
+            metalLayer.drawableSize = size
+        }
+        requestFrame()
+    }
 
     func draw(in view: MTKView) {
         guard usesSmokeFrameFallback, let drawable = currentDrawable else {
@@ -4234,6 +4521,10 @@ final class TerminalMetalView: MTKView, CAMetalDisplayLinkDelegate, MTKViewDeleg
         targetTimestamp: CFTimeInterval?,
         targetPresentationTimestamp: CFTimeInterval?
     ) {
+        guard prepareDrawableForRendering(drawable.texture) else {
+            requestFrame()
+            return
+        }
         let performanceRecorder = NativePerformanceRecorder.shared
         let frameStartedAt = performanceRecorder.isEnabled ? CACurrentMediaTime() : 0
         let performanceToken = performanceRecorder.beginFrame(
@@ -4300,6 +4591,37 @@ final class TerminalMetalView: MTKView, CAMetalDisplayLinkDelegate, MTKViewDeleg
         skiaFrameCount = 0
     }
 
+    func resetResizeDiagnostics() {
+        lastRenderedTextureSize = nil
+        rejectedDrawableCount = 0
+    }
+
+    func resizeDiagnosticsSummary() -> String {
+        let viewSize = expectedDrawableSize()
+        let mtkSize = roundedSize(drawableSize)
+        let layerSize = roundedSize((layer as? CAMetalLayer)?.drawableSize ?? .zero)
+        let textureSize = lastRenderedTextureSize ?? (0, 0)
+        return "view=\(viewSize.width)x\(viewSize.height) "
+            + "mtk=\(mtkSize.width)x\(mtkSize.height) "
+            + "layer=\(layerSize.width)x\(layerSize.height) "
+            + "texture=\(textureSize.width)x\(textureSize.height) "
+            + "rejected=\(rejectedDrawableCount)"
+    }
+
+    func drawableSizesMatchView() -> Bool {
+        guard let lastRenderedTextureSize else {
+            return false
+        }
+        let expected = expectedDrawableSize()
+        guard roundedSize(drawableSize) == expected,
+              let metalLayer = layer as? CAMetalLayer
+        else {
+            return false
+        }
+        return roundedSize(metalLayer.drawableSize) == expected
+            && lastRenderedTextureSize == expected
+    }
+
     func hasPendingSkiaFrame() -> Bool {
         satin_skia_metal_needs_animation_frame(skiaRenderer) != 0
     }
@@ -4357,6 +4679,28 @@ final class TerminalMetalView: MTKView, CAMetalDisplayLinkDelegate, MTKViewDeleg
             deadline: .now() + .milliseconds(milliseconds),
             execute: workItem
         )
+    }
+
+    private func prepareDrawableForRendering(_ texture: MTLTexture) -> Bool {
+        let textureSize = (texture.width, texture.height)
+        if textureSize != expectedDrawableSize() {
+            rejectedDrawableCount += 1
+            return false
+        }
+        lastRenderedTextureSize = textureSize
+        return true
+    }
+
+    private func expectedDrawableSize() -> (width: Int, height: Int) {
+        let scale = window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 1
+        return (
+            max(1, Int((bounds.width * scale).rounded())),
+            max(1, Int((bounds.height * scale).rounded()))
+        )
+    }
+
+    private func roundedSize(_ size: CGSize) -> (width: Int, height: Int) {
+        (max(1, Int(size.width.rounded())), max(1, Int(size.height.rounded())))
     }
 }
 
@@ -4603,7 +4947,7 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
     TerminalContextMenuProvider, NSToolbarDelegate {
     private let core: RustCore
     private var settings: NativeSettings
-    private let tabControl = NSSegmentedControl(frame: .zero)
+    private let tabControl = NativeTabControl(frame: .zero)
     private let sessionControlButton = NSButton(frame: .zero)
     private let toolbarActionControl = NSSegmentedControl(frame: .zero)
     private let backdropView = NativeTerminalBackdropView(frame: .zero)
@@ -4689,6 +5033,16 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
         self.metalView.contextMenuProvider = self
         self.terminalTextView.onPaneSelected = { [weak self] paneId in
             self?.selectPane(paneId)
+        }
+        self.terminalTextView.onSplitResize = {
+            [weak self] firstPaneId, secondPaneId, axis, ratio, cellDelta in
+            self?.resizeSplit(
+                firstPaneId: firstPaneId,
+                secondPaneId: secondPaneId,
+                axis: axis,
+                ratio: ratio,
+                cellDelta: cellDelta
+            )
         }
         self.terminalTextView.onFocusChanged = { [weak self] focused in
             self?.setTerminalFocus(focused)
@@ -5921,6 +6275,46 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
         syncFromCore()
     }
 
+    private func resizeSplit(
+        firstPaneId: Int,
+        secondPaneId: Int,
+        axis: NativePaneDividerAxis,
+        ratio: CGFloat,
+        cellDelta: Int
+    ) {
+        if let session = tmuxSession {
+            guard cellDelta != 0,
+                  let tmuxPaneId = session.tmuxPaneIds[firstPaneId]
+            else {
+                return
+            }
+            let direction = switch (axis, cellDelta > 0) {
+            case (.vertical, true): "-R"
+            case (.vertical, false): "-L"
+            case (.horizontal, true): "-D"
+            case (.horizontal, false): "-U"
+            }
+            _ = session.gateway.tmuxCommand(
+                "resize-pane -t %\(tmuxPaneId) \(direction) \(abs(cellDelta))"
+            )
+            return
+        }
+        guard core.resizeSplit(
+                  firstPaneId: firstPaneId,
+                  secondPaneId: secondPaneId,
+                  ratio: Double(ratio)
+              )
+        else {
+            return
+        }
+        guard let snapshot = core.snapshot() else {
+            return
+        }
+        lastSnapshot = snapshot
+        syncPaneLayout(snapshot)
+        updateActiveFrame()
+    }
+
     @objc func openNativeNeovim(_ sender: Any?) {
         guard let paneId = activePaneId else {
             return
@@ -6071,12 +6465,24 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
         else {
             return nil
         }
-        return NativeSessionPane(kind: "split", axis: axis, first: first, second: second)
+        return NativeSessionPane(
+            kind: "split",
+            axis: axis,
+            ratio: layout.ratio,
+            first: first,
+            second: second
+        )
     }
 
     @objc func renameActiveTab(_ sender: Any?) {
-        guard let snapshot = lastSnapshot,
-              let tab = snapshot.tabs.first(where: { $0.index == snapshot.active_tab })
+        guard let index = lastSnapshot?.active_tab else {
+            return
+        }
+        renameTab(at: index)
+    }
+
+    private func renameTab(at index: Int) {
+        guard let tab = lastSnapshot?.tabs.first(where: { $0.index == index })
         else {
             return
         }
@@ -6086,7 +6492,7 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
         input.isEditable = true
         input.isSelectable = true
         let alert = NSAlert()
-        alert.messageText = "Rename Session"
+        alert.messageText = "Rename Tab"
         alert.accessoryView = input
         let renameButton = alert.addButton(withTitle: "Rename")
         alert.addButton(withTitle: "Cancel")
@@ -6108,15 +6514,35 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
         guard alert.runModal() == .alertFirstButtonReturn else {
             return
         }
+        let title = input.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !title.isEmpty else {
+            return
+        }
         if let session = tmuxSession,
            let windowId = session.tmuxWindowIds[tab.id] {
             _ = session.gateway.tmuxCommand(
-                "rename-window -t @\(windowId) \(tmuxCommandArgument(input.stringValue))"
+                "rename-window -t @\(windowId) \(tmuxCommandArgument(title))"
             )
             return
         }
-        core.renameTab(snapshot.active_tab, title: input.stringValue)
+        core.renameTab(tab.index, title: title)
         syncFromCore()
+    }
+
+    private func showTabContextMenu(index: Int, event: NSEvent, view: NSView) {
+        selectTabForContextMenu(index)
+        let menu = NSMenu()
+        let renameItem = menuItem("Rename Tab…", #selector(renameTabFromContextMenu(_:)))
+        renameItem.representedObject = index
+        menu.addItem(renameItem)
+        NSMenu.popUpContextMenu(menu, with: event, for: view)
+    }
+
+    @objc private func renameTabFromContextMenu(_ sender: NSMenuItem) {
+        guard let index = sender.representedObject as? Int else {
+            return
+        }
+        renameTab(at: index)
     }
 
     @objc func toggleTmuxPaneZoom(_ sender: Any?) {
@@ -6206,7 +6632,10 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
         core.setTheme("Harbor", tab: 1)
         _ = core.splitActive(axis: ffiSplitVertical)
         syncFromCore()
-        writeToActivePane(Data("printf 'native pty view ready\\n'\r".utf8))
+        writeToActivePane(Data((
+            "printf 'native pty view ready: renderer text marker\\n"
+                + "native pty view ready: second text marker\\n'\r"
+        ).utf8))
         guard let resultPath, !resultPath.isEmpty else {
             return
         }
@@ -6218,6 +6647,8 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
     func applySessionSchemaSmokeScenario(resultPath: String) {
         _ = core.splitActive(axis: ffiSplitVertical)
         _ = core.splitActive(axis: ffiSplitHorizontal)
+        _ = core.resizeSplit(firstPaneId: 1, secondPaneId: 2, ratio: 0.35)
+        _ = core.resizeSplit(firstPaneId: 2, secondPaneId: 3, ratio: 0.65)
         syncFromCore()
         guard let state = currentSessionState(),
               let data = try? JSONEncoder().encode(state),
@@ -6255,10 +6686,13 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
         let futureData = Data("{\"schemaVersion\":999}".utf8)
         let futurePreserved = sessionSchemaVersion(in: futureData) == 999
         let counts = sessionPaneCounts(decoded.tabs[decoded.activeTab].layout)
+        let ratiosRetained = decoded.tabs[decoded.activeTab].layout.ratio == 0.35
+            && decoded.tabs[decoded.activeTab].layout.second?.ratio == 0.65
         let ok = decoded.schemaVersion == currentSessionSchemaVersion
             && counts.leaves == 3
             && counts.splits == 2
             && counts.activeLeaves == 1
+            && ratiosRetained
             && migrated?.schemaVersion == currentSessionSchemaVersion
             && migrated?.tabs.first?.layout.kind == "leaf"
             && attachedRoundTrip?.tmuxAttachment == attachment
@@ -6276,6 +6710,7 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
             resultPath,
             result: "\(status) session-schema version=\(decoded.schemaVersion) " +
                 "leaves=\(counts.leaves) splits=\(counts.splits) active=\(counts.activeLeaves) " +
+                "ratios=\(ratiosRetained ? "retained" : "lost") " +
                 "migration=\(migrated == nil ? "failed" : "ok") " +
                 "reattach=\(attachedRoundTrip?.tmuxAttachment == attachment ? "ok" : "failed") " +
                 "consume-once=\(consumed.tmuxAttachment == nil ? "ok" : "failed") " +
@@ -6729,6 +7164,56 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
             )
             return
         }
+        guard let initialRatio = lastSnapshot?.tabs.first?.layout.ratio,
+              terminalTextView.splitDividerCount(for: .vertical) == 1,
+              terminalTextView.splitDividerUsesResizeCursor(for: .vertical),
+              terminalTextView.resizeFirstDividerForSmoke(
+                  axis: .vertical,
+                  ratio: initialRatio > 0.4 ? initialRatio - 0.1 : initialRatio + 0.1
+              )
+        else {
+            tmuxSession?.gateway.tmuxCommand("kill-session")
+            writeSessionSmokeResult(
+                resultPath,
+                result: "failed tmux-native split-divider=no\n"
+            )
+            return
+        }
+        waitForTmuxSmokeDividerResize(
+            resultPath,
+            initialRatio: initialRatio,
+            retries: 30
+        )
+    }
+
+    private func waitForTmuxSmokeDividerResize(
+        _ resultPath: String,
+        initialRatio: Double,
+        retries: Int
+    ) {
+        let observedRatio = lastSnapshot?.tabs.first?.layout.ratio
+        guard observedRatio.map({ abs($0 - initialRatio) > 0.02 }) == true else {
+            if retries > 0 {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+                    self?.waitForTmuxSmokeDividerResize(
+                        resultPath,
+                        initialRatio: initialRatio,
+                        retries: retries - 1
+                    )
+                }
+            } else {
+                tmuxSession?.gateway.tmuxCommand("kill-session")
+                writeSessionSmokeResult(
+                    resultPath,
+                    result: "failed tmux-native split-divider-resize=no\n"
+                )
+            }
+            return
+        }
+        continueTmuxSmokeAfterDividerResize(resultPath)
+    }
+
+    private func continueTmuxSmokeAfterDividerResize(_ resultPath: String) {
         guard let tab = lastSnapshot?.tabs.first,
               let currentPaneId = activePaneId,
               let targetPaneId = tab.panes.first(where: { $0 != currentPaneId })
@@ -6916,7 +7401,8 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
         let attachmentCleared = currentSessionState()?.tmuxAttachment == nil
         let result = restored && attachmentCleared
             ? "ok tmux-native indicator=yes output=yes history=yes paste=yes zoom=yes "
-                + "rename=yes split=2 client-grid=full tabs=2 cli=yes live-cursor=yes "
+                + "rename=yes split=2 divider-resize=yes client-grid=full "
+                + "tabs=2 cli=yes live-cursor=yes "
                 + "ime=yes focus-input=yes return-repeat=yes kitty=yes "
                 + "shell-env=yes "
                 + "shell-restored=yes detach-clears=yes\n"
@@ -7283,6 +7769,42 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
         }
         let metrics = paneLayoutMetrics(activeTab.layout)
         let axes = metrics.axes.sorted()
+        let dividersReady = terminalTextView.splitDividerCount(for: .vertical) == 1
+            && terminalTextView.splitDividerCount(for: .horizontal) == 1
+        let cursorsReady = terminalTextView.splitDividerUsesResizeCursor(for: .vertical)
+            && terminalTextView.splitDividerUsesResizeCursor(for: .horizontal)
+        let firstRootPaneId = firstPaneId(in: activeTab.layout)
+        let firstWidthBefore = firstRootPaneId.flatMap { visiblePaneFrames[$0]?.width }
+        let dividerDragged = terminalTextView.resizeFirstDividerForSmoke(
+            axis: .vertical,
+            ratio: 0.35
+        )
+        let firstWidthAfter = firstRootPaneId.flatMap { visiblePaneFrames[$0]?.width }
+        let paneFrameUpdated = if let firstWidthBefore, let firstWidthAfter {
+            firstWidthAfter < firstWidthBefore - 10
+        } else {
+            false
+        }
+        let resizedRatio = core.snapshot()?.tabs
+            .first(where: { $0.index == snapshot.active_tab })?.layout.ratio
+        let ratioUpdated = resizedRatio.map { abs($0 - 0.35) < 0.001 } ?? false
+        let originalRenameHandler = tabControl.onRenameRequested
+        var renameRequestedSegment: Int?
+        tabControl.onRenameRequested = { segment in
+            renameRequestedSegment = segment
+        }
+        tabControl.simulateDoubleClickForSmoke(segment: snapshot.active_tab)
+        tabControl.onRenameRequested = originalRenameHandler
+        let renamedTitle = "renamed by tab click"
+        if let renameRequestedSegment {
+            core.renameTab(renameRequestedSegment, title: renamedTitle)
+            syncFromCore()
+        }
+        let renameReady = renameRequestedSegment == snapshot.active_tab
+            && core.snapshot()?.tabs.first(where: {
+                $0.index == snapshot.active_tab
+            })?.title == renamedTitle
+            && tabControl.label(forSegment: snapshot.active_tab) == renamedTitle
         let ok = controlsReady
             && shortcutsReady
             && chromeReady
@@ -7294,6 +7816,12 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
             && metrics.leaves == 3
             && metrics.splits == 2
             && axes == ["horizontal", "vertical"]
+            && dividersReady
+            && cursorsReady
+            && dividerDragged
+            && ratioUpdated
+            && paneFrameUpdated
+            && renameReady
         let status = ok ? "ok" : "failed"
         writeSessionSmokeResult(
             resultPath,
@@ -7305,7 +7833,12 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
                 + "background=\(backdropSpansWindow ? "edge-to-edge" : "inset") "
                 + "tabs=\(snapshot.tabs.count) active=\(snapshot.active_tab) "
                 + "leaves=\(metrics.leaves) splits=\(metrics.splits) "
-                + "axes=\(axes.joined(separator: ","))\n"
+                + "axes=\(axes.joined(separator: ",")) "
+                + "dividers=\(dividersReady ? "ready" : "missing") "
+                + "cursors=\(cursorsReady ? "resize" : "missing") "
+                + "ratio=\(ratioUpdated ? "updated" : "stale") "
+                + "frame=\(paneFrameUpdated ? "resized" : "stale") "
+                + "rename=\(renameReady ? "double-click" : "missing")\n"
         )
     }
 
@@ -7363,6 +7896,7 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
                 return
             }
             let initial = terminalTextView.terminalGridSize()
+            metalView.resetResizeDiagnostics()
             window.setContentSize(NSSize(width: 1120, height: 760))
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
                 guard let self else {
@@ -7373,11 +7907,13 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
                 let ok = resized.rows > initial.rows
                     && resized.cols > initial.cols
                     && terminalPanes[activePaneId ?? -1] != nil
+                    && metalView.drawableSizesMatchView()
                 let status = ok ? "ok" : "failed"
                 writeSessionSmokeResult(
                     resultPath,
                     result: "\(status) terminal-resize " +
-                        "from=\(initial.cols)x\(initial.rows) to=\(resized.cols)x\(resized.rows)\n"
+                        "from=\(initial.cols)x\(initial.rows) to=\(resized.cols)x\(resized.rows) " +
+                        "\(metalView.resizeDiagnosticsSummary())\n"
                 )
             }
         }
@@ -9709,6 +10245,10 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
         for (idx, tab) in snapshot.tabs.enumerated() {
             tabControl.setLabel(tab.title, forSegment: idx)
             tabControl.setWidth(tabWidth(for: tab.title), forSegment: idx)
+            tabControl.setToolTip(
+                "Click to select; double-click or right-click to rename",
+                forSegment: idx
+            )
         }
         if snapshot.active_tab < tabControl.segmentCount {
             tabControl.selectedSegment = snapshot.active_tab
@@ -9729,13 +10269,19 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
             return
         }
         var frames: [Int: NSRect] = [:]
+        var dividers: [NativePaneDivider] = []
         collectPaneFrames(
             tab.layout,
             rect: terminalTextView.terminalContentRect(),
-            frames: &frames
+            frames: &frames,
+            dividers: &dividers
         )
         visiblePaneFrames = frames
-        terminalTextView.updatePaneFrames(frames, activePaneId: tab.active_pane)
+        terminalTextView.updatePaneFrames(
+            frames,
+            activePaneId: tab.active_pane,
+            dividers: dividers
+        )
         for (paneId, frame) in frames {
             let pane = terminalPane(for: paneId)
             if !(pane is RustTmuxPane) {
@@ -9767,7 +10313,8 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
     private func collectPaneFrames(
         _ layout: PaneLayoutSnapshot,
         rect: NSRect,
-        frames: inout [Int: NSRect]
+        frames: inout [Int: NSRect],
+        dividers: inout [NativePaneDivider]
     ) {
         if layout.kind == "leaf", let paneId = layout.pane_id {
             frames[paneId] = rect.insetBy(dx: 1, dy: 1)
@@ -9777,12 +10324,30 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
             return
         }
         let ratio = CGFloat(min(max(layout.ratio ?? 0.5, 0.05), 0.95))
+        if let dividerAxis = NativePaneDividerAxis(rawValue: axis),
+           let firstMarker = paneId(
+               at: dividerAxis == .vertical ? .trailing : .bottom,
+               in: first
+           ),
+           let secondMarker = paneId(
+               at: dividerAxis == .vertical ? .leading : .top,
+               in: second
+           ) {
+            dividers.append(NativePaneDivider(
+                axis: dividerAxis,
+                containerRect: rect,
+                firstPaneId: firstMarker,
+                secondPaneId: secondMarker,
+                ratio: ratio
+            ))
+        }
         if axis == "vertical" {
             let firstWidth = floor(rect.width * ratio)
             collectPaneFrames(
                 first,
                 rect: NSRect(x: rect.minX, y: rect.minY, width: firstWidth, height: rect.height),
-                frames: &frames
+                frames: &frames,
+                dividers: &dividers
             )
             collectPaneFrames(
                 second,
@@ -9792,14 +10357,16 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
                     width: rect.width - firstWidth,
                     height: rect.height
                 ),
-                frames: &frames
+                frames: &frames,
+                dividers: &dividers
             )
         } else {
             let firstHeight = floor(rect.height * ratio)
             collectPaneFrames(
                 first,
                 rect: NSRect(x: rect.minX, y: rect.minY, width: rect.width, height: firstHeight),
-                frames: &frames
+                frames: &frames,
+                dividers: &dividers
             )
             collectPaneFrames(
                 second,
@@ -9809,9 +10376,44 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
                     width: rect.width,
                     height: rect.height - firstHeight
                 ),
-                frames: &frames
+                frames: &frames,
+                dividers: &dividers
             )
         }
+    }
+
+    private func firstPaneId(in layout: PaneLayoutSnapshot) -> Int? {
+        if layout.kind == "leaf" {
+            return layout.pane_id
+        }
+        return layout.first.flatMap(firstPaneId) ?? layout.second.flatMap(firstPaneId)
+    }
+
+    private enum PaneBoundaryEdge {
+        case leading
+        case trailing
+        case top
+        case bottom
+    }
+
+    private func paneId(
+        at edge: PaneBoundaryEdge,
+        in layout: PaneLayoutSnapshot
+    ) -> Int? {
+        if layout.kind == "leaf" {
+            return layout.pane_id
+        }
+        guard let axis = layout.axis,
+              let first = layout.first,
+              let second = layout.second
+        else {
+            return nil
+        }
+        let boundaryChild = switch (axis, edge) {
+        case ("vertical", .trailing), ("horizontal", .bottom): second
+        default: first
+        }
+        return paneId(at: edge, in: boundaryChild)
     }
 
     private func themeMenuItem() -> NSMenuItem {
@@ -9856,7 +10458,16 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
         tabControl.trackingMode = .selectOne
         tabControl.target = self
         tabControl.action = #selector(tabControlChanged(_:))
+        tabControl.onRenameRequested = { [weak self] index in
+            self?.renameTab(at: index)
+        }
+        tabControl.onContextMenuRequested = { [weak self] index, event, view in
+            self?.showTabContextMenu(index: index, event: event, view: view)
+        }
         tabControl.setAccessibilityLabel("Terminal Tabs")
+        tabControl.setAccessibilityHelp(
+            "Click a tab to select it. Double-click or right-click a tab to rename it."
+        )
     }
 
     private func configureToolbarControls() {
@@ -10646,6 +11257,13 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
         }
         let firstActivePane = restoreSessionPane(first, paneId: paneId)
         let secondActivePane = restoreSessionPane(second, paneId: secondPaneId)
+        if let ratio = saved.ratio {
+            _ = core.resizeSplit(
+                firstPaneId: paneId,
+                secondPaneId: secondPaneId,
+                ratio: ratio
+            )
+        }
         return firstActivePane ?? secondActivePane
     }
 
