@@ -82,6 +82,19 @@ native-notarize:
 native-release:
     @./scripts/native-release
 
+# Build and verify the signed artifacts consumed by the tag release workflow.
+native-signed-release:
+    @if [[ -z "${IN_NIX_SHELL:-}" ]]; then \
+        exec nix develop --command just native-signed-release; \
+    else \
+        if [[ -z "${UPDATE_SIGNING_PRIVATE_KEY_B64:-}" ]]; then \
+            echo "UPDATE_SIGNING_PRIVATE_KEY_B64 is required" >&2; \
+            exit 64; \
+        fi; \
+        just native-release; \
+        just native-update-release-smoke; \
+    fi
+
 # Build CI artifacts exactly once, then reuse the signed package downstream.
 native-ci-build:
     @if [[ -z "${IN_NIX_SHELL:-}" ]]; then \
