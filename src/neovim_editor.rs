@@ -1,11 +1,11 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::Arc};
 
 use crate::{
     neovide_render::{
         NeovideGridPosition, NeovideLine, NeovideMessageSelection, NeovideRenderedWindowCache,
         NeovideRenderedWindowPlacement, NeovideRenderedWindowSnapshot,
-        NeovideRendererModelSnapshot, NeovideScrollHint, NeovideWindowDrawCommand,
-        NeovideWindowKind,
+        NeovideRendererModelSnapshot, NeovideScrollHint, NeovideUiStateSnapshot,
+        NeovideWindowDrawCommand, NeovideWindowKind,
     },
     terminal_runtime::{
         TerminalCellSnapshot, TerminalCellStyle, TerminalColor, TerminalCursorSnapshot,
@@ -118,6 +118,13 @@ impl NeovimEditor {
     pub fn renderer_model_with_pending_scroll(&mut self) -> NeovideRendererModelSnapshot {
         let scroll_hint = self.take_scroll_hint();
         self.renderer_model_with_scroll_hint(scroll_hint)
+    }
+
+    pub fn ui_state_with_pending_scroll(&mut self) -> NeovideUiStateSnapshot {
+        NeovideUiStateSnapshot {
+            cursor: self.cursor_snapshot(),
+            scroll_hint: self.take_scroll_hint(),
+        }
     }
 
     fn renderer_model_with_scroll_hint(
@@ -916,7 +923,7 @@ impl NeovimEditor {
 struct NeovimGrid {
     width: u16,
     height: u16,
-    rows: Vec<Vec<TerminalCellSnapshot>>,
+    rows: Vec<Arc<[TerminalCellSnapshot]>>,
 }
 
 impl NeovimGrid {
@@ -933,48 +940,112 @@ impl NeovimGrid {
     fn resize(&mut self, width: u16, height: u16, fill: TerminalCellSnapshot) {
         self.width = width.max(1);
         self.height = height.max(1);
-        self.rows.resize_with(self.height as usize, || {
-            vec![fill.clone(); self.width as usize]
-        });
+        let blank_row = Self::blank_row(self.width as usize, &fill);
+        self.rows
+            .resize_with(self.height as usize, || Arc::clone(&blank_row));
         for row in &mut self.rows {
-            row.resize(self.width as usize, fill.clone());
+            if row.len() != self.width as usize {
+                let mut cells = row.to_vec();
+                cells.resize(self.width as usize, fill.clone());
+                *row = cells.into();
+            }
         }
     }
 
     fn clear(&mut self, fill: TerminalCellSnapshot) {
-        self.rows = vec![vec![fill; self.width as usize]; self.height as usize];
+        let blank_row = Self::blank_row(self.width as usize, &fill);
+        self.rows = vec![blank_row; self.height as usize];
     }
 
     fn set(&mut self, row: usize, col: usize, cell: TerminalCellSnapshot) {
         let Some(target_row) = self.rows.get_mut(row) else {
             return;
         };
-        let Some(target_cell) = target_row.get_mut(col) else {
+        let Some(target_cell) = Arc::make_mut(target_row).get_mut(col) else {
             return;
         };
         *target_cell = cell;
     }
 
     fn scroll(&mut self, region: ScrollRegion, fill: TerminalCellSnapshot) {
+        let Some(region) = region.clamped(self.height as usize, self.width as usize) else {
+            return;
+        };
+        if region.rows == 0 && region.cols == 0 {
+            return;
+        }
+        if region.cols == 0 && region.left == 0 && region.right == self.width as usize {
+            self.scroll_full_rows(region, &fill);
+            return;
+        }
+        if region.rows == 0 {
+            self.scroll_columns(region, &fill);
+            return;
+        }
+
+        self.copy_scrolled_region(region, &fill);
+    }
+
+    fn scroll_full_rows(&mut self, region: ScrollRegion, fill: &TerminalCellSnapshot) {
+        let height = region.bot - region.top;
+        let shift = region.rows.unsigned_abs().min(height);
+        let blank_row = Self::blank_row(self.width as usize, fill);
+        if region.rows > 0 {
+            self.rows[region.top..region.bot].rotate_left(shift);
+            for row in &mut self.rows[region.bot - shift..region.bot] {
+                *row = Arc::clone(&blank_row);
+            }
+        } else {
+            self.rows[region.top..region.bot].rotate_right(shift);
+            for row in &mut self.rows[region.top..region.top + shift] {
+                *row = Arc::clone(&blank_row);
+            }
+        }
+    }
+
+    fn scroll_columns(&mut self, region: ScrollRegion, fill: &TerminalCellSnapshot) {
+        let width = region.right - region.left;
+        let shift = region.cols.unsigned_abs().min(width);
+        for row in &mut self.rows[region.top..region.bot] {
+            let cells = &mut Arc::make_mut(row)[region.left..region.right];
+            if region.cols > 0 {
+                cells.rotate_left(shift);
+                cells[width - shift..].fill(fill.clone());
+            } else {
+                cells.rotate_right(shift);
+                cells[..shift].fill(fill.clone());
+            }
+        }
+    }
+
+    fn copy_scrolled_region(&mut self, region: ScrollRegion, fill: &TerminalCellSnapshot) {
         let previous = self.rows.clone();
         for row in region.top..region.bot {
-            for col in region.left..region.right {
-                let Some((source_row, source_col)) = region.source_cell(row, col) else {
-                    self.set(row, col, fill.clone());
-                    continue;
-                };
-                let Some(cell) = previous.get(source_row).and_then(|row| row.get(source_col))
-                else {
-                    self.set(row, col, fill.clone());
-                    continue;
-                };
-                self.set(row, col, cell.clone());
+            let target = Arc::make_mut(&mut self.rows[row]);
+            for (col, target_cell) in target
+                .iter_mut()
+                .enumerate()
+                .take(region.right)
+                .skip(region.left)
+            {
+                *target_cell = region
+                    .source_cell(row, col)
+                    .and_then(|(source_row, source_col)| previous.get(source_row)?.get(source_col))
+                    .cloned()
+                    .unwrap_or_else(|| fill.clone());
             }
         }
     }
 
     fn line(&self, row: usize) -> Option<NeovideLine> {
-        self.rows.get(row).cloned().map(NeovideLine::from_cells)
+        self.rows
+            .get(row)
+            .cloned()
+            .map(NeovideLine::from_shared_cells)
+    }
+
+    fn blank_row(width: usize, fill: &TerminalCellSnapshot) -> Arc<[TerminalCellSnapshot]> {
+        vec![fill.clone(); width].into()
     }
 }
 
@@ -989,6 +1060,20 @@ struct ScrollRegion {
 }
 
 impl ScrollRegion {
+    fn clamped(self, height: usize, width: usize) -> Option<Self> {
+        let top = self.top.min(height);
+        let bot = self.bot.min(height);
+        let left = self.left.min(width);
+        let right = self.right.min(width);
+        (top < bot && left < right).then_some(Self {
+            top,
+            bot,
+            left,
+            right,
+            ..self
+        })
+    }
+
     fn source_cell(self, row: usize, col: usize) -> Option<(usize, usize)> {
         let source_row = row.checked_add_signed(self.rows)?;
         let source_col = col.checked_add_signed(self.cols)?;
@@ -1810,6 +1895,7 @@ mod tests {
         set_row(&mut grid, 0, "aaa");
         set_row(&mut grid, 1, "bbb");
         set_row(&mut grid, 2, "ccc");
+        let row_allocations = grid.rows.iter().map(|row| row.as_ptr()).collect::<Vec<_>>();
 
         grid.scroll(
             ScrollRegion {
@@ -1825,6 +1911,79 @@ mod tests {
 
         assert_eq!(row_text(&grid.rows[0]), "bbb");
         assert_eq!(row_text(&grid.rows[1]), "ccc");
+        assert_eq!(row_text(&grid.rows[2]), "   ");
+        assert_eq!(grid.rows[0].as_ptr(), row_allocations[1]);
+        assert_eq!(grid.rows[1].as_ptr(), row_allocations[2]);
+    }
+
+    #[test]
+    fn grid_scroll_moves_partial_region_down_without_touching_edges() {
+        let mut grid = NeovimGrid::new(5, 3, blank());
+        set_row(&mut grid, 0, "abcde");
+        set_row(&mut grid, 1, "fghij");
+        set_row(&mut grid, 2, "klmno");
+
+        grid.scroll(
+            ScrollRegion {
+                top: 0,
+                bot: 3,
+                left: 1,
+                right: 4,
+                rows: -1,
+                cols: 0,
+            },
+            blank(),
+        );
+
+        assert_eq!(row_text(&grid.rows[0]), "a   e");
+        assert_eq!(row_text(&grid.rows[1]), "fbcdj");
+        assert_eq!(row_text(&grid.rows[2]), "kghio");
+    }
+
+    #[test]
+    fn grid_scroll_moves_columns_in_place() {
+        let mut grid = NeovimGrid::new(5, 2, blank());
+        set_row(&mut grid, 0, "abcde");
+        set_row(&mut grid, 1, "fghij");
+
+        grid.scroll(
+            ScrollRegion {
+                top: 0,
+                bot: 2,
+                left: 1,
+                right: 5,
+                rows: 0,
+                cols: 2,
+            },
+            blank(),
+        );
+
+        assert_eq!(row_text(&grid.rows[0]), "ade  ");
+        assert_eq!(row_text(&grid.rows[1]), "fij  ");
+    }
+
+    #[test]
+    fn grid_scroll_moves_combined_row_and_column_offsets() {
+        let mut grid = NeovimGrid::new(4, 3, blank());
+        set_row(&mut grid, 0, "abcd");
+        set_row(&mut grid, 1, "efgh");
+        set_row(&mut grid, 2, "ijkl");
+
+        grid.scroll(
+            ScrollRegion {
+                top: 0,
+                bot: 3,
+                left: 0,
+                right: 4,
+                rows: 1,
+                cols: 1,
+            },
+            blank(),
+        );
+
+        assert_eq!(row_text(&grid.rows[0]), "fgh ");
+        assert_eq!(row_text(&grid.rows[1]), "jkl ");
+        assert_eq!(row_text(&grid.rows[2]), "    ");
     }
 
     #[test]
@@ -2078,6 +2237,37 @@ mod tests {
     }
 
     #[test]
+    fn ui_state_consumes_scroll_hint_without_building_renderer_model() {
+        let mut editor = NeovimEditor::new(10, 6);
+        editor.grid_mut(2).resize(10, 6, blank());
+        editor.show_window(
+            2,
+            WindowPosition {
+                top: 1,
+                left: 3,
+                width: 7,
+                height: 5,
+            },
+            WindowKind::Normal,
+            WindowSort::default(),
+        );
+        editor.cursor = Some(NeovimCursor {
+            grid: 2,
+            row: 2,
+            col: 1,
+        });
+        editor.layout_changed = false;
+        editor.window_mut(2).pending_scroll_rows = 2;
+
+        let state = editor.ui_state_with_pending_scroll();
+
+        let cursor = state.cursor.unwrap();
+        assert_eq!((cursor.x, cursor.y), (4, 3));
+        assert_eq!(state.scroll_hint.unwrap().rows, 2);
+        assert!(editor.ui_state_with_pending_scroll().scroll_hint.is_none());
+    }
+
+    #[test]
     fn layout_change_suppresses_scroll_hint() {
         let mut editor = NeovimEditor::new(8, 4);
         editor.grid_mut(2).resize(8, 4, blank());
@@ -2121,7 +2311,11 @@ mod tests {
         assert_eq!(model.background, editor.default_bg);
         assert_eq!(model.windows[0].grid_id, DEFAULT_GRID);
         let line = model.windows[0].lines[1].as_ref().unwrap();
-        assert_eq!(line.text, "xxx");
+        assert_eq!(line.text.as_ref(), "xxx");
+        assert!(Arc::ptr_eq(
+            &editor.grids[&DEFAULT_GRID].rows[1],
+            &line.cells
+        ));
         assert_eq!(
             line.cells[0].fg,
             TerminalColor {

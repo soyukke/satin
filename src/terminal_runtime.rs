@@ -2973,7 +2973,7 @@ mod tests {
         let window = &snapshot.windows[0];
         assert_eq!(window.width, 3);
         assert_eq!(window.height, 2);
-        assert_eq!(window.lines[0].as_ref().unwrap().text, "abc");
+        assert_eq!(window.lines[0].as_ref().unwrap().text.as_ref(), "abc");
         assert_eq!(snapshot.cursor.unwrap().x, 1);
     }
 
@@ -3104,7 +3104,10 @@ mod tests {
         let window = &snapshot.windows[0];
         assert_eq!(window.scroll_position, -1.0);
         assert_eq!(window.viewport_margins.bottom, 1);
-        assert_eq!(window.lines[7].as_ref().unwrap().text, "vim status");
+        assert_eq!(
+            window.lines[7].as_ref().unwrap().text.as_ref(),
+            "vim status"
+        );
     }
 
     #[test]
