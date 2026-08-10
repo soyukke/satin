@@ -1,0 +1,279 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ -z "${IN_NIX_SHELL:-}" ]]; then
+  exec nix develop --command ./scripts/native-artifact-smoke "$@"
+fi
+
+app="${SATIN_NATIVE_EXECUTABLE:-spikes/macos-shell/.build/SatinApplication}"
+cli="${SATIN_CONTROL_EXECUTABLE:-target/debug/satin}"
+cli="$(cd "$(dirname "$cli")" && pwd)/$(basename "$cli")"
+smoke_root="$(mktemp -d "${TMPDIR:-/tmp}/satin-artifact-smoke.XXXXXX")"
+socket="$smoke_root/control.sock"
+window_id_file="$smoke_root/window-id"
+popover_result="$smoke_root/popover.result"
+popover_shot="spikes/macos-shell/.build/native-artifact-popover-smoke.png"
+popover_card_shot="spikes/macos-shell/.build/native-artifact-popover-card-smoke.png"
+rich_markdown_shot="spikes/macos-shell/.build/native-artifact-rich-markdown-smoke.png"
+table_shot="spikes/macos-shell/.build/native-artifact-table-smoke.png"
+image_shot="spikes/macos-shell/.build/native-artifact-image-smoke.png"
+app_log="$smoke_root/app.log"
+rm -f "$popover_shot" "$popover_card_shot" "$rich_markdown_shot" \
+  "$table_shot" "$image_shot"
+
+"$cli" --socket "$socket" artifact policy set \
+  --max-columns 80 --max-rows 32 --language ja-JP --overflow compact >/dev/null
+
+table_source="$smoke_root/test-results.json"
+jq -n '[
+  {"テスト":"auth_login", "結果":"成功", "時間":"0.8s", "対象":"auth.rs"},
+  {"テスト":"token_refresh", "結果":"失敗", "時間":"2.4s", "対象":"token.rs"},
+  {"テスト":"session_expiry", "結果":"成功", "時間":"1.1s", "対象":"session.rs"},
+  {"テスト":"permission_check", "結果":"成功", "時間":"0.4s", "対象":"policy.rs"}
+]' >"$table_source"
+table_registration="$($cli --socket "$socket" --json artifact add \
+  --kind table --title "テスト結果" --language ja-JP --file "$table_source")"
+table_id="$(jq -r '.result.id' <<<"$table_registration")"
+table_next="$smoke_root/test-results-next.json"
+jq '. + [{"テスト":"artifact_list", "結果":"成功", "時間":"0.3s", "対象":"artifact.rs"}]' \
+  "$table_source" >"$table_next"
+mv "$table_next" "$table_source"
+table_version="$($cli --socket "$socket" --json artifact add --id "$table_id" \
+  --kind table --title "テスト結果" --language ja-JP --file "$table_source")"
+table_unchanged="$($cli --socket "$socket" --json artifact add --id "$table_id" \
+  --kind table --title "テスト結果" --language ja-JP --file "$table_source")"
+jq -e '.result.version == 2' <<<"$table_version" >/dev/null
+jq -e '.result.version == 2' <<<"$table_unchanged" >/dev/null
+table_document="$(jq -r '.result.document' <<<"$table_version")"
+table_directory="$(dirname "$(dirname "$(dirname "$table_document")")")"
+test -f "$smoke_root/artifacts/INDEX.md"
+test -f "$table_directory/README.md"
+test -f "$table_directory/current.md"
+test -f "$table_directory/versions/v001/artifact.md"
+test -f "$table_directory/versions/v002/artifact.md"
+
+rich_image="$smoke_root/rich-image.png"
+rich_source="$smoke_root/rich-report.md"
+cp "$PWD/assets/app-icon.png" "$rich_image"
+cat >"$rich_source" <<'MARKDOWN'
+# リッチレポート
+
+結論: **重要情報**を先に置き、*補足*、~~旧情報~~、`cargo test`を区別します。
+
+| Check | Result |
+| --- | --- |
+| Rust tests | pass |
+| Native smoke | pass |
+
+```rust
+let status = "pass";
+assert_eq!(status, "pass");
+```
+
+![Satin icon](rich-image.png)
+MARKDOWN
+rich_registration="$($cli --socket "$socket" --json artifact add \
+  --kind markdown --title "リッチレポート" --language ja-JP --file "$rich_source")"
+rich_document="$(jq -r '.result.document' <<<"$rich_registration")"
+rich_asset="$(jq -r '.result.assets[0]' <<<"$rich_registration")"
+rich_directory="$(dirname "$(dirname "$(dirname "$rich_document")")")"
+test -f "$rich_asset"
+test -f "$rich_directory/rich-image.png"
+rm -f "$rich_source" "$rich_image"
+
+SATIN_CONTROL_SOCKET="$socket" \
+  SATIN_NATIVE_SMOKE_SCENARIO=artifact-popover \
+  SATIN_NATIVE_SMOKE_RESULT="$popover_result" \
+  SATIN_NATIVE_SMOKE_WINDOW_ID="$window_id_file" \
+  "$app" >"$app_log" 2>&1 &
+app_pid=$!
+
+# shellcheck disable=SC2329
+cleanup() {
+  cleanup_status=$?
+  if [[ "$cleanup_status" -ne 0 && -s "$app_log" ]]; then
+    cat "$app_log" >&2
+  fi
+  if kill -0 "$app_pid" 2>/dev/null; then
+    kill "$app_pid" 2>/dev/null || true
+    wait "$app_pid" 2>/dev/null || true
+  fi
+  rm -rf -- "$smoke_root"
+  return "$cleanup_status"
+}
+trap cleanup EXIT INT TERM
+
+for _ in {1..100}; do
+  if [[ -S "$socket" && -s "$window_id_file" ]] && kill -0 "$app_pid" 2>/dev/null; then
+    break
+  fi
+  sleep 0.05
+done
+if [[ ! -S "$socket" || ! -s "$window_id_file" ]]; then
+  cat "$app_log" >&2
+  echo "artifact smoke failed: application did not become ready" >&2
+  exit 1
+fi
+
+for _ in {1..100}; do
+  if [[ -s "$popover_result" ]]; then
+    break
+  fi
+  sleep 0.05
+done
+if [[ "$(cat "$popover_result" 2>/dev/null || true)" != ok\ artifact-popover*capture=ok* ]]; then
+  cat "$app_log" >&2
+  echo "artifact smoke failed: recent artifact popover did not load" >&2
+  exit 1
+fi
+
+window_id="$(tr -d '[:space:]' <"$window_id_file")"
+cp "$popover_result.png" "$popover_card_shot"
+test -s "$popover_card_shot"
+sleep 0.3
+for _ in {1..40}; do
+  if ./scripts/native-window-capture "$window_id" "$popover_shot" && [[ -s "$popover_shot" ]]; then
+    break
+  fi
+  sleep 0.05
+done
+test -s "$popover_shot"
+: >"$popover_result.open"
+
+for _ in {1..100}; do
+  state="$($cli --socket "$socket" --json list)"
+  rich_pane="$(jq -r '[.result.panes[] | select(.id != 1)] | first | .id // empty' <<<"$state")"
+  if [[ -n "$rich_pane" ]]; then
+    break
+  fi
+  sleep 0.05
+done
+if [[ -z "${rich_pane:-}" ]]; then
+  cat "$app_log" >&2
+  echo "artifact smoke failed: selecting the popover item did not create a split" >&2
+  exit 1
+fi
+
+for _ in {1..100}; do
+  rich_screen="$($cli --socket "$socket" read-screen --pane "$rich_pane")"
+  state="$($cli --socket "$socket" --json list)"
+  if grep -Fq "リッチレポート" <<<"$rich_screen" \
+    && grep -Fq "Check" <<<"$rich_screen" \
+    && grep -Fq "rust" <<<"$rich_screen" \
+    && grep -Fq "cargo test" <<<"$rich_screen" \
+    && jq -e --argjson pane "$rich_pane" '
+      any(.result.panes[]; .id == $pane and .kittyImages == 1)
+    ' <<<"$state" >/dev/null; then
+    break
+  fi
+  sleep 0.05
+done
+if ! grep -Fq "cargo test" <<<"${rich_screen:-}"; then
+  printf '%s\n' "${rich_screen:-<empty screen>}" >&2
+  cat "$app_log" >&2
+  echo "artifact smoke failed: rich Markdown preview did not render" >&2
+  exit 1
+fi
+jq -e --argjson pane "$rich_pane" '
+  any(.result.panes[]; .id == $pane and .kittyImages == 1)
+' <<<"$state" >/dev/null
+
+sleep 0.5
+for _ in {1..40}; do
+  if ./scripts/native-window-capture "$window_id" "$rich_markdown_shot" \
+    && [[ -s "$rich_markdown_shot" ]]; then
+    break
+  fi
+  sleep 0.15
+done
+test -s "$rich_markdown_shot"
+
+"$cli" --socket "$socket" key --pane "$rich_pane" q >/dev/null
+for _ in {1..100}; do
+  state="$($cli --socket "$socket" --json list)"
+  if jq -e --argjson pane "$rich_pane" \
+    '.result.panes | all(.id != $pane)' <<<"$state" >/dev/null; then
+    break
+  fi
+  sleep 0.05
+done
+jq -e --argjson pane "$rich_pane" \
+  '.result.panes | all(.id != $pane)' <<<"$state" >/dev/null
+
+table_show="$($cli --socket "$socket" --json artifact show \
+  "$table_id" --pane 1 --vertical --background)"
+table_pane="$(jq -r '.result.pane' <<<"$table_show")"
+for _ in {1..100}; do
+  table_screen="$($cli --socket "$socket" read-screen --pane "$table_pane")"
+  if grep -Fq "テスト結果" <<<"$table_screen"; then
+    break
+  fi
+  sleep 0.05
+done
+if ! grep -Fq "テスト結果" <<<"${table_screen:-}"; then
+  printf '%s\n' "${table_screen:-<empty screen>}" >&2
+  echo "artifact smoke failed: table preview did not render" >&2
+  exit 1
+fi
+sleep 0.5
+for _ in {1..40}; do
+  if ./scripts/native-window-capture "$window_id" "$table_shot" && [[ -s "$table_shot" ]]; then
+    break
+  fi
+  sleep 0.15
+done
+test -s "$table_shot"
+"$cli" --socket "$socket" key --pane "$table_pane" q >/dev/null
+for _ in {1..100}; do
+  state="$($cli --socket "$socket" --json list)"
+  if jq -e --argjson pane "$table_pane" \
+    '.result.panes | all(.id != $pane)' <<<"$state" >/dev/null; then
+    break
+  fi
+  sleep 0.05
+done
+jq -e --argjson pane "$table_pane" \
+  '.result.panes | all(.id != $pane)' <<<"$state" >/dev/null
+
+image_source="$PWD/assets/app-icon.png"
+image_registration="$($cli --socket "$socket" --json artifact add \
+  --kind image --title "Satin image preview" --language en-US --file "$image_source")"
+image_id="$(jq -r '.result.id' <<<"$image_registration")"
+image_show="$($cli --socket "$socket" --json artifact show \
+  "$image_id" --pane 1 --vertical --background)"
+image_pane="$(jq -r '.result.pane' <<<"$image_show")"
+
+for _ in {1..100}; do
+  state="$($cli --socket "$socket" --json list)"
+  if jq -e --argjson pane "$image_pane" '
+    any(.result.panes[]; .id == $pane and .kittyImages == 1)
+  ' <<<"$state" >/dev/null; then
+    break
+  fi
+  sleep 0.05
+done
+jq -e --argjson pane "$image_pane" '
+  any(.result.panes[]; .id == $pane and .kittyImages == 1)
+' <<<"$state" >/dev/null
+image_screen="$($cli --socket "$socket" read-screen --pane "$image_pane")"
+if ! grep -Fq "q close" <<<"$image_screen"; then
+  printf '%s\n' "$image_screen" >&2
+  echo "artifact smoke failed: image preview footer did not render" >&2
+  exit 1
+fi
+
+sleep 0.5
+for _ in {1..40}; do
+  if ./scripts/native-window-capture "$window_id" "$image_shot" && [[ -s "$image_shot" ]]; then
+    break
+  fi
+  sleep 0.15
+done
+test -s "$image_shot"
+
+echo "native artifact smoke passed"
+echo "$popover_shot"
+echo "$popover_card_shot"
+echo "$rich_markdown_shot"
+echo "$table_shot"
+echo "$image_shot"

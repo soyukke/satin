@@ -1,3 +1,4 @@
+pub mod artifact;
 pub mod control;
 pub mod core;
 pub mod ffi;

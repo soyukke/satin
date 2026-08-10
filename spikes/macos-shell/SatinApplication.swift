@@ -4284,6 +4284,174 @@ private enum SatinToolbarItemIdentifier {
     static let controls = NSToolbarItem.Identifier("dev.soyukke.satin.toolbar.controls")
 }
 
+private enum SatinToolbarActionSegment {
+    static let newTab = 0
+    static let splitVertical = 1
+    static let splitHorizontal = 2
+    static let artifacts = 3
+    static let count = 4
+}
+
+private struct NativeArtifactListItem: Decodable {
+    let id: String
+    let title: String
+    let kind: String
+    let version: UInt32
+    let updatedAtMs: UInt64
+    let preview: String
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case title
+        case kind
+        case version
+        case updatedAtMs = "updated_at_ms"
+        case preview
+    }
+}
+
+private struct NativeArtifactCLIResult: Decodable {
+    let artifacts: [NativeArtifactListItem]
+}
+
+private struct NativeArtifactCLIResponse: Decodable {
+    let ok: Bool
+    let result: NativeArtifactCLIResult?
+}
+
+private struct NativeStoredArtifactVersion: Decodable {
+    let version: UInt32
+}
+
+private struct NativeStoredArtifactMetadata: Decodable {
+    let id: String
+    let versions: [NativeStoredArtifactVersion]
+}
+
+private final class NativeArtifactsPopoverViewController: NSViewController {
+    private let artifacts: [NativeArtifactListItem]
+    var onSelect: ((String) -> Void)?
+
+    init(artifacts: [NativeArtifactListItem]) {
+        self.artifacts = artifacts
+        super.init(nibName: nil, bundle: nil)
+    }
+
+    required init?(coder: NSCoder) {
+        nil
+    }
+
+    override func loadView() {
+        let width: CGFloat = 380
+        let headerHeight: CGFloat = 42
+        let rowHeight: CGFloat = 64
+        let emptyHeight: CGFloat = 58
+        let contentHeight = headerHeight
+            + (artifacts.isEmpty ? emptyHeight : rowHeight * CGFloat(artifacts.count))
+            + 10
+        let container = NSView(frame: NSRect(x: 0, y: 0, width: width, height: contentHeight))
+        container.wantsLayer = true
+        container.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
+
+        let header = NSTextField(labelWithString: "Recent Artifacts")
+        header.font = .systemFont(ofSize: 13, weight: .semibold)
+        header.textColor = .labelColor
+        header.frame = NSRect(x: 16, y: contentHeight - 31, width: width - 32, height: 18)
+        container.addSubview(header)
+
+        if artifacts.isEmpty {
+            let empty = NSTextField(labelWithString: "No artifacts yet")
+            empty.font = .systemFont(ofSize: 12)
+            empty.textColor = .secondaryLabelColor
+            empty.alignment = .center
+            empty.frame = NSRect(x: 16, y: 18, width: width - 32, height: 20)
+            container.addSubview(empty)
+        } else {
+            var y = contentHeight - headerHeight - rowHeight
+            for (index, artifact) in artifacts.enumerated() {
+                let button = artifactButton(artifact, index: index)
+                button.frame = NSRect(x: 10, y: y, width: width - 20, height: rowHeight - 4)
+                container.addSubview(button)
+                y -= rowHeight
+            }
+        }
+        view = container
+    }
+
+    private func artifactButton(_ artifact: NativeArtifactListItem, index: Int) -> NSButton {
+        let button = NSButton(frame: .zero)
+        button.tag = index
+        button.target = self
+        button.action = #selector(selectArtifact(_:))
+        button.bezelStyle = .regularSquare
+        button.alignment = .left
+        button.focusRingType = .none
+        button.setAccessibilityLabel("Open \(artifact.title), version \(artifact.version)")
+
+        let title = NSMutableAttributedString(
+            string: artifact.title,
+            attributes: [
+                .font: NSFont.systemFont(ofSize: 13, weight: .semibold),
+                .foregroundColor: NSColor.labelColor,
+            ]
+        )
+        let detail = "\n\(artifact.kind) · v\(artifact.version) · \(relativeTime(artifact.updatedAtMs))"
+        title.append(
+            NSAttributedString(
+                string: detail,
+                attributes: [
+                    .font: NSFont.systemFont(ofSize: 11),
+                    .foregroundColor: NSColor.labelColor.withAlphaComponent(0.62),
+                ]
+            )
+        )
+        if !artifact.preview.isEmpty {
+            title.append(
+                NSAttributedString(
+                    string: "\n\(artifact.preview)",
+                    attributes: [
+                        .font: NSFont.systemFont(ofSize: 11),
+                        .foregroundColor: NSColor.labelColor.withAlphaComponent(0.78),
+                    ]
+                )
+            )
+        }
+        button.attributedTitle = title
+        button.cell?.wraps = false
+        button.cell?.lineBreakMode = .byTruncatingTail
+        return button
+    }
+
+    @objc private func selectArtifact(_ sender: NSButton) {
+        guard artifacts.indices.contains(sender.tag) else {
+            return
+        }
+        onSelect?(artifacts[sender.tag].id)
+    }
+
+    func performFirstSelectionForSmoke() {
+        guard let first = artifacts.first else {
+            return
+        }
+        onSelect?(first.id)
+    }
+
+    private func relativeTime(_ milliseconds: UInt64) -> String {
+        let updated = TimeInterval(milliseconds) / 1_000
+        let elapsed = max(0, Date().timeIntervalSince1970 - updated)
+        if elapsed < 60 {
+            return "now"
+        }
+        if elapsed < 3_600 {
+            return "\(Int(elapsed / 60))m"
+        }
+        if elapsed < 86_400 {
+            return "\(Int(elapsed / 3_600))h"
+        }
+        return "\(Int(elapsed / 86_400))d"
+    }
+}
+
 final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
     TerminalContextMenuProvider, NSToolbarDelegate {
     private let core: RustCore
@@ -4326,6 +4494,9 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
     private var controlCliPath = ""
     private var nvimLauncherPath = ""
     private var zshIntegrationPath = ""
+    private var artifactsPopover: NSPopover?
+    private var artifactPopoverSmokeResultPath: String?
+    private var artifactPopoverSmokeOpenPath: String?
     private var suspendedTerminalSessions: [Int: NativeSuspendedTerminalSession] = [:]
     private var paneControlStatuses: [Int: NativePaneControlStatus] = [:]
     private var paneStatusWaiters: [Int: [NativeStatusWaiter]] = [:]
@@ -4515,6 +4686,171 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
         self.zshIntegrationPath = zshIntegrationPath
     }
 
+    private func showArtifactsPopover(relativeTo sourceView: NSView) {
+        if let popover = artifactsPopover, popover.isShown {
+            popover.performClose(sourceView)
+            artifactsPopover = nil
+            return
+        }
+        let popover = NSPopover()
+        popover.behavior = artifactPopoverSmokeResultPath == nil ? .transient : .applicationDefined
+        popover.animates = true
+        let loading = NativeArtifactsPopoverViewController(artifacts: [])
+        popover.contentViewController = loading
+        popover.contentSize = loading.view.frame.size
+        artifactsPopover = popover
+        popover.show(relativeTo: sourceView.bounds, of: sourceView, preferredEdge: .maxY)
+        loadRecentArtifacts { [weak self, weak popover] artifacts in
+            guard let self, let popover, self.artifactsPopover === popover, popover.isShown else {
+                return
+            }
+            let content = NativeArtifactsPopoverViewController(artifacts: artifacts)
+            content.onSelect = { [weak self] artifact in
+                self?.openArtifactFromPopover(artifact)
+            }
+            popover.contentViewController = content
+            popover.contentSize = content.view.frame.size
+            if let resultPath = self.artifactPopoverSmokeResultPath {
+                self.artifactPopoverSmokeResultPath = nil
+                DispatchQueue.main.async {
+                    let status = artifacts.isEmpty ? "failed" : "ok"
+                    let window = content.view.window?.windowNumber ?? 0
+                    let captured = self.captureArtifactPopover(
+                        content.view,
+                        path: "\(resultPath).png"
+                    )
+                    self.writeArtifactPopoverSmokeResult(
+                        resultPath,
+                        result: "\(status) artifact-popover items=\(artifacts.count) "
+                            + "window=\(window) capture=\(captured ? "ok" : "failed")\n"
+                    )
+                    if !artifacts.isEmpty {
+                        self.waitForArtifactPopoverSmokeOpen(content, attempts: 300)
+                    }
+                }
+            }
+        }
+    }
+
+    private func loadRecentArtifacts(
+        completion: @escaping ([NativeArtifactListItem]) -> Void
+    ) {
+        let executable = controlCliPath
+        let socket = controlSocketPath
+        guard FileManager.default.isExecutableFile(atPath: executable), !socket.isEmpty else {
+            completion([])
+            return
+        }
+        DispatchQueue.global(qos: .userInitiated).async {
+            let process = Process()
+            let output = Pipe()
+            process.executableURL = URL(fileURLWithPath: executable)
+            process.arguments = [
+                "--socket", socket, "--json", "artifact", "list", "--limit", "5",
+            ]
+            process.standardOutput = output
+            process.standardError = Pipe()
+            do {
+                try process.run()
+                let data = output.fileHandleForReading.readDataToEndOfFile()
+                process.waitUntilExit()
+                let response = try JSONDecoder().decode(NativeArtifactCLIResponse.self, from: data)
+                let artifacts = response.ok ? response.result?.artifacts ?? [] : []
+                DispatchQueue.main.async {
+                    completion(artifacts)
+                }
+            } catch {
+                NativeLog.runtimeError("artifact_list_failed")
+                DispatchQueue.main.async {
+                    completion([])
+                }
+            }
+        }
+    }
+
+    private func openArtifactFromPopover(_ artifact: String) {
+        artifactsPopover?.performClose(nil)
+        artifactsPopover = nil
+        guard let paneId = activePaneId,
+              let tab = lastSnapshot?.tabs.first(where: { $0.panes.contains(paneId) }),
+              validControlArtifactSelector(artifact),
+              controlArtifactExists(artifact),
+              FileManager.default.isExecutableFile(atPath: controlCliPath),
+              createArtifactPane(
+                  paneId: paneId,
+                  tab: tab,
+                  artifact: artifact,
+                  axis: "vertical"
+              ) != nil
+        else {
+            NSSound.beep()
+            return
+        }
+        focusTerminal()
+    }
+
+    func applyArtifactPopoverSmokeScenario(resultPath: String) {
+        artifactPopoverSmokeResultPath = resultPath
+        artifactPopoverSmokeOpenPath = "\(resultPath).open"
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
+            guard let self,
+                  self.toolbarActionControl.superview != nil,
+                  self.toolbarActionControl.segmentCount == SatinToolbarActionSegment.count,
+                  self.toolbarActionControl.image(
+                      forSegment: SatinToolbarActionSegment.artifacts
+                  ) != nil
+            else {
+                self?.writeArtifactPopoverSmokeResult(
+                    resultPath,
+                    result: "failed artifact-popover button=unavailable\n"
+                )
+                return
+            }
+            self.showArtifactsPopover(relativeTo: self.toolbarActionControl)
+        }
+    }
+
+    private func waitForArtifactPopoverSmokeOpen(
+        _ content: NativeArtifactsPopoverViewController,
+        attempts: Int
+    ) {
+        guard let path = artifactPopoverSmokeOpenPath, attempts > 0 else {
+            return
+        }
+        if FileManager.default.fileExists(atPath: path) {
+            artifactPopoverSmokeOpenPath = nil
+            content.performFirstSelectionForSmoke()
+            return
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self, weak content] in
+            guard let self, let content else {
+                return
+            }
+            self.waitForArtifactPopoverSmokeOpen(content, attempts: attempts - 1)
+        }
+    }
+
+    private func captureArtifactPopover(_ view: NSView, path: String) -> Bool {
+        view.layoutSubtreeIfNeeded()
+        guard let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) else {
+            return false
+        }
+        view.cacheDisplay(in: view.bounds, to: bitmap)
+        guard let data = bitmap.representation(using: .png, properties: [:]) else {
+            return false
+        }
+        do {
+            try data.write(to: URL(fileURLWithPath: path), options: .atomic)
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    private func writeArtifactPopoverSmokeResult(_ path: String, result: String) {
+        try? result.write(toFile: path, atomically: true, encoding: .utf8)
+    }
+
     func applySettings(_ settings: NativeSettings) {
         let previous = self.settings
         self.settings = settings
@@ -4567,6 +4903,8 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
             handleControlNewTab(request, reply: reply)
         case "split":
             handleControlSplit(request, reply: reply)
+        case "artifact-show":
+            handleControlArtifactShow(request, reply: reply)
         case "select-tab":
             handleControlSelectTab(request, reply: reply)
         case "move-tab":
@@ -4916,6 +5254,160 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
             restoreControlContext(tabId: previousTabId, paneId: previousPaneId)
         }
         reply(.success(result))
+    }
+
+    private func handleControlArtifactShow(
+        _ request: NativeControlRequest,
+        reply: @escaping NativeControlReply
+    ) {
+        let previousTabId = lastSnapshot.flatMap { snapshot in
+            snapshot.tabs.first(where: { $0.index == snapshot.active_tab })?.id
+        }
+        let previousPaneId = activePaneId
+        guard let paneId = request.pane,
+              let tab = lastSnapshot?.tabs.first(where: { $0.panes.contains(paneId) }),
+              let artifact = request.artifact,
+              validControlArtifactSelector(artifact),
+              controlArtifactExists(artifact),
+              FileManager.default.isExecutableFile(atPath: controlCliPath),
+              let axisName = request.axis,
+              ["vertical", "horizontal"].contains(axisName)
+        else {
+            reply(
+                controlFailure(
+                    "invalid_artifact",
+                    "The pane, artifact, or split axis is invalid."
+                )
+            )
+            return
+        }
+        guard let newPane = createArtifactPane(
+            paneId: paneId,
+            tab: tab,
+            artifact: artifact,
+            axis: axisName
+        ) else {
+            reply(controlFailure("core_error", "The artifact pane could not be created."))
+            return
+        }
+        let result: [String: Any] = ["artifact": artifact, "tab": tab.id, "pane": newPane]
+        if request.background == true {
+            restoreControlContext(tabId: previousTabId, paneId: previousPaneId)
+        }
+        reply(.success(result))
+    }
+
+    private func createArtifactPane(
+        paneId: Int,
+        tab: TerminalCoreTabSnapshot,
+        artifact: String,
+        axis: String
+    ) -> Int? {
+        _ = core.selectTab(tab.index)
+        _ = core.selectPane(paneId)
+        pendingPaneWorkingDirectory = activeWorkingDirectory()
+        pendingPaneStartupCommand = [
+            controlCliPath,
+            "--socket",
+            controlSocketPath,
+            "artifact",
+            "view",
+            artifact,
+        ]
+        pendingPaneMode = .terminal
+        let splitAxis = axis == "horizontal" ? ffiSplitHorizontal : ffiSplitVertical
+        guard let newPane = core.splitActive(axis: splitAxis) else {
+            pendingPaneWorkingDirectory = nil
+            pendingPaneStartupCommand = nil
+            pendingPaneMode = nil
+            return nil
+        }
+        syncFromCore()
+        return newPane
+    }
+
+    private func validControlArtifactSelector(_ value: String) -> Bool {
+        let components = value.split(separator: "@", omittingEmptySubsequences: false)
+        guard components.count <= 2, let id = components.first, !id.isEmpty,
+              id.utf8.count <= 64,
+              id.utf8.allSatisfy({ byte in
+            (byte >= 97 && byte <= 122) || (byte >= 48 && byte <= 57) || byte == 45
+              })
+        else {
+            return false
+        }
+        guard components.count == 2 else {
+            return true
+        }
+        let version = components[1].first == "v" ? components[1].dropFirst() : components[1]
+        return !version.isEmpty && version.count <= 10 && version.utf8.allSatisfy { byte in
+            byte >= 48 && byte <= 57
+        }
+    }
+
+    private func controlArtifactExists(_ artifact: String) -> Bool {
+        let components = artifact.split(separator: "@", maxSplits: 1)
+        guard let rawId = components.first else {
+            return false
+        }
+        let id = String(rawId)
+        let requestedVersion: UInt32?
+        if components.count == 2 {
+            let component = components[1].first == "v"
+                ? components[1].dropFirst()
+                : components[1][...]
+            guard let version = UInt32(component) else {
+                return false
+            }
+            requestedVersion = version
+        } else {
+            requestedVersion = nil
+        }
+        let socketDirectory = URL(fileURLWithPath: controlSocketPath).deletingLastPathComponent()
+        let root = (socketDirectory.lastPathComponent == "run"
+            ? socketDirectory.deletingLastPathComponent()
+            : socketDirectory)
+            .appendingPathComponent("artifacts", isDirectory: true)
+        let marker = root
+            .appendingPathComponent(".index", isDirectory: true)
+            .appendingPathComponent(id)
+        let suffix = "--\(id)"
+        var directory: URL?
+        if let markerData = try? Data(contentsOf: marker),
+           let markerValue = String(data: markerData, encoding: .utf8) {
+            let name = markerValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !name.isEmpty, !name.hasPrefix("."), !name.contains("/"), name.hasSuffix(suffix) {
+                directory = root.appendingPathComponent(name, isDirectory: true)
+            }
+        }
+        if directory == nil {
+            let matches = ((try? FileManager.default.contentsOfDirectory(atPath: root.path)) ?? [])
+                .filter { !$0.hasPrefix(".") && $0.hasSuffix(suffix) }
+            guard matches.count == 1 else {
+                return false
+            }
+            directory = root.appendingPathComponent(matches[0], isDirectory: true)
+        }
+        guard let directory else {
+            return false
+        }
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: directory.path, isDirectory: &isDirectory),
+              isDirectory.boolValue,
+              let data = try? Data(contentsOf: directory.appendingPathComponent("metadata.json")),
+              let metadata = try? JSONDecoder().decode(
+                  NativeStoredArtifactMetadata.self,
+                  from: data
+              ),
+              metadata.id == id,
+              !metadata.versions.isEmpty
+        else {
+            return false
+        }
+        guard let requestedVersion else {
+            return true
+        }
+        return metadata.versions.contains { $0.version == requestedVersion }
     }
 
     private func handleControlSelectTab(
@@ -6489,7 +6981,9 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
         view.layoutSubtreeIfNeeded()
         let controlsReady = sessionControlButton.superview != nil
             && toolbarActionControl.superview != nil
-            && (0..<3).allSatisfy { toolbarActionControl.image(forSegment: $0) != nil }
+            && (0..<SatinToolbarActionSegment.count).allSatisfy {
+                toolbarActionControl.image(forSegment: $0) != nil
+            }
         let shortcutsReady = mainMenuShortcutMatches(
             actionName: "splitVertical:",
             shortcut: settings.shortcut(for: .splitVertical)
@@ -9117,34 +9611,41 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
         sessionControlButton.toolTip = "Switch between the local terminal and tmux sessions"
         sessionControlButton.setAccessibilityLabel("Terminal Session")
 
-        toolbarActionControl.segmentCount = 3
+        toolbarActionControl.segmentCount = SatinToolbarActionSegment.count
         toolbarActionControl.trackingMode = .momentary
         toolbarActionControl.setImage(
             NSImage(systemSymbolName: "plus", accessibilityDescription: "New Tab"),
-            forSegment: 0
+            forSegment: SatinToolbarActionSegment.newTab
         )
         toolbarActionControl.setImage(
             NSImage(
                 systemSymbolName: "rectangle.split.2x1",
                 accessibilityDescription: "Split Left and Right"
             ),
-            forSegment: 1
+            forSegment: SatinToolbarActionSegment.splitVertical
         )
         toolbarActionControl.setImage(
             NSImage(
                 systemSymbolName: "rectangle.split.1x2",
                 accessibilityDescription: "Split Top and Bottom"
             ),
-            forSegment: 2
+            forSegment: SatinToolbarActionSegment.splitHorizontal
         )
-        for segment in 0..<3 {
+        toolbarActionControl.setImage(
+            NSImage(
+                systemSymbolName: "doc.on.doc",
+                accessibilityDescription: "Recent Artifacts"
+            ),
+            forSegment: SatinToolbarActionSegment.artifacts
+        )
+        for segment in 0..<SatinToolbarActionSegment.count {
             toolbarActionControl.setWidth(30, forSegment: segment)
         }
         toolbarActionControl.sizeToFit()
         toolbarActionControl.target = self
         toolbarActionControl.action = #selector(toolbarActionChanged(_:))
-        toolbarActionControl.toolTip = "New Tab and Split Pane"
-        toolbarActionControl.setAccessibilityLabel("Tab and Pane Actions")
+        toolbarActionControl.toolTip = "New Tab, Split Pane, and Recent Artifacts"
+        toolbarActionControl.setAccessibilityLabel("Tab, Pane, and Artifact Actions")
     }
 
     func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
@@ -9184,12 +9685,15 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
 
     @objc private func toolbarActionChanged(_ sender: NSSegmentedControl) {
         switch sender.selectedSegment {
-        case 0:
+        case SatinToolbarActionSegment.newTab:
             newTab(nil)
-        case 1:
+        case SatinToolbarActionSegment.splitVertical:
             splitVertical(nil)
-        case 2:
+        case SatinToolbarActionSegment.splitHorizontal:
             splitHorizontal(nil)
+        case SatinToolbarActionSegment.artifacts:
+            showArtifactsPopover(relativeTo: sender)
+            return
         default:
             return
         }
@@ -10035,12 +10539,15 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
 
     private func drainTerminalPanes() {
         var activePaneChanged = false
+        var visiblePaneChanged = false
         var exitedNvimPanes: [Int] = []
         var exitedTerminalPanes: [Int] = []
         var tmuxEvents: [(paneId: Int, pane: RustTerminalPane, event: TmuxControlEvent)] = []
         for (paneId, pane) in terminalPanes {
             let changed = pane.drain()
             activePaneChanged = activePaneChanged || (changed && paneId == activePaneId)
+            visiblePaneChanged = visiblePaneChanged
+                || (changed && visiblePaneFrames[paneId] != nil)
             if let terminal = pane as? RustTerminalPane {
                 while let event = terminal.takeTmuxEvent() {
                     tmuxEvents.append((paneId, terminal, event))
@@ -10069,6 +10576,8 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
         }
         if activePaneChanged {
             updateActiveFrame()
+        } else if visiblePaneChanged {
+            metalView.needsDisplay = true
         }
     }
 
@@ -10980,6 +11489,10 @@ final class SatinAppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidat
         case "tab-bar-actions":
             if let path = environment["SATIN_NATIVE_SMOKE_RESULT"], !path.isEmpty {
                 controller.applyTabBarActionsSmokeScenario(resultPath: path)
+            }
+        case "artifact-popover":
+            if let path = environment["SATIN_NATIVE_SMOKE_RESULT"], !path.isEmpty {
+                controller.applyArtifactPopoverSmokeScenario(resultPath: path)
             }
         case "home-cwd":
             if let path = environment["SATIN_NATIVE_SMOKE_RESULT"], !path.isEmpty {

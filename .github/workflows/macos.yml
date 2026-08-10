@@ -44,6 +44,7 @@ jobs:
           nix develop --command just native-smoke
           nix develop --command just native-settings-smoke
           nix develop --command just native-control-smoke
+          nix develop --command just native-artifact-smoke
           nix develop --command just native-kitty-smoke
           nix develop --command just native-package-smoke
           nix develop --command just finder-editor-smoke

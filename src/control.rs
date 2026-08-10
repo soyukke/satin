@@ -81,6 +81,13 @@ pub enum ControlCommand {
         #[serde(default)]
         background: bool,
     },
+    ArtifactShow {
+        pane: usize,
+        artifact: String,
+        axis: ControlSplitAxis,
+        #[serde(default)]
+        background: bool,
+    },
     SelectTab {
         tab: usize,
     },
@@ -529,6 +536,24 @@ mod tests {
             request
         );
         assert!(json.contains("\"command\":\"status-set\""));
+    }
+
+    #[test]
+    fn protocol_round_trips_artifact_split_context() {
+        let request = ControlRequest::new(ControlCommand::ArtifactShow {
+            pane: 7,
+            artifact: "a123abc@2".to_owned(),
+            axis: ControlSplitAxis::Vertical,
+            background: true,
+        });
+        let json = serde_json::to_string(&request).unwrap();
+
+        assert_eq!(
+            serde_json::from_str::<ControlRequest>(&json).unwrap(),
+            request
+        );
+        assert!(json.contains("\"command\":\"artifact-show\""));
+        assert!(json.contains("\"artifact\":\"a123abc@2\""));
     }
 
     #[test]

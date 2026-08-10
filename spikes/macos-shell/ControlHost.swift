@@ -38,6 +38,7 @@ struct NativeControlRequest: Decodable {
     let timeout_ms: UInt64?
     let cwd: String?
     let axis: String?
+    let artifact: String?
     let title: String?
     let theme: String?
     let executable: String?
