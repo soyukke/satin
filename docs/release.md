@@ -23,9 +23,11 @@ runs Gatekeeper assessment, and only then writes the archive and manifest.
 ## Publish a release
 
 The release workflow requires a tag that exactly matches the Cargo package
-version, for example `vX.Y.Z`. It runs the full verification and packaged-app
-smoke gates on an Apple Silicon runner, publishes the archive and schema-2
-manifest, generates release notes, and records GitHub build provenance.
+version, for example `vX.Y.Z`, and points at the current `main` commit. Pull
+request CI owns the full source and packaged-app verification gates. The tag
+workflow builds the release bundle once, signs it, verifies the archive and its
+installability, publishes the archive and schema-2 manifest, generates release
+notes, and records GitHub build provenance.
 
 The workflow reads `UPDATE_SIGNING_PRIVATE_KEY_B64` from GitHub Actions Secrets.
 Signing credentials and notary secrets must never be stored in the repository.

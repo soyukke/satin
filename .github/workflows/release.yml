@@ -24,7 +24,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Validate tag and architecture
+      - name: Validate release ref and architecture
         run: |
           version="$(
             sed -nE 's/^version = "([^"]+)"$/\1/p' Cargo.toml |
@@ -33,29 +33,16 @@ jobs:
           test -n "$version"
           test "$GITHUB_REF_NAME" = "v$version"
           test "$(uname -m)" = "arm64"
-          git merge-base --is-ancestor "$GITHUB_SHA" origin/main
+          tagged_commit="$(git rev-list -n 1 "$GITHUB_REF_NAME")"
+          test "$tagged_commit" = "$(git rev-parse origin/main)"
 
       - name: Install Nix
         uses: DeterminateSystems/determinate-nix-action@v3
 
-      - name: Verify source
-        run: nix develop --command just verify
-
-      - name: Build signed arm64 artifacts once
+      - name: Build and verify signed arm64 release
         env:
           UPDATE_SIGNING_PRIVATE_KEY_B64: ${{ secrets.UPDATE_SIGNING_PRIVATE_KEY_B64 }}
-        run: |
-          test -n "$UPDATE_SIGNING_PRIVATE_KEY_B64"
-          nix develop --command just native-ci-build
-          jq -e '
-            .schemaVersion == 2
-              and .signature.algorithm == "ed25519"
-              and (.signature.value | length > 0)
-          ' spikes/macos-shell/.build/release/latest.json
-          nix develop --command just native-update-release-smoke
-
-      - name: Smoke-test application surfaces
-        run: nix develop --command just native-ci-smoke
+        run: nix develop --command just native-signed-release
 
       - name: Attest release provenance
         uses: actions/attest-build-provenance@v4
