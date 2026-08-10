@@ -82,6 +82,40 @@ native-notarize:
 native-release:
     @./scripts/native-release
 
+# Build CI artifacts exactly once, then reuse the signed package downstream.
+native-ci-build:
+    @if [[ -z "${IN_NIX_SHELL:-}" ]]; then \
+        exec nix develop --command just native-ci-build; \
+    else \
+        just native-build; \
+        SATIN_UPDATE_SELF_TEST=1 spikes/macos-shell/.build/SatinApplication; \
+        just native-package; \
+        ./scripts/native-update-install-smoke; \
+        SATIN_USE_PREBUILT_PACKAGE=1 ./scripts/native-release; \
+    fi
+
+# Run the production smoke suite without recompiling unchanged native artifacts.
+native-ci-smoke:
+    @if [[ -z "${IN_NIX_SHELL:-}" ]]; then \
+        exec nix develop --command just native-ci-smoke; \
+    else \
+        test -x spikes/macos-shell/.build/SatinApplication; \
+        test -d "spikes/macos-shell/.build/package/Satin.app"; \
+        ./scripts/native-smoke; \
+        ./scripts/native-settings-smoke; \
+        ./scripts/native-control-smoke; \
+        ./scripts/native-artifact-smoke; \
+        ./scripts/native-kitty-smoke; \
+        SATIN_USE_PREBUILT_PACKAGE=1 ./scripts/native-package-smoke; \
+        SATIN_USE_PREBUILT_PACKAGE=1 ./scripts/native-finder-editor-smoke; \
+        ./scripts/native-nvim-ui-surfaces-smoke; \
+        ./scripts/native-resize-smoke; \
+        ./scripts/native-session-smoke; \
+        ./scripts/native-tab-bar-actions-smoke; \
+        ./scripts/native-home-cwd-smoke; \
+        ./scripts/native-terminal-exit-closes-tab-smoke; \
+    fi
+
 # Verify update metadata parsing and semantic-version ordering.
 native-update-test:
     @if [[ -z "${IN_NIX_SHELL:-}" ]]; then exec nix develop --command just native-update-test; else just native-build && SATIN_UPDATE_SELF_TEST=1 spikes/macos-shell/.build/SatinApplication; fi

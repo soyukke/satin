@@ -5,7 +5,14 @@ if [[ -z "${IN_NIX_SHELL:-}" ]]; then
   exec nix develop --command ./scripts/native-package-smoke "$@"
 fi
 
-./scripts/native-package
+case "${SATIN_USE_PREBUILT_PACKAGE:-0}" in
+  0) ./scripts/native-package ;;
+  1) test -d "spikes/macos-shell/.build/package/Satin.app" ;;
+  *)
+    echo "SATIN_USE_PREBUILT_PACKAGE must be 0 or 1" >&2
+    exit 64
+    ;;
+esac
 app_path="spikes/macos-shell/.build/package/Satin.app"
 executable="$app_path/Contents/MacOS/satin-app"
 control_executable="$app_path/Contents/MacOS/satin"
