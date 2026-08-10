@@ -52,6 +52,9 @@ settings, and input translation.
   directly in a focused editor tab without restoring the normal workspace.
 - Kitty graphics in terminal panes and image.nvim-backed native Neovim panes,
   plus an owner-only `satin` automation interface.
+- Bounded, versioned Markdown reports with a native recent-artifact popover.
+  The terminal viewer renders GFM tables, inline emphasis, syntax-highlighted
+  fenced code, and snapshotted relative PNG images without an embedded browser.
 - Explicit local `tmux -CC` integration that projects tmux windows, panes, zoom,
   history, alternate screens, terminal modes, and bells as native tabs and
   splits, then reattaches that projection after a clean Satin restart. A native

@@ -21,7 +21,10 @@ allowed to differ from the target design during a migration.
 - [0011: Rename the product to Satin through a signed migration bridge](0011-rename-product-to-satin-through-signed-migration-bridge.md)
 - [0012: Unify shell and Command-N Neovim runtime](0012-unify-shell-and-command-neovim-runtime.md)
 - [0013: Use LaunchServices for simple editor launches](0013-use-launchservices-for-simple-editor-launches.md)
+- [0014: Project explicit tmux control mode into native tabs and panes](0014-native-tmux-control-mode.md)
+- [0015: Use the native navigation layer and system Liquid Glass](0015-use-native-navigation-layer-and-liquid-glass.md)
 - [0016: Bridge Kitty graphics into native Neovim](0016-bridge-kitty-graphics-into-native-neovim.md)
+- [0017: Store versioned Markdown artifacts and present them through Satin](0017-present-bounded-artifacts-through-satin.md)
 
 ## Workflow
 

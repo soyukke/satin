@@ -1,6 +1,6 @@
 ---
 name: satin
-description: Control and organize a running Satin macOS terminal through its bundled CLI. Use when the user asks to inspect or operate Satin tabs or panes, set session names, reorder or close workspaces, set up a new development workspace, locate and open an existing project, send terminal input, change themes, or coordinate pane status. Run only from a Satin-managed pane with a valid local control context.
+description: Control and organize a running Satin macOS terminal through its bundled CLI. Use when the user asks to inspect or operate Satin tabs or panes, save or version a bounded rich Markdown artifact, present tables, code, diagrams, trees, timelines, diffs, or images, split an artifact beside the current pane, set session names, reorder or close workspaces, set up a development workspace, send terminal input, change themes, or coordinate pane status. Run only from a Satin-managed pane with a valid local control context.
 ---
 
 # Satin
@@ -125,6 +125,70 @@ satin status set running "running tests"
 satin status wait --pane 2 --timeout 300
 satin status set done "tests passed"
 ```
+
+## Present bounded artifacts
+
+Inspect saved artifacts and the live presentation policy before preparing one:
+
+```sh
+satin artifact list --json
+satin artifact policy --json
+```
+
+Prepare the source for that policy: use the requested presentation language; put the conclusion or
+state first, then anomalies, the next human action, and only the evidence needed to decide. Order
+failing or unusual rows before routine rows. Use tables for records, diffs for changes, trees for
+hierarchy, timelines for ordered events, and images only when spatial information matters. Preserve
+exact commands, paths, identifiers, error text, and numbers, and do not repeat the same fact in prose
+and a table.
+
+Prefer one human-readable Markdown document containing headings, prose, tables, and fenced evidence.
+Write it inside the user's authorized workspace, then register it by absolute path. Satin snapshots the
+document into its owner-only artifact store, generates `INDEX.md`, and returns a stable ID. Supported
+import kinds are `text`, `markdown`, `table`, `tree`, `timeline`, `diff`, and PNG `image`; JSON/CSV/TSV
+tables and PNG images also receive a Markdown document beside their retained source snapshot.
+
+Use GFM tables for compact records and fenced code blocks for exact commands, code, logs, or errors.
+Always put a language token on code that has one so Satin can syntax-highlight it. Use strong and
+emphasis sparingly to mark decisions or exceptions, and inline code for exact identifiers and commands.
+Satin preserves those inline styles through terminal-aware wrapping; do not use raw HTML for layout. A
+Markdown report may embed up to four PNG files, 32 MiB combined, through paths relative to the report and
+below its directory. Keep those images in the workspace until registration completes. Satin snapshots
+them, so do not use absolute paths, `..`, data URLs, or remote image URLs.
+
+Satin does not render Mermaid. A fenced `mermaid` block is displayed as source code. When a diagram
+matters, render a PNG with the task's normal authorized tooling and embed that local PNG instead. Satin
+does not execute Mermaid JavaScript or raw HTML.
+
+```sh
+result="$(satin artifact add --kind markdown --title "Test results" \
+  --language ja-JP --file "$project/test-results.md" --json)"
+artifact_id="$(printf '%s' "$result" | jq -r '.result.id')"
+satin artifact show "$artifact_id" --vertical --background --json
+```
+
+When revising the same logical artifact, reuse its exact ID. Satin appends a version only when the
+document or retained source changed:
+
+```sh
+satin artifact add --id "$artifact_id" --kind markdown --title "Test results" \
+  --language ja-JP --file "$project/test-results.md" --json
+satin artifact list "$artifact_id" --json
+satin artifact show "$artifact_id@2" --vertical --background --json
+```
+
+Omitting `--pane` targets `SATIN_PANE_ID`. `artifact show` creates and starts the split atomically;
+do not emulate it with `split`, `send`, and `key`. Use `--background` unless the user wants focus moved
+to the viewer. Humans can also use the Artifacts action in the native toolbar to inspect recent previews
+and open one beside the active pane. The viewer obeys the configured cell and row budget, reports
+omissions, and closes with `q`, Escape, Enter, or Ctrl+C. `show ID` selects the latest version and
+`show ID@N` selects an immutable prior version.
+
+The overflow policy is `compact`, `defer`, or `reject`. If registration is rejected, revise the source
+or ask before changing policy. Do not create a new artifact when the user is clearly revising an
+existing one; identify it from `artifact list --json` and pass `--id`. Do not register secrets,
+credentials, or unrelated files. Opening a split is a layout mutation and still requires user intent
+under the Safety rules below.
 
 ## Safety
 

@@ -106,6 +106,10 @@ native-settings-smoke:
 native-control-smoke:
     @if [[ -z "${IN_NIX_SHELL:-}" ]]; then exec nix develop --command just native-control-smoke; else just native-build && ./scripts/native-control-smoke; fi
 
+# Verify versioning, rich Markdown, the recent popover, atomic splits, and Kitty images.
+native-artifact-smoke:
+    @if [[ -z "${IN_NIX_SHELL:-}" ]]; then exec nix develop --command just native-artifact-smoke; else just native-build && ./scripts/native-artifact-smoke; fi
+
 # Verify Kitty temp-file transfer, pane isolation, deletion, and Skia rendering.
 native-kitty-smoke:
     @if [[ -z "${IN_NIX_SHELL:-}" ]]; then exec nix develop --command just native-kitty-smoke; else just native-build && ./scripts/native-kitty-smoke; fi

@@ -5,8 +5,14 @@ use std::{
 };
 
 use anyhow::{Context, Result, anyhow, bail};
-use satin::control::{
-    ControlCommand, ControlRequest, ControlResponse, ControlSplitAxis, send_control_request,
+use satin::{
+    artifact::{
+        ArtifactKind, ArtifactOverflow, RegisterArtifact, list_artifacts, load_manifest,
+        load_policy, register_artifact, save_policy, view_artifact,
+    },
+    control::{
+        ControlCommand, ControlRequest, ControlResponse, ControlSplitAxis, send_control_request,
+    },
 };
 use serde_json::{Value, json};
 
@@ -36,13 +42,15 @@ fn run() -> Result<()> {
         return Ok(());
     }
 
-    let socket = extract_value(&mut args, "--socket")
-        .map(PathBuf::from)
-        .or_else(|| env::var_os("SATIN_SOCKET").map(PathBuf::from))
-        .or_else(|| env::var_os("NVTERM_SOCKET").map(PathBuf::from))
-        .or_else(default_socket_path)
-        .ok_or_else(|| anyhow!("set SATIN_SOCKET or pass --socket PATH"))?;
+    let socket_argument = extract_value(&mut args, "--socket").map(PathBuf::from);
     let json_output = remove_flag(&mut args, "--json");
+    if args.first().is_some_and(|argument| argument == "artifact") {
+        args.remove(0);
+        let socket = resolve_socket(socket_argument)?;
+        return run_artifact(&socket, &mut args, json_output);
+    }
+
+    let socket = resolve_socket(socket_argument)?;
     if args.first().is_some_and(|argument| argument == "identify") {
         args.remove(0);
         ensure_empty(&args)?;
@@ -51,6 +59,204 @@ fn run() -> Result<()> {
     let request = parse_request(&mut args)?;
     let response = send_control_request(&socket, &request)?;
     print_response(response, json_output)
+}
+
+fn resolve_socket(argument: Option<PathBuf>) -> Result<PathBuf> {
+    argument
+        .or_else(|| env::var_os("SATIN_SOCKET").map(PathBuf::from))
+        .or_else(|| env::var_os("NVTERM_SOCKET").map(PathBuf::from))
+        .or_else(default_socket_path)
+        .ok_or_else(|| anyhow!("set SATIN_SOCKET or pass --socket PATH"))
+}
+
+fn run_artifact(socket: &Path, args: &mut Vec<String>, json_output: bool) -> Result<()> {
+    let Some(command) = args.first().cloned() else {
+        bail!(artifact_usage());
+    };
+    args.remove(0);
+    match command.as_str() {
+        "policy" => artifact_policy(socket, args, json_output),
+        "add" => artifact_add(socket, args, json_output),
+        "list" => artifact_list(socket, args, json_output),
+        "show" => artifact_show(socket, args, json_output),
+        "view" => artifact_view(socket, args),
+        _ => bail!(
+            "unknown artifact command {command:?}\n\n{}",
+            artifact_usage()
+        ),
+    }
+}
+
+fn artifact_policy(socket: &Path, args: &mut Vec<String>, json_output: bool) -> Result<()> {
+    let mut policy = load_policy(socket)?;
+    let update = args.first().is_some_and(|argument| argument == "set");
+    if update {
+        args.remove(0);
+        if let Some(value) = extract_value(args, "--max-columns") {
+            policy.max_columns = value.parse().context("--max-columns must be an integer")?;
+        }
+        if let Some(value) = extract_value(args, "--max-rows") {
+            policy.max_rows = value.parse().context("--max-rows must be an integer")?;
+        }
+        if let Some(value) = extract_value(args, "--language") {
+            policy.language = value;
+        }
+        if let Some(value) = extract_value(args, "--overflow") {
+            policy.overflow = value.parse::<ArtifactOverflow>()?;
+        }
+        save_policy(socket, &policy)?;
+    }
+    ensure_empty(args)?;
+    let resolved_language = policy.resolved_language();
+    print_response(
+        ControlResponse::success(json!({
+            "policy": policy,
+            "resolvedLanguage": resolved_language,
+        })),
+        json_output,
+    )
+}
+
+fn artifact_add(socket: &Path, args: &mut Vec<String>, json_output: bool) -> Result<()> {
+    let id = extract_value(args, "--id");
+    let kind = extract_value(args, "--kind")
+        .ok_or_else(|| anyhow!("artifact add requires --kind KIND"))?
+        .parse::<ArtifactKind>()?;
+    let title = extract_value(args, "--title")
+        .ok_or_else(|| anyhow!("artifact add requires --title TITLE"))?;
+    let source = extract_value(args, "--file")
+        .map(PathBuf::from)
+        .ok_or_else(|| anyhow!("artifact add requires --file PATH"))?;
+    if !source.is_absolute() {
+        bail!("artifact source path must be absolute");
+    }
+    let language = extract_value(args, "--language");
+    let owner_pane = optional_identifier(args, "--pane", "SATIN_PANE_ID", "NVTERM_PANE_ID")?;
+    let owner_tab = optional_identifier(args, "--tab", "SATIN_TAB_ID", "NVTERM_TAB_ID")?;
+    ensure_empty(args)?;
+    let policy = load_policy(socket)?;
+    let manifest = register_artifact(
+        socket,
+        &policy,
+        RegisterArtifact {
+            id: id.as_deref(),
+            kind,
+            title: &title,
+            language: language.as_deref(),
+            source: &source,
+            owner_tab,
+            owner_pane,
+        },
+    )?;
+    print_response(
+        ControlResponse::success(serde_json::to_value(manifest)?),
+        json_output,
+    )
+}
+
+fn artifact_list(socket: &Path, args: &mut Vec<String>, json_output: bool) -> Result<()> {
+    let limit = extract_value(args, "--limit")
+        .map(|value| value.parse::<usize>().context("--limit must be an integer"))
+        .transpose()?
+        .unwrap_or(20);
+    if !(1..=200).contains(&limit) {
+        bail!("--limit must be between 1 and 200");
+    }
+    if args.len() > 1 {
+        bail!("artifact list accepts at most one artifact ID");
+    }
+    let artifacts = list_artifacts(socket, None)?;
+    if let Some(id) = args.first() {
+        let item = artifacts
+            .iter()
+            .find(|artifact| artifact.id == *id)
+            .ok_or_else(|| anyhow!("artifact {id} does not exist"))?;
+        let versions = (1..=item.version_count)
+            .rev()
+            .take(limit)
+            .map(|version| load_manifest(socket, &format!("{}@{version}", item.id)))
+            .collect::<Result<Vec<_>>>()?;
+        let text = versions
+            .iter()
+            .map(|version| {
+                format!(
+                    "v{}\t{}\t{} bytes",
+                    version.version, version.created_at, version.source_bytes
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        return print_response(
+            ControlResponse::success(json!({
+                "artifact": item,
+                "versions": versions,
+                "text": text,
+            })),
+            json_output,
+        );
+    }
+    let artifacts = artifacts.into_iter().take(limit).collect::<Vec<_>>();
+    let text = if artifacts.is_empty() {
+        "No artifacts.\n".to_owned()
+    } else {
+        artifacts
+            .iter()
+            .map(|artifact| {
+                format!(
+                    "{}\tv{}\t{}\t{}\t{}\t{}",
+                    artifact.id,
+                    artifact.version,
+                    artifact.kind.as_str(),
+                    artifact.updated_at,
+                    artifact.title,
+                    artifact.preview
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n"
+    };
+    print_response(
+        ControlResponse::success(json!({"artifacts": artifacts, "text": text})),
+        json_output,
+    )
+}
+
+fn artifact_show(socket: &Path, args: &mut Vec<String>, json_output: bool) -> Result<()> {
+    let pane = pane_argument(args)?;
+    let background = remove_flag(args, "--background");
+    let vertical = remove_flag(args, "--vertical");
+    let horizontal = remove_flag(args, "--horizontal");
+    if vertical == horizontal {
+        bail!("artifact show requires exactly one of --vertical or --horizontal");
+    }
+    if args.len() != 1 {
+        bail!("artifact show requires one artifact ID");
+    }
+    let artifact = args.remove(0);
+    load_manifest(socket, &artifact)?;
+    let response = send_control_request(
+        socket,
+        &ControlRequest::new(ControlCommand::ArtifactShow {
+            pane,
+            artifact,
+            axis: if vertical {
+                ControlSplitAxis::Vertical
+            } else {
+                ControlSplitAxis::Horizontal
+            },
+            background,
+        }),
+    )?;
+    print_response(response, json_output)
+}
+
+fn artifact_view(socket: &Path, args: &mut Vec<String>) -> Result<()> {
+    let no_wait = remove_flag(args, "--no-wait");
+    if args.len() != 1 {
+        bail!("artifact view requires one artifact ID");
+    }
+    view_artifact(socket, &args[0], !no_wait)
 }
 
 fn version_requested(args: &[String]) -> bool {
@@ -324,6 +530,23 @@ fn numeric_argument(
         .with_context(|| format!("invalid {label} identifier"))
 }
 
+fn optional_identifier(
+    args: &mut Vec<String>,
+    flag: &str,
+    environment: &str,
+    legacy_environment: &str,
+) -> Result<Option<usize>> {
+    extract_value(args, flag)
+        .or_else(|| env::var(environment).ok())
+        .or_else(|| env::var(legacy_environment).ok())
+        .map(|value| {
+            value
+                .parse::<usize>()
+                .with_context(|| format!("invalid identifier in {environment}"))
+        })
+        .transpose()
+}
+
 fn print_response(response: ControlResponse, json_output: bool) -> Result<()> {
     if json_output {
         println!("{}", serde_json::to_string_pretty(&response)?);
@@ -393,6 +616,12 @@ fn usage() -> &'static str {
 commands:
   skill
   identify
+  artifact policy [set [--max-columns N] [--max-rows N] [--language TAG]
+                       [--overflow compact|defer|reject]]
+  artifact add [--id ID] --kind KIND --title TITLE --file PATH [--language TAG]
+  artifact list [ID] [--limit N]
+  artifact show [--pane ID] ID --vertical|--horizontal [--background]
+  artifact view ID [--no-wait]
   list
   read-screen [--pane ID]
   send [--pane ID] TEXT|-
@@ -408,6 +637,20 @@ commands:
   close-pane [--pane ID]
   rename-tab [--tab ID] TITLE
   set-theme [--tab ID] THEME"
+}
+
+fn artifact_usage() -> &'static str {
+    "usage: satin artifact policy
+       satin artifact policy set [--max-columns N] [--max-rows N]
+                                 [--language TAG]
+                                 [--overflow compact|defer|reject]
+       satin artifact add [--id ID] --kind KIND --title TITLE --file PATH
+                          [--language TAG] [--pane ID] [--tab ID]
+       satin artifact list [ID] [--limit N]
+       satin artifact show [--pane ID] ID --vertical|--horizontal [--background]
+       satin artifact view ID [--no-wait]
+
+kinds: text, markdown, table, tree, timeline, diff, image"
 }
 
 #[cfg(test)]
@@ -509,6 +752,8 @@ mod tests {
     fn bundled_skill_has_valid_core_metadata() {
         assert!(SATIN_SKILL.starts_with("---\nname: satin\ndescription: "));
         assert!(SATIN_SKILL.contains("\n---\n"));
+        assert!(SATIN_SKILL.contains("satin artifact policy --json"));
+        assert!(SATIN_SKILL.contains("satin artifact show"));
         assert!(!SATIN_SKILL.contains("TODO"));
     }
 }
