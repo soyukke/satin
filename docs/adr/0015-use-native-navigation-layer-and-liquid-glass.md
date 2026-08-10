@@ -35,6 +35,9 @@ Tahoe-only custom glass view.
   custom toolbar material must not leak into terminal or session code. Future
   macOS appearance changes should be adopted in that adapter, preferring newer
   standard AppKit behavior before adding another custom presentation path.
+- Compile references to macOS 26 glass classes only when the selected macOS SDK
+  advertises that API. Runtime availability still selects the glass path; builds
+  made with an older supported SDK compile the same standard AppKit fallback.
 - On macOS 26, wrap the custom Local/tmux and pane-action controls in regular
   `NSGlassEffectView` surfaces inside one `NSGlassEffectContainerView`. These
   remain semantic `NSButton` and `NSSegmentedControl` instances; the container

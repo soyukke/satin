@@ -3842,9 +3842,11 @@ enum NativePlatformAppearance {
     }
 
     static var usesLiquidGlass: Bool {
+#if SATIN_HAS_LIQUID_GLASS_SDK
         if #available(macOS 26.0, *) {
             return true
         }
+#endif
         return false
     }
 
@@ -3869,6 +3871,7 @@ enum NativePlatformAppearance {
         sessionControl: NSButton,
         actionControl: NSSegmentedControl
     ) -> NSView {
+#if SATIN_HAS_LIQUID_GLASS_SDK
         if #available(macOS 26.0, *) {
             sessionControl.isBordered = false
             sessionControl.bezelStyle = .inline
@@ -3878,6 +3881,7 @@ enum NativePlatformAppearance {
                 actionControl: actionControl
             )
         }
+#endif
 
         sessionControl.bezelStyle = .texturedRounded
         actionControl.segmentStyle = .capsule
@@ -3889,24 +3893,29 @@ enum NativePlatformAppearance {
     }
 
     static func toolbarControlsUseExpectedPresentation(_ view: NSView) -> Bool {
+#if SATIN_HAS_LIQUID_GLASS_SDK
         if #available(macOS 26.0, *) {
             return view is NativeLiquidGlassToolbarControls
         }
+#endif
         return view is NSStackView
     }
 
     static func toolbarControlContentSizeDidChange(_ view: NSView) {
+#if SATIN_HAS_LIQUID_GLASS_SDK
         if #available(macOS 26.0, *),
            let controls = view as? NativeLiquidGlassToolbarControls {
             controls.updatePreferredSize()
             return
         }
+#endif
         view.invalidateIntrinsicContentSize()
         view.needsLayout = true
         view.superview?.needsLayout = true
     }
 }
 
+#if SATIN_HAS_LIQUID_GLASS_SDK
 @available(macOS 26.0, *)
 private final class NativeLiquidGlassToolbarControls: NSView {
     private enum Metrics {
@@ -4027,6 +4036,7 @@ private final class NativeLiquidGlassToolbarControls: NSView {
         return ceil(titleWidth + imageWidth + imageSpacing)
     }
 }
+#endif
 
 private final class NativeTerminalBackdropView: NSView {
     private var accentColor = themeAccentColor(nil)
