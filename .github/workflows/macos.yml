@@ -62,23 +62,6 @@ jobs:
       - name: Verify Rust
         run: nix develop --command just verify
 
-  updates:
-    needs: scope
-    if: needs.scope.outputs.full == 'true'
-    runs-on: macos-15
-    timeout-minutes: 20
-    steps:
-      - name: Check out source
-        uses: actions/checkout@v7
-
-      - name: Install Nix
-        uses: DeterminateSystems/determinate-nix-action@v3
-
-      - name: Test update discovery
-        run: |
-          nix develop --command just native-update-test
-          nix develop --command just native-update-install-smoke
-
   native:
     needs: scope
     if: needs.scope.outputs.full == 'true'
@@ -93,6 +76,13 @@ jobs:
 
       - name: Build native host
         run: nix develop --command just native-build
+
+      # Keep update and packaging checks on the same runner: the update install
+      # smoke builds the release bundle that native-release reuses.
+      - name: Test update discovery
+        run: |
+          nix develop --command just native-update-test
+          nix develop --command just native-update-install-smoke
 
       - name: Build application bundle
         run: nix develop --command just native-release
@@ -130,7 +120,6 @@ jobs:
     needs:
       - scope
       - rust
-      - updates
       - native
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -140,16 +129,13 @@ jobs:
           FULL: ${{ needs.scope.outputs.full }}
           SCOPE_RESULT: ${{ needs.scope.result }}
           RUST_RESULT: ${{ needs.rust.result }}
-          UPDATES_RESULT: ${{ needs.updates.result }}
           NATIVE_RESULT: ${{ needs.native.result }}
         run: |
           test "$SCOPE_RESULT" = success
           if [[ "$FULL" == true ]]; then
             test "$RUST_RESULT" = success
-            test "$UPDATES_RESULT" = success
             test "$NATIVE_RESULT" = success
           else
             test "$RUST_RESULT" = skipped
-            test "$UPDATES_RESULT" = skipped
             test "$NATIVE_RESULT" = skipped
           fi
