@@ -4319,6 +4319,15 @@ private struct NativeArtifactCLIResponse: Decodable {
     let result: NativeArtifactCLIResult?
 }
 
+private struct NativeStoredArtifactVersion: Decodable {
+    let version: UInt32
+}
+
+private struct NativeStoredArtifactMetadata: Decodable {
+    let id: String
+    let versions: [NativeStoredArtifactVersion]
+}
+
 private final class NativeArtifactsPopoverViewController: NSViewController {
     private let artifacts: [NativeArtifactListItem]
     var onSelect: ((String) -> Void)?
@@ -5331,12 +5340,28 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
             return true
         }
         let version = components[1].first == "v" ? components[1].dropFirst() : components[1]
-        return !version.isEmpty && version.count <= 10 && version.allSatisfy(\.isNumber)
+        return !version.isEmpty && version.count <= 10 && version.utf8.allSatisfy { byte in
+            byte >= 48 && byte <= 57
+        }
     }
 
     private func controlArtifactExists(_ artifact: String) -> Bool {
-        guard let id = artifact.split(separator: "@", maxSplits: 1).first else {
+        let components = artifact.split(separator: "@", maxSplits: 1)
+        guard let rawId = components.first else {
             return false
+        }
+        let id = String(rawId)
+        let requestedVersion: UInt32?
+        if components.count == 2 {
+            let component = components[1].first == "v"
+                ? components[1].dropFirst()
+                : components[1][...]
+            guard let version = UInt32(component) else {
+                return false
+            }
+            requestedVersion = version
+        } else {
+            requestedVersion = nil
         }
         let socketDirectory = URL(fileURLWithPath: controlSocketPath).deletingLastPathComponent()
         let root = (socketDirectory.lastPathComponent == "run"
@@ -5345,16 +5370,44 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
             .appendingPathComponent("artifacts", isDirectory: true)
         let marker = root
             .appendingPathComponent(".index", isDirectory: true)
-            .appendingPathComponent(String(id))
-            .path
+            .appendingPathComponent(id)
+        let suffix = "--\(id)"
+        var directory: URL?
+        if let markerData = try? Data(contentsOf: marker),
+           let markerValue = String(data: markerData, encoding: .utf8) {
+            let name = markerValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !name.isEmpty, !name.hasPrefix("."), !name.contains("/"), name.hasSuffix(suffix) {
+                directory = root.appendingPathComponent(name, isDirectory: true)
+            }
+        }
+        if directory == nil {
+            let matches = ((try? FileManager.default.contentsOfDirectory(atPath: root.path)) ?? [])
+                .filter { !$0.hasPrefix(".") && $0.hasSuffix(suffix) }
+            guard matches.count == 1 else {
+                return false
+            }
+            directory = root.appendingPathComponent(matches[0], isDirectory: true)
+        }
+        guard let directory else {
+            return false
+        }
         var isDirectory: ObjCBool = false
-        if FileManager.default.fileExists(atPath: marker, isDirectory: &isDirectory),
-           !isDirectory.boolValue {
+        guard FileManager.default.fileExists(atPath: directory.path, isDirectory: &isDirectory),
+              isDirectory.boolValue,
+              let data = try? Data(contentsOf: directory.appendingPathComponent("metadata.json")),
+              let metadata = try? JSONDecoder().decode(
+                  NativeStoredArtifactMetadata.self,
+                  from: data
+              ),
+              metadata.id == id,
+              !metadata.versions.isEmpty
+        else {
+            return false
+        }
+        guard let requestedVersion else {
             return true
         }
-        let suffix = "--\(id)"
-        let names = (try? FileManager.default.contentsOfDirectory(atPath: root.path)) ?? []
-        return names.contains(where: { $0.hasSuffix(suffix) })
+        return metadata.versions.contains { $0.version == requestedVersion }
     }
 
     private func handleControlSelectTab(

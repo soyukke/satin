@@ -2,7 +2,10 @@ use std::{
     env,
     fs::{self, File, OpenOptions},
     io::{self, BufReader, Read, Write},
-    os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt},
+    os::{
+        fd::AsRawFd,
+        unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt},
+    },
     path::{Path, PathBuf},
     str::FromStr,
     time::{SystemTime, UNIX_EPOCH},
@@ -338,8 +341,14 @@ struct BodyImage {
 
 pub fn load_policy(socket: &Path) -> Result<ArtifactPolicy> {
     let path = policy_path(socket)?;
-    let Ok(file) = File::open(&path) else {
-        return Ok(ArtifactPolicy::default());
+    let file = match File::open(&path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            return Ok(ArtifactPolicy::default());
+        }
+        Err(error) => {
+            return Err(error).with_context(|| format!("open artifact policy {}", path.display()));
+        }
     };
     let policy: ArtifactPolicy = serde_json::from_reader(BufReader::new(file))
         .with_context(|| format!("decode artifact policy {}", path.display()))?;
@@ -372,20 +381,23 @@ pub fn register_artifact(
     validate_language(&language)?;
     let prepared = prepare_artifact_source(request.kind, request.title, request.source)?;
     let created_at_ms = unix_time_ms();
+    let mut preview_manifest = registration_preview(
+        policy,
+        &request,
+        &prepared,
+        request.id.unwrap_or("preview"),
+        1,
+        &language,
+        created_at_ms,
+    )?;
+    let _store_lock = lock_artifact_store(socket)?;
     let (id, stored) = registration_target(socket, request.id, request.kind)?;
     let next_version = stored
         .as_ref()
         .and_then(|artifact| artifact.versions.last())
         .map_or(1, |version| version.version.saturating_add(1));
-    let preview_manifest = registration_preview(
-        policy,
-        &request,
-        &prepared,
-        &id,
-        next_version,
-        &language,
-        created_at_ms,
-    )?;
+    preview_manifest.id.clone_from(&id);
+    preview_manifest.version = next_version;
     if let Some(existing) = stored.as_ref()
         && stored_artifact_matches(socket, existing, request.title, &language, &prepared)?
     {
@@ -490,11 +502,11 @@ fn store_artifact_version(
     prepared: &ArtifactSource,
     preview: &ArtifactManifest,
 ) -> Result<StoredArtifactVersion> {
-    let version_directory = directory.join("versions").join(format!("v{version:03}"));
-    if version_directory.exists() {
-        bail!("artifact version {version} already exists");
-    }
-    ensure_owner_only_directory(&version_directory)?;
+    let versions_directory = directory.join("versions");
+    ensure_owner_only_directory(&versions_directory)?;
+    let version_directory = versions_directory.join(format!("v{version:03}"));
+    create_owner_only_directory(&version_directory)
+        .with_context(|| format!("create artifact version {version}"))?;
     let document_path = version_directory.join("artifact.md");
     write_bytes_atomically(&document_path, prepared.document.as_bytes())?;
     let source_path = if prepared.source_name == "artifact.md" {
@@ -560,8 +572,12 @@ pub fn load_manifest(socket: &Path, selector: &str) -> Result<ArtifactManifest> 
 
 pub fn list_artifacts(socket: &Path, limit: Option<usize>) -> Result<Vec<ArtifactListItem>> {
     let root = artifact_root(socket)?;
-    let Ok(entries) = fs::read_dir(&root) else {
-        return Ok(Vec::new());
+    let entries = match fs::read_dir(&root) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => {
+            return Err(error).with_context(|| format!("open artifact store {}", root.display()));
+        }
     };
     let mut artifacts = Vec::new();
     for entry in entries {
@@ -570,8 +586,14 @@ pub fn list_artifacts(socket: &Path, limit: Option<usize>) -> Result<Vec<Artifac
             continue;
         }
         let metadata_path = entry.path().join("metadata.json");
-        let Ok(file) = File::open(&metadata_path) else {
-            continue;
+        let file = match File::open(&metadata_path) {
+            Ok(file) => file,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!("open artifact metadata {}", metadata_path.display())
+                });
+            }
         };
         let stored: StoredArtifact = serde_json::from_reader(BufReader::new(file))
             .with_context(|| format!("decode artifact metadata {}", metadata_path.display()))?;
@@ -1378,13 +1400,28 @@ fn read_text_source(manifest: &ArtifactManifest) -> Result<String> {
 }
 
 fn read_bounded_source(path: &Path, maximum: u64, label: &str) -> Result<Vec<u8>> {
-    let metadata = path
+    let file =
+        File::open(path).with_context(|| format!("open {label} source {}", path.display()))?;
+    let metadata = file
         .metadata()
         .with_context(|| format!("inspect {label} source {}", path.display()))?;
-    if !metadata.is_file() || metadata.len() > maximum {
+    if !metadata.is_file() {
+        bail!("{label} source must be a regular file");
+    }
+    if metadata.len() > maximum {
         bail!("{label} source exceeds the {maximum}-byte preview limit");
     }
-    fs::read(path).with_context(|| format!("read {label} source {}", path.display()))
+    let read_limit = maximum
+        .checked_add(1)
+        .ok_or_else(|| anyhow!("{label} source limit is too large"))?;
+    let mut bytes = Vec::with_capacity(metadata.len().try_into().unwrap_or(0));
+    file.take(read_limit)
+        .read_to_end(&mut bytes)
+        .with_context(|| format!("read {label} source {}", path.display()))?;
+    if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > maximum {
+        bail!("{label} source exceeds the {maximum}-byte preview limit");
+    }
+    Ok(bytes)
 }
 
 fn validate_source_size(kind: ArtifactKind, bytes: u64) -> Result<()> {
@@ -2135,6 +2172,46 @@ fn ensure_owner_only_directory(path: &Path) -> Result<()> {
     Ok(())
 }
 
+fn create_owner_only_directory(path: &Path) -> Result<()> {
+    let mut builder = fs::DirBuilder::new();
+    builder.mode(0o700);
+    builder.create(path)?;
+    validate_existing_artifact_directory(path)
+}
+
+struct ArtifactStoreLock {
+    _file: File,
+}
+
+fn lock_artifact_store(socket: &Path) -> Result<ArtifactStoreLock> {
+    let root = artifact_root(socket)?;
+    ensure_owner_only_directory(&root)?;
+    let path = root.join(".register.lock");
+    let file = OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .mode(0o600)
+        .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW)
+        .open(&path)
+        .with_context(|| format!("open artifact store lock {}", path.display()))?;
+    let metadata = file
+        .metadata()
+        .with_context(|| format!("inspect artifact store lock {}", path.display()))?;
+    if !metadata.is_file()
+        || metadata.uid() != effective_uid()
+        || metadata.permissions().mode() & 0o077 != 0
+    {
+        bail!("artifact store lock must be owner-only: {}", path.display());
+    }
+    // SAFETY: `file` owns a valid descriptor for the lifetime of the returned guard.
+    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } != 0 {
+        return Err(io::Error::last_os_error())
+            .with_context(|| format!("lock artifact store {}", root.display()));
+    }
+    Ok(ArtifactStoreLock { _file: file })
+}
+
 fn write_json_atomically(path: &Path, value: &impl Serialize) -> Result<()> {
     let parent = path
         .parent()
@@ -2145,8 +2222,7 @@ fn write_json_atomically(path: &Path, value: &impl Serialize) -> Result<()> {
         unix_time_ns()
     ));
     let mut file = OpenOptions::new()
-        .create(true)
-        .truncate(true)
+        .create_new(true)
         .write(true)
         .mode(0o600)
         .open(&temporary)?;
@@ -2376,6 +2452,26 @@ mod tests {
     }
 
     #[test]
+    fn bounded_source_read_enforces_the_limit_on_the_open_file() {
+        let directory = TestDirectory::new("bounded-read");
+        let source = directory.0.join("source.txt");
+        fs::write(&source, b"1234").unwrap();
+
+        assert_eq!(read_bounded_source(&source, 4, "test").unwrap(), b"1234");
+        let error = read_bounded_source(&source, 3, "test").unwrap_err();
+        assert!(error.to_string().contains("3-byte preview limit"));
+    }
+
+    #[test]
+    fn artifact_listing_reports_an_unreadable_store() {
+        let directory = TestDirectory::new("invalid-store");
+        fs::write(directory.0.join("artifacts"), b"not a directory").unwrap();
+
+        let error = list_artifacts(&directory.socket(), None).unwrap_err();
+        assert!(error.to_string().contains("open artifact store"));
+    }
+
+    #[test]
     fn markdown_preview_obeys_cell_and_row_bounds() {
         let directory = TestDirectory::new("markdown");
         let source = directory.0.join("report.md");
@@ -2582,6 +2678,57 @@ mod tests {
             fs::read_to_string(Path::new(&artifacts[0].directory).join("README.md"))
                 .unwrap()
                 .contains("[v2]")
+        );
+    }
+
+    #[test]
+    fn concurrent_updates_receive_distinct_versions() {
+        let directory = TestDirectory::new("concurrent-versions");
+        let initial_source = directory.0.join("initial.md");
+        fs::write(&initial_source, "# Initial\n").unwrap();
+        let initial =
+            register_markdown_version(&directory, &initial_source, None, "Concurrent notes");
+        let first_source = directory.0.join("first.md");
+        let second_source = directory.0.join("second.md");
+        fs::write(&first_source, "# First update\n").unwrap();
+        fs::write(&second_source, "# Second update\n").unwrap();
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let spawn_registration = |source: PathBuf| {
+            let barrier = barrier.clone();
+            let socket = directory.socket();
+            let id = initial.id.clone();
+            std::thread::spawn(move || {
+                barrier.wait();
+                register_artifact(
+                    &socket,
+                    &ArtifactPolicy::default(),
+                    RegisterArtifact {
+                        id: Some(&id),
+                        kind: ArtifactKind::Markdown,
+                        title: "Concurrent notes",
+                        language: Some("en-US"),
+                        source: &source,
+                        owner_tab: None,
+                        owner_pane: None,
+                    },
+                )
+                .unwrap()
+                .version
+            })
+        };
+
+        let first = spawn_registration(first_source);
+        let second = spawn_registration(second_source);
+        let mut versions = [first.join().unwrap(), second.join().unwrap()];
+        versions.sort_unstable();
+
+        assert_eq!(versions, [2, 3]);
+        assert_eq!(
+            load_stored_artifact(&directory.socket(), &initial.id)
+                .unwrap()
+                .versions
+                .len(),
+            3
         );
     }
 

@@ -43,7 +43,10 @@ and a release-matched embedded agent skill.
   `~/Library/Application Support/Satin/artifacts`. Its directories use a title
   slug plus short ID. Root `INDEX.md`, per-artifact `README.md` and `current.md`,
   and `versions/vNNN/artifact.md` make direct filesystem inspection useful.
-  JSON is limited to internal metadata and a hidden ID lookup index.
+  JSON is limited to internal metadata and a hidden ID lookup index. Registration
+  holds an owner-only advisory store lock across version allocation and metadata
+  publication, so concurrent CLI producers cannot claim the same immutable
+  version number.
 - The default preview budget is 80 terminal cells by 32 rows. Users can change
   both limits, the BCP 47 presentation language, and an overflow policy of
   `compact`, `defer`, or `reject`. A preview never bypasses its configured bound;
