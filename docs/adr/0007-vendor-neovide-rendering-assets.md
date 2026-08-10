@@ -215,6 +215,30 @@ increased end-to-end work in the diff-scroll benchmark. Reconsider it only with
 backend-specific frame and glyph-cache measurements; retained line metadata and
 prepared `TextBlob`s remain the smaller cache boundary for now.
 
+A GPU image per retained line and a shared line-raster atlas were also evaluated
+and rejected. Both reduced renderer CPU in an unoptimized development build,
+but the per-line form raised GPU queue p95 to about 5.2 ms in the real
+user-configured four-window Diffview workload. The shared atlas removed that
+texture-switching regression, yet increased optimized renderer p50 from about
+0.67 to 1.11 ms. Neither cache belongs in the production renderer.
+
+The larger cause was the daily `just terminal` path compiling Rust and Swift
+without optimization even though it is exercised as an interactive 60 Hz app.
+The development Cargo profile now matches release runtime code generation and
+disables incremental and debug artifacts; the native Swift host uses `-O` with
+whole-module optimization. Rust tests retain their separate test profile. In
+three eight-second runs at a fixed 15-point font and 115x37 grid, the median
+four-window Diffview renderer p50 fell from 0.943 to 0.673 ms, p95 from 1.757 to
+0.842 ms, and p99 from 2.372 to 0.972 ms. Satin CPU fell from 1.39 to 0.76
+seconds, main-thread Neovim drain p99 from 1.148 to 0.130 ms, and peak combined
+RSS from 236,192 to 229,728 KiB without a Neovim cadence regression. The final
+development renderer p50 is within measurement noise of the packaged release
+build (0.678 ms under the same geometry).
+
+The opt-in `just nvim-perf` harness records renderer, presentation, GPU queue,
+main-thread drain, Neovim cadence and grid geometry, process CPU, and RSS as JSON
+for the same synthetic or user Diffview workload without production log noise.
+
 Short-term AppKit drawing optimizations are allowed only as stopgaps. New
 Neovim-specific rendering behavior should be added to the Neovide-derived
 renderer path once that boundary exists.

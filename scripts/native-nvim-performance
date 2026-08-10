@@ -1,0 +1,208 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+repo_root="$(cd -- "$script_dir/.." && pwd)"
+executable="${1:-$repo_root/spikes/macos-shell/.build/SatinApplication}"
+label="${2:-current}"
+workload="${3:-synthetic}"
+if [[ ! "$label" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
+  echo "invalid label: use letters, digits, dot, underscore, or hyphen" >&2
+  exit 64
+fi
+duration_seconds="${SATIN_PERF_DURATION_SECONDS:-8}"
+duration_ns="$(awk -v seconds="$duration_seconds" 'BEGIN { printf "%.0f", seconds * 1000000000 }')"
+output_root="${SATIN_PERF_OUTPUT_DIR:-$repo_root/spikes/macos-shell/.build/nvim-performance}"
+result_dir="$output_root/$label"
+run_root="$(mktemp -d "${TMPDIR:-/tmp}/satin-nvim-performance.XXXXXX")"
+config_dir="$run_root/config/nvim"
+ready="$run_root/ready"
+start="$run_root/start"
+done_file="$run_root/done"
+render_result="$result_dir/render.json"
+nvim_result="$result_dir/nvim.json"
+summary_result="$result_dir/summary.json"
+rss_samples="$result_dir/rss-kb.txt"
+app_log="$result_dir/app.log"
+
+mkdir -p "$config_dir" "$result_dir"
+rm -f "$ready" "$start" "$done_file" "$render_result" "$nvim_result" \
+  "$summary_result" "$rss_samples" "$app_log"
+
+benchmark_environment=()
+case "$workload" in
+  synthetic)
+    ln -s "$repo_root/benchmarks/nvim-diff/init.lua" "$config_dir/init.lua"
+    benchmark_environment+=(
+      "XDG_CONFIG_HOME=$run_root/config"
+      "XDG_DATA_HOME=$run_root/data"
+      "XDG_STATE_HOME=$run_root/state"
+      "XDG_CACHE_HOME=$run_root/cache"
+    )
+    ;;
+  user)
+    benchmark_environment+=(
+      "SATIN_NATIVE_PERF_NVIM_INIT=$repo_root/benchmarks/nvim-diff/user.lua"
+    )
+    ;;
+  *)
+    echo "unknown workload: $workload (expected synthetic or user)" >&2
+    exit 64
+    ;;
+esac
+
+env \
+  "${benchmark_environment[@]}" \
+  SATIN_NATIVE_PANE=nvim \
+  SATIN_NATIVE_SMOKE_SCENARIO=nvim-diff-benchmark \
+  SATIN_NATIVE_SMOKE_CAPTURE_RENDERER_MODEL=0 \
+  SATIN_CONTROL_SOCKET="$run_root/control.sock" \
+  SATIN_BENCH_READY="$ready" \
+  SATIN_BENCH_RESULT="$nvim_result" \
+  SATIN_BENCH_DURATION_NS="$duration_ns" \
+  SATIN_PERF_START="$start" \
+  SATIN_PERF_RESULT="$render_result" \
+  SATIN_PERF_DURATION_SECONDS="$duration_seconds" \
+  SATIN_PERF_CWD="$repo_root" \
+  SATIN_NATIVE_PERF_FONT_SIZE="${SATIN_NATIVE_PERF_FONT_SIZE:-15}" \
+  "$executable" >"$app_log" 2>&1 &
+app_pid=$!
+rss_pid=""
+
+# shellcheck disable=SC2329 # Invoked indirectly by the EXIT trap.
+cleanup() {
+  touch "$done_file"
+  if [[ -n "$rss_pid" ]] && kill -0 "$rss_pid" 2>/dev/null; then
+    wait "$rss_pid" 2>/dev/null || true
+  fi
+  if kill -0 "$app_pid" 2>/dev/null; then
+    kill "$app_pid" 2>/dev/null || true
+    wait "$app_pid" 2>/dev/null || true
+  fi
+  rm -rf -- "$run_root"
+}
+trap cleanup EXIT
+
+for _ in {1..300}; do
+  if [[ -s "$ready" ]]; then
+    break
+  fi
+  if [[ -s "$ready.error" ]]; then
+    cat "$ready.error" >&2
+    exit 1
+  fi
+  if ! kill -0 "$app_pid" 2>/dev/null; then
+    echo "performance run exited before Neovim was ready" >&2
+    tail -n 80 "$app_log" >&2
+    exit 1
+  fi
+  sleep 0.1
+done
+if [[ ! -s "$ready" ]]; then
+  echo "performance run timed out waiting for Neovim" >&2
+  tail -n 80 "$app_log" >&2
+  exit 1
+fi
+
+nvim_pid=""
+for _ in {1..50}; do
+  nvim_pid="$(pgrep -P "$app_pid" -x nvim | head -n 1 || true)"
+  if [[ -n "$nvim_pid" ]]; then
+    break
+  fi
+  sleep 0.05
+done
+if [[ -z "$nvim_pid" ]]; then
+  echo "performance run could not find the Neovim child process" >&2
+  exit 1
+fi
+
+cpu_seconds() {
+  ps -p "$1" -o time= | awk -F: '
+    NF == 3 { print ($1 * 3600) + ($2 * 60) + $3; next }
+    NF == 2 { print ($1 * 60) + $2; next }
+    { print $1 }
+  '
+}
+
+sleep 1
+app_cpu_start="$(cpu_seconds "$app_pid")"
+nvim_cpu_start="$(cpu_seconds "$nvim_pid")"
+touch "$start"
+
+(
+  while [[ ! -e "$done_file" ]] && kill -0 "$app_pid" 2>/dev/null; do
+    ps -p "$app_pid,$nvim_pid" -o rss= | awk '{ total += $1 } END { print total + 0 }'
+    sleep 0.1
+  done
+) >"$rss_samples" &
+rss_pid=$!
+
+for _ in {1..300}; do
+  if [[ -s "$nvim_result" && -s "$render_result" ]]; then
+    break
+  fi
+  if ! kill -0 "$app_pid" 2>/dev/null; then
+    echo "performance run exited before metrics were written" >&2
+    tail -n 80 "$app_log" >&2
+    exit 1
+  fi
+  sleep 0.1
+done
+if [[ ! -s "$nvim_result" || ! -s "$render_result" ]]; then
+  echo "performance run timed out waiting for metrics" >&2
+  tail -n 80 "$app_log" >&2
+  exit 1
+fi
+
+touch "$done_file"
+wait "$rss_pid" 2>/dev/null || true
+rss_pid=""
+app_cpu_end="$(cpu_seconds "$app_pid")"
+nvim_cpu_end="$(cpu_seconds "$nvim_pid")"
+rss_peak="$(sort -nr "$rss_samples" | head -n 1)"
+
+jq -n \
+  --slurpfile render "$render_result" \
+  --slurpfile nvim "$nvim_result" \
+  --arg label "$label" \
+  --arg workload "$workload" \
+  --argjson app_cpu_seconds "$(awk -v end="$app_cpu_end" -v start="$app_cpu_start" 'BEGIN { print end - start }')" \
+  --argjson nvim_cpu_seconds "$(awk -v end="$nvim_cpu_end" -v start="$nvim_cpu_start" 'BEGIN { print end - start }')" \
+  --argjson rss_peak_kb "$rss_peak" \
+  '{
+    schema_version: 1,
+    label: $label,
+    workload: $workload,
+    process: {
+      satin_cpu_seconds: $app_cpu_seconds,
+      nvim_cpu_seconds: $nvim_cpu_seconds,
+      combined_rss_peak_kb: $rss_peak_kb
+    },
+    render: $render[0],
+    nvim: $nvim[0]
+  }' >"$summary_result"
+
+jq '{
+  label,
+  process,
+  frames: {
+    count: .render.frames.count,
+    renderer_cpu_p50_ms: .render.frames.renderer_cpu_ms.p50,
+    renderer_cpu_p95_ms: .render.frames.renderer_cpu_ms.p95,
+    renderer_cpu_p99_ms: .render.frames.renderer_cpu_ms.p99,
+    presentation_lateness_p99_ms: .render.frames.presentation_lateness_ms.p99,
+    missed_presented_intervals: .render.frames.missed_presented_intervals
+  },
+  gpu_queue: {
+    completion_p95_ms: .render.gpu_queue.completion_latency_ms.p95,
+    completion_p99_ms: .render.gpu_queue.completion_latency_ms.p99
+  },
+  main_thread: {
+    drain_p99_ms: .render.main_thread.drain_cpu_ms.p99,
+    nvim_drain_p99_ms: .render.main_thread.nvim_drain_cpu_ms.p99
+  },
+  nvim
+}' "$summary_result"
+
+echo "full performance artifact: $summary_result"
