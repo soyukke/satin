@@ -52,6 +52,9 @@ connection while native surfaces render the individual panes.
   encoded keyboard, text, mouse, focus, and resize operations back to the gateway
   as tmux commands. Route paste through a private tmux buffer and `paste-buffer
   -p`, leaving tmux responsible for the application's bracketed-paste contract.
+  Apply pending explicit VT scroll commands before checking whether the retained
+  scroll spring needs another Metal frame. This keeps terminal Neovim scrolling
+  smooth even when no cursor animation or later `%output` happens to schedule it.
 - On first projection of a pane whose effective `allow-passthrough` value is
   `off`, set that pane-local option to `on`; preserve an existing `on` or `all`
   value and never change the window/global default. Decode tmux's outer
@@ -134,9 +137,12 @@ Native tabs and the persistent session control intentionally replace the tmux st
 
 The native picker discovers sessions from the current local tmux server, switches
 the existing control client between them, and can create a session on that server.
-From `Local`, it lists the default local server and starts an explicit `-CC`
-attach in the active shell. Selecting `Local` sends `detach-client` and restores
-the preserved Satin workspace. Satin still owns one tmux control client at a time.
+After returning to `Local`, the window remembers that one server socket so its
+sessions remain listed and new sessions use the same server. Before any native
+tmux projection, `Local` uses the default local server. Selection starts an
+explicit `-CC` attach in the active shell. Selecting `Local` sends
+`detach-client` and restores the preserved Satin workspace. Satin still owns one
+tmux control client at a time; remembering one socket does not aggregate servers.
 
 Remote bootstrap and simultaneous multi-server aggregation are separate product
 features. They must build on the same protocol boundary and must not introduce

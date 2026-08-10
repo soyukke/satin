@@ -4469,6 +4469,7 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
     private var paneModes: [Int: NativePaneMode] = [:]
     private var paneTitles: [Int: String] = [:]
     private var tmuxSession: NativeTmuxSession?
+    private var lastTmuxSocketPath: String?
     private var pendingTmuxReattach: NativeTmuxAttachment?
     private var sessionPopover: NSPopover?
     private var lastSearchQuery = ""
@@ -6881,11 +6882,104 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
             writeSessionSmokeResult(resultPath, result: "failed tmux-reattach active-pane=no\n")
             return
         }
-        pane.write(Data("\u{1b}:qa!\r".utf8))
-        waitForTmuxReattachPrimaryRestore(resultPath, retries: 30)
+        let initialFrames = metalView.skiaFrames()
+        guard pane.writeThroughTmux(Data([4])) else {
+            _ = session.gateway.tmuxCommand("detach-client")
+            writeSessionSmokeResult(resultPath, result: "failed tmux-reattach nvim-scroll-input=no\n")
+            return
+        }
+        waitForTmuxReattachScroll(
+            resultPath,
+            attachment: attachment,
+            pane: pane,
+            initialFrames: initialFrames,
+            topMarker: expectedContent,
+            retries: 40
+        )
     }
 
-    private func waitForTmuxReattachPrimaryRestore(_ resultPath: String, retries: Int) {
+    private func waitForTmuxReattachScroll(
+        _ resultPath: String,
+        attachment: NativeTmuxAttachment,
+        pane: RustTmuxPane,
+        initialFrames: Int,
+        topMarker: String,
+        retries: Int
+    ) {
+        let frames = metalView.skiaFrames()
+        let position = abs(pane.rendererScrollPosition())
+        let scrolled = !pane.controlScreenText().contains(topMarker)
+        guard scrolled, frames > initialFrames, position > maxTerminalBottomInputSmokePosition else {
+            if retries > 0 {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.01) { [weak self, weak pane] in
+                    guard let pane else {
+                        return
+                    }
+                    self?.waitForTmuxReattachScroll(
+                        resultPath,
+                        attachment: attachment,
+                        pane: pane,
+                        initialFrames: initialFrames,
+                        topMarker: topMarker,
+                        retries: retries - 1
+                    )
+                }
+            } else {
+                _ = tmuxSession?.gateway.tmuxCommand("detach-client")
+                writeSessionSmokeResult(
+                    resultPath,
+                    result: "failed tmux-reattach nvim-scroll-start=no "
+                        + "frames=\(frames - initialFrames) position=\(position)\n"
+                )
+            }
+            return
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) { [weak self, weak pane] in
+            guard let self, let pane else {
+                return
+            }
+            self.verifyTmuxReattachScrollProgress(
+                resultPath,
+                attachment: attachment,
+                pane: pane,
+                initialFrames: frames,
+                initialPosition: position
+            )
+        }
+    }
+
+    private func verifyTmuxReattachScrollProgress(
+        _ resultPath: String,
+        attachment: NativeTmuxAttachment,
+        pane: RustTmuxPane,
+        initialFrames: Int,
+        initialPosition: Double
+    ) {
+        let frames = metalView.skiaFrames()
+        let position = abs(pane.rendererScrollPosition())
+        guard frames > initialFrames, position < initialPosition else {
+            _ = tmuxSession?.gateway.tmuxCommand("detach-client")
+            writeSessionSmokeResult(
+                resultPath,
+                result: "failed tmux-reattach nvim-scroll-progress=no "
+                    + "frames=\(frames - initialFrames) "
+                    + "position=\(initialPosition)->\(position)\n"
+            )
+            return
+        }
+        pane.write(Data("\u{1b}:qa!\r".utf8))
+        waitForTmuxReattachPrimaryRestore(
+            resultPath,
+            attachment: attachment,
+            retries: 30
+        )
+    }
+
+    private func waitForTmuxReattachPrimaryRestore(
+        _ resultPath: String,
+        attachment: NativeTmuxAttachment,
+        retries: Int
+    ) {
         let primaryVisible = activePaneId
             .flatMap { terminalPanes[$0] as? RustTmuxPane }?
             .controlScreenText()
@@ -6893,7 +6987,11 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
         guard primaryVisible else {
             if retries > 0 {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
-                    self?.waitForTmuxReattachPrimaryRestore(resultPath, retries: retries - 1)
+                    self?.waitForTmuxReattachPrimaryRestore(
+                        resultPath,
+                        attachment: attachment,
+                        retries: retries - 1
+                    )
                 }
             } else {
                 _ = tmuxSession?.gateway.tmuxCommand("detach-client")
@@ -6902,14 +7000,22 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
             return
         }
         _ = tmuxSession?.gateway.tmuxCommand("detach-client")
-        waitForTmuxReattachDetach(resultPath, retries: 30)
+        waitForTmuxReattachDetach(resultPath, attachment: attachment, retries: 30)
     }
 
-    private func waitForTmuxReattachDetach(_ resultPath: String, retries: Int) {
+    private func waitForTmuxReattachDetach(
+        _ resultPath: String,
+        attachment: NativeTmuxAttachment,
+        retries: Int
+    ) {
         guard tmuxSession == nil else {
             if retries > 0 {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
-                    self?.waitForTmuxReattachDetach(resultPath, retries: retries - 1)
+                    self?.waitForTmuxReattachDetach(
+                        resultPath,
+                        attachment: attachment,
+                        retries: retries - 1
+                    )
                 }
             } else {
                 writeSessionSmokeResult(resultPath, result: "failed tmux-reattach detach-timeout\n")
@@ -6917,11 +7023,15 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
             return
         }
         let attachmentCleared = currentSessionState()?.tmuxAttachment == nil
-        let status = attachmentCleared ? "ok" : "failed"
+        let sessionListed = discoveredTmuxSessions().contains {
+            $0.name == attachment.sessionName && $0.socketPath == attachment.socketPath
+        }
+        let status = attachmentCleared && sessionListed ? "ok" : "failed"
         writeSessionSmokeResult(
             resultPath,
             result: "\(status) tmux-reattach attached=yes descriptor=yes alternate=yes "
-                + "primary-restored=yes "
+                + "primary-restored=yes nvim-scroll=yes "
+                + "local-list=\(sessionListed ? "yes" : "no") "
                 + "explicit-detach-clears=\(attachmentCleared ? "yes" : "no")\n"
         )
     }
@@ -9735,7 +9845,7 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
     }
 
     private func discoveredTmuxSessions() -> [NativeTmuxSessionDescriptor] {
-        let socketPath = tmuxSession?.socketPath
+        let socketPath = preferredTmuxSocketPath()
         var descriptors = NativeTmuxSessionDiscovery.sessions(socketPath: socketPath)
         if let session = tmuxSession,
            !descriptors.contains(where: {
@@ -9752,6 +9862,13 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
         return descriptors.sorted {
             $0.name.localizedStandardCompare($1.name) == .orderedAscending
         }
+    }
+
+    private func preferredTmuxSocketPath() -> String? {
+        if let activeSocketPath = tmuxSession?.socketPath, !activeSocketPath.isEmpty {
+            return activeSocketPath
+        }
+        return lastTmuxSocketPath
     }
 
     private func dismissSessionPopover() {
@@ -9805,8 +9922,11 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
             }
             return
         }
+        let socketArgument = preferredTmuxSocketPath().map {
+            "-S \(shellQuote($0)) "
+        } ?? ""
         runTmuxCommandInActiveShell(
-            "command tmux -CC new-session -s \(shellQuote(name))"
+            "command tmux \(socketArgument)-CC new-session -s \(shellQuote(name))"
         )
     }
 
@@ -10674,6 +10794,9 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
         }
         session.sessionName = snapshot.session_name
         session.socketPath = snapshot.socket_path
+        if !snapshot.socket_path.isEmpty {
+            lastTmuxSocketPath = snapshot.socket_path
+        }
         session.serverPid = snapshot.server_pid
         session.activeWindowZoomed = snapshot.windows
             .first(where: { $0.window_id == snapshot.active_window_id })?.zoomed ?? false
@@ -10799,6 +10922,9 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
     private func endTmuxSession(gatewayPaneId: Int) {
         guard let session = tmuxSession, session.gatewayPaneId == gatewayPaneId else {
             return
+        }
+        if !session.socketPath.isEmpty {
+            lastTmuxSocketPath = session.socketPath
         }
         for paneId in session.nativePaneIds.values {
             removePaneRuntime(paneId)

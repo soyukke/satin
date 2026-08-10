@@ -28,7 +28,7 @@ echo "$result"
 tmux -L "$socket_name" new-session -d -s "$session_name"
 socket_path="$(tmux -L "$socket_name" display-message -p '#{socket_path}')"
 tmux -S "$socket_path" send-keys -t "$session_name" \
-  "printf '%s\\n' '$primary_marker'; nvim -u NONE -n -c 'call setline(1, [\"$existing_marker\"])'" \
+  "printf '%s\\n' '$primary_marker'; nvim -u NONE -n -c 'call setline(1, range(1, 200))' -c 'call setline(1, \"$existing_marker\")'" \
   Enter
 
 content_ready=false
