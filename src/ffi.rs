@@ -66,6 +66,17 @@ pub extern "C" fn satin_core_split_active(handle: *mut TerminalCore, axis: u32) 
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn satin_core_resize_split(
+    handle: *mut TerminalCore,
+    first_pane_id: usize,
+    second_pane_id: usize,
+    ratio: f64,
+) -> u8 {
+    core_mut(handle).is_some_and(|core| core.resize_split(first_pane_id, second_pane_id, ratio))
+        as u8
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn satin_core_close_pane(handle: *mut TerminalCore, pane_id: usize) -> u8 {
     core_mut(handle).is_some_and(|core| core.close_pane(pane_id)) as u8
 }
