@@ -78,8 +78,10 @@ env -u SDKROOT -u DEVELOPER_DIR \
   -sdk "$sdk" \
   -target "$swift_target" \
   "${swift_feature_flags[@]}" \
+  spikes/macos-shell/AppUpdateChecker.swift \
   spikes/macos-shell/ControlHost.swift \
   spikes/macos-shell/PerformanceRecorder.swift \
+  spikes/macos-shell/SatinFFI.swift \
   spikes/macos-shell/SettingsWindow.swift \
   spikes/macos-shell/SatinApplication.swift \
   spikes/macos-shell/UpdateInstaller.swift \
