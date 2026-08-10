@@ -1,12 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+scenario="${1:-nvim-skia}"
+artifact="${2:-native-nvim-smoke}"
+verify_mode="${3:-nvim-skia}"
 app="spikes/macos-shell/.build/SatinApplication"
-shot="spikes/macos-shell/.build/native-nvim-smoke.png"
-result_file="spikes/macos-shell/.build/native-nvim-smoke.result"
-window_id_file="spikes/macos-shell/.build/native-nvim-window-id"
-capture_error="spikes/macos-shell/.build/native-nvim-smoke-screencapture.err"
-verify_error="spikes/macos-shell/.build/native-nvim-smoke-verify.err"
+shot="spikes/macos-shell/.build/${artifact}.png"
+result_file="spikes/macos-shell/.build/${artifact}.result"
+window_id_file="spikes/macos-shell/.build/${artifact}-window-id"
+capture_error="spikes/macos-shell/.build/${artifact}-screencapture.err"
+verify_error="spikes/macos-shell/.build/${artifact}-verify.err"
 
 rm -f "$shot" "$result_file" "$window_id_file" "$capture_error" "$verify_error"
 
@@ -15,7 +18,7 @@ caffeinate_pid=$!
 
 SATIN_NATIVE_PANE=nvim \
   SATIN_NATIVE_SMOKE_CLEAN_NVIM=1 \
-  SATIN_NATIVE_SMOKE_SCENARIO=nvim-skia \
+  SATIN_NATIVE_SMOKE_SCENARIO="$scenario" \
   SATIN_NATIVE_SMOKE_RESULT="$result_file" \
   SATIN_NATIVE_SMOKE_WINDOW_ID="$window_id_file" \
   SATIN_NATIVE_SMOKE_KEEP_OPEN=1 \
@@ -57,7 +60,7 @@ for _ in {1..100}; do
   if [[ -s "$result_file" ]] &&
     ./scripts/native-window-capture "$window_id" "$shot" 2>"$capture_error" &&
     [[ -s "$shot" ]] &&
-    ./scripts/native-smoke-verify "$shot" nvim-skia "$result_file" 2>"$verify_error"; then
+    ./scripts/native-smoke-verify "$shot" "$verify_mode" "$result_file" 2>"$verify_error"; then
     cat "$result_file"
     exit 0
   fi

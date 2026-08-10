@@ -1,0 +1,109 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ -z "${IN_NIX_SHELL:-}" ]]; then
+  exec nix develop --command ./scripts/native-dev-app "$@"
+fi
+
+./scripts/native-build
+
+version="$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')"
+build_number="${SATIN_BUILD_NUMBER:-$(git rev-list --count HEAD 2>/dev/null || printf '1')}"
+dev_root="spikes/macos-shell/.build/dev"
+app_path="$dev_root/Satin Dev.app"
+contents="$app_path/Contents"
+app_binary="$contents/MacOS/satin-dev-app"
+control_binary="$contents/MacOS/satin"
+nvim_launcher="$contents/MacOS/satin-nvim"
+icon_cache="$dev_root/AppIcon.icns"
+icon_source="assets/app-icon-dev.png"
+iconset="$dev_root/AppIcon.iconset"
+plist_template="spikes/macos-shell/Info.plist.in"
+
+case "$app_path" in
+  "spikes/macos-shell/.build/dev/Satin Dev.app") ;;
+  *)
+    echo "refusing unexpected development app path: $app_path" >&2
+    exit 64
+    ;;
+esac
+
+rm -rf -- "$app_path"
+mkdir -p "$contents/MacOS" "$contents/Resources/Legal"
+/usr/bin/ditto spikes/macos-shell/.build/SatinApplication "$app_binary"
+/usr/bin/ditto target/debug/satin "$control_binary"
+/usr/bin/ditto target/debug/satin-nvim "$nvim_launcher"
+chmod 755 "$app_binary" "$control_binary" "$nvim_launcher"
+
+if [[ ! -s "$icon_cache" || "$icon_source" -nt "$icon_cache" ]]; then
+  rm -rf -- "$iconset"
+  mkdir -p "$iconset"
+  while read -r points pixels suffix; do
+    /usr/bin/sips \
+      --resampleHeightWidth "$pixels" "$pixels" \
+      "$icon_source" \
+      --out "$iconset/icon_${points}x${points}${suffix}.png" \
+      >/dev/null
+  done <<'SIZES'
+16 16
+16 32 @2x
+32 32
+32 64 @2x
+128 128
+128 256 @2x
+256 256
+256 512 @2x
+512 512
+512 1024 @2x
+SIZES
+  /usr/bin/iconutil -c icns "$iconset" -o "$icon_cache"
+  rm -rf -- "$iconset"
+fi
+
+/usr/bin/ditto "$icon_cache" "$contents/Resources/AppIcon.icns"
+/usr/bin/ditto THIRD_PARTY_NOTICES.md "$contents/Resources/Legal/THIRD_PARTY_NOTICES.md"
+mkdir -p "$contents/Resources/ShellIntegration"
+/usr/bin/ditto scripts/shell-integration/zsh "$contents/Resources/ShellIntegration/zsh"
+
+sed \
+  -e "s/@VERSION@/$version/g" \
+  -e "s/@BUILD_NUMBER@/$build_number/g" \
+  -e "s/@MINIMUM_MACOS@/14.0/g" \
+  -e "s/@DISPLAY_NAME@/Satin Dev/g" \
+  -e "s/@EXECUTABLE@/satin-dev-app/g" \
+  -e "s/@BUNDLE_ID@/dev.soyukke.satin.dev/g" \
+  -e "s/@DATA_DIRECTORY@/Satin Dev/g" \
+  -e "s/@DEVELOPMENT_BUILD@/true/g" \
+  "$plist_template" >"$contents/Info.plist"
+/usr/libexec/PlistBuddy -c 'Delete :CFBundleDocumentTypes' "$contents/Info.plist"
+/usr/libexec/PlistBuddy -c 'Delete :NSServices' "$contents/Info.plist"
+plutil -lint "$contents/Info.plist" >/dev/null
+
+for executable in "$control_binary" "$nvim_launcher"; do
+  /usr/bin/codesign --force --sign - "$executable" >/dev/null
+done
+/usr/bin/codesign --force --sign - --entitlements spikes/macos-shell/Satin.entitlements \
+  "$app_path" >/dev/null
+/usr/bin/codesign --verify --deep --strict "$app_path"
+
+test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$contents/Info.plist")" \
+  = "dev.soyukke.satin.dev"
+test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleDisplayName' "$contents/Info.plist")" \
+  = "Satin Dev"
+test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$contents/Info.plist")" \
+  = "satin-dev-app"
+test "$(/usr/libexec/PlistBuddy -c 'Print :SatinDataDirectoryName' "$contents/Info.plist")" \
+  = "Satin Dev"
+test "$(/usr/libexec/PlistBuddy -c 'Print :SatinDevelopmentBuild' "$contents/Info.plist")" \
+  = "true"
+if /usr/libexec/PlistBuddy -c 'Print :CFBundleDocumentTypes' "$contents/Info.plist" \
+  >/dev/null 2>&1; then
+  echo "development app unexpectedly registers document types" >&2
+  exit 65
+fi
+if /usr/libexec/PlistBuddy -c 'Print :NSServices' "$contents/Info.plist" \
+  >/dev/null 2>&1; then
+  echo "development app unexpectedly registers services" >&2
+  exit 65
+fi
+printf '%s\n' "$app_path"

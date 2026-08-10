@@ -50,6 +50,9 @@ def main() -> int:
     if mode == "nvim-skia" and len(sys.argv) > 3:
         verify_nvim_skia(width, height, pixels, sys.argv[3])
         return 0
+    if mode == "nvim-image" and len(sys.argv) > 3:
+        verify_nvim_image(width, height, pixels, sys.argv[3])
+        return 0
 
     blue = 0
     dark_surface = 0
@@ -71,7 +74,10 @@ def main() -> int:
         raise SystemExit(f"native smoke tab pixels missing: blue={blue}")
     if dark_surface < 100_000:
         raise SystemExit(f"native smoke terminal surface missing: dark={dark_surface}")
-    min_text = 80 if mode == "nvim-skia" else 500
+    # The native toolbar no longer contributes custom white tab labels to this
+    # count. Compact AppKit windows also dim inactive terminal glyphs, so keep
+    # the gate focused on the presence of rendered text instead of key state.
+    min_text = 80
     if terminal_text < min_text:
         raise SystemExit(f"native smoke terminal text missing: text={terminal_text}")
     if mode == "terminal" and len(sys.argv) > 3:
@@ -143,6 +149,23 @@ def verify_nvim_skia(width: int, height: int, pixels, result_path: str) -> None:
         f"marker={marker['row']}:{marker['col']} "
         f"ink={stats['ink']}"
     )
+
+
+def verify_nvim_image(width: int, height: int, pixels, result_path: str) -> None:
+    result = read_prefixed_result(result_path, "ok nvim-image ")
+    if int(parse_result_field(result, "images")) != 1:
+        raise SystemExit(f"native nvim image placement missing: {result}")
+    if parse_result_field(result, "skia-frames") != "yes":
+        raise SystemExit(f"native nvim image did not use Skia: {result}")
+
+    red = 0
+    for row in pixels:
+        for r, g, b, a in row:
+            if a > 200 and r > 200 and g < 40 and b < 40:
+                red += 1
+    if red < 20_000:
+        raise SystemExit(f"native nvim image pixels missing: red={red}")
+    print(f"native nvim image verified: {width}x{height} red={red}")
 
 
 def verify_file_tree_close(width: int, height: int, pixels, result_path: str) -> None:

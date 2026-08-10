@@ -49,6 +49,12 @@ legal_resources="$contents/Resources/Legal"
 mkdir -p "$legal_resources"
 
 sdk="$(env -u SDKROOT -u DEVELOPER_DIR /usr/bin/xcrun --sdk macosx --show-sdk-path)"
+satin_sdk_version="$(env -u SDKROOT -u DEVELOPER_DIR /usr/bin/xcrun --sdk macosx --show-sdk-version)"
+satin_sdk_major="${satin_sdk_version%%.*}"
+swift_feature_flags=()
+if [[ "$satin_sdk_major" =~ ^[0-9]+$ ]] && (( satin_sdk_major >= 26 )); then
+  swift_feature_flags=(-D SATIN_HAS_LIQUID_GLASS_SDK)
+fi
 portable_ldflags=("-L$sdk/usr/lib")
 read -r -a inherited_ldflags <<<"${NIX_LDFLAGS:-}"
 for flag in "${inherited_ldflags[@]}"; do
@@ -71,6 +77,7 @@ env -u SDKROOT -u DEVELOPER_DIR \
   -whole-module-optimization \
   -sdk "$sdk" \
   -target "$swift_target" \
+  "${swift_feature_flags[@]}" \
   spikes/macos-shell/ControlHost.swift \
   spikes/macos-shell/SettingsWindow.swift \
   spikes/macos-shell/SatinApplication.swift \
@@ -129,6 +136,11 @@ sed \
   -e "s/@VERSION@/$version/g" \
   -e "s/@BUILD_NUMBER@/$build_number/g" \
   -e "s/@MINIMUM_MACOS@/$minimum_macos/g" \
+  -e "s/@DISPLAY_NAME@/Satin/g" \
+  -e "s/@EXECUTABLE@/satin-app/g" \
+  -e "s/@BUNDLE_ID@/dev.soyukke.satin/g" \
+  -e "s/@DATA_DIRECTORY@/Satin/g" \
+  -e "s/@DEVELOPMENT_BUILD@/false/g" \
   "$plist_template" >"$contents/Info.plist"
 plutil -lint "$contents/Info.plist"
 test -s "$contents/Resources/AppIcon.icns"
