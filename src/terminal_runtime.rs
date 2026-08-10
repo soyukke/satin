@@ -37,6 +37,7 @@ use crate::neovide_render::{
     NeovideLine, NeovideRenderedWindowCache, NeovideRenderedWindowPlacement,
     NeovideRendererModelSnapshot, NeovideWindowDrawCommand, NeovideWindowKind,
 };
+use crate::tmux_control::{TmuxControl, TmuxControlEvent};
 use crate::wakeup::{WakeupReceiver, WakeupSender};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -45,6 +46,94 @@ pub struct TerminalGridSize {
     pub cols: u16,
     pub pixel_width: u16,
     pub pixel_height: u16,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum TmuxShellPromptState {
+    Unavailable = 0,
+    Waiting = 1,
+    Ready = 2,
+}
+
+const MAX_SEMANTIC_PROMPT_OSC_BYTES: usize = 64;
+
+#[derive(Debug, Default)]
+struct SemanticPromptTracker {
+    state: SemanticPromptParseState,
+    payload: Vec<u8>,
+    observed: bool,
+    ready_generation: u64,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum SemanticPromptParseState {
+    #[default]
+    Ground,
+    Escape,
+    Payload,
+    PayloadEscape,
+}
+
+impl SemanticPromptTracker {
+    fn feed(&mut self, bytes: &[u8]) {
+        for &byte in bytes {
+            self.feed_byte(byte);
+        }
+    }
+
+    fn feed_byte(&mut self, byte: u8) {
+        self.state = match self.state {
+            SemanticPromptParseState::Ground if byte == 0x1b => SemanticPromptParseState::Escape,
+            SemanticPromptParseState::Ground => SemanticPromptParseState::Ground,
+            SemanticPromptParseState::Escape if byte == b']' => {
+                self.payload.clear();
+                SemanticPromptParseState::Payload
+            }
+            SemanticPromptParseState::Escape if byte == 0x1b => SemanticPromptParseState::Escape,
+            SemanticPromptParseState::Escape => SemanticPromptParseState::Ground,
+            SemanticPromptParseState::Payload if byte == 0x07 => {
+                self.finish_payload();
+                SemanticPromptParseState::Ground
+            }
+            SemanticPromptParseState::Payload if byte == 0x1b => {
+                SemanticPromptParseState::PayloadEscape
+            }
+            SemanticPromptParseState::Payload => {
+                self.push_payload_byte(byte);
+                SemanticPromptParseState::Payload
+            }
+            SemanticPromptParseState::PayloadEscape if byte == b'\\' => {
+                self.finish_payload();
+                SemanticPromptParseState::Ground
+            }
+            SemanticPromptParseState::PayloadEscape if byte == 0x1b => {
+                self.push_payload_byte(0x1b);
+                SemanticPromptParseState::PayloadEscape
+            }
+            SemanticPromptParseState::PayloadEscape => {
+                self.push_payload_byte(0x1b);
+                self.push_payload_byte(byte);
+                SemanticPromptParseState::Payload
+            }
+        };
+    }
+
+    fn push_payload_byte(&mut self, byte: u8) {
+        if self.payload.len() < MAX_SEMANTIC_PROMPT_OSC_BYTES {
+            self.payload.push(byte);
+        }
+    }
+
+    fn finish_payload(&mut self) {
+        let Some(command) = self.payload.strip_prefix(b"133;") else {
+            return;
+        };
+        self.observed = true;
+        if command.first() == Some(&b'B') {
+            self.ready_generation = self.ready_generation.wrapping_add(1);
+        }
+    }
 }
 
 impl TerminalGridSize {
@@ -76,12 +165,13 @@ pub struct TerminalSpawnConfig {
 }
 
 pub struct NativeTerminalRuntime {
-    pty: RuntimePty,
+    pty: Option<RuntimePty>,
     pty_replies: Rc<RefCell<Vec<u8>>>,
     bell_count: Rc<Cell<u64>>,
     terminal: Terminal<'static, 'static>,
     scroll_sequence_tracker: TerminalScrollSequenceTracker,
     key_encoder: key::Encoder<'static>,
+    semantic_prompt_tracker: SemanticPromptTracker,
     mouse_encoder: mouse::Encoder<'static>,
     mouse_button_pressed: bool,
     option_as_alt: bool,
@@ -91,6 +181,7 @@ pub struct NativeTerminalRuntime {
     current_working_directory: Option<PathBuf>,
     last_search: Option<TerminalSearchState>,
     kitty_image_cache: RefCell<HashMap<u32, CachedKittyImage>>,
+    tmux_control: TmuxControl,
     exited: bool,
 }
 
@@ -111,6 +202,22 @@ impl NativeTerminalRuntime {
 
     pub fn spawn_with_config(size: TerminalGridSize, config: TerminalSpawnConfig) -> Result<Self> {
         let pty = RuntimePty::spawn(size, &config)?;
+        Self::new(
+            size,
+            Some(pty),
+            config.cwd.or_else(|| env::current_dir().ok()),
+        )
+    }
+
+    pub fn external(size: TerminalGridSize) -> Result<Self> {
+        Self::new(size, None, None)
+    }
+
+    fn new(
+        size: TerminalGridSize,
+        pty: Option<RuntimePty>,
+        current_working_directory: Option<PathBuf>,
+    ) -> Result<Self> {
         let pty_replies = Rc::new(RefCell::new(Vec::new()));
         let bell_count = Rc::new(Cell::new(0_u64));
         let mut terminal = Terminal::new(TerminalOptions {
@@ -138,15 +245,17 @@ impl NativeTerminalRuntime {
             terminal,
             scroll_sequence_tracker: TerminalScrollSequenceTracker::default(),
             key_encoder: key::Encoder::new()?,
+            semantic_prompt_tracker: SemanticPromptTracker::default(),
             mouse_encoder: mouse::Encoder::new()?,
             mouse_button_pressed: false,
             option_as_alt: true,
             renderer: TerminalFrameRenderer::new()?,
             renderer_model: TerminalRendererModel::new(size),
             size,
-            current_working_directory: config.cwd.or_else(|| env::current_dir().ok()),
+            current_working_directory,
             last_search: None,
             kitty_image_cache: RefCell::new(HashMap::new()),
+            tmux_control: TmuxControl::default(),
             exited: false,
         };
         runtime.resize_terminal_cells(size)?;
@@ -154,12 +263,21 @@ impl NativeTerminalRuntime {
     }
 
     pub fn write_all(&mut self, bytes: &[u8]) -> Result<()> {
-        self.pty.write_all(bytes)
+        self.pty_mut()?.write_all(bytes)
     }
 
     pub fn write_key(&mut self, input: NativeKeyInput<'_>) -> Result<bool> {
-        let Some(key) = macos_key(input.key_code) else {
+        let Some(encoded) = self.encode_key(input)? else {
             return Ok(false);
+        };
+        self.pty_mut()?.write_all(&encoded)?;
+        self.scroll_to_bottom_after_input();
+        Ok(true)
+    }
+
+    pub fn encode_key(&mut self, input: NativeKeyInput<'_>) -> Result<Option<Vec<u8>>> {
+        let Some(key) = macos_key(input.key_code) else {
+            return Ok(None);
         };
         self.key_encoder
             .set_options_from_terminal(&self.terminal)
@@ -192,20 +310,25 @@ impl NativeTerminalRuntime {
         let mut encoded = Vec::with_capacity(32);
         self.key_encoder.encode_to_vec(&event, &mut encoded)?;
         if encoded.is_empty() {
-            return Ok(false);
+            return Ok(None);
         }
-        self.pty.write_all(&encoded)?;
-        self.scroll_to_bottom_after_input();
-        Ok(true)
+        Ok(Some(encoded))
     }
 
     pub fn write_text(&mut self, text: &str) -> Result<()> {
-        self.pty.write_all(text.as_bytes())?;
+        self.pty_mut()?.write_all(text.as_bytes())?;
         self.scroll_to_bottom_after_input();
         Ok(())
     }
 
     pub fn write_paste(&mut self, text: &str) -> Result<()> {
+        let encoded = self.encode_paste(text)?;
+        self.pty_mut()?.write_all(&encoded)?;
+        self.scroll_to_bottom_after_input();
+        Ok(())
+    }
+
+    pub fn encode_paste(&mut self, text: &str) -> Result<Vec<u8>> {
         let mut data = text.as_bytes().to_vec();
         let bracketed = self.terminal.mode(Mode::BRACKETED_PASTE).unwrap_or(false);
         let mut encoded = vec![0; data.len().saturating_add(32)];
@@ -217,14 +340,21 @@ impl NativeTerminalRuntime {
             }
             Err(error) => return Err(error.into()),
         };
-        self.pty.write_all(&encoded[..written])?;
-        self.scroll_to_bottom_after_input();
-        Ok(())
+        encoded.truncate(written);
+        Ok(encoded)
     }
 
     pub fn write_mouse(&mut self, input: NativeMouseInput) -> Result<bool> {
-        if !self.terminal.is_mouse_tracking().unwrap_or(false) {
+        let Some(encoded) = self.encode_mouse(input)? else {
             return Ok(false);
+        };
+        self.pty_mut()?.write_all(&encoded)?;
+        Ok(true)
+    }
+
+    pub fn encode_mouse(&mut self, input: NativeMouseInput) -> Result<Option<Vec<u8>>> {
+        if !self.terminal.is_mouse_tracking().unwrap_or(false) {
+            return Ok(None);
         }
         self.mouse_encoder
             .set_options_from_terminal(&self.terminal)
@@ -251,22 +381,31 @@ impl NativeTerminalRuntime {
         let mut encoded = Vec::with_capacity(32);
         self.mouse_encoder.encode_to_vec(&event, &mut encoded)?;
         if encoded.is_empty() {
-            return Ok(false);
+            return Ok(None);
         }
         if input.button.is_some() {
             self.mouse_button_pressed = input.action != mouse::Action::Release;
         }
-        self.pty.write_all(&encoded)?;
-        Ok(true)
+        Ok(Some(encoded))
     }
 
     pub fn write_focus(&mut self, focused: bool) -> Result<bool> {
-        if !self.terminal.mode(Mode::FOCUS_EVENT)? {
+        let Some(encoded) = self.encode_focus(focused)? else {
             return Ok(false);
-        }
-        self.pty
-            .write_all(if focused { b"\x1b[I" } else { b"\x1b[O" })?;
+        };
+        self.pty_mut()?.write_all(&encoded)?;
         Ok(true)
+    }
+
+    pub fn encode_focus(&self, focused: bool) -> Result<Option<Vec<u8>>> {
+        if !self.terminal.mode(Mode::FOCUS_EVENT)? {
+            return Ok(None);
+        }
+        Ok(Some(if focused {
+            b"\x1b[I".to_vec()
+        } else {
+            b"\x1b[O".to_vec()
+        }))
     }
 
     pub fn select(
@@ -386,56 +525,7 @@ impl NativeTerminalRuntime {
     }
 
     pub fn kitty_placements(&self) -> Result<Vec<KittyImagePlacementSnapshot>> {
-        let graphics = self.terminal.kitty_graphics()?;
-        let mut iterator = PlacementIterator::new()?;
-        let mut placements = iterator.update(&graphics)?;
-        let mut output = Vec::new();
-        let mut visible_images = HashSet::new();
-        while let Some(placement) = placements.next() {
-            let image_id = placement.image_id()?;
-            visible_images.insert(image_id);
-            let Some(image) = graphics.image(image_id) else {
-                continue;
-            };
-            let info = placement.placement_render_info(&image, &self.terminal)?;
-            if !info.viewport_visible {
-                continue;
-            }
-            let image_number = image.number()?;
-            let rgba = self.cached_kitty_rgba(image_id, image_number, &image)?;
-            output.push(KittyImagePlacementSnapshot {
-                image_id,
-                image_number,
-                z: placement.z()?,
-                viewport_col: info.viewport_col,
-                viewport_row: info.viewport_row,
-                x_offset: placement.x_offset()?,
-                y_offset: placement.y_offset()?,
-                pixel_width: info.pixel_width,
-                pixel_height: info.pixel_height,
-                source_x: info.source_x,
-                source_y: info.source_y,
-                source_width: info.source_width,
-                source_height: info.source_height,
-                image_width: image.width()?,
-                image_height: image.height()?,
-                rgba,
-            });
-        }
-        self.kitty_image_cache
-            .borrow_mut()
-            .retain(|image_id, _| visible_images.contains(image_id));
-        output.sort_by_key(|placement| placement.z);
-        Ok(output)
-    }
-
-    fn cached_kitty_rgba(
-        &self,
-        image_id: u32,
-        image_number: u32,
-        image: &graphics::Image<'_>,
-    ) -> Result<Arc<[u8]>> {
-        cached_kitty_rgba(&self.kitty_image_cache, image_id, image_number, image)
+        kitty_placements(&self.terminal, &self.kitty_image_cache)
     }
 
     pub fn resize(&mut self, size: TerminalGridSize) -> Result<()> {
@@ -443,26 +533,29 @@ impl NativeTerminalRuntime {
             return Ok(());
         }
         self.resize_terminal_cells(size)?;
-        self.pty.resize(size)?;
+        if let Some(pty) = self.pty.as_ref() {
+            pty.resize(size)?;
+        }
         self.renderer_model.resize(size);
         self.size = size;
         Ok(())
     }
 
     pub fn drain(&mut self) -> Result<bool> {
-        self.pty.clear_wakeup();
+        let Some(pty) = self.pty.as_ref() else {
+            return Ok(false);
+        };
+        pty.clear_wakeup();
+        let bytes = pty.rx.try_iter().collect::<Vec<_>>();
         let mut changed = false;
-        while let Ok(bytes) = self.pty.rx.try_recv() {
-            let scroll_update = self.scroll_sequence_tracker.feed(&bytes);
-            self.terminal.vt_write(&bytes);
-            self.renderer_model.record_scroll_update(scroll_update);
-            self.update_working_directory_from_terminal();
-            changed = true;
-
-            if !self.pty_replies.borrow().is_empty() {
-                let replies = std::mem::take(&mut *self.pty_replies.borrow_mut());
-                self.pty.write_all(&replies)?;
+        for bytes in bytes {
+            let passthrough = self.tmux_control.feed(&bytes)?;
+            if !passthrough.is_empty() {
+                self.feed_terminal(&passthrough);
+                changed = true;
             }
+            self.flush_tmux_outgoing()?;
+            self.flush_terminal_replies()?;
         }
         let was_exited = self.exited;
         if self.refresh_exited() && !was_exited {
@@ -472,7 +565,97 @@ impl NativeTerminalRuntime {
     }
 
     pub fn wakeup_fd(&self) -> i32 {
-        self.pty.wakeup_fd()
+        self.pty.as_ref().map_or(-1, RuntimePty::wakeup_fd)
+    }
+
+    pub fn feed_external(&mut self, bytes: &[u8]) -> Result<Vec<u8>> {
+        if self.pty.is_some() {
+            bail!("cannot externally feed a PTY-backed terminal runtime");
+        }
+        self.feed_terminal(bytes);
+        Ok(std::mem::take(&mut *self.pty_replies.borrow_mut()))
+    }
+
+    pub fn feed_tmux_projection(&mut self, bytes: &[u8]) -> Result<()> {
+        if self.pty.is_some() {
+            bail!("cannot externally feed a PTY-backed terminal runtime");
+        }
+        self.feed_terminal(bytes);
+        self.semantic_prompt_tracker.feed(bytes);
+        // tmux is the terminal emulator for the pane PTY and already answers
+        // device reports from applications. Replies generated by Satin's
+        // display-only projection would be duplicates; a late duplicate can
+        // otherwise arrive at the shell after an alternate-screen app exits.
+        self.pty_replies.borrow_mut().clear();
+        Ok(())
+    }
+
+    pub fn tmux_shell_prompt_state(&self) -> Result<TmuxShellPromptState> {
+        if self.terminal.active_screen()? != Screen::Primary {
+            return Ok(TmuxShellPromptState::Unavailable);
+        }
+        let cursor_x = self.terminal.cursor_x()?;
+        if cursor_x > 0 {
+            Ok(TmuxShellPromptState::Ready)
+        } else {
+            Ok(TmuxShellPromptState::Waiting)
+        }
+    }
+
+    pub fn tmux_semantic_prompt_seen(&self) -> bool {
+        self.semantic_prompt_tracker.observed
+    }
+
+    pub fn tmux_prompt_generation(&self) -> u64 {
+        self.semantic_prompt_tracker.ready_generation
+    }
+
+    pub fn reset_tmux_prompt_tracking(&mut self) {
+        self.semantic_prompt_tracker = SemanticPromptTracker::default();
+    }
+
+    pub fn take_tmux_event(&mut self) -> Option<TmuxControlEvent> {
+        self.tmux_control.take_event()
+    }
+
+    pub fn tmux_command(&mut self, command: &str) -> Result<bool> {
+        if !self.tmux_control.command(command) {
+            return Ok(false);
+        }
+        self.flush_tmux_outgoing()?;
+        Ok(true)
+    }
+
+    pub fn tmux_send_bytes(&mut self, pane_id: u32, bytes: &[u8]) -> Result<bool> {
+        if bytes.is_empty() || !self.tmux_control.pane_accepts_input(pane_id) {
+            return Ok(false);
+        }
+        for chunk in bytes.chunks(256) {
+            let mut command = format!("send-keys -t %{pane_id} -H");
+            for byte in chunk {
+                use std::fmt::Write as _;
+                write!(command, " {byte:02x}")?;
+            }
+            if !self.tmux_control.command(command) {
+                return Ok(false);
+            }
+        }
+        self.flush_tmux_outgoing()?;
+        Ok(true)
+    }
+
+    pub fn tmux_paste(&mut self, pane_id: u32, bytes: &[u8]) -> Result<bool> {
+        if !self.tmux_control.paste(pane_id, bytes) {
+            return Ok(false);
+        }
+        self.flush_tmux_outgoing()?;
+        Ok(true)
+    }
+
+    pub fn finish_external_input(&mut self) {
+        if self.pty.is_none() {
+            self.scroll_to_bottom_after_input();
+        }
     }
 
     pub fn is_exited(&mut self) -> bool {
@@ -529,6 +712,10 @@ impl NativeTerminalRuntime {
         self.renderer_model.scroll_position()
     }
 
+    pub fn cursor_position(&self) -> Result<Option<(u16, u16)>> {
+        Ok(Some((self.terminal.cursor_x()?, self.terminal.cursor_y()?)))
+    }
+
     pub fn current_working_directory(&self) -> Option<PathBuf> {
         self.current_working_directory.clone()
     }
@@ -549,11 +736,36 @@ impl NativeTerminalRuntime {
         self.terminal.scroll_viewport(ScrollViewport::Bottom);
     }
 
-    fn resize_terminal_cells(&mut self, size: TerminalGridSize) -> Result<()> {
-        let (cell_width, cell_height) = size.cell_pixel_size();
-        self.terminal
-            .resize(size.cols, size.rows, cell_width.max(1), cell_height.max(1))?;
+    fn feed_terminal(&mut self, bytes: &[u8]) {
+        let scroll_update = self.scroll_sequence_tracker.feed(bytes);
+        self.terminal.vt_write(bytes);
+        self.renderer_model.record_scroll_update(scroll_update);
+        self.update_working_directory_from_terminal();
+    }
+
+    fn flush_tmux_outgoing(&mut self) -> Result<()> {
+        while let Some(command) = self.tmux_control.take_outgoing() {
+            self.pty_mut()?.write_all(&command)?;
+        }
         Ok(())
+    }
+
+    fn flush_terminal_replies(&mut self) -> Result<()> {
+        if self.pty_replies.borrow().is_empty() {
+            return Ok(());
+        }
+        let replies = std::mem::take(&mut *self.pty_replies.borrow_mut());
+        self.pty_mut()?.write_all(&replies)
+    }
+
+    fn pty_mut(&mut self) -> Result<&mut RuntimePty> {
+        self.pty
+            .as_mut()
+            .ok_or_else(|| anyhow::anyhow!("terminal runtime has no PTY"))
+    }
+
+    fn resize_terminal_cells(&mut self, size: TerminalGridSize) -> Result<()> {
+        resize_kitty_terminal(&mut self.terminal, size)
     }
 
     fn search_start_row(
@@ -651,14 +863,16 @@ impl NativeTerminalRuntime {
     }
 
     fn refresh_exited(&mut self) -> bool {
-        self.exited = self.exited || self.pty.poll_exited();
+        self.exited = self.exited || self.pty.as_mut().is_some_and(RuntimePty::poll_exited);
         self.exited
     }
 }
 
 impl Drop for NativeTerminalRuntime {
     fn drop(&mut self) {
-        let _ = self.pty.kill();
+        if let Some(pty) = self.pty.as_mut() {
+            let _ = pty.kill();
+        }
     }
 }
 
@@ -817,6 +1031,7 @@ fn configure_shell_command(cmd: &mut CommandBuilder, config: &TerminalSpawnConfi
     cmd.env("LC_CTYPE", &locale);
     cmd.env("TERM", "xterm-256color");
     cmd.env("COLORTERM", "truecolor");
+    cmd.env("SHELL", shell);
     cmd.env("SATIN_PROTO", "libghostty-vt");
     cmd.env("NVTERM_PROTO", "libghostty-vt");
     for (key, value) in &config.environment {
@@ -947,9 +1162,96 @@ pub struct KittyImagePlacementSnapshot {
     pub rgba: Arc<[u8]>,
 }
 
+pub struct KittyGraphicsBridge {
+    terminal: Terminal<'static, 'static>,
+    image_cache: RefCell<HashMap<u32, CachedKittyImage>>,
+    size: TerminalGridSize,
+}
+
+impl KittyGraphicsBridge {
+    pub fn new(size: TerminalGridSize) -> Result<Self> {
+        let mut terminal = Terminal::new(TerminalOptions {
+            cols: size.cols,
+            rows: size.rows,
+            max_scrollback: 0,
+        })?;
+        configure_kitty_graphics(&mut terminal)?;
+        resize_kitty_terminal(&mut terminal, size)?;
+        Ok(Self {
+            terminal,
+            image_cache: RefCell::new(HashMap::new()),
+            size,
+        })
+    }
+
+    pub fn feed(&mut self, bytes: &[u8]) {
+        self.terminal.vt_write(bytes);
+    }
+
+    pub fn resize(&mut self, size: TerminalGridSize) -> Result<()> {
+        if self.size == size {
+            return Ok(());
+        }
+        resize_kitty_terminal(&mut self.terminal, size)?;
+        self.size = size;
+        Ok(())
+    }
+
+    pub fn placements(&self) -> Result<Vec<KittyImagePlacementSnapshot>> {
+        kitty_placements(&self.terminal, &self.image_cache)
+    }
+}
+
 struct CachedKittyImage {
     image_number: u32,
     rgba: Arc<[u8]>,
+}
+
+fn kitty_placements(
+    terminal: &Terminal<'static, 'static>,
+    image_cache: &RefCell<HashMap<u32, CachedKittyImage>>,
+) -> Result<Vec<KittyImagePlacementSnapshot>> {
+    let graphics = terminal.kitty_graphics()?;
+    let mut iterator = PlacementIterator::new()?;
+    let mut placements = iterator.update(&graphics)?;
+    let mut output = Vec::new();
+    let mut visible_images = HashSet::new();
+    while let Some(placement) = placements.next() {
+        let image_id = placement.image_id()?;
+        visible_images.insert(image_id);
+        let Some(image) = graphics.image(image_id) else {
+            continue;
+        };
+        let info = placement.placement_render_info(&image, terminal)?;
+        if !info.viewport_visible {
+            continue;
+        }
+        let image_number = image.number()?;
+        let rgba = cached_kitty_rgba(image_cache, image_id, image_number, &image)?;
+        output.push(KittyImagePlacementSnapshot {
+            image_id,
+            image_number,
+            z: placement.z()?,
+            viewport_col: info.viewport_col,
+            viewport_row: info.viewport_row,
+            x_offset: placement.x_offset()?,
+            y_offset: placement.y_offset()?,
+            pixel_width: info.pixel_width,
+            pixel_height: info.pixel_height,
+            source_x: info.source_x,
+            source_y: info.source_y,
+            source_width: info.source_width,
+            source_height: info.source_height,
+            image_width: image.width()?,
+            image_height: image.height()?,
+            rgba,
+        });
+    }
+    image_cache
+        .borrow_mut()
+        .retain(|image_id, _| visible_images.contains(image_id));
+    output.sort_by_key(|placement| placement.z);
+    Ok(output)
 }
 
 fn cached_kitty_rgba(
@@ -988,6 +1290,15 @@ fn configure_kitty_graphics(terminal: &mut Terminal<'static, 'static>) -> Result
         .set_kitty_image_from_file_allowed(false)?
         .set_kitty_image_from_temp_file_allowed(true)?
         .set_kitty_image_from_shared_mem_allowed(true)?;
+    Ok(())
+}
+
+fn resize_kitty_terminal(
+    terminal: &mut Terminal<'static, 'static>,
+    size: TerminalGridSize,
+) -> Result<()> {
+    let (cell_width, cell_height) = size.cell_pixel_size();
+    terminal.resize(size.cols, size.rows, cell_width.max(1), cell_height.max(1))?;
     Ok(())
 }
 
@@ -1087,7 +1398,6 @@ const NATIVE_MOD_OPTION: u32 = 1 << 2;
 const NATIVE_MOD_COMMAND: u32 = 1 << 3;
 const NATIVE_MOD_CAPS_LOCK: u32 = 1 << 4;
 const NATIVE_MOD_NUM_LOCK: u32 = 1 << 5;
-
 fn native_key_mods(modifiers: u32) -> Mods {
     let mut mods = Mods::empty();
     for (mask, value) in [
@@ -2123,6 +2433,102 @@ mod tests {
     }
 
     #[test]
+    fn external_runtime_keeps_the_logical_cursor_for_native_input_when_hidden() {
+        let mut runtime = NativeTerminalRuntime::external(TerminalGridSize {
+            rows: 24,
+            cols: 80,
+            pixel_width: 800,
+            pixel_height: 480,
+        })
+        .unwrap();
+        runtime.feed_external(b"\x1b[3;7H").unwrap();
+        assert_eq!(runtime.cursor_position().unwrap(), Some((6, 2)));
+
+        runtime.feed_external(b"\x1b[?25l").unwrap();
+        assert_eq!(runtime.cursor_position().unwrap(), Some((6, 2)));
+    }
+
+    #[test]
+    fn tmux_projection_discards_duplicate_terminal_reports() {
+        let mut runtime = NativeTerminalRuntime::external(TerminalGridSize {
+            rows: 24,
+            cols: 80,
+            pixel_width: 800,
+            pixel_height: 480,
+        })
+        .unwrap();
+
+        runtime.feed_tmux_projection(b"\x1b[c").unwrap();
+
+        assert!(runtime.feed_external(b"").unwrap().is_empty());
+    }
+
+    #[test]
+    fn tmux_prompt_tracker_waits_for_a_completed_semantic_prompt_marker() {
+        let mut tracker = SemanticPromptTracker::default();
+        tracker.feed(b"\x1b]133;C\x1b\\");
+        assert!(tracker.observed);
+        assert_eq!(tracker.ready_generation, 0);
+
+        tracker.feed(b"\x1b]133;B");
+        assert_eq!(tracker.ready_generation, 0);
+        tracker.feed(b"\x1b\\");
+        assert_eq!(tracker.ready_generation, 1);
+
+        tracker.feed(b"\x1b]0;133;B\x07");
+        assert_eq!(tracker.ready_generation, 1);
+        tracker.feed(b"\x1b]133;B;fresh\x07");
+        assert_eq!(tracker.ready_generation, 2);
+    }
+
+    #[test]
+    fn tmux_prompt_state_uses_output_only_as_a_pre_integration_fallback() {
+        let mut runtime = NativeTerminalRuntime::external(TerminalGridSize {
+            rows: 24,
+            cols: 80,
+            pixel_width: 800,
+            pixel_height: 480,
+        })
+        .unwrap();
+
+        assert_eq!(
+            runtime.tmux_shell_prompt_state().unwrap(),
+            TmuxShellPromptState::Waiting
+        );
+        runtime.feed_tmux_projection(b"prompt> ").unwrap();
+        assert_eq!(
+            runtime.tmux_shell_prompt_state().unwrap(),
+            TmuxShellPromptState::Ready
+        );
+        runtime
+            .feed_tmux_projection(b"\r\n\x1b]133;C\x1b\\")
+            .unwrap();
+        assert!(runtime.tmux_semantic_prompt_seen());
+        assert_eq!(runtime.tmux_prompt_generation(), 0);
+        assert_eq!(
+            runtime.tmux_shell_prompt_state().unwrap(),
+            TmuxShellPromptState::Waiting
+        );
+        runtime
+            .feed_tmux_projection(b"\x1b]133;A\x1b\\next> \x1b]133;B\x1b\\")
+            .unwrap();
+        assert_eq!(runtime.tmux_prompt_generation(), 1);
+        assert_eq!(
+            runtime.tmux_shell_prompt_state().unwrap(),
+            TmuxShellPromptState::Ready
+        );
+        runtime.reset_tmux_prompt_tracking();
+        assert!(!runtime.tmux_semantic_prompt_seen());
+        assert_eq!(runtime.tmux_prompt_generation(), 0);
+
+        runtime.feed_tmux_projection(b"\x1b[?1049h").unwrap();
+        assert_eq!(
+            runtime.tmux_shell_prompt_state().unwrap(),
+            TmuxShellPromptState::Unavailable
+        );
+    }
+
+    #[test]
     fn renderer_preserves_extended_terminal_styles() {
         let mut terminal = Terminal::new(TerminalOptions {
             cols: 4,
@@ -2275,6 +2681,28 @@ mod tests {
             .len(),
             4
         );
+    }
+
+    #[test]
+    fn native_nvim_kitty_bridge_tracks_rpc_graphics_without_a_pty() {
+        let size = grid_size(8, 4);
+        let mut bridge = KittyGraphicsBridge::new(size).unwrap();
+        let encoded = base64_encode(&one_pixel_png());
+        bridge.feed(b"\x1b[2;3H");
+        bridge
+            .feed(format!("\x1b_Ga=T,f=100,t=d,i=81,z=0,w=12,h=14,q=2;{encoded}\x1b\\").as_bytes());
+
+        let placements = bridge.placements().unwrap();
+        assert_eq!(placements.len(), 1);
+        assert_eq!(placements[0].image_id, 81);
+        assert_eq!(placements[0].viewport_col, 2);
+        assert_eq!(placements[0].viewport_row, 1);
+        assert_eq!(placements[0].rgba.as_ref(), &[255, 0, 0, 255]);
+
+        bridge.resize(grid_size(12, 6)).unwrap();
+        assert_eq!(bridge.placements().unwrap().len(), 1);
+        bridge.feed(b"\x1b_Ga=d,d=I,i=81,q=2\x1b\\");
+        assert!(bridge.placements().unwrap().is_empty());
     }
 
     #[test]
@@ -2459,6 +2887,21 @@ mod tests {
     }
 
     #[test]
+    fn shell_environment_matches_the_selected_shell_without_assuming_zsh() {
+        let config = TerminalSpawnConfig::default();
+        for shell in ["/bin/sh", "/usr/local/bin/fish"] {
+            let mut command = CommandBuilder::new(shell);
+            configure_shell_command(&mut command, &config, shell);
+
+            assert_eq!(command.get_env("SHELL"), Some(std::ffi::OsStr::new(shell)));
+            assert_eq!(
+                command.get_env("SATIN_SHELL_EXECUTABLE"),
+                Some(std::ffi::OsStr::new(shell))
+            );
+        }
+    }
+
+    #[test]
     fn startup_command_is_argv_quoted_and_exits_the_shell() {
         let input = startup_command_input(&[
             "nvim".to_owned(),
@@ -2546,6 +2989,32 @@ mod tests {
         assert!(model.has_active_animation());
         assert!(!model.advance_animations(0.3));
         assert!(!model.has_active_animation());
+    }
+
+    #[test]
+    fn terminal_renderer_model_keeps_resize_scroll_transition_gap_free() {
+        let mut model = TerminalRendererModel::new(grid_size(3, 3));
+        model.snapshot(&primary_frame_with_scrollbar(
+            vec![row("111"), row("222"), row("333")],
+            0,
+            3,
+        ));
+        model.snapshot(&primary_frame_with_scrollbar(
+            vec![row("222"), row("333"), row("444")],
+            1,
+            4,
+        ));
+
+        let snapshot = model.snapshot(&primary_frame_with_scrollbar(
+            vec![row("3333"), row("4444"), row("5555")],
+            2,
+            5,
+        ));
+        let window = &snapshot.windows[0];
+
+        assert_eq!(window.scroll_position, -1.0);
+        assert!(window.scrollback_line(-1).is_some());
+        assert!(window.scrollback_line(0).is_some());
     }
 
     #[test]

@@ -129,6 +129,11 @@ sed \
   -e "s/@VERSION@/$version/g" \
   -e "s/@BUILD_NUMBER@/$build_number/g" \
   -e "s/@MINIMUM_MACOS@/$minimum_macos/g" \
+  -e "s/@DISPLAY_NAME@/Satin/g" \
+  -e "s/@EXECUTABLE@/satin-app/g" \
+  -e "s/@BUNDLE_ID@/dev.soyukke.satin/g" \
+  -e "s/@DATA_DIRECTORY@/Satin/g" \
+  -e "s/@DEVELOPMENT_BUILD@/false/g" \
   "$plist_template" >"$contents/Info.plist"
 plutil -lint "$contents/Info.plist"
 test -s "$contents/Resources/AppIcon.icns"

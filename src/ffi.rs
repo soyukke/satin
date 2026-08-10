@@ -4,7 +4,7 @@ use std::{path::PathBuf, ptr};
 use serde::{Deserialize, Serialize};
 
 use crate::control::{ControlResponse, ControlServer};
-use crate::core::{SplitAxis, TerminalCore};
+use crate::core::{SplitAxis, TerminalCore, TerminalWorkspaceInput};
 use crate::neovim_runtime::{NativeNeovimRuntime, NeovimLaunchOptions};
 use crate::skia_metal::{NativeSkiaMetalRenderer, SkiaRenderGeometry};
 use crate::terminal_runtime::{
@@ -140,6 +140,23 @@ pub extern "C" fn satin_core_snapshot_json(handle: *const TerminalCore) -> *mut 
         return ptr::null_mut();
     };
     json_ptr(&core.snapshot())
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn satin_core_apply_workspace_json(
+    handle: *mut TerminalCore,
+    workspace: *const c_char,
+) -> u8 {
+    let Some(core) = core_mut(handle) else {
+        return 0;
+    };
+    let Some(workspace) = c_string(workspace) else {
+        return 0;
+    };
+    let Ok(workspace) = serde_json::from_str::<TerminalWorkspaceInput>(&workspace) else {
+        return 0;
+    };
+    core.apply_workspace(workspace).is_ok() as u8
 }
 
 #[unsafe(no_mangle)]
@@ -282,6 +299,28 @@ pub extern "C" fn satin_runtime_create_config(
         Ok(runtime) => Box::into_raw(Box::new(runtime)),
         Err(error) => {
             log::error!(target: "terminal", "spawn_config_failed error={error:#}");
+            ptr::null_mut()
+        }
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn satin_runtime_create_external(
+    rows: u16,
+    cols: u16,
+    pixel_width: u16,
+    pixel_height: u16,
+) -> *mut NativeTerminalRuntime {
+    let size = TerminalGridSize {
+        rows,
+        cols,
+        pixel_width,
+        pixel_height,
+    };
+    match NativeTerminalRuntime::external(size) {
+        Ok(runtime) => Box::into_raw(Box::new(runtime)),
+        Err(error) => {
+            log::error!(target: "tmux", "external_runtime_create_failed error={error:#}");
             ptr::null_mut()
         }
     }
@@ -566,6 +605,231 @@ pub extern "C" fn satin_runtime_drain(handle: *mut NativeTerminalRuntime) -> u8 
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn satin_runtime_take_tmux_event_json(
+    handle: *mut NativeTerminalRuntime,
+) -> *mut c_char {
+    runtime_mut(handle)
+        .and_then(NativeTerminalRuntime::take_tmux_event)
+        .map_or(ptr::null_mut(), |event| json_ptr(&event))
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn satin_runtime_tmux_command(
+    handle: *mut NativeTerminalRuntime,
+    command: *const c_char,
+) -> u8 {
+    let Some(runtime) = runtime_mut(handle) else {
+        return 0;
+    };
+    let Some(command) = c_string(command) else {
+        return 0;
+    };
+    runtime.tmux_command(&command).unwrap_or(false) as u8
+}
+
+#[unsafe(no_mangle)]
+/// # Safety
+///
+/// `bytes` must point to `len` readable bytes and `pane` must be a live
+/// external runtime handle.
+pub unsafe extern "C" fn satin_runtime_tmux_feed_pane(
+    pane: *mut NativeTerminalRuntime,
+    bytes: *const u8,
+    len: usize,
+) -> u8 {
+    let Some(pane) = runtime_mut(pane) else {
+        return 0;
+    };
+    if bytes.is_null() {
+        return 0;
+    }
+    // SAFETY: The caller promises that `bytes` points to `len` readable bytes.
+    let bytes = unsafe { std::slice::from_raw_parts(bytes, len) };
+    if pane.feed_tmux_projection(bytes).is_err() {
+        return 0;
+    }
+    1
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn satin_runtime_tmux_shell_prompt_state(pane: *mut NativeTerminalRuntime) -> u8 {
+    runtime_ref(pane)
+        .and_then(|pane| pane.tmux_shell_prompt_state().ok())
+        .map_or(0, |state| state as u8)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn satin_runtime_tmux_semantic_prompt_seen(pane: *mut NativeTerminalRuntime) -> u8 {
+    runtime_ref(pane).is_some_and(NativeTerminalRuntime::tmux_semantic_prompt_seen) as u8
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn satin_runtime_tmux_prompt_generation(pane: *mut NativeTerminalRuntime) -> u64 {
+    runtime_ref(pane).map_or(0, NativeTerminalRuntime::tmux_prompt_generation)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn satin_runtime_tmux_reset_prompt_tracking(pane: *mut NativeTerminalRuntime) -> u8 {
+    let Some(pane) = runtime_mut(pane) else {
+        return 0;
+    };
+    pane.reset_tmux_prompt_tracking();
+    1
+}
+
+#[unsafe(no_mangle)]
+/// # Safety
+///
+/// Non-null text pointers must point to their specified number of readable
+/// bytes. `gateway` and `pane` must be distinct live runtime handles.
+pub unsafe extern "C" fn satin_runtime_tmux_key(
+    gateway: *mut NativeTerminalRuntime,
+    pane: *mut NativeTerminalRuntime,
+    pane_id: u32,
+    key_code: u16,
+    modifiers: u32,
+    text: *const u8,
+    text_len: usize,
+    unshifted: *const u8,
+    unshifted_len: usize,
+    repeat: u8,
+    released: u8,
+) -> u8 {
+    let Some((gateway, pane)) = distinct_runtimes(gateway, pane) else {
+        return 0;
+    };
+    // SAFETY: The caller promises readable buffers for non-null pointers.
+    let text = unsafe { optional_utf8(text, text_len) };
+    // SAFETY: The caller promises readable buffers for non-null pointers.
+    let Some(unshifted) = (unsafe { optional_utf8(unshifted, unshifted_len) }) else {
+        return 0;
+    };
+    let input = NativeKeyInput {
+        key_code,
+        modifiers,
+        text,
+        unshifted,
+        repeat: repeat != 0,
+        released: released != 0,
+    };
+    let Ok(Some(encoded)) = pane.encode_key(input) else {
+        return 0;
+    };
+    let sent = gateway.tmux_send_bytes(pane_id, &encoded).unwrap_or(false);
+    if sent {
+        pane.finish_external_input();
+    }
+    sent as u8
+}
+
+#[unsafe(no_mangle)]
+/// # Safety
+///
+/// `bytes` must point to `len` readable bytes. `gateway` and `pane` must be
+/// distinct live runtime handles.
+pub unsafe extern "C" fn satin_runtime_tmux_write(
+    gateway: *mut NativeTerminalRuntime,
+    pane: *mut NativeTerminalRuntime,
+    pane_id: u32,
+    bytes: *const u8,
+    len: usize,
+) -> u8 {
+    let Some((gateway, pane)) = distinct_runtimes(gateway, pane) else {
+        return 0;
+    };
+    if bytes.is_null() {
+        return 0;
+    }
+    // SAFETY: The caller promises that `bytes` points to `len` readable bytes.
+    let bytes = unsafe { std::slice::from_raw_parts(bytes, len) };
+    let sent = gateway.tmux_send_bytes(pane_id, bytes).unwrap_or(false);
+    if sent {
+        pane.finish_external_input();
+    }
+    sent as u8
+}
+
+#[unsafe(no_mangle)]
+/// # Safety
+///
+/// `bytes` must point to `len` readable UTF-8 bytes. `gateway` and `pane` must
+/// be distinct live runtime handles.
+pub unsafe extern "C" fn satin_runtime_tmux_paste(
+    gateway: *mut NativeTerminalRuntime,
+    pane: *mut NativeTerminalRuntime,
+    pane_id: u32,
+    bytes: *const u8,
+    len: usize,
+) -> u8 {
+    let Some((gateway, pane)) = distinct_runtimes(gateway, pane) else {
+        return 0;
+    };
+    // SAFETY: The caller promises a readable buffer.
+    let Some(text) = (unsafe { optional_utf8(bytes, len) }) else {
+        return 0;
+    };
+    let sent = gateway
+        .tmux_paste(pane_id, text.as_bytes())
+        .unwrap_or(false);
+    if sent {
+        pane.finish_external_input();
+    }
+    sent as u8
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn satin_runtime_tmux_mouse(
+    gateway: *mut NativeTerminalRuntime,
+    pane: *mut NativeTerminalRuntime,
+    pane_id: u32,
+    action: u32,
+    button: i32,
+    modifiers: u32,
+    x: f32,
+    y: f32,
+    cell_width: u32,
+    cell_height: u32,
+) -> u8 {
+    let Some((gateway, pane)) = distinct_runtimes(gateway, pane) else {
+        return 0;
+    };
+    let Some(action) = mouse_action(action) else {
+        return 0;
+    };
+    let Some(button) = mouse_button(button) else {
+        return 0;
+    };
+    let Ok(Some(encoded)) = pane.encode_mouse(NativeMouseInput {
+        action,
+        button,
+        modifiers,
+        x,
+        y,
+        cell_width,
+        cell_height,
+    }) else {
+        return 0;
+    };
+    gateway.tmux_send_bytes(pane_id, &encoded).unwrap_or(false) as u8
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn satin_runtime_tmux_focus(
+    gateway: *mut NativeTerminalRuntime,
+    pane: *mut NativeTerminalRuntime,
+    pane_id: u32,
+    focused: u8,
+) -> u8 {
+    let Some((gateway, pane)) = distinct_runtimes(gateway, pane) else {
+        return 0;
+    };
+    let Ok(Some(encoded)) = pane.encode_focus(focused != 0) else {
+        return 0;
+    };
+    gateway.tmux_send_bytes(pane_id, &encoded).unwrap_or(false) as u8
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn satin_runtime_exited(handle: *mut NativeTerminalRuntime) -> u8 {
     let Some(runtime) = runtime_mut(handle) else {
         return 1;
@@ -594,6 +858,13 @@ pub extern "C" fn satin_runtime_renderer_scroll_position(
     handle: *const NativeTerminalRuntime,
 ) -> f32 {
     runtime_ref(handle).map_or(0.0, NativeTerminalRuntime::renderer_scroll_position)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn satin_runtime_cursor_position(handle: *const NativeTerminalRuntime) -> u32 {
+    runtime_ref(handle)
+        .and_then(|runtime| runtime.cursor_position().ok().flatten())
+        .map_or(u32::MAX, |(x, y)| u32::from(x) | (u32::from(y) << 16))
 }
 
 #[unsafe(no_mangle)]
@@ -859,6 +1130,13 @@ pub extern "C" fn satin_nvim_wakeup_fd(handle: *const NativeNeovimRuntime) -> i3
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn satin_nvim_kitty_placement_count(handle: *const NativeNeovimRuntime) -> usize {
+    nvim_ref(handle)
+        .and_then(|runtime| runtime.kitty_placements().ok())
+        .map_or(0, |placements| placements.len())
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn satin_nvim_renderer_model_json(handle: *mut NativeNeovimRuntime) -> *mut c_char {
     let Some(runtime) = nvim_mut(handle) else {
         return ptr::null_mut();
@@ -1081,6 +1359,18 @@ fn runtime_mut<'a>(handle: *mut NativeTerminalRuntime) -> Option<&'a mut NativeT
 
     // SAFETY: Callers pass an exclusive opaque pointer created by `satin_runtime_create`.
     unsafe { handle.as_mut() }
+}
+
+fn distinct_runtimes<'a>(
+    gateway: *mut NativeTerminalRuntime,
+    pane: *mut NativeTerminalRuntime,
+) -> Option<(&'a mut NativeTerminalRuntime, &'a mut NativeTerminalRuntime)> {
+    if gateway.is_null() || pane.is_null() || gateway == pane {
+        return None;
+    }
+    // SAFETY: FFI callers guarantee both pointers are live, distinct runtime
+    // handles and provide exclusive access for the duration of the call.
+    Some(unsafe { (&mut *gateway, &mut *pane) })
 }
 
 fn runtime_ref<'a>(handle: *const NativeTerminalRuntime) -> Option<&'a NativeTerminalRuntime> {

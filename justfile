@@ -26,13 +26,34 @@ adr-new title:
     sed -e "s/NNNN/${next}/" -e "s/Title/${escaped_title}/" -e "s/YYYY-MM-DD/$(date +%F)/" docs/adr/template.md > "$path"; \
     echo "$path"
 
-# Launch the native macOS terminal host.
+# Build and launch Satin detached without adding build/runtime output to this terminal.
 terminal:
-    @if [[ -z "${IN_NIX_SHELL:-}" ]]; then exec nix develop --command just terminal; else just native-build && exec spikes/macos-shell/.build/SatinApplication; fi
+    @log="${TMPDIR:-/tmp}/satin-terminal.log"; \
+    if [[ -z "${IN_NIX_SHELL:-}" ]]; then \
+        if ! SATIN_LAUNCH_LOG="$log" nix develop --command just _terminal-detached >"$log" 2>&1; then cat "$log"; exit 1; fi; \
+    else \
+        if ! SATIN_LAUNCH_LOG="$log" just _terminal-detached >"$log" 2>&1; then cat "$log"; exit 1; fi; \
+    fi
+
+# Launch Satin in the foreground with build and runtime logs attached.
+terminal-foreground:
+    @if [[ -z "${IN_NIX_SHELL:-}" ]]; then exec nix develop --command just terminal-foreground; else just native-dev-app && exec "spikes/macos-shell/.build/dev/Satin Dev.app/Contents/MacOS/satin-dev-app"; fi
+
+[private]
+_terminal-detached:
+    @just native-dev-app
+    @log="${SATIN_LAUNCH_LOG:-${TMPDIR:-/tmp}/satin-terminal.log}"; \
+    app="$(pwd)/spikes/macos-shell/.build/dev/Satin Dev.app"; \
+    environment=(PATH SATIN_FONT SATIN_LOG SATIN_NATIVE_PANE SATIN_UPDATE_SELF_TEST \
+        SATIN_NATIVE_SMOKE_SCENARIO SATIN_NATIVE_SMOKE_RESULT SATIN_NATIVE_SMOKE_SHOT \
+        SATIN_NATIVE_SMOKE_WINDOW_ID SATIN_NATIVE_SMOKE_KEEP_OPEN); \
+    open_args=(); \
+    for name in "${environment[@]}"; do if [[ -v "$name" ]]; then open_args+=(--env "$name=${!name}"); fi; done; \
+    open -i /dev/null --stdout "$log" --stderr "$log" "${open_args[@]}" "$app"
 
 # Launch the native Neovim UI pane.
 neovim:
-    @if [[ -z "${IN_NIX_SHELL:-}" ]]; then exec nix develop --command just neovim; else just native-build && SATIN_NATIVE_PANE=nvim exec spikes/macos-shell/.build/SatinApplication; fi
+    @if [[ -z "${IN_NIX_SHELL:-}" ]]; then exec nix develop --command just neovim; else just native-dev-app && SATIN_NATIVE_PANE=nvim exec "spikes/macos-shell/.build/dev/Satin Dev.app/Contents/MacOS/satin-dev-app"; fi
 
 alias run := terminal
 alias launch := terminal
@@ -40,6 +61,14 @@ alias launch := terminal
 # Build the native macOS terminal host.
 native-build:
     @./scripts/native-build
+
+# Build the isolated local development application bundle.
+native-dev-app:
+    @./scripts/native-dev-app
+
+# Build and smoke the isolated Satin Dev application bundle.
+native-dev-smoke:
+    @if [[ -z "${IN_NIX_SHELL:-}" ]]; then exec nix develop --command just native-dev-smoke; else just native-dev-app && SATIN_NATIVE_EXECUTABLE="spikes/macos-shell/.build/dev/Satin Dev.app/Contents/MacOS/satin-dev-app" ./scripts/native-smoke; fi
 
 # Build and verify an optimized, hardened-runtime macOS application bundle.
 native-package:
@@ -109,6 +138,10 @@ terminal-exit-closes-tab-smoke:
 native-session-smoke:
     @if [[ -z "${IN_NIX_SHELL:-}" ]]; then exec nix develop --command just native-session-smoke; else just native-build && ./scripts/native-session-smoke; fi
 
+# Verify tmux projection, history/modes/paste/zoom/CLI, reattach, detach, and recovery.
+native-tmux-smoke:
+    @if [[ -z "${IN_NIX_SHELL:-}" ]]; then exec nix develop --command just native-tmux-smoke; else just native-build && ./scripts/native-tmux-smoke; fi
+
 # Verify tab-bar buttons create a tab and both split axes through their click actions.
 native-tab-bar-actions-smoke:
     @if [[ -z "${IN_NIX_SHELL:-}" ]]; then exec nix develop --command just native-tab-bar-actions-smoke; else just native-build && ./scripts/native-tab-bar-actions-smoke; fi
@@ -140,6 +173,10 @@ terminal-nvim-quit-smoke:
 # Capture the native Neovim Skia/Metal pane and verify it is nonblank.
 nvim-skia-smoke:
     @if [[ -z "${IN_NIX_SHELL:-}" ]]; then exec nix develop --command just nvim-skia-smoke; else just native-build && ./scripts/native-nvim-smoke; fi
+
+# Verify image.nvim-compatible Kitty graphics over native Neovim RPC and Skia/Metal.
+nvim-image-smoke:
+    @if [[ -z "${IN_NIX_SHELL:-}" ]]; then exec nix develop --command just nvim-image-smoke; else just native-build && ./scripts/native-nvim-smoke nvim-image native-nvim-image-smoke nvim-image; fi
 
 # Run all deterministic native Neovim animation smoke scenarios.
 nvim-smoke-all:

@@ -100,6 +100,22 @@ mod platform {
                 return false;
             };
             let runtime_id = runtime as *const NativeNeovimRuntime as usize;
+            let placements = match runtime.kitty_placements() {
+                Ok(placements) => {
+                    self.reported_kitty_failures.remove(&runtime_id);
+                    placements
+                }
+                Err(error) => {
+                    if self.reported_kitty_failures.insert(runtime_id) {
+                        log::warn!(
+                            target: "renderer",
+                            "nvim_kitty_snapshot_failed runtime={runtime_id} error={error:#}"
+                        );
+                    }
+                    Vec::new()
+                }
+            };
+            retain_visible_kitty_images(&mut self.kitty_images, runtime_id, &placements);
             let state = self.runtime_states.entry(runtime_id).or_default();
             let dt = state.animation_dt();
             state.scroll_animation_active =
@@ -117,7 +133,7 @@ mod platform {
                 geometry,
                 ModelRenderOptions {
                     clear,
-                    kitty_placements: &[],
+                    kitty_placements: &placements,
                     kitty_images: &mut self.kitty_images,
                     runtime_id,
                 },
@@ -157,13 +173,7 @@ mod platform {
                     Vec::new()
                 }
             };
-            let visible_image_ids = placements
-                .iter()
-                .map(|placement| placement.image_id)
-                .collect::<std::collections::HashSet<_>>();
-            self.kitty_images.retain(|(owner, image_id), _| {
-                *owner != runtime_id || visible_image_ids.contains(image_id)
-            });
+            retain_visible_kitty_images(&mut self.kitty_images, runtime_id, &placements);
             let state = self.runtime_states.entry(runtime_id).or_default();
             let dt = state.animation_dt();
             state.scroll_animation_active =
@@ -407,6 +417,20 @@ mod platform {
                 &paint,
             );
         }
+    }
+
+    fn retain_visible_kitty_images(
+        image_cache: &mut HashMap<(usize, u32), CachedKittyImage>,
+        runtime_id: usize,
+        placements: &[KittyImagePlacementSnapshot],
+    ) {
+        let visible_image_ids = placements
+            .iter()
+            .map(|placement| placement.image_id)
+            .collect::<HashSet<_>>();
+        image_cache.retain(|(owner, image_id), _| {
+            *owner != runtime_id || visible_image_ids.contains(image_id)
+        });
     }
 
     fn animated_kitty_row(model: &NeovideRendererModelSnapshot, viewport_row: i32) -> f32 {

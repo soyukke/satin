@@ -210,10 +210,14 @@ impl NeovideRenderedWindowCache {
     fn resize(&mut self, width: usize, height: usize) {
         let width = width.max(1);
         let height = height.max(1);
+        if self.width == width && self.height == height {
+            return;
+        }
         self.width = width;
         self.height = height;
         self.lines.resize(self.height, None);
         self.scroll_delta = 0;
+        self.scroll_animation.reset();
         self.scrollback_lines
             .resize(scrollback_len(self.height), None);
         self.scrollback_lines
@@ -707,6 +711,30 @@ mod tests {
             snapshot.scrollback_line(0).map(|line| line.text.as_str()),
             Some("aaa")
         );
+    }
+
+    #[test]
+    fn resized_window_drops_incompatible_scroll_animation() {
+        let mut window = NeovideRenderedWindowCache::new(3, 3);
+        set_window_rows(&mut window, ["aaa", "bbb", "ccc"]);
+        window.flush(1);
+        window.apply(&NeovideWindowDrawCommand::Viewport { scroll_delta: 1 });
+        window.flush(1);
+        assert!(window.has_active_animation());
+
+        window.apply(&NeovideWindowDrawCommand::Position {
+            top: 0,
+            left: 0,
+            width: 4,
+            height: 3,
+            window_kind: NeovideWindowKind::Normal,
+            zindex: 0,
+            compindex: 0,
+        });
+
+        let snapshot = window.snapshot(1, NeovideRenderedWindowPlacement::main(4, 3));
+        assert_eq!(snapshot.scroll_position, 0.0);
+        assert!(!window.has_active_animation());
     }
 
     #[test]

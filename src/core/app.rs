@@ -1,6 +1,9 @@
-use serde::Serialize;
+use std::collections::HashSet;
 
-use super::layout::{PaneId, PaneLayout, PaneLayoutSnapshot, SplitAxis};
+use anyhow::{Result, bail};
+use serde::{Deserialize, Serialize};
+
+use super::layout::{PaneId, PaneLayout, PaneLayoutInput, PaneLayoutSnapshot, SplitAxis};
 
 const DEFAULT_THEME_NAME: &str = "Graphite";
 
@@ -153,6 +156,57 @@ impl TerminalCore {
         }
     }
 
+    pub fn apply_workspace(&mut self, workspace: TerminalWorkspaceInput) -> Result<()> {
+        if workspace.tabs.is_empty() || workspace.active_tab >= workspace.tabs.len() {
+            bail!("workspace must contain an active tab");
+        }
+        let mut tab_ids = HashSet::new();
+        let mut pane_ids = HashSet::new();
+        let mut tabs = Vec::with_capacity(workspace.tabs.len());
+        for tab in workspace.tabs {
+            if !tab_ids.insert(tab.id) {
+                bail!("workspace contains duplicate tab id {}", tab.id);
+            }
+            let layout = PaneLayout::from_input(tab.layout)?;
+            let mut layout_panes = Vec::new();
+            layout.leaves(&mut layout_panes);
+            if layout_panes.is_empty() || !layout_panes.contains(&PaneId(tab.active_pane)) {
+                bail!("workspace tab {} has no valid active pane", tab.id);
+            }
+            let mut unique_layout_panes = HashSet::new();
+            for pane_id in &layout_panes {
+                if !unique_layout_panes.insert(*pane_id) || !pane_ids.insert(*pane_id) {
+                    bail!("workspace contains duplicate pane id {}", pane_id.0);
+                }
+            }
+            let declared = tab.panes.into_iter().map(PaneId).collect::<HashSet<_>>();
+            if declared != unique_layout_panes {
+                bail!(
+                    "workspace tab {} pane list does not match its layout",
+                    tab.id
+                );
+            }
+            tabs.push(TerminalCoreTab {
+                id: tab.id,
+                title: tab.title,
+                active_pane: PaneId(tab.active_pane),
+                theme: normalized_theme(tab.theme),
+                panes: layout_panes,
+                layout,
+            });
+        }
+        self.active_tab = workspace.active_tab;
+        self.next_tab_id = tab_ids.iter().max().copied().unwrap_or(0).saturating_add(1);
+        self.next_pane_id = pane_ids
+            .iter()
+            .map(|pane| pane.0)
+            .max()
+            .unwrap_or(0)
+            .saturating_add(1);
+        self.tabs = tabs;
+        Ok(())
+    }
+
     fn active_tab_mut(&mut self) -> Option<&mut TerminalCoreTab> {
         self.tabs.get_mut(self.active_tab)
     }
@@ -256,6 +310,22 @@ pub struct TerminalCoreTabSnapshot {
     pub layout: PaneLayoutSnapshot,
 }
 
+#[derive(Clone, Debug, Deserialize)]
+pub struct TerminalWorkspaceInput {
+    pub active_tab: usize,
+    pub tabs: Vec<TerminalWorkspaceTabInput>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct TerminalWorkspaceTabInput {
+    pub id: usize,
+    pub title: String,
+    pub active_pane: usize,
+    pub theme: String,
+    pub panes: Vec<usize>,
+    pub layout: PaneLayoutInput,
+}
+
 fn normalized_theme(theme: String) -> String {
     let theme = theme.trim();
     if theme.is_empty() {
@@ -316,6 +386,7 @@ mod tests {
             serde_json::json!({
                 "kind": "split",
                 "axis": "vertical",
+                "ratio": 0.5,
                 "first": {"kind": "leaf", "pane_id": 1},
                 "second": {"kind": "leaf", "pane_id": 2}
             })
@@ -380,5 +451,47 @@ mod tests {
         assert!(!core.move_tab(99, 0));
         assert!(!core.move_tab(1, 2));
         assert_eq!(core.snapshot(), before);
+    }
+
+    #[test]
+    fn applies_validated_external_workspace_with_retained_ratio() {
+        let mut core = TerminalCore::new();
+        core.apply_workspace(TerminalWorkspaceInput {
+            active_tab: 0,
+            tabs: vec![TerminalWorkspaceTabInput {
+                id: 90,
+                title: "tmux".to_owned(),
+                active_pane: 902,
+                theme: "Harbor".to_owned(),
+                panes: vec![901, 902],
+                layout: PaneLayoutInput {
+                    kind: "split".to_owned(),
+                    pane_id: None,
+                    axis: Some(SplitAxis::Vertical),
+                    ratio: Some(0.4),
+                    first: Some(Box::new(PaneLayoutInput {
+                        kind: "leaf".to_owned(),
+                        pane_id: Some(901),
+                        axis: None,
+                        ratio: None,
+                        first: None,
+                        second: None,
+                    })),
+                    second: Some(Box::new(PaneLayoutInput {
+                        kind: "leaf".to_owned(),
+                        pane_id: Some(902),
+                        axis: None,
+                        ratio: None,
+                        first: None,
+                        second: None,
+                    })),
+                },
+            }],
+        })
+        .unwrap();
+
+        let snapshot = core.snapshot();
+        assert_eq!(snapshot.tabs[0].id, 90);
+        assert_eq!(snapshot.tabs[0].layout.ratio, Some(0.4));
     }
 }

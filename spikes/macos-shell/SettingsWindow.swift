@@ -534,6 +534,10 @@ final class NativeSettingsWindowController: NSWindowController, NSTextFieldDeleg
         window.styleMask = [.titled, .closable, .miniaturizable]
         window.setContentSize(NSSize(width: 700, height: 480))
         window.isReleasedWhenClosed = false
+        NativePlatformAppearance.configureWindow(
+            window,
+            role: .settings
+        )
         super.init(window: window)
         tabs.tabStyle = .toolbar
         tabs.addTabViewItem(tab(title: "General", symbol: "gearshape", view: generalView()))
@@ -541,8 +545,8 @@ final class NativeSettingsWindowController: NSWindowController, NSTextFieldDeleg
         tabs.addTabViewItem(tab(title: "Terminal", symbol: "terminal", view: terminalView()))
         tabs.addTabViewItem(tab(title: "Keybindings", symbol: "keyboard", view: keybindingsView()))
         tabs.addTabViewItem(tab(title: "Updates", symbol: "arrow.triangle.2.circlepath", view: updatesView()))
-        tabs.title = "Satin Settings"
-        window.title = "Satin Settings"
+        tabs.title = "\(nativeApplicationName) Settings"
+        window.title = "\(nativeApplicationName) Settings"
         refreshControls()
     }
 

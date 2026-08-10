@@ -1,5 +1,5 @@
 pub mod app;
 mod layout;
 
-pub use app::{TerminalCore, TerminalCoreSnapshot};
-pub use layout::{PaneLayoutSnapshot, SplitAxis};
+pub use app::{TerminalCore, TerminalCoreSnapshot, TerminalWorkspaceInput};
+pub use layout::{PaneLayoutInput, PaneLayoutSnapshot, SplitAxis};

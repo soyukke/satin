@@ -196,11 +196,10 @@ enum NativeControlEnvironment {
             for: .applicationSupportDirectory,
             in: .userDomainMask
         ).first ?? FileManager.default.homeDirectoryForCurrentUser
-        return base
-            .appendingPathComponent("Satin", isDirectory: true)
+        let runDirectory = base
+            .appendingPathComponent(nativeApplicationDataDirectoryName, isDirectory: true)
             .appendingPathComponent("run", isDirectory: true)
-            .appendingPathComponent("control.sock")
-            .path
+        return runDirectory.appendingPathComponent("control.sock").path
     }
 
     static func cliPath() -> String {

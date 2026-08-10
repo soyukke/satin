@@ -26,6 +26,18 @@
 > Its in-app updater installs `Satin.app` from this repository without breaking
 > the existing Ed25519 trust chain or discarding settings and session state.
 
+<p align="center">
+  <a href="assets/satin-demo.mp4">
+    <img src="assets/satin-demo.gif" width="880"
+      alt="Satin projecting a tmux session as native macOS tabs and split panes">
+  </a>
+</p>
+
+<p align="center">
+  <sub>Native tmux windows and panes as macOS tabs and splits. Click for the
+  12-second MP4.</sub>
+</p>
+
 Satin combines a Rust terminal core and Neovide-derived Skia/Metal
 renderer with a native AppKit shell. Terminal bytes flow through a real PTY and
 `libghostty-vt`, while AppKit owns the macOS window, menus, tabs, pane layout,
@@ -44,7 +56,13 @@ settings, and input translation.
   same Skia/Metal renderer whether it is opened from the shell or Command-N.
 - Finder Open With, Dock drops, and a macOS Service for opening files or folders
   directly in a focused editor tab without restoring the normal workspace.
-- Kitty graphics support and an owner-only `satin` automation interface.
+- Kitty graphics in terminal panes and image.nvim-backed native Neovim panes,
+  plus an owner-only `satin` automation interface.
+- Explicit local `tmux -CC` integration that projects tmux windows, panes, zoom,
+  history, alternate screens, terminal modes, and bells as native tabs and
+  splits, then reattaches that projection after a clean Satin restart. A native
+  session picker switches, creates, attaches, and detaches local sessions;
+  ordinary `tmux attach` remains a terminal TUI.
 - Publisher-signed in-app updates distributed through GitHub Releases.
 
 ## Requirements
@@ -103,6 +121,17 @@ dependencies are required.
 nix develop
 just terminal
 ```
+
+`just terminal` builds and launches the isolated `Satin Dev.app` through macOS
+LaunchServices, returns to the calling shell, and keeps successful build/runtime
+output out of that terminal. The Dev app lives under
+`spikes/macos-shell/.build/dev/`, uses bundle ID `dev.soyukke.satin.dev`, and has
+separate preferences, restored sessions, and control socket state from the
+release `Satin.app`. It also uses a purple application icon instead of the
+release icon's blue palette. Its launch log is
+`${TMPDIR:-/tmp}/satin-terminal.log`.
+Use `just terminal-foreground` when debugging with attached build and runtime
+logs.
 
 ## Development commands
 
@@ -220,6 +249,22 @@ events use macOS unified logging.
 - Keeps recursive split layout and tab metadata in the Rust core. AppKit renders
   every split leaf into a clipped region of one shared Metal drawable and routes
   focus/input to the selected pane.
+- Recognizes an explicit `tmux -CC attach` (or `tmux -CC new-session`) control
+  client, renders each `%output` stream through its own `libghostty-vt` surface,
+  and routes native and Satin CLI tab/split/focus/input actions back to tmux.
+  Paste uses tmux's bracketed-paste-aware buffer path. Exiting tmux restores the
+  same shell pane. The unified macOS toolbar always shows `Local` or
+  `tmux · <session>`, opens the session picker, and adds `Zoom` while the active
+  tmux window is zoomed; ordinary tmux commands are not auto-converted.
+  Initial, resized, and newly discovered panes hydrate bounded history, primary
+  and alternate screens, cursor state, and terminal modes from `capture-pane`,
+  including when reattaching after a Satin restart. Control-mode pause recovery
+  performs a fresh capture rather than dropping output.
+- On a clean app exit while native tmux mode is attached, stores the validated
+  local socket path, live server PID, and session name and consumes that
+  descriptor once on the next launch. The checkpoint follows topology changes;
+  explicit detach clears it, and a missing session reports the tmux attach error
+  in the restored shell instead of entering a broken mode.
 - Inherits the active pane working directory for new tabs, splits, and explicit
   native Neovim replacement.
 - Stores font size, Option-as-Alt, bell attention, session-restore preferences,
@@ -251,7 +296,27 @@ events use macOS unified logging.
   placements in Skia/Metal with pane clipping and z-order. RGBA and Skia image
   objects are cached by image generation and released with their pane runtime.
   Direct data, owner-scoped Kitty temporary files, and shared memory are
-  supported; arbitrary regular-file reads remain disabled.
+  supported; arbitrary regular-file reads remain disabled. Embedded Neovim
+  receives a pre-init Lua bridge that forwards image.nvim Kitty commands over
+  bounded RPC messages into the same decoder and renderer. Interactive Neovim
+  inside a Satin-projected tmux pane receives a TTY bridge from `satin-nvim`:
+  it converts image.nvim files to direct chunks in Neovim, wraps them with
+  tmux passthrough, and leaves arbitrary file reads disabled in the host.
+
+For an image.nvim spec that is otherwise disabled in GUI clients, allow Satin's
+advertised bridge explicitly:
+
+```lua
+cond = function()
+  local satin = vim.g.satin_features
+  return not vim.g.neovide or (satin and satin.kitty_graphics)
+end
+```
+
+Satin sets this capability before user configuration; users must not set it
+themselves. Configurations that already load image.nvim do not need a
+Satin-specific option. The condition above is needed only when a configuration
+otherwise disables image.nvim in every GUI client.
 
 ## Settings
 

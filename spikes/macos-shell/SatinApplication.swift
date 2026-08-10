@@ -5,6 +5,16 @@ import Foundation
 import MetalKit
 import OSLog
 
+let nativeApplicationName = Bundle.main.object(
+    forInfoDictionaryKey: "CFBundleDisplayName"
+) as? String ?? "Satin"
+let nativeApplicationDataDirectoryName = Bundle.main.object(
+    forInfoDictionaryKey: "SatinDataDirectoryName"
+) as? String ?? "Satin"
+let nativeIsDevelopmentBuild = Bundle.main.object(
+    forInfoDictionaryKey: "SatinDevelopmentBuild"
+) as? Bool ?? false
+
 enum NativeLog {
     private static let subsystem = Bundle.main.bundleIdentifier ?? "dev.soyukke.satin"
     private static let lifecycle = Logger(subsystem: subsystem, category: "lifecycle")
@@ -488,6 +498,12 @@ func satin_core_set_default_theme(
 @_silgen_name("satin_core_snapshot_json")
 func satin_core_snapshot_json(_ handle: UnsafeMutableRawPointer?) -> UnsafeMutablePointer<CChar>?
 
+@_silgen_name("satin_core_apply_workspace_json")
+func satin_core_apply_workspace_json(
+    _ handle: UnsafeMutableRawPointer?,
+    _ workspace: UnsafePointer<CChar>?
+) -> UInt8
+
 @_silgen_name("satin_runtime_create")
 func satin_runtime_create(
     _ rows: UInt16,
@@ -512,6 +528,14 @@ func satin_runtime_create_config(
     _ pixelWidth: UInt16,
     _ pixelHeight: UInt16,
     _ config: UnsafePointer<CChar>?
+) -> UnsafeMutableRawPointer?
+
+@_silgen_name("satin_runtime_create_external")
+func satin_runtime_create_external(
+    _ rows: UInt16,
+    _ cols: UInt16,
+    _ pixelWidth: UInt16,
+    _ pixelHeight: UInt16
 ) -> UnsafeMutableRawPointer?
 
 @_silgen_name("satin_runtime_destroy")
@@ -558,6 +582,99 @@ func satin_runtime_paste(
     _ handle: UnsafeMutableRawPointer?,
     _ bytes: UnsafePointer<UInt8>?,
     _ length: Int
+) -> UInt8
+
+@_silgen_name("satin_runtime_take_tmux_event_json")
+func satin_runtime_take_tmux_event_json(
+    _ handle: UnsafeMutableRawPointer?
+) -> UnsafeMutablePointer<CChar>?
+
+@_silgen_name("satin_runtime_tmux_command")
+func satin_runtime_tmux_command(
+    _ handle: UnsafeMutableRawPointer?,
+    _ command: UnsafePointer<CChar>?
+) -> UInt8
+
+@_silgen_name("satin_runtime_tmux_feed_pane")
+func satin_runtime_tmux_feed_pane(
+    _ pane: UnsafeMutableRawPointer?,
+    _ bytes: UnsafePointer<UInt8>?,
+    _ length: Int
+) -> UInt8
+
+@_silgen_name("satin_runtime_tmux_shell_prompt_state")
+func satin_runtime_tmux_shell_prompt_state(
+    _ pane: UnsafeMutableRawPointer?
+) -> UInt8
+
+@_silgen_name("satin_runtime_tmux_semantic_prompt_seen")
+func satin_runtime_tmux_semantic_prompt_seen(
+    _ pane: UnsafeMutableRawPointer?
+) -> UInt8
+
+@_silgen_name("satin_runtime_tmux_prompt_generation")
+func satin_runtime_tmux_prompt_generation(
+    _ pane: UnsafeMutableRawPointer?
+) -> UInt64
+
+@_silgen_name("satin_runtime_tmux_reset_prompt_tracking")
+func satin_runtime_tmux_reset_prompt_tracking(
+    _ pane: UnsafeMutableRawPointer?
+) -> UInt8
+
+@_silgen_name("satin_runtime_tmux_key")
+func satin_runtime_tmux_key(
+    _ gateway: UnsafeMutableRawPointer?,
+    _ pane: UnsafeMutableRawPointer?,
+    _ paneId: UInt32,
+    _ keyCode: UInt16,
+    _ modifiers: UInt32,
+    _ text: UnsafePointer<UInt8>?,
+    _ textLength: Int,
+    _ unshifted: UnsafePointer<UInt8>?,
+    _ unshiftedLength: Int,
+    _ repeated: UInt8,
+    _ released: UInt8
+) -> UInt8
+
+@_silgen_name("satin_runtime_tmux_write")
+func satin_runtime_tmux_write(
+    _ gateway: UnsafeMutableRawPointer?,
+    _ pane: UnsafeMutableRawPointer?,
+    _ paneId: UInt32,
+    _ bytes: UnsafePointer<UInt8>?,
+    _ length: Int
+) -> UInt8
+
+@_silgen_name("satin_runtime_tmux_paste")
+func satin_runtime_tmux_paste(
+    _ gateway: UnsafeMutableRawPointer?,
+    _ pane: UnsafeMutableRawPointer?,
+    _ paneId: UInt32,
+    _ bytes: UnsafePointer<UInt8>?,
+    _ length: Int
+) -> UInt8
+
+@_silgen_name("satin_runtime_tmux_mouse")
+func satin_runtime_tmux_mouse(
+    _ gateway: UnsafeMutableRawPointer?,
+    _ pane: UnsafeMutableRawPointer?,
+    _ paneId: UInt32,
+    _ action: UInt32,
+    _ button: Int32,
+    _ modifiers: UInt32,
+    _ x: Float,
+    _ y: Float,
+    _ cellWidth: UInt32,
+    _ cellHeight: UInt32
+) -> UInt8
+
+@_silgen_name("satin_runtime_tmux_focus")
+func satin_runtime_tmux_focus(
+    _ gateway: UnsafeMutableRawPointer?,
+    _ pane: UnsafeMutableRawPointer?,
+    _ paneId: UInt32,
+    _ focused: UInt8
 ) -> UInt8
 
 @_silgen_name("satin_runtime_mouse")
@@ -639,6 +756,9 @@ func satin_runtime_scroll(_ handle: UnsafeMutableRawPointer?, _ requestedRows: I
 
 @_silgen_name("satin_runtime_renderer_scroll_position")
 func satin_runtime_renderer_scroll_position(_ handle: UnsafeMutableRawPointer?) -> Float
+
+@_silgen_name("satin_runtime_cursor_position")
+func satin_runtime_cursor_position(_ handle: UnsafeMutableRawPointer?) -> UInt32
 
 @_silgen_name("satin_runtime_cwd")
 func satin_runtime_cwd(_ handle: UnsafeMutableRawPointer?) -> UnsafeMutablePointer<CChar>?
@@ -730,6 +850,9 @@ func satin_nvim_exit_code(_ handle: UnsafeMutableRawPointer?) -> Int32
 @_silgen_name("satin_nvim_wakeup_fd")
 func satin_nvim_wakeup_fd(_ handle: UnsafeMutableRawPointer?) -> Int32
 
+@_silgen_name("satin_nvim_kitty_placement_count")
+func satin_nvim_kitty_placement_count(_ handle: UnsafeMutableRawPointer?) -> Int
+
 @_silgen_name("satin_nvim_renderer_model_json")
 func satin_nvim_renderer_model_json(_ handle: UnsafeMutableRawPointer?) -> UnsafeMutablePointer<CChar>?
 
@@ -798,7 +921,7 @@ func satin_skia_metal_next_frame_delay_ms(_ renderer: UnsafeMutableRawPointer?) 
 private let ffiSplitVertical: UInt32 = 0
 private let ffiSplitHorizontal: UInt32 = 1
 private let terminalHorizontalInset: CGFloat = 12
-private let terminalTextTop: CGFloat = 38
+private let terminalTextTop: CGFloat = 12
 private let terminalTextBottomInset: CGFloat = 10
 private let defaultTerminalFontSize = CGFloat(nativeDefaultFontSize)
 private let minTerminalFontSize = CGFloat(nativeMinimumFontSize)
@@ -817,12 +940,318 @@ private let themeAccentColors: [String: NSColor] = [
     "Rose": NSColor(calibratedRed: 0.78, green: 0.32, blue: 0.48, alpha: 1.0),
     "Paper": NSColor(calibratedRed: 0.78, green: 0.57, blue: 0.26, alpha: 1.0),
 ]
-private let currentSessionSchemaVersion = 2
+private let currentSessionSchemaVersion = 3
 
 struct NativeSessionState: Codable {
     let schemaVersion: Int
     let activeTab: Int
     let tabs: [NativeSessionTab]
+    let tmuxAttachment: NativeTmuxAttachment?
+
+    init(
+        schemaVersion: Int,
+        activeTab: Int,
+        tabs: [NativeSessionTab],
+        tmuxAttachment: NativeTmuxAttachment? = nil
+    ) {
+        self.schemaVersion = schemaVersion
+        self.activeTab = activeTab
+        self.tabs = tabs
+        self.tmuxAttachment = tmuxAttachment
+    }
+}
+
+struct NativeTmuxAttachment: Codable, Equatable {
+    let sessionName: String
+    let socketPath: String
+}
+
+struct NativeTmuxSessionDescriptor: Equatable {
+    let name: String
+    let windowCount: Int
+    let socketPath: String
+}
+
+enum NativeTmuxSessionDiscovery {
+    static func sessions(socketPath: String?) -> [NativeTmuxSessionDescriptor] {
+        guard let executable = executableURL() else {
+            return []
+        }
+        let process = Process()
+        let output = Pipe()
+        process.executableURL = executable
+        process.standardOutput = output
+        process.standardError = FileHandle.nullDevice
+        var arguments: [String] = []
+        if let socketPath, !socketPath.isEmpty {
+            arguments += ["-S", socketPath]
+        }
+        arguments += [
+            "list-sessions",
+            "-F",
+            "#{session_name}\t#{session_windows}\t#{socket_path}",
+        ]
+        process.arguments = arguments
+
+        do {
+            try process.run()
+        } catch {
+            return []
+        }
+        let data = output.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        guard process.terminationStatus == 0 else {
+            return []
+        }
+        guard let value = String(data: data, encoding: .utf8) else {
+            return []
+        }
+        return value.split(whereSeparator: \.isNewline).compactMap { line in
+            let fields = line.split(separator: "\t", omittingEmptySubsequences: false)
+            guard fields.count == 3,
+                  let windowCount = Int(fields[1]),
+                  !fields[0].isEmpty,
+                  !fields[2].isEmpty
+            else {
+                return nil
+            }
+            return NativeTmuxSessionDescriptor(
+                name: String(fields[0]),
+                windowCount: windowCount,
+                socketPath: String(fields[2])
+            )
+        }
+        .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+    }
+
+    private static func executableURL() -> URL? {
+        let environmentPath = ProcessInfo.processInfo.environment["PATH"] ?? ""
+        let pathDirectories = environmentPath.split(separator: ":").map(String.init)
+        let fallbackDirectories = [
+            "/opt/homebrew/bin",
+            "/usr/local/bin",
+            "/run/current-system/sw/bin",
+            "/nix/var/nix/profiles/default/bin",
+            "/usr/bin",
+        ]
+        for directory in pathDirectories + fallbackDirectories {
+            let candidate = URL(fileURLWithPath: directory).appendingPathComponent("tmux")
+            if FileManager.default.isExecutableFile(atPath: candidate.path) {
+                return candidate
+            }
+        }
+        return nil
+    }
+}
+
+final class TmuxSessionPopoverController: NSViewController, NSSearchFieldDelegate {
+    var onSelectLocal: (() -> Void)?
+    var onSelectSession: ((NativeTmuxSessionDescriptor) -> Void)?
+    var onCreateSession: ((String) -> Void)?
+
+    private let sessions: [NativeTmuxSessionDescriptor]
+    private let currentSessionName: String?
+    private let searchField = NSSearchField(frame: .zero)
+    private let rows = NSStackView()
+    private let newSessionButton = NSButton(frame: .zero)
+    private let nameField = NSTextField(frame: .zero)
+    private let createButton = NSButton(frame: .zero)
+    private let creationRow = NSStackView()
+    private let validationLabel = NSTextField(labelWithString: "")
+
+    init(sessions: [NativeTmuxSessionDescriptor], currentSessionName: String?) {
+        self.sessions = sessions
+        self.currentSessionName = currentSessionName
+        super.init(nibName: nil, bundle: nil)
+        preferredContentSize = NSSize(
+            width: 320,
+            height: Self.preferredHeight(rowCount: sessions.count)
+        )
+    }
+
+    required init?(coder: NSCoder) {
+        nil
+    }
+
+    override func loadView() {
+        let root = NSView()
+        let heading = NSTextField(labelWithString: "Sessions")
+        heading.font = .systemFont(ofSize: 13, weight: .semibold)
+
+        searchField.placeholderString = "Search Sessions"
+        searchField.delegate = self
+        searchField.isHidden = sessions.count <= 5
+
+        rows.orientation = .vertical
+        rows.alignment = .leading
+        rows.spacing = 2
+        refreshSessionRows()
+
+        configureRowButton(
+            newSessionButton,
+            title: "New tmux Session…",
+            symbol: "plus",
+            action: #selector(beginCreatingSession(_:))
+        )
+
+        nameField.placeholderString = "Session name"
+        nameField.target = self
+        nameField.action = #selector(createSession(_:))
+        createButton.title = "Create"
+        createButton.bezelStyle = .rounded
+        createButton.target = self
+        createButton.action = #selector(createSession(_:))
+        creationRow.orientation = .horizontal
+        creationRow.alignment = .centerY
+        creationRow.spacing = 8
+        creationRow.addArrangedSubview(nameField)
+        creationRow.addArrangedSubview(createButton)
+        creationRow.isHidden = true
+
+        validationLabel.textColor = .systemRed
+        validationLabel.font = .systemFont(ofSize: 11)
+        validationLabel.maximumNumberOfLines = 2
+        validationLabel.isHidden = true
+
+        let separator = NSBox()
+        separator.boxType = .separator
+        let stack = NSStackView(views: [
+            heading,
+            searchField,
+            rows,
+            separator,
+            newSessionButton,
+            creationRow,
+            validationLabel,
+        ])
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 8
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        root.addSubview(stack)
+        NSLayoutConstraint.activate([
+            root.widthAnchor.constraint(equalToConstant: 320),
+            stack.topAnchor.constraint(equalTo: root.topAnchor, constant: 14),
+            stack.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 12),
+            stack.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -12),
+            stack.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -12),
+            searchField.widthAnchor.constraint(equalTo: stack.widthAnchor),
+            rows.widthAnchor.constraint(equalTo: stack.widthAnchor),
+            separator.widthAnchor.constraint(equalTo: stack.widthAnchor),
+            newSessionButton.widthAnchor.constraint(equalTo: stack.widthAnchor),
+            creationRow.widthAnchor.constraint(equalTo: stack.widthAnchor),
+            nameField.widthAnchor.constraint(greaterThanOrEqualToConstant: 190),
+            validationLabel.widthAnchor.constraint(equalTo: stack.widthAnchor),
+        ])
+        view = root
+    }
+
+    func controlTextDidChange(_ notification: Notification) {
+        refreshSessionRows()
+    }
+
+    private func refreshSessionRows() {
+        for child in rows.arrangedSubviews {
+            rows.removeArrangedSubview(child)
+            child.removeFromSuperview()
+        }
+        let query = searchField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        let filtered = query.isEmpty
+            ? sessions
+            : sessions.filter { $0.name.localizedCaseInsensitiveContains(query) }
+
+        let local = NSButton(frame: .zero)
+        configureRowButton(
+            local,
+            title: "Local Terminal",
+            symbol: currentSessionName == nil ? "checkmark.circle.fill" : "terminal",
+            action: #selector(selectLocal(_:))
+        )
+        rows.addArrangedSubview(local)
+        for descriptor in filtered {
+            let button = NSButton(frame: .zero)
+            let suffix = descriptor.windowCount == 1 ? "1 window" : "\(descriptor.windowCount) windows"
+            let symbol = descriptor.name == currentSessionName ? "checkmark.circle.fill" : "rectangle.stack"
+            configureRowButton(
+                button,
+                title: "\(descriptor.name)  ·  \(suffix)",
+                symbol: symbol,
+                action: #selector(selectSession(_:))
+            )
+            button.tag = sessions.firstIndex(of: descriptor) ?? -1
+            rows.addArrangedSubview(button)
+        }
+        if filtered.isEmpty, !query.isEmpty {
+            let empty = NSTextField(labelWithString: "No matching tmux sessions")
+            empty.textColor = .secondaryLabelColor
+            empty.font = .systemFont(ofSize: 12)
+            rows.addArrangedSubview(empty)
+        }
+    }
+
+    private func configureRowButton(
+        _ button: NSButton,
+        title: String,
+        symbol: String,
+        action: Selector
+    ) {
+        button.title = title
+        button.bezelStyle = .inline
+        button.alignment = .left
+        button.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)
+        button.imagePosition = .imageLeading
+        button.contentTintColor = .labelColor
+        button.target = self
+        button.action = action
+        button.heightAnchor.constraint(equalToConstant: 28).isActive = true
+    }
+
+    @objc private func selectLocal(_ sender: Any?) {
+        onSelectLocal?()
+    }
+
+    @objc private func selectSession(_ sender: NSButton) {
+        guard sessions.indices.contains(sender.tag) else {
+            return
+        }
+        onSelectSession?(sessions[sender.tag])
+    }
+
+    @objc private func beginCreatingSession(_ sender: Any?) {
+        newSessionButton.isHidden = true
+        creationRow.isHidden = false
+        validationLabel.isHidden = true
+        preferredContentSize.height += 38
+        view.window?.makeFirstResponder(nameField)
+    }
+
+    @objc private func createSession(_ sender: Any?) {
+        let name = nameField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let error = validationError(for: name) {
+            validationLabel.stringValue = error
+            validationLabel.isHidden = false
+            return
+        }
+        onCreateSession?(name)
+    }
+
+    private func validationError(for name: String) -> String? {
+        if name.isEmpty {
+            return "Enter a session name."
+        }
+        if name.contains(":") || name.contains(".") {
+            return "tmux session names cannot contain a colon or period."
+        }
+        if sessions.contains(where: { $0.name == name }) {
+            return "A tmux session with that name already exists."
+        }
+        return nil
+    }
+
+    private static func preferredHeight(rowCount: Int) -> CGFloat {
+        let visibleRows = min(max(rowCount + 1, 2), 10)
+        return CGFloat(visibleRows * 30 + (rowCount > 5 ? 114 : 74))
+    }
 }
 
 struct NativeSessionTab: Codable {
@@ -870,12 +1299,12 @@ struct LegacyNativeSessionTab: Codable {
     let cwd: String
 }
 
-struct TerminalCoreSnapshot: Decodable {
+struct TerminalCoreSnapshot: Codable {
     let active_tab: Int
     let tabs: [TerminalCoreTabSnapshot]
 }
 
-struct TerminalCoreTabSnapshot: Decodable {
+struct TerminalCoreTabSnapshot: Codable {
     let id: Int
     let index: Int
     let title: String
@@ -885,12 +1314,81 @@ struct TerminalCoreTabSnapshot: Decodable {
     let layout: PaneLayoutSnapshot
 }
 
-final class PaneLayoutSnapshot: Decodable {
+final class PaneLayoutSnapshot: Codable {
     let kind: String
     let pane_id: Int?
     let axis: String?
+    let ratio: Double?
     let first: PaneLayoutSnapshot?
     let second: PaneLayoutSnapshot?
+
+    init(
+        kind: String,
+        paneId: Int? = nil,
+        axis: String? = nil,
+        ratio: Double? = nil,
+        first: PaneLayoutSnapshot? = nil,
+        second: PaneLayoutSnapshot? = nil
+    ) {
+        self.kind = kind
+        self.pane_id = paneId
+        self.axis = axis
+        self.ratio = ratio
+        self.first = first
+        self.second = second
+    }
+}
+
+struct TmuxControlEvent: Decodable {
+    let kind: String
+    let pane_id: UInt32?
+    let data: [UInt8]?
+    let snapshot: TmuxSnapshot?
+    let reason: String?
+    let message: String?
+}
+
+struct TmuxSnapshot: Decodable {
+    let session_id: UInt32
+    let session_name: String
+    let socket_path: String
+    let server_pid: UInt32
+    let active_window_id: UInt32
+    let windows: [TmuxWindowSnapshot]
+}
+
+struct TmuxWindowSnapshot: Decodable {
+    let window_id: UInt32
+    let index: UInt32
+    let name: String
+    let active_pane_id: UInt32
+    let zoomed: Bool
+    let layout: TmuxLayoutSnapshot
+    let panes: [TmuxPaneSnapshot]
+}
+
+struct TmuxPaneSnapshot: Decodable {
+    let pane_id: UInt32
+    let index: UInt32
+    let active: Bool
+    let current_path: String
+    let cols: UInt16
+    let rows: UInt16
+    let cursor_x: UInt16
+    let cursor_y: UInt16
+    let cursor_visible: Bool
+    let origin_mode: Bool
+    let scroll_region_upper: UInt16
+    let current_command: String
+}
+
+final class TmuxLayoutSnapshot: Decodable {
+    let kind: String
+    let pane_id: UInt32?
+    let axis: String?
+    let ratio: Double?
+    let first: TmuxLayoutSnapshot?
+    let second: TmuxLayoutSnapshot?
 }
 
 struct NeovideRendererModelSnapshot: Decodable {
@@ -1023,6 +1521,17 @@ final class RustCore {
 
     func snapshot() -> TerminalCoreSnapshot? {
         decode(satin_core_snapshot_json(handle), as: TerminalCoreSnapshot.self)
+    }
+
+    func applyWorkspace(_ snapshot: TerminalCoreSnapshot) -> Bool {
+        guard let data = try? JSONEncoder().encode(snapshot),
+              let json = String(data: data, encoding: .utf8)
+        else {
+            return false
+        }
+        return json.withCString { value in
+            satin_core_apply_workspace_json(handle, value) != 0
+        }
     }
 
     @discardableResult
@@ -1222,9 +1731,9 @@ enum NativePaneMode: Equatable {
     }
 }
 
-final class RustTerminalPane: NativePane {
+class RustTerminalPane: NativePane {
     let kind = NativePaneMode.terminal
-    private let handle: UnsafeMutableRawPointer
+    fileprivate let handle: UnsafeMutableRawPointer
 
     init?(
         grid: (rows: Int, cols: Int, widthPixels: Int, heightPixels: Int),
@@ -1258,6 +1767,10 @@ final class RustTerminalPane: NativePane {
             return nil
         }
         self.handle = handle
+    }
+
+    fileprivate init(externalHandle: UnsafeMutableRawPointer) {
+        self.handle = externalHandle
     }
 
     deinit {
@@ -1432,6 +1945,14 @@ final class RustTerminalPane: NativePane {
         Double(satin_runtime_renderer_scroll_position(handle))
     }
 
+    func cursorPosition() -> (x: Int, y: Int)? {
+        let packed = satin_runtime_cursor_position(handle)
+        guard packed != UInt32.max else {
+            return nil
+        }
+        return (Int(packed & 0xffff), Int(packed >> 16))
+    }
+
     func renderHandle() -> UnsafeMutableRawPointer? {
         handle
     }
@@ -1444,6 +1965,268 @@ final class RustTerminalPane: NativePane {
         satin_runtime_kitty_placement_count(handle)
     }
 
+    func takeTmuxEvent() -> TmuxControlEvent? {
+        guard let pointer = satin_runtime_take_tmux_event_json(handle) else {
+            return nil
+        }
+        defer { satin_string_free(pointer) }
+        return try? JSONDecoder().decode(TmuxControlEvent.self, from: Data(String(cString: pointer).utf8))
+    }
+
+    @discardableResult
+    func tmuxCommand(_ command: String) -> Bool {
+        command.withCString { value in
+            satin_runtime_tmux_command(handle, value) != 0
+        }
+    }
+
+}
+
+final class RustTmuxPane: RustTerminalPane {
+    let tmuxPaneId: UInt32
+    private weak var gateway: RustTerminalPane?
+    private var currentShellCommand: String?
+    private var shellOwnsPane = false
+    private var returnAwaitingPrompt = false
+    private var returnPromptGeneration: UInt64 = 0
+    private var pendingRepeatedReturn: NSEvent?
+
+    init?(
+        grid: (rows: Int, cols: Int, widthPixels: Int, heightPixels: Int),
+        paneId: UInt32,
+        gateway: RustTerminalPane
+    ) {
+        guard let handle = satin_runtime_create_external(
+            clampedUInt16(grid.rows),
+            clampedUInt16(grid.cols),
+            clampedUInt16(grid.widthPixels),
+            clampedUInt16(grid.heightPixels)
+        ) else {
+            return nil
+        }
+        self.tmuxPaneId = paneId
+        self.gateway = gateway
+        super.init(externalHandle: handle)
+    }
+
+    override func write(_ data: Data) {
+        _ = writeThroughTmux(data)
+    }
+
+    @discardableResult
+    func writeThroughTmux(_ data: Data) -> Bool {
+        guard let gateway else {
+            return false
+        }
+        return data.withUnsafeBytes { buffer in
+            guard let base = buffer.bindMemory(to: UInt8.self).baseAddress else {
+                return false
+            }
+            return satin_runtime_tmux_write(
+                gateway.handle,
+                handle,
+                tmuxPaneId,
+                base,
+                buffer.count
+            ) != 0
+        }
+    }
+
+    override func writeText(_ text: String) {
+        write(Data(text.utf8))
+    }
+
+    func syncCursor(_ snapshot: TmuxPaneSnapshot) {
+        let absoluteRow = Int(snapshot.cursor_y)
+        let row = snapshot.origin_mode
+            ? max(0, absoluteRow - Int(snapshot.scroll_region_upper))
+            : absoluteRow
+        let visibility = snapshot.cursor_visible ? "h" : "l"
+        let column = Int(snapshot.cursor_x)
+        _ = feed(Data("\u{1b}[\(row + 1);\(column + 1)H\u{1b}[?25\(visibility)".utf8))
+    }
+
+    func setCurrentCommand(_ command: String) {
+        let commandIsShell = tmuxCommandIsShell(command)
+        if commandIsShell {
+            if currentShellCommand != command {
+                currentShellCommand = command
+                _ = satin_runtime_tmux_reset_prompt_tracking(handle)
+                resetRepeatedReturnBackpressure()
+            }
+            shellOwnsPane = true
+            return
+        }
+        if returnAwaitingPrompt {
+            return
+        }
+        shellOwnsPane = false
+        resetRepeatedReturnBackpressure()
+    }
+
+    override func key(_ event: NSEvent, released: Bool) -> Bool {
+        let isReturn = terminalReturnKeyCodes.contains(event.keyCode)
+        if isReturn, released {
+            resetRepeatedReturnBackpressure()
+            return forwardKey(event, released: true)
+        }
+        let promptState = satin_runtime_tmux_shell_prompt_state(handle)
+        let managesShellRepeat = isReturn && shellOwnsPane && promptState != 0
+        if managesShellRepeat {
+            if event.isARepeat, returnAwaitingPrompt {
+                pendingRepeatedReturn = event
+                return true
+            }
+            returnAwaitingPrompt = true
+            returnPromptGeneration = satin_runtime_tmux_prompt_generation(handle)
+        }
+        let sent = forwardKey(event, released: released)
+        if !sent, managesShellRepeat {
+            resetRepeatedReturnBackpressure()
+        }
+        return sent
+    }
+
+    private func forwardKey(_ event: NSEvent, released: Bool) -> Bool {
+        guard let gateway else {
+            return false
+        }
+        let textData = terminalKeyText(event).map { Data($0.utf8) }
+        let unshiftedData = Data((event.charactersIgnoringModifiers ?? "").utf8)
+        return unshiftedData.withUnsafeBytes { unshiftedBuffer in
+            let unshifted = unshiftedBuffer.bindMemory(to: UInt8.self).baseAddress
+            if let textData {
+                return textData.withUnsafeBytes { textBuffer in
+                    satin_runtime_tmux_key(
+                        gateway.handle,
+                        handle,
+                        tmuxPaneId,
+                        event.keyCode,
+                        terminalModifierMask(event.modifierFlags),
+                        textBuffer.bindMemory(to: UInt8.self).baseAddress,
+                        textBuffer.count,
+                        unshifted,
+                        unshiftedBuffer.count,
+                        event.isARepeat ? 1 : 0,
+                        released ? 1 : 0
+                    ) != 0
+                }
+            }
+            return satin_runtime_tmux_key(
+                gateway.handle,
+                handle,
+                tmuxPaneId,
+                event.keyCode,
+                terminalModifierMask(event.modifierFlags),
+                nil,
+                0,
+                unshifted,
+                unshiftedBuffer.count,
+                event.isARepeat ? 1 : 0,
+                released ? 1 : 0
+            ) != 0
+        }
+    }
+
+    override func paste(_ text: String) {
+        _ = pasteThroughTmux(text)
+    }
+
+    @discardableResult
+    func pasteThroughTmux(_ text: String) -> Bool {
+        guard let gateway else {
+            return false
+        }
+        return withUtf8(text) { bytes, count in
+            satin_runtime_tmux_paste(
+                gateway.handle,
+                handle,
+                tmuxPaneId,
+                bytes,
+                count
+            ) != 0
+        }
+    }
+
+    override func mouse(_ input: NativeMouseInput) -> Bool {
+        guard let gateway else {
+            return false
+        }
+        return satin_runtime_tmux_mouse(
+            gateway.handle,
+            handle,
+            tmuxPaneId,
+            terminalMouseAction(input.action),
+            terminalMouseButton(input.button, action: input.action),
+            terminalModifierMask(input.modifier),
+            input.surfaceX,
+            input.surfaceY,
+            input.cellWidth,
+            input.cellHeight
+        ) != 0
+    }
+
+    override func focus(_ focused: Bool) {
+        guard let gateway else {
+            return
+        }
+        if !focused {
+            resetRepeatedReturnBackpressure()
+        }
+        _ = satin_runtime_tmux_focus(
+            gateway.handle,
+            handle,
+            tmuxPaneId,
+            focused ? 1 : 0
+        )
+    }
+
+    @discardableResult
+    func feed(_ data: Data) -> Bool {
+        guard gateway != nil else {
+            return false
+        }
+        let fed = data.withUnsafeBytes { buffer in
+            guard let base = buffer.bindMemory(to: UInt8.self).baseAddress else {
+                return false
+            }
+            return satin_runtime_tmux_feed_pane(
+                handle,
+                base,
+                buffer.count
+            ) != 0
+        }
+        if fed {
+            forwardPendingReturnAtReadyPrompt()
+        }
+        return fed
+    }
+
+    private func forwardPendingReturnAtReadyPrompt() {
+        guard returnAwaitingPrompt else {
+            return
+        }
+        let promptGeneration = satin_runtime_tmux_prompt_generation(handle)
+        let semanticPromptSeen = satin_runtime_tmux_semantic_prompt_seen(handle) != 0
+        let semanticPromptAdvanced = promptGeneration != returnPromptGeneration
+        let fallbackPromptReady = !semanticPromptSeen
+            && satin_runtime_tmux_shell_prompt_state(handle) == 2
+        guard semanticPromptAdvanced || fallbackPromptReady else {
+            return
+        }
+        returnAwaitingPrompt = false
+        guard let event = pendingRepeatedReturn else {
+            return
+        }
+        pendingRepeatedReturn = nil
+        _ = key(event, released: false)
+    }
+
+    private func resetRepeatedReturnBackpressure() {
+        returnAwaitingPrompt = false
+        returnPromptGeneration = satin_runtime_tmux_prompt_generation(handle)
+        pendingRepeatedReturn = nil
+    }
 }
 
 final class RustNeovimPane: NativePane {
@@ -1582,7 +2365,7 @@ final class RustNeovimPane: NativePane {
     }
 
     func controlImageCount() -> Int {
-        0
+        satin_nvim_kitty_placement_count(handle)
     }
 
     private func decode<T: Decodable>(_ pointer: UnsafeMutablePointer<CChar>?, as type: T.Type) -> T? {
@@ -1605,6 +2388,27 @@ final class RustNeovimPane: NativePane {
 
 private func shellQuote(_ value: String) -> String {
     "'\(value.replacingOccurrences(of: "'", with: "'\\''"))'"
+}
+
+private func tmuxCommandArgument(_ value: String) -> String {
+    let octal = value.utf8.map { String(format: "\\%03o", Int($0)) }.joined()
+    return "\"\(octal)\""
+}
+
+private func isLocalTmuxEndpoint(socketPath: String, serverPid: UInt32) -> Bool {
+    guard serverPid > 0 else {
+        return false
+    }
+    var status = stat()
+    guard lstat(socketPath, &status) == 0,
+          status.st_mode & S_IFMT == S_IFSOCK
+    else {
+        return false
+    }
+    if kill(pid_t(serverPid), 0) == 0 {
+        return true
+    }
+    return errno == EPERM
 }
 
 private func vimSingleQuote(_ value: String) -> String {
@@ -1633,16 +2437,6 @@ final class RenameTextField: NSTextField, NSTextFieldDelegate {
     }
 }
 
-private enum TabBarMetrics {
-    static let height: CGFloat = 30
-    static let leadingInset: CGFloat = 12
-    static let trailingInset: CGFloat = 8
-    static let tabSpacing: CGFloat = 6
-    static let controlsSpacing: CGFloat = 3
-    static let controlsGap: CGFloat = 8
-    static let buttonSize: CGFloat = 24
-}
-
 final class TerminalTextView: NSView, NSTextInputClient {
     var onInput: ((Data) -> Void)?
     var onKeyEvent: ((NSEvent, Bool) -> Bool)?
@@ -1655,11 +2449,7 @@ final class TerminalTextView: NSView, NSTextInputClient {
     var onSelectAllRequested: (() -> Bool)?
     var onFindRequested: (() -> Bool)?
     var onScroll: ((CGFloat) -> Void)?
-    var onTabSelected: ((Int) -> Void)?
     var onPaneSelected: ((Int) -> Void)?
-    var onNewTabRequested: (() -> Void)?
-    var onSplitVerticalRequested: (() -> Void)?
-    var onSplitHorizontalRequested: (() -> Void)?
     var onFocusChanged: ((Bool) -> Void)?
     var onContextMenuRequested: ((Int?, NSEvent, NSView) -> Void)?
     var onGeometryChanged: (() -> Void)?
@@ -1673,25 +2463,19 @@ final class TerminalTextView: NSView, NSTextInputClient {
     }
 
     private var rendererModelSnapshot: NeovideRendererModelSnapshot?
+    private var terminalCursor: (x: Int, y: Int)?
     private var rendererModelFrameCount = 0
-    private var tabTitles: [String] = []
-    private var tabThemes: [String] = []
-    private var activeTab = 0
     private var activePaneId: Int?
     private var paneFrames: [Int: NSRect] = [:]
     private var terminalFontSize = defaultTerminalFontSize
     private var terminalFont = NSFont.monospacedSystemFont(ofSize: defaultTerminalFontSize, weight: .regular)
     private var terminalFontFamily = ""
-    private let tabFont = NSFont.systemFont(ofSize: 12, weight: .semibold)
     private var markedText = NSMutableAttributedString()
     private var markedSelection = NSRange(location: 0, length: 0)
     private var interpretingKeyEvent: NSEvent?
     private var selectionAnchor: (row: Int, col: Int)?
     private var messageSelectionActive = false
     private var terminalKeysDown = Set<UInt16>()
-    private let newTabButton = NSButton(frame: .zero)
-    private let splitVerticalButton = NSButton(frame: .zero)
-    private let splitHorizontalButton = NSButton(frame: .zero)
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -1701,12 +2485,6 @@ final class TerminalTextView: NSView, NSTextInputClient {
     private func configure() {
         wantsLayer = true
         layer?.backgroundColor = NSColor.clear.cgColor
-        configureTabBarButtons()
-    }
-
-    override func layout() {
-        super.layout()
-        layoutTabBarButtons()
     }
 
     override var acceptsFirstResponder: Bool {
@@ -1722,7 +2500,7 @@ final class TerminalTextView: NSView, NSTextInputClient {
     }
 
     override func draw(_ dirtyRect: NSRect) {
-        drawTabStrip()
+        drawPaneBorders()
         drawScrollbar()
         drawMarkedText()
     }
@@ -1763,25 +2541,9 @@ final class TerminalTextView: NSView, NSTextInputClient {
         let changed = frame.size != newSize
         super.setFrameSize(newSize)
         if changed {
+            invalidateInputCoordinates()
             onGeometryChanged?()
         }
-    }
-
-    func performTabBarActionSmokeClicks() -> Bool {
-        layoutSubtreeIfNeeded()
-        let buttons = tabBarButtons
-        let controlsReady = buttons.allSatisfy {
-            $0.superview === self
-                && $0.image != nil
-                && $0.frame.width == TabBarMetrics.buttonSize
-                && bounds.contains($0.frame)
-        }
-        let tabsAvoidControls = tabRects().allSatisfy { $0.maxX <= tabBarTabsMaxX }
-        guard controlsReady, tabsAvoidControls else {
-            return false
-        }
-        buttons.forEach { $0.performClick(nil) }
-        return true
     }
 
     override func keyDown(with event: NSEvent) {
@@ -1811,10 +2573,6 @@ final class TerminalTextView: NSView, NSTextInputClient {
 
     override func mouseDown(with event: NSEvent) {
         let point = convert(event.locationInWindow, from: nil)
-        if let index = tabIndex(at: point) {
-            onTabSelected?(index)
-            return
-        }
         if let paneId = paneFrames.first(where: { $0.value.contains(point) })?.key,
            paneId != activePaneId {
             activePaneId = paneId
@@ -1894,7 +2652,7 @@ final class TerminalTextView: NSView, NSTextInputClient {
            handleMouseInput(input) {
             return
         }
-        onContextMenuRequested?(tabIndex(at: point), event, self)
+        onContextMenuRequested?(nil, event, self)
     }
 
     override func rightMouseUp(with event: NSEvent) {
@@ -1976,6 +2734,18 @@ final class TerminalTextView: NSView, NSTextInputClient {
             rendererModelFrameCount += 1
         }
         needsDisplay = true
+    }
+
+    func setTerminalCursor(_ cursor: (x: Int, y: Int)?) {
+        terminalCursor = cursor
+        invalidateInputCoordinates()
+        if hasMarkedText() {
+            needsDisplay = true
+        }
+    }
+
+    func markedTextOriginForSmoke() -> NSPoint {
+        compositionOrigin()
     }
 
     func hasRendererModelFrames() -> Bool {
@@ -2309,16 +3079,10 @@ final class TerminalTextView: NSView, NSTextInputClient {
         .joined(separator: ":")
     }
 
-    func updateTabs(_ titles: [String], themes: [String], active: Int) {
-        tabTitles = titles
-        tabThemes = themes
-        activeTab = active
-        needsDisplay = true
-    }
-
     func updatePaneFrames(_ frames: [Int: NSRect], activePaneId: Int?) {
         paneFrames = frames
         self.activePaneId = activePaneId
+        invalidateInputCoordinates()
         needsDisplay = true
     }
 
@@ -2400,18 +3164,6 @@ final class TerminalTextView: NSView, NSTextInputClient {
         )
     }
 
-    private func drawTabStrip() {
-        NSColor(calibratedRed: 34.0 / 255.0, green: 36.0 / 255.0, blue: 46.0 / 255.0, alpha: 1.0)
-            .setFill()
-        NSRect(x: 0, y: 0, width: bounds.width, height: TabBarMetrics.height).fill()
-
-        for (idx, rect) in tabRects().enumerated() {
-            let theme = idx < tabThemes.count ? tabThemes[idx] : nil
-            drawTab(title: tabTitles[idx], rect: rect, active: idx == activeTab, theme: theme)
-        }
-        drawPaneBorders()
-    }
-
     private func drawPaneBorders() {
         guard paneFrames.count > 1 else {
             return
@@ -2449,29 +3201,6 @@ final class TerminalTextView: NSView, NSTextInputClient {
             xRadius: 2,
             yRadius: 2
         ).fill()
-    }
-
-    private func drawTab(title: String, rect: NSRect, active: Bool, theme: String?) {
-        tabColor(theme: theme, active: active).setFill()
-        NSBezierPath(roundedRect: rect, xRadius: 7, yRadius: 7).fill()
-
-        let paragraph = NSMutableParagraphStyle()
-        paragraph.alignment = .center
-        paragraph.lineBreakMode = .byTruncatingTail
-        let attributes: [NSAttributedString.Key: Any] = [
-            .font: tabFont,
-            .foregroundColor: NSColor.white,
-            .paragraphStyle: paragraph,
-        ]
-        let size = (title as NSString).size(withAttributes: attributes)
-        let horizontalInset = min(8, rect.width * 0.25)
-        let textRect = NSRect(
-            x: rect.minX + horizontalInset,
-            y: rect.midY - size.height * 0.5,
-            width: max(0, rect.width - horizontalInset * 2),
-            height: size.height
-        )
-        (title as NSString).draw(in: textRect, withAttributes: attributes)
     }
 
     private func rendererModelRows(_ model: NeovideRendererModelSnapshot) -> [[TerminalCellSnapshot]] {
@@ -2551,136 +3280,6 @@ final class TerminalTextView: NSView, NSTextInputClient {
             row[left + sourceCol] = line.cells[sourceCol]
         }
         rows[targetRow] = row
-    }
-
-    private func tabIndex(at point: NSPoint) -> Int? {
-        for (idx, rect) in tabRects().enumerated() {
-            if rect.contains(point) {
-                return idx
-            }
-        }
-        return nil
-    }
-
-    private func tabRects() -> [NSRect] {
-        guard !tabTitles.isEmpty else {
-            return []
-        }
-        let availableWidth = tabBarTabsMaxX - TabBarMetrics.leadingInset
-        guard availableWidth > 0 else {
-            return []
-        }
-
-        let preferredWidths = tabTitles.map(tabWidth)
-        let preferredSpacing = TabBarMetrics.tabSpacing * CGFloat(max(0, tabTitles.count - 1))
-        let preferredTotal = preferredWidths.reduce(0, +) + preferredSpacing
-        let scale = preferredTotal > availableWidth ? availableWidth / preferredTotal : 1
-        let spacing = TabBarMetrics.tabSpacing * scale
-        var rects: [NSRect] = []
-        var x = TabBarMetrics.leadingInset
-        for preferredWidth in preferredWidths {
-            let width = preferredWidth * scale
-            rects.append(NSRect(x: x, y: 5, width: width, height: 20))
-            x += width + spacing
-        }
-        return rects
-    }
-
-    private func tabWidth(_ title: String) -> CGFloat {
-        let size = (title as NSString).size(withAttributes: [.font: tabFont])
-        return min(max(size.width + 24, 92), 170)
-    }
-
-    private var tabBarButtons: [NSButton] {
-        [newTabButton, splitVerticalButton, splitHorizontalButton]
-    }
-
-    private var tabBarControlsWidth: CGFloat {
-        let buttonCount = CGFloat(tabBarButtons.count)
-        return buttonCount * TabBarMetrics.buttonSize
-            + max(0, buttonCount - 1) * TabBarMetrics.controlsSpacing
-    }
-
-    private var tabBarControlsLeadingX: CGFloat {
-        max(0, bounds.width - TabBarMetrics.trailingInset - tabBarControlsWidth)
-    }
-
-    private var tabBarTabsMaxX: CGFloat {
-        max(TabBarMetrics.leadingInset, tabBarControlsLeadingX - TabBarMetrics.controlsGap)
-    }
-
-    private func configureTabBarButtons() {
-        configureTabBarButton(
-            newTabButton,
-            symbolName: "plus",
-            label: "New Tab",
-            toolTip: "New Tab (Command-T)",
-            action: #selector(newTabButtonClicked(_:))
-        )
-        configureTabBarButton(
-            splitVerticalButton,
-            symbolName: "rectangle.split.2x1",
-            label: "Split Left and Right",
-            toolTip: "Split Left and Right (Command-D)",
-            action: #selector(splitVerticalButtonClicked(_:))
-        )
-        configureTabBarButton(
-            splitHorizontalButton,
-            symbolName: "rectangle.split.1x2",
-            label: "Split Top and Bottom",
-            toolTip: "Split Top and Bottom (Command-Shift-D)",
-            action: #selector(splitHorizontalButtonClicked(_:))
-        )
-        tabBarButtons.forEach(addSubview)
-    }
-
-    private func configureTabBarButton(
-        _ button: NSButton,
-        symbolName: String,
-        label: String,
-        toolTip: String,
-        action: Selector
-    ) {
-        button.title = ""
-        button.bezelStyle = .inline
-        button.setButtonType(.momentaryPushIn)
-        button.image = NSImage(
-            systemSymbolName: symbolName,
-            accessibilityDescription: label
-        )
-        button.imagePosition = .imageOnly
-        button.imageScaling = .scaleProportionallyDown
-        button.contentTintColor = .secondaryLabelColor
-        button.focusRingType = .none
-        button.toolTip = toolTip
-        button.setAccessibilityLabel(label)
-        button.target = self
-        button.action = action
-    }
-
-    private func layoutTabBarButtons() {
-        var x = tabBarControlsLeadingX
-        for button in tabBarButtons {
-            button.frame = NSRect(
-                x: x,
-                y: (TabBarMetrics.height - TabBarMetrics.buttonSize) * 0.5,
-                width: TabBarMetrics.buttonSize,
-                height: TabBarMetrics.buttonSize
-            )
-            x += TabBarMetrics.buttonSize + TabBarMetrics.controlsSpacing
-        }
-    }
-
-    @objc private func newTabButtonClicked(_ sender: NSButton) {
-        onNewTabRequested?()
-    }
-
-    @objc private func splitVerticalButtonClicked(_ sender: NSButton) {
-        onSplitVerticalRequested?()
-    }
-
-    @objc private func splitHorizontalButtonClicked(_ sender: NSButton) {
-        onSplitHorizontalRequested?()
     }
 
     private func handleCommandKey(_ event: NSEvent) -> Bool {
@@ -2840,13 +3439,28 @@ final class TerminalTextView: NSView, NSTextInputClient {
     private func compositionOrigin() -> NSPoint {
         let textRect = terminalTextRect()
         let cell = terminalCellSize()
-        guard let cursor = rendererModelSnapshot?.cursor else {
+        let cursor: (x: Int, y: Int)? = if let rendererCursor = rendererModelSnapshot?.cursor {
+            (Int(rendererCursor.x), Int(rendererCursor.y))
+        } else {
+            terminalCursor
+        }
+        guard let cursor else {
             return NSPoint(x: textRect.minX, y: textRect.maxY - cell.height)
         }
         return NSPoint(
-            x: textRect.minX + CGFloat(cursor.x) * cell.width,
-            y: textRect.minY + CGFloat(cursor.y) * cell.height
+            x: min(
+                textRect.minX + CGFloat(cursor.x) * cell.width,
+                textRect.maxX - cell.width
+            ),
+            y: min(
+                textRect.minY + CGFloat(cursor.y) * cell.height,
+                textRect.maxY - cell.height
+            )
         )
+    }
+
+    private func invalidateInputCoordinates() {
+        inputContext?.invalidateCharacterCoordinates()
     }
 
     private func routeKeyEvent(_ event: NSEvent, released: Bool) -> Bool {
@@ -3046,6 +3660,31 @@ private func terminalKeyText(_ event: NSEvent) -> String? {
     return text
 }
 
+private let terminalReturnKeyCodes: Set<UInt16> = [36, 76]
+
+private let tmuxShellCommandNames: Set<String> = {
+    var names = Set<String>()
+    if let contents = try? String(contentsOfFile: "/etc/shells", encoding: .utf8) {
+        for line in contents.split(whereSeparator: \.isNewline) {
+            let value = line.trimmingCharacters(in: .whitespaces)
+            guard !value.isEmpty, !value.hasPrefix("#") else {
+                continue
+            }
+            names.insert((value as NSString).lastPathComponent)
+        }
+    }
+    if let loginShell = ProcessInfo.processInfo.environment["SHELL"] {
+        names.insert((loginShell as NSString).lastPathComponent)
+    }
+    return names
+}()
+
+private func tmuxCommandIsShell(_ command: String) -> Bool {
+    let name = (command as NSString).lastPathComponent
+        .trimmingCharacters(in: CharacterSet(charactersIn: "-"))
+    return tmuxShellCommandNames.contains(name)
+}
+
 private func terminalModifierMask(_ flags: NSEvent.ModifierFlags) -> UInt32 {
     var mask: UInt32 = 0
     if flags.contains(.shift) {
@@ -3112,12 +3751,12 @@ private func terminalMouseButton(_ button: String, action: String) -> Int32 {
     }
 }
 
-private func withUtf8(
+private func withUtf8<Result>(
     _ text: String,
-    _ body: (UnsafePointer<UInt8>?, Int) -> Void
-) {
+    _ body: (UnsafePointer<UInt8>?, Int) -> Result
+) -> Result {
     let data = Data(text.utf8)
-    data.withUnsafeBytes { buffer in
+    return data.withUnsafeBytes { buffer in
         body(buffer.bindMemory(to: UInt8.self).baseAddress, buffer.count)
     }
 }
@@ -3190,12 +3829,230 @@ func themeAccentColor(_ theme: String?) -> NSColor {
     return themeAccentColors[theme] ?? NSColor.controlAccentColor
 }
 
-func tabColor(theme: String?, active: Bool) -> NSColor {
-    let accent = themeAccentColor(theme)
-    if active {
-        return accent
+/// Owns the small amount of platform-specific navigation presentation in Satin.
+///
+/// Keep availability checks here so the rest of the shell can continue to use
+/// semantic AppKit controls. When macOS changes its standard navigation
+/// appearance again, this is the only compatibility boundary that should need
+/// to change.
+enum NativePlatformAppearance {
+    enum WindowRole {
+        case terminal
+        case settings
     }
-    return accent.withAlphaComponent(0.45)
+
+    static var usesLiquidGlass: Bool {
+        if #available(macOS 26.0, *) {
+            return true
+        }
+        return false
+    }
+
+    static func configureWindow(_ window: NSWindow, role: WindowRole) {
+        window.titleVisibility = .hidden
+        window.toolbarStyle = role == .terminal ? .unifiedCompact : .unified
+        window.titlebarSeparatorStyle = .none
+        guard role == .terminal else {
+            return
+        }
+        if #available(macOS 26.0, *) {
+            window.styleMask.insert(.fullSizeContentView)
+            window.titlebarAppearsTransparent = true
+        }
+    }
+
+    static func configureTabControl(_ control: NSSegmentedControl) {
+        control.segmentStyle = .automatic
+    }
+
+    static func makeToolbarControls(
+        sessionControl: NSButton,
+        actionControl: NSSegmentedControl
+    ) -> NSView {
+        if #available(macOS 26.0, *) {
+            sessionControl.isBordered = false
+            sessionControl.bezelStyle = .inline
+            actionControl.segmentStyle = .automatic
+            return NativeLiquidGlassToolbarControls(
+                sessionControl: sessionControl,
+                actionControl: actionControl
+            )
+        }
+
+        sessionControl.bezelStyle = .texturedRounded
+        actionControl.segmentStyle = .capsule
+        let stack = NSStackView(views: [sessionControl, actionControl])
+        stack.orientation = .horizontal
+        stack.alignment = .centerY
+        stack.spacing = 8
+        return stack
+    }
+
+    static func toolbarControlsUseExpectedPresentation(_ view: NSView) -> Bool {
+        if #available(macOS 26.0, *) {
+            return view is NativeLiquidGlassToolbarControls
+        }
+        return view is NSStackView
+    }
+
+    static func toolbarControlContentSizeDidChange(_ view: NSView) {
+        if #available(macOS 26.0, *),
+           let controls = view as? NativeLiquidGlassToolbarControls {
+            controls.updatePreferredSize()
+            return
+        }
+        view.invalidateIntrinsicContentSize()
+        view.needsLayout = true
+        view.superview?.needsLayout = true
+    }
+}
+
+@available(macOS 26.0, *)
+private final class NativeLiquidGlassToolbarControls: NSView {
+    private enum Metrics {
+        static let height: CGFloat = 28
+        static let spacing: CGFloat = 6
+        static let controlVerticalInset: CGFloat = 1
+        static let sessionHorizontalInset: CGFloat = 6
+        static let actionsHorizontalInset: CGFloat = 2
+        static let minimumSessionWidth: CGFloat = 86
+        static let minimumActionsWidth: CGFloat = 94
+    }
+
+    private let sessionControl: NSButton
+    private let actionControl: NSSegmentedControl
+    private let container = NSGlassEffectContainerView()
+    private let containerContent = NSView()
+    private let sessionGlass = NSGlassEffectView()
+    private let actionsGlass = NSGlassEffectView()
+    private var preferredWidthConstraint: NSLayoutConstraint?
+    private var preferredHeightConstraint: NSLayoutConstraint?
+
+    init(sessionControl: NSButton, actionControl: NSSegmentedControl) {
+        self.sessionControl = sessionControl
+        self.actionControl = actionControl
+        super.init(frame: .zero)
+
+        sessionGlass.style = .regular
+        sessionGlass.cornerRadius = Metrics.height / 2
+        sessionGlass.contentView = sessionControl
+        actionsGlass.style = .regular
+        actionsGlass.cornerRadius = Metrics.height / 2
+        actionsGlass.contentView = actionControl
+        container.spacing = Metrics.spacing + 4
+        container.contentView = containerContent
+        containerContent.addSubview(sessionGlass)
+        containerContent.addSubview(actionsGlass)
+        addSubview(container)
+        updatePreferredSize()
+    }
+
+    required init?(coder: NSCoder) {
+        nil
+    }
+
+    override var intrinsicContentSize: NSSize {
+        let sessionWidth = max(
+            Metrics.minimumSessionWidth,
+            sessionContentWidth + Metrics.sessionHorizontalInset * 2
+        )
+        let actionsWidth = max(
+            Metrics.minimumActionsWidth,
+            actionControl.fittingSize.width + Metrics.actionsHorizontalInset * 2
+        )
+        return NSSize(
+            width: sessionWidth + Metrics.spacing + actionsWidth,
+            height: Metrics.height
+        )
+    }
+
+    func updatePreferredSize() {
+        let size = intrinsicContentSize
+        if preferredWidthConstraint == nil {
+            preferredWidthConstraint = widthAnchor.constraint(equalToConstant: size.width)
+            preferredHeightConstraint = heightAnchor.constraint(equalToConstant: size.height)
+            preferredWidthConstraint?.isActive = true
+            preferredHeightConstraint?.isActive = true
+        } else {
+            preferredWidthConstraint?.constant = size.width
+            preferredHeightConstraint?.constant = size.height
+        }
+        invalidateIntrinsicContentSize()
+        needsLayout = true
+        superview?.needsLayout = true
+    }
+
+    override func layout() {
+        super.layout()
+        container.frame = bounds
+        containerContent.frame = container.bounds
+
+        let sessionWidth = max(
+            Metrics.minimumSessionWidth,
+            sessionContentWidth + Metrics.sessionHorizontalInset * 2
+        )
+        let actionsWidth = max(
+            Metrics.minimumActionsWidth,
+            bounds.width - sessionWidth - Metrics.spacing
+        )
+        sessionGlass.frame = NSRect(
+            x: 0,
+            y: 0,
+            width: sessionWidth,
+            height: bounds.height
+        )
+        actionsGlass.frame = NSRect(
+            x: sessionWidth + Metrics.spacing,
+            y: 0,
+            width: actionsWidth,
+            height: bounds.height
+        )
+        sessionControl.frame = sessionGlass.bounds.insetBy(
+            dx: Metrics.sessionHorizontalInset,
+            dy: Metrics.controlVerticalInset
+        )
+        actionControl.frame = actionsGlass.bounds.insetBy(
+            dx: Metrics.actionsHorizontalInset,
+            dy: Metrics.controlVerticalInset
+        )
+    }
+
+    private var sessionContentWidth: CGFloat {
+        let font = sessionControl.font ?? NSFont.systemFont(ofSize: NSFont.systemFontSize)
+        let titleWidth = (sessionControl.title as NSString).size(withAttributes: [
+            .font: font,
+        ]).width
+        let imageWidth = sessionControl.image?.size.width ?? 0
+        let imageSpacing: CGFloat = sessionControl.image == nil ? 0 : 5
+        return ceil(titleWidth + imageWidth + imageSpacing)
+    }
+}
+
+private final class NativeTerminalBackdropView: NSView {
+    private var accentColor = themeAccentColor(nil)
+
+    override var isOpaque: Bool {
+        true
+    }
+
+    func updateAccentColor(_ color: NSColor) {
+        accentColor = color
+        needsDisplay = true
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        needsDisplay = true
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        let base = NSColor(calibratedRed: 0.078, green: 0.086, blue: 0.102, alpha: 1)
+        base.setFill()
+        dirtyRect.fill()
+        let resolvedAccent = accentColor.usingColorSpace(.deviceRGB) ?? accentColor
+        let top = base.blended(withFraction: 0.42, of: resolvedAccent) ?? base
+        NSGradient(starting: base, ending: top)?.draw(in: bounds, angle: 90)
+    }
 }
 
 func colorSwatchImage(_ color: NSColor) -> NSImage {
@@ -3378,10 +4235,53 @@ final class NativeSuspendedTerminalSession {
     }
 }
 
-final class TerminalShellViewController: NSViewController, NSTabViewDelegate, TerminalContextMenuProvider {
+private let tmuxNativePaneIdBase = 1_000_000_000
+private let tmuxNativeTabIdBase = 1_500_000_000
+
+final class NativeTmuxSession {
+    let gatewayPaneId: Int
+    let gateway: RustTerminalPane
+    let savedWorkspace: TerminalCoreSnapshot
+    var nativePaneIds: [UInt32: Int] = [:]
+    var tmuxPaneIds: [Int: UInt32] = [:]
+    var nativeTabIds: [UInt32: Int] = [:]
+    var tmuxWindowIds: [Int: UInt32] = [:]
+    var bufferedOutput: [UInt32: Data] = [:]
+    var latestPanes: [UInt32: TmuxPaneSnapshot] = [:]
+    var lastClientGrid: (cols: Int, rows: Int)?
+    var sessionName = "tmux"
+    var socketPath = ""
+    var serverPid: UInt32 = 0
+    var activeWindowZoomed = false
+
+    init(gatewayPaneId: Int, gateway: RustTerminalPane, savedWorkspace: TerminalCoreSnapshot) {
+        self.gatewayPaneId = gatewayPaneId
+        self.gateway = gateway
+        self.savedWorkspace = savedWorkspace
+    }
+
+    func nativePaneId(_ paneId: UInt32) -> Int {
+        tmuxNativePaneIdBase + Int(paneId)
+    }
+
+    func nativeTabId(_ windowId: UInt32) -> Int {
+        tmuxNativeTabIdBase + Int(windowId)
+    }
+}
+
+private enum SatinToolbarItemIdentifier {
+    static let tabs = NSToolbarItem.Identifier("dev.soyukke.satin.toolbar.tabs")
+    static let controls = NSToolbarItem.Identifier("dev.soyukke.satin.toolbar.controls")
+}
+
+final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
+    TerminalContextMenuProvider, NSToolbarDelegate {
     private let core: RustCore
     private var settings: NativeSettings
     private let tabControl = NSSegmentedControl(frame: .zero)
+    private let sessionControlButton = NSButton(frame: .zero)
+    private let toolbarActionControl = NSSegmentedControl(frame: .zero)
+    private let backdropView = NativeTerminalBackdropView(frame: .zero)
     private let metalView: TerminalMetalView
     private let terminalTextView = TerminalTextView(frame: .zero)
     private let defaultPaneMode = NativePaneMode.current()
@@ -3390,6 +4290,9 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate, Te
     private var paneWorkingDirectories: [Int: String] = [:]
     private var paneModes: [Int: NativePaneMode] = [:]
     private var paneTitles: [Int: String] = [:]
+    private var tmuxSession: NativeTmuxSession?
+    private var pendingTmuxReattach: NativeTmuxAttachment?
+    private var sessionPopover: NSPopover?
     private var lastSearchQuery = ""
     private var optionAsAltEnabled: Bool
     private var notificationsEnabled: Bool
@@ -3417,6 +4320,19 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate, Te
     private var paneControlStatuses: [Int: NativePaneControlStatus] = [:]
     private var paneStatusWaiters: [Int: [NativeStatusWaiter]] = [:]
     private var nextStatusRevision: UInt64 = 1
+    private lazy var toolbarControlsView = NativePlatformAppearance.makeToolbarControls(
+        sessionControl: sessionControlButton,
+        actionControl: toolbarActionControl
+    )
+    private lazy var nativeToolbar: NSToolbar = {
+        let toolbar = NSToolbar(identifier: "dev.soyukke.satin.toolbar.main")
+        toolbar.delegate = self
+        toolbar.displayMode = .iconOnly
+        toolbar.allowsUserCustomization = false
+        toolbar.autosavesConfiguration = false
+        toolbar.showsBaselineSeparator = false
+        return toolbar
+    }()
 
     init?(
         core: RustCore,
@@ -3434,33 +4350,11 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate, Te
         self.notificationsEnabled = settings.notifications
         self.metalView = TerminalMetalView(frame: .zero)
         super.init(nibName: nil, bundle: nil)
+        configureTabControl()
+        configureToolbarControls()
         self.metalView.contextMenuProvider = self
-        self.terminalTextView.onTabSelected = { [weak self] index in
-            self?.selectTab(index)
-        }
         self.terminalTextView.onPaneSelected = { [weak self] paneId in
             self?.selectPane(paneId)
-        }
-        self.terminalTextView.onNewTabRequested = { [weak self] in
-            guard let self else {
-                return
-            }
-            self.newTab(nil)
-            self.focusTerminal()
-        }
-        self.terminalTextView.onSplitVerticalRequested = { [weak self] in
-            guard let self else {
-                return
-            }
-            self.splitVertical(nil)
-            self.focusTerminal()
-        }
-        self.terminalTextView.onSplitHorizontalRequested = { [weak self] in
-            guard let self else {
-                return
-            }
-            self.splitHorizontal(nil)
-            self.focusTerminal()
         }
         self.terminalTextView.onFocusChanged = { [weak self] focused in
             self?.setTerminalFocus(focused)
@@ -3547,14 +4441,19 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate, Te
 
     override func loadView() {
         view = NSView()
-        configureTabControl()
+        backdropView.translatesAutoresizingMaskIntoConstraints = false
         metalView.translatesAutoresizingMaskIntoConstraints = false
         configureTerminalTextView()
+        view.addSubview(backdropView)
         view.addSubview(metalView)
         metalView.addSubview(terminalTextView)
 
         NSLayoutConstraint.activate([
-            metalView.topAnchor.constraint(equalTo: view.topAnchor),
+            backdropView.topAnchor.constraint(equalTo: view.topAnchor),
+            backdropView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            backdropView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            backdropView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            metalView.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
             metalView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             metalView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             metalView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
@@ -3573,6 +4472,7 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate, Te
             restoreSessionIfNeeded()
         }
         syncFromCore()
+        schedulePendingTmuxReattach()
     }
 
     func openFinderItems(_ launch: NativeFinderEditorLaunch) -> Bool {
@@ -3587,6 +4487,10 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate, Te
 
     func focusTerminal() {
         view.window?.makeFirstResponder(terminalTextView)
+    }
+
+    func toolbar() -> NSToolbar {
+        nativeToolbar
     }
 
     func configureControl(
@@ -3627,6 +4531,15 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate, Te
         _ request: NativeControlRequest,
         reply: @escaping NativeControlReply
     ) {
+        if tmuxSession != nil, request.command == "open-neovim" {
+            reply(
+                controlFailure(
+                    "tmux_owned",
+                    "Native Neovim replacement is unavailable while tmux owns the pane."
+                )
+            )
+            return
+        }
         switch request.command {
         case "list":
             reply(.success(controlListResult()))
@@ -3900,6 +4813,22 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate, Te
             reply(controlFailure("invalid_title", "The tab title cannot be empty."))
             return
         }
+        if let session = tmuxSession {
+            guard let cwd = validatedControlDirectory(request.cwd) else {
+                reply(controlFailure("invalid_cwd", "The working directory is invalid."))
+                return
+            }
+            var command = "new-window"
+            if request.background == true {
+                command += " -d"
+            }
+            command += " -c \(tmuxCommandArgument(cwd))"
+            if let title {
+                command += " -n \(tmuxCommandArgument(title))"
+            }
+            replyTmuxCommand(session, command: command, result: ["queued": true], reply: reply)
+            return
+        }
         let previousTabId = lastSnapshot.flatMap { snapshot in
             snapshot.tabs.first(where: { $0.index == snapshot.active_tab })?.id
         }
@@ -3929,6 +4858,28 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate, Te
         _ request: NativeControlRequest,
         reply: @escaping NativeControlReply
     ) {
+        if let session = tmuxSession {
+            guard let paneId = request.pane,
+                  let tmuxPaneId = session.tmuxPaneIds[paneId],
+                  let cwd = validatedControlDirectory(request.cwd),
+                  let axisName = request.axis,
+                  ["horizontal", "vertical"].contains(axisName)
+            else {
+                reply(controlFailure("invalid_split", "The pane, axis, or directory is invalid."))
+                return
+            }
+            let flag = axisName == "horizontal" ? "-v" : "-h"
+            let detached = request.background == true ? " -d" : ""
+            let command = "split-window \(flag)\(detached) -c \(tmuxCommandArgument(cwd)) "
+                + "-t %\(tmuxPaneId)"
+            replyTmuxCommand(
+                session,
+                command: command,
+                result: ["pane": paneId, "queued": true],
+                reply: reply
+            )
+            return
+        }
         let previousTabId = lastSnapshot.flatMap { snapshot in
             snapshot.tabs.first(where: { $0.index == snapshot.active_tab })?.id
         }
@@ -3961,6 +4912,21 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate, Te
         _ request: NativeControlRequest,
         reply: @escaping NativeControlReply
     ) {
+        if let session = tmuxSession {
+            guard let tabId = request.tab,
+                  let windowId = session.tmuxWindowIds[tabId]
+            else {
+                reply(controlFailure("tab_not_found", "The requested tab does not exist."))
+                return
+            }
+            replyTmuxCommand(
+                session,
+                command: "select-window -t @\(windowId)",
+                result: ["tab": tabId],
+                reply: reply
+            )
+            return
+        }
         guard let tabId = request.tab,
               let tab = lastSnapshot?.tabs.first(where: { $0.id == tabId }),
               core.selectTab(tab.index)
@@ -3977,6 +4943,44 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate, Te
         _ request: NativeControlRequest,
         reply: @escaping NativeControlReply
     ) {
+        if let session = tmuxSession {
+            guard let tabId = request.tab,
+                  let index = request.index,
+                  let snapshot = lastSnapshot,
+                  let source = snapshot.tabs.first(where: { $0.id == tabId }),
+                  let sourceWindow = session.tmuxWindowIds[source.id],
+                  index >= 0,
+                  index < snapshot.tabs.count
+            else {
+                reply(controlFailure("invalid_tab_index", "The tab or destination index is invalid."))
+                return
+            }
+            let remaining = snapshot.tabs.filter { $0.id != tabId }
+            if remaining.isEmpty || source.index == index {
+                reply(.success(["tab": tabId, "index": index]))
+                return
+            }
+            let positionFlag: String
+            let targetTab: TerminalCoreTabSnapshot
+            if index == 0 {
+                positionFlag = "-b"
+                targetTab = remaining[0]
+            } else {
+                positionFlag = "-a"
+                targetTab = remaining[min(index - 1, remaining.count - 1)]
+            }
+            guard let targetWindow = session.tmuxWindowIds[targetTab.id] else {
+                reply(controlFailure("tab_not_found", "The destination tab does not exist."))
+                return
+            }
+            replyTmuxCommand(
+                session,
+                command: "move-window -s @\(sourceWindow) \(positionFlag) -t @\(targetWindow)",
+                result: ["tab": tabId, "index": index],
+                reply: reply
+            )
+            return
+        }
         guard let tabId = request.tab,
               let index = request.index,
               let snapshot = lastSnapshot,
@@ -3995,6 +4999,27 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate, Te
         _ request: NativeControlRequest,
         reply: @escaping NativeControlReply
     ) {
+        if let session = tmuxSession {
+            guard let tabId = request.tab,
+                  let snapshot = lastSnapshot,
+                  let tab = snapshot.tabs.first(where: { $0.id == tabId }),
+                  let windowId = session.tmuxWindowIds[tabId]
+            else {
+                reply(controlFailure("tab_not_found", "The requested tab does not exist."))
+                return
+            }
+            guard snapshot.tabs.count > 1 else {
+                reply(controlFailure("final_tab", "The final tab cannot be closed by automation."))
+                return
+            }
+            replyTmuxCommand(
+                session,
+                command: "kill-window -t @\(windowId)",
+                result: ["tab": tabId, "closedPanes": tab.panes],
+                reply: reply
+            )
+            return
+        }
         guard let tabId = request.tab,
               let snapshot = lastSnapshot,
               let tab = snapshot.tabs.first(where: { $0.id == tabId })
@@ -4021,6 +5046,21 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate, Te
         _ request: NativeControlRequest,
         reply: @escaping NativeControlReply
     ) {
+        if let session = tmuxSession {
+            guard let paneId = request.pane,
+                  let tmuxPaneId = session.tmuxPaneIds[paneId]
+            else {
+                reply(controlFailure("pane_not_found", "The requested pane does not exist."))
+                return
+            }
+            replyTmuxCommand(
+                session,
+                command: "select-pane -t %\(tmuxPaneId)",
+                result: ["pane": paneId],
+                reply: reply
+            )
+            return
+        }
         guard let paneId = request.pane,
               let tab = lastSnapshot?.tabs.first(where: { $0.panes.contains(paneId) }),
               core.selectTab(tab.index),
@@ -4038,6 +5078,27 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate, Te
         _ request: NativeControlRequest,
         reply: @escaping NativeControlReply
     ) {
+        if let session = tmuxSession {
+            guard let paneId = request.pane,
+                  let snapshot = lastSnapshot,
+                  let tab = snapshot.tabs.first(where: { $0.panes.contains(paneId) }),
+                  let tmuxPaneId = session.tmuxPaneIds[paneId]
+            else {
+                reply(controlFailure("pane_not_found", "The requested pane does not exist."))
+                return
+            }
+            guard snapshot.tabs.count > 1 || tab.panes.count > 1 else {
+                reply(controlFailure("final_pane", "The final pane cannot be closed by automation."))
+                return
+            }
+            replyTmuxCommand(
+                session,
+                command: "kill-pane -t %\(tmuxPaneId)",
+                result: ["tab": tab.id, "pane": paneId, "tabClosed": tab.panes.count == 1],
+                reply: reply
+            )
+            return
+        }
         guard let paneId = request.pane,
               let snapshot = lastSnapshot,
               let tab = snapshot.tabs.first(where: { $0.panes.contains(paneId) })
@@ -4072,6 +5133,16 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate, Te
               let tab = lastSnapshot?.tabs.first(where: { $0.id == tabId })
         else {
             reply(controlFailure("invalid_tab", "The tab or title is invalid."))
+            return
+        }
+        if let session = tmuxSession,
+           let windowId = session.tmuxWindowIds[tabId] {
+            replyTmuxCommand(
+                session,
+                command: "rename-window -t @\(windowId) \(tmuxCommandArgument(title))",
+                result: ["tab": tabId, "title": title],
+                reply: reply
+            )
             return
         }
         core.renameTab(tab.index, title: title)
@@ -4122,6 +5193,19 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate, Te
         .failure(NativeControlFailure(code: code, message: message))
     }
 
+    private func replyTmuxCommand(
+        _ session: NativeTmuxSession,
+        command: String,
+        result: [String: Any],
+        reply: @escaping NativeControlReply
+    ) {
+        guard session.gateway.tmuxCommand(command) else {
+            reply(controlFailure("tmux_command_failed", "The tmux command could not be queued."))
+            return
+        }
+        reply(.success(result))
+    }
+
     private func controlKeyData(_ key: String) -> Data? {
         let normalized = key.lowercased()
         let named: [String: [UInt8]] = [
@@ -4155,18 +5239,28 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate, Te
     }
 
     @objc func newTab(_ sender: Any?) {
+        if let session = tmuxSession {
+            _ = session.gateway.tmuxCommand("new-window")
+            return
+        }
         pendingPaneWorkingDirectory = newPaneWorkingDirectory()
         core.newTab()
         syncFromCore()
     }
 
     @objc func splitVertical(_ sender: Any?) {
+        if routeTmuxSplit(horizontal: true) {
+            return
+        }
         pendingPaneWorkingDirectory = newPaneWorkingDirectory()
         _ = core.splitActive(axis: ffiSplitVertical)
         syncFromCore()
     }
 
     @objc func splitHorizontal(_ sender: Any?) {
+        if routeTmuxSplit(horizontal: false) {
+            return
+        }
         pendingPaneWorkingDirectory = newPaneWorkingDirectory()
         _ = core.splitActive(axis: ffiSplitHorizontal)
         syncFromCore()
@@ -4180,6 +5274,12 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate, Te
     }
 
     @objc func closeActivePane(_ sender: Any?) {
+        if let session = tmuxSession,
+           let paneId = activePaneId,
+           let tmuxPaneId = session.tmuxPaneIds[paneId] {
+            _ = session.gateway.tmuxCommand("kill-pane -t %\(tmuxPaneId)")
+            return
+        }
         guard let paneId = activePaneId, core.closePane(paneId) else {
             return
         }
@@ -4189,6 +5289,17 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate, Te
             return
         }
         syncFromCore()
+    }
+
+    private func routeTmuxSplit(horizontal: Bool) -> Bool {
+        guard let session = tmuxSession,
+              let paneId = activePaneId,
+              let tmuxPaneId = session.tmuxPaneIds[paneId]
+        else {
+            return false
+        }
+        let flag = horizontal ? "-h" : "-v"
+        return session.gateway.tmuxCommand("split-window \(flag) -t %\(tmuxPaneId)")
     }
 
     @objc func toggleOptionAsAlt(_ sender: Any?) {
@@ -4227,7 +5338,7 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate, Te
     }
 
     private func currentSessionState() -> NativeSessionState? {
-        guard let snapshot = lastSnapshot else {
+        guard let snapshot = tmuxSession?.savedWorkspace ?? lastSnapshot else {
             return nil
         }
         let tabs = snapshot.tabs.compactMap { tab in
@@ -4238,8 +5349,43 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate, Te
         return NativeSessionState(
             schemaVersion: currentSessionSchemaVersion,
             activeTab: snapshot.active_tab,
-            tabs: tabs
+            tabs: tabs,
+            tmuxAttachment: tmuxSession.flatMap { session in
+                guard isLocalTmuxEndpoint(
+                    socketPath: session.socketPath,
+                    serverPid: session.serverPid
+                ) else {
+                    return nil
+                }
+                return validatedTmuxAttachment(
+                    NativeTmuxAttachment(
+                        sessionName: session.sessionName,
+                        socketPath: session.socketPath
+                    )
+                )
+            }
         )
+    }
+
+    private func validatedTmuxAttachment(
+        _ attachment: NativeTmuxAttachment
+    ) -> NativeTmuxAttachment? {
+        let name = attachment.sessionName
+        let socket = attachment.socketPath
+        guard !name.isEmpty,
+              name.utf8.count <= 256,
+              socket.utf8.count <= 1_024,
+              (socket as NSString).isAbsolutePath,
+              name.unicodeScalars.allSatisfy({
+                  !CharacterSet.controlCharacters.contains($0)
+              }),
+              socket.unicodeScalars.allSatisfy({
+                  !CharacterSet.controlCharacters.contains($0)
+              })
+        else {
+            return nil
+        }
+        return attachment
     }
 
     private func savedSessionPane(
@@ -4307,8 +5453,37 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate, Te
         guard alert.runModal() == .alertFirstButtonReturn else {
             return
         }
+        if let session = tmuxSession,
+           let windowId = session.tmuxWindowIds[tab.id] {
+            _ = session.gateway.tmuxCommand(
+                "rename-window -t @\(windowId) \(tmuxCommandArgument(input.stringValue))"
+            )
+            return
+        }
         core.renameTab(snapshot.active_tab, title: input.stringValue)
         syncFromCore()
+    }
+
+    @objc func toggleTmuxPaneZoom(_ sender: Any?) {
+        guard let session = tmuxSession,
+              let paneId = activePaneId,
+              let tmuxPaneId = session.tmuxPaneIds[paneId]
+        else {
+            return
+        }
+        _ = session.gateway.tmuxCommand("resize-pane -Z -t %\(tmuxPaneId)")
+        focusTerminal()
+    }
+
+    @objc func closeTmuxWindow(_ sender: Any?) {
+        guard let session = tmuxSession,
+              let snapshot = lastSnapshot,
+              let tab = snapshot.tabs.first(where: { $0.index == snapshot.active_tab }),
+              let windowId = session.tmuxWindowIds[tab.id]
+        else {
+            return
+        }
+        _ = session.gateway.tmuxCommand("kill-window -t @\(windowId)")
     }
 
     @objc func zoomIn(_ sender: Any?) {
@@ -4358,6 +5533,13 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate, Te
 
         let menu = NSMenu()
         menu.addItem(menuItem("Rename Session", #selector(renameActiveTab(_:))))
+        if tmuxSession != nil {
+            let zoomTitle = tmuxSession?.activeWindowZoomed == true
+                ? "Restore tmux Panes"
+                : "Zoom tmux Pane"
+            menu.addItem(menuItem(zoomTitle, #selector(toggleTmuxPaneZoom(_:))))
+            menu.addItem(menuItem("Close tmux Window", #selector(closeTmuxWindow(_:))))
+        }
         menu.addItem(NSMenuItem.separator())
         menu.addItem(themeMenuItem())
         return menu
@@ -4394,6 +5576,26 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate, Te
             tabs: [LegacyNativeSessionTab(title: "legacy", theme: "Graphite", cwd: "/tmp")]
         )
         let migrated = (try? JSONEncoder().encode(legacy)).flatMap(decodeSessionState)
+        let attachment = NativeTmuxAttachment(
+            sessionName: "persisted-session",
+            socketPath: "/tmp/persisted-tmux.sock"
+        )
+        let attachedState = NativeSessionState(
+            schemaVersion: currentSessionSchemaVersion,
+            activeTab: state.activeTab,
+            tabs: state.tabs,
+            tmuxAttachment: attachment
+        )
+        let attachedData = try? JSONEncoder().encode(attachedState)
+        let attachedRoundTrip = attachedData.flatMap(decodeSessionState)
+        let consumed = sessionStateWithoutTmuxAttachment(attachedState)
+        var versionTwoObject = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+        versionTwoObject?["schemaVersion"] = 2
+        versionTwoObject?.removeValue(forKey: "tmuxAttachment")
+        let versionTwoData = versionTwoObject.flatMap {
+            try? JSONSerialization.data(withJSONObject: $0)
+        }
+        let versionTwoMigrated = versionTwoData.flatMap(decodeSessionState)
         let corruptRejected = decodeSessionState(Data("{not-json".utf8)) == nil
         let futureData = Data("{\"schemaVersion\":999}".utf8)
         let futurePreserved = sessionSchemaVersion(in: futureData) == 999
@@ -4404,6 +5606,14 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate, Te
             && counts.activeLeaves == 1
             && migrated?.schemaVersion == currentSessionSchemaVersion
             && migrated?.tabs.first?.layout.kind == "leaf"
+            && attachedRoundTrip?.tmuxAttachment == attachment
+            && consumed.tmuxAttachment == nil
+            && versionTwoMigrated?.schemaVersion == currentSessionSchemaVersion
+            && versionTwoMigrated?.tmuxAttachment == nil
+            && validatedTmuxAttachment(attachment) == attachment
+            && validatedTmuxAttachment(
+                NativeTmuxAttachment(sessionName: "invalid", socketPath: "relative.sock")
+            ) == nil
             && corruptRejected
             && futurePreserved
         let status = ok ? "ok" : "failed"
@@ -4411,12 +5621,894 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate, Te
             resultPath,
             result: "\(status) session-schema version=\(decoded.schemaVersion) " +
                 "leaves=\(counts.leaves) splits=\(counts.splits) active=\(counts.activeLeaves) " +
-                "migration=\(migrated == nil ? "failed" : "ok") corruption=rejected future=preserved\n"
+                "migration=\(migrated == nil ? "failed" : "ok") " +
+                "reattach=\(attachedRoundTrip?.tmuxAttachment == attachment ? "ok" : "failed") " +
+                "consume-once=\(consumed.tmuxAttachment == nil ? "ok" : "failed") " +
+                "corruption=rejected future=preserved\n"
+        )
+    }
+
+    func applyTmuxNativeSmokeScenario(resultPath: String) {
+        waitForTmuxSmokeLayout(resultPath, previousGrid: nil, retries: 10)
+    }
+
+    private func waitForTmuxSmokeLayout(
+        _ resultPath: String,
+        previousGrid: (rows: Int, cols: Int)?,
+        retries: Int
+    ) {
+        view.layoutSubtreeIfNeeded()
+        resizeTerminalPanesToGrid()
+        let grid = tmuxClientGrid()
+        if previousGrid?.rows != grid.rows || previousGrid?.cols != grid.cols {
+            guard retries > 0 else {
+                writeSessionSmokeResult(resultPath, result: "failed tmux-native layout-unstable\n")
+                return
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+                self?.waitForTmuxSmokeLayout(
+                    resultPath,
+                    previousGrid: (rows: grid.rows, cols: grid.cols),
+                    retries: retries - 1
+                )
+            }
+            return
+        }
+
+        let socket = "satin-native-smoke-\(ProcessInfo.processInfo.processIdentifier)"
+        let command = "tmux -L \(socket) new-session -d -s satin-native-smoke && "
+            + "tmux -L \(socket) send-keys -t satin-native-smoke "
+            + "\"printf 'TMUX_HISTORY_MARKER\\n'; seq 1 120\" Enter && sleep 0.2 && "
+            + "tmux -L \(socket) -CC attach -t satin-native-smoke"
+        writeToActivePane(Data("\(command)\r".utf8))
+        waitForTmuxSmokeEntry(resultPath, retries: 40)
+    }
+
+    private func waitForTmuxSmokeEntry(_ resultPath: String, retries: Int) {
+        guard retries > 0 else {
+            let live = activePaneId
+                .flatMap { terminalPanes[$0] as? RustTmuxPane }?
+                .cursorPosition()
+            let projected = tmuxSession?.latestPanes.values.first(where: { $0.active })
+            writeSessionSmokeResult(
+                resultPath,
+                result: "failed tmux-native entry-timeout "
+                    + "live-cursor=\(live?.x ?? -1),\(live?.y ?? -1) "
+                    + "tmux-cursor=\(projected.map { Int($0.cursor_x) } ?? -1),"
+                    + "\(projected.map { Int($0.cursor_y) } ?? -1)\n"
+            )
+            return
+        }
+        guard tmuxSession != nil,
+              lastSnapshot?.tabs.count == 1,
+              lastSnapshot?.tabs.first?.panes.count == 1,
+              sessionControlTitle().hasPrefix("tmux · "),
+              view.window?.title.contains("tmux · ") == true
+        else {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+                self?.waitForTmuxSmokeEntry(resultPath, retries: retries - 1)
+            }
+            return
+        }
+        guard let tmuxPane = activePaneId.flatMap({ terminalPanes[$0] as? RustTmuxPane }) else {
+            writeSessionSmokeResult(resultPath, result: "failed tmux-native missing-pane\n")
+            return
+        }
+        let projectedPane = tmuxSession?.latestPanes.values.first { $0.active }
+        let currentGrid = tmuxClientGrid()
+        let gridIsSettled = tmuxSession?.lastClientGrid?.cols == currentGrid.cols
+            && tmuxSession?.lastClientGrid?.rows == currentGrid.rows
+        guard let tmuxCursor = tmuxPane.cursorPosition(),
+              tmuxCursor.x > 0,
+              let projectedPane,
+              tmuxCursor.x == Int(projectedPane.cursor_x),
+              tmuxCursor.y == Int(projectedPane.cursor_y),
+              gridIsSettled
+        else {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+                self?.waitForTmuxSmokeEntry(resultPath, retries: retries - 1)
+            }
+            return
+        }
+        let cursorProbe = "TMUX_CURSOR_ADVANCE"
+        guard tmuxPane.writeThroughTmux(Data(cursorProbe.utf8)) else {
+            tmuxSession?.gateway.tmuxCommand("kill-session")
+            writeSessionSmokeResult(resultPath, result: "failed tmux-native cursor-input=no\n")
+            return
+        }
+        waitForTmuxSmokeLiveCursor(
+            resultPath,
+            pane: tmuxPane,
+            start: tmuxCursor,
+            marker: cursorProbe,
+            retries: 20
+        )
+    }
+
+    private func waitForTmuxSmokeLiveCursor(
+        _ resultPath: String,
+        pane: RustTmuxPane,
+        start: (x: Int, y: Int),
+        marker: String,
+        retries: Int
+    ) {
+        let cursor = pane.cursorPosition()
+        let cursorAdvanced = cursor?.y == start.y
+            && (cursor?.x ?? -1) >= start.x + marker.count
+        let inputVisible = pane.controlScreenText().contains(marker)
+        guard cursorAdvanced, inputVisible else {
+            if retries > 0 {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+                    self?.waitForTmuxSmokeLiveCursor(
+                        resultPath,
+                        pane: pane,
+                        start: start,
+                        marker: marker,
+                        retries: retries - 1
+                    )
+                }
+            } else {
+                tmuxSession?.gateway.tmuxCommand("kill-session")
+                writeSessionSmokeResult(
+                    resultPath,
+                    result: "failed tmux-native live-cursor=no "
+                        + "start=\(start.x),\(start.y) "
+                        + "observed=\(cursor?.x ?? -1),\(cursor?.y ?? -1)\n"
+                )
+            }
+            return
+        }
+        guard pane.writeThroughTmux(Data([3])) else {
+            tmuxSession?.gateway.tmuxCommand("kill-session")
+            writeSessionSmokeResult(resultPath, result: "failed tmux-native cursor-clear=no\n")
+            return
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
+            self?.continueTmuxSmokeIME(resultPath, pane: pane)
+        }
+    }
+
+    private func continueTmuxSmokeIME(_ resultPath: String, pane tmuxPane: RustTmuxPane) {
+        terminalTextView.setMarkedText(
+            "TMUX_IME_PREEDIT",
+            selectedRange: NSRange(location: 16, length: 0),
+            replacementRange: NSRange(location: NSNotFound, length: 0)
+        )
+        let imeOrigin = terminalTextView.markedTextOriginForSmoke()
+        guard let paneId = activePaneId,
+              let paneFrame = visiblePaneFrames[paneId],
+              paneFrame.contains(imeOrigin),
+              imeOrigin.x > paneFrame.minX + 1
+        else {
+            terminalTextView.unmarkText()
+            tmuxSession?.gateway.tmuxCommand("kill-session")
+            writeSessionSmokeResult(resultPath, result: "failed tmux-native ime-anchor=no\n")
+            return
+        }
+        terminalTextView.insertText(
+            "printf 'TMUX_IME_%s\\n' COMMITTED\r",
+            replacementRange: NSRange(location: NSNotFound, length: 0)
+        )
+        _ = tmuxPane.scroll(rows: -10_000)
+        let historyVisible = tmuxPane.controlScreenText().contains("TMUX_HISTORY_MARKER")
+        _ = tmuxPane.scroll(rows: 10_000)
+        guard historyVisible else {
+            tmuxSession?.gateway.tmuxCommand("kill-session")
+            writeSessionSmokeResult(resultPath, result: "failed tmux-native history=no\n")
+            return
+        }
+        let shellCheck = "test \"$SHELL\" = \"$SATIN_SHELL_EXECUTABLE\" "
+            + "&& printf 'TMUX_NATIVE_%s SHELL_MATCH=%s\\n' OUTPUT yes "
+            + "|| printf 'TMUX_NATIVE_%s SHELL_MATCH=%s SHELL=%s SELECTED=%s\\n' "
+            + "OUTPUT no \"$SHELL\" \"$SATIN_SHELL_EXECUTABLE\""
+        writeTextToActivePane("\(shellCheck)\r")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+            self?.waitForTmuxSmokeOutput(resultPath, retries: 20)
+        }
+    }
+
+    private func waitForTmuxSmokeOutput(_ resultPath: String, retries: Int) {
+        let screenText = activePaneId
+            .flatMap { terminalPanes[$0] as? RustTmuxPane }?
+            .controlScreenText() ?? ""
+        if screenText.contains("TMUX_NATIVE_OUTPUT SHELL_MATCH=no") {
+            tmuxSession?.gateway.tmuxCommand("kill-session")
+            let detail = screenText
+                .split(separator: "\n")
+                .last(where: { $0.contains("TMUX_NATIVE_OUTPUT SHELL_MATCH=no") })
+                .map(String.init) ?? "missing"
+            writeSessionSmokeResult(
+                resultPath,
+                result: "failed tmux-native shell-env=no detail=\(detail)\n"
+            )
+            return
+        }
+        let outputVisible = screenText.contains("TMUX_NATIVE_OUTPUT SHELL_MATCH=yes")
+        let imeInputVisible = screenText.contains("TMUX_IME_COMMITTED")
+        guard outputVisible, imeInputVisible else {
+            if retries > 0 {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+                    self?.waitForTmuxSmokeOutput(resultPath, retries: retries - 1)
+                }
+            } else {
+                tmuxSession?.gateway.tmuxCommand("kill-session")
+                writeSessionSmokeResult(resultPath, result: "failed tmux-native output-timeout\n")
+            }
+            return
+        }
+        beginTmuxSmokeKitty(resultPath)
+    }
+
+    private func beginTmuxSmokeKitty(_ resultPath: String) {
+        guard let pane = activePaneId.flatMap({ terminalPanes[$0] as? RustTmuxPane }) else {
+            tmuxSession?.gateway.tmuxCommand("kill-session")
+            writeSessionSmokeResult(resultPath, result: "failed tmux-native kitty-pane=no\n")
+            return
+        }
+        let command = "printf '\\033Ptmux;\\033\\033_G"
+            + "a=T,f=24,s=1,v=1,i=4242,c=8,r=4,q=2;/wAA"
+            + "\\033\\033\\\\\\033\\\\'"
+        guard pane.pasteThroughTmux(command), pane.writeThroughTmux(Data([13])) else {
+            tmuxSession?.gateway.tmuxCommand("kill-session")
+            writeSessionSmokeResult(resultPath, result: "failed tmux-native kitty-input=no\n")
+            return
+        }
+        waitForTmuxSmokeKitty(resultPath, pane: pane, retries: 30)
+    }
+
+    private func waitForTmuxSmokeKitty(
+        _ resultPath: String,
+        pane: RustTmuxPane,
+        retries: Int
+    ) {
+        guard pane.controlImageCount() == 1 else {
+            if retries > 0 {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self, weak pane] in
+                    guard let pane else {
+                        return
+                    }
+                    self?.waitForTmuxSmokeKitty(
+                        resultPath,
+                        pane: pane,
+                        retries: retries - 1
+                    )
+                }
+            } else {
+                tmuxSession?.gateway.tmuxCommand("kill-session")
+                writeSessionSmokeResult(resultPath, result: "failed tmux-native kitty-image=no\n")
+            }
+            return
+        }
+        let clear = "printf '\\033Ptmux;\\033\\033_Ga=d,d=I,i=4242,q=2"
+            + "\\033\\033\\\\\\033\\\\'"
+        guard pane.pasteThroughTmux(clear), pane.writeThroughTmux(Data([13])) else {
+            tmuxSession?.gateway.tmuxCommand("kill-session")
+            writeSessionSmokeResult(resultPath, result: "failed tmux-native kitty-clear=no\n")
+            return
+        }
+        beginTmuxSmokeReturnRepeat(resultPath)
+    }
+
+    private func beginTmuxSmokeReturnRepeat(_ resultPath: String) {
+        guard let pane = activePaneId.flatMap({ terminalPanes[$0] as? RustTmuxPane }),
+              pane.writeThroughTmux(Data("PS1='TMUX_REPEAT> '\r".utf8))
+        else {
+            tmuxSession?.gateway.tmuxCommand("kill-session")
+            writeSessionSmokeResult(resultPath, result: "failed tmux-native repeat-setup=no\n")
+            return
+        }
+        waitForTmuxSmokeReturnPrompt(resultPath, pane: pane, retries: 20)
+    }
+
+    private func waitForTmuxSmokeReturnPrompt(
+        _ resultPath: String,
+        pane: RustTmuxPane,
+        retries: Int
+    ) {
+        let marker = "TMUX_REPEAT>"
+        let lastLine = pane.controlScreenText()
+            .split(separator: "\n")
+            .last
+            .map { String($0).trimmingCharacters(in: .whitespaces) }
+        guard lastLine == marker else {
+            if retries > 0 {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self, weak pane] in
+                    guard let pane else {
+                        return
+                    }
+                    self?.waitForTmuxSmokeReturnPrompt(
+                        resultPath,
+                        pane: pane,
+                        retries: retries - 1
+                    )
+                }
+            } else {
+                tmuxSession?.gateway.tmuxCommand("kill-session")
+                writeSessionSmokeResult(resultPath, result: "failed tmux-native repeat-prompt=no\n")
+            }
+            return
+        }
+        sendTmuxSmokeReturnRepeat(resultPath, pane: pane, remaining: 65)
+    }
+
+    private func sendTmuxSmokeReturnRepeat(
+        _ resultPath: String,
+        pane: RustTmuxPane,
+        remaining: Int
+    ) {
+        guard remaining > 0 else {
+            if let event = tmuxSmokeReturnEvent(repeated: false, released: true) {
+                _ = pane.key(event, released: true)
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self, weak pane] in
+                guard let pane else {
+                    return
+                }
+                self?.validateTmuxSmokeReturnRepeat(resultPath, pane: pane, retries: 10)
+            }
+            return
+        }
+        guard let event = tmuxSmokeReturnEvent(repeated: true, released: false),
+              pane.key(event, released: false)
+        else {
+            tmuxSession?.gateway.tmuxCommand("kill-session")
+            writeSessionSmokeResult(resultPath, result: "failed tmux-native repeat-input=no\n")
+            return
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.02) { [weak self, weak pane] in
+            guard let pane else {
+                return
+            }
+            self?.sendTmuxSmokeReturnRepeat(
+                resultPath,
+                pane: pane,
+                remaining: remaining - 1
+            )
+        }
+    }
+
+    private func validateTmuxSmokeReturnRepeat(
+        _ resultPath: String,
+        pane: RustTmuxPane,
+        retries: Int
+    ) {
+        let marker = "TMUX_REPEAT>"
+        let lines = pane.controlScreenText().components(separatedBy: .newlines)
+        let markerRows = lines.indices.filter {
+            lines[$0].trimmingCharacters(in: .whitespaces) == marker
+        }
+        let continuous = markerRows.count >= 10
+            && markerRows.first.flatMap { first in
+                markerRows.last.map { last in
+                    lines[first...last].allSatisfy {
+                        $0.trimmingCharacters(in: .whitespaces) == marker
+                    }
+                }
+            } == true
+        guard continuous else {
+            if retries > 0 {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self, weak pane] in
+                    guard let pane else {
+                        return
+                    }
+                    self?.validateTmuxSmokeReturnRepeat(
+                        resultPath,
+                        pane: pane,
+                        retries: retries - 1
+                    )
+                }
+            } else {
+                tmuxSession?.gateway.tmuxCommand("kill-session")
+                writeSessionSmokeResult(
+                    resultPath,
+                    result: "failed tmux-native repeat-gap=yes rows=\(markerRows.count)\n"
+                )
+            }
+            return
+        }
+        continueTmuxSmokeSplit(resultPath)
+    }
+
+    private func tmuxSmokeReturnEvent(repeated: Bool, released: Bool) -> NSEvent? {
+        NSEvent.keyEvent(
+            with: released ? .keyUp : .keyDown,
+            location: .zero,
+            modifierFlags: [],
+            timestamp: ProcessInfo.processInfo.systemUptime,
+            windowNumber: view.window?.windowNumber ?? 0,
+            context: nil,
+            characters: "\r",
+            charactersIgnoringModifiers: "\r",
+            isARepeat: repeated,
+            keyCode: 36
+        )
+    }
+
+    private func continueTmuxSmokeSplit(_ resultPath: String) {
+        guard let paneId = activePaneId,
+              runTmuxSmokeControl([
+                  "command": "split",
+                  "pane": paneId,
+                  "axis": "vertical",
+              ])
+        else {
+            tmuxSession?.gateway.tmuxCommand("kill-session")
+            writeSessionSmokeResult(resultPath, result: "failed tmux-native cli-split=no\n")
+            return
+        }
+        waitForTmuxSmokeSplit(resultPath, previousPaneId: paneId, retries: 30)
+    }
+
+    private func waitForTmuxSmokeSplit(
+        _ resultPath: String,
+        previousPaneId: Int,
+        retries: Int
+    ) {
+        guard lastSnapshot?.tabs.first?.panes.count == 2,
+              activePaneId != previousPaneId
+        else {
+            if retries > 0 {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+                    self?.waitForTmuxSmokeSplit(
+                        resultPath,
+                        previousPaneId: previousPaneId,
+                        retries: retries - 1
+                    )
+                }
+            } else {
+                tmuxSession?.gateway.tmuxCommand("kill-session")
+                writeSessionSmokeResult(resultPath, result: "failed tmux-native split-timeout\n")
+            }
+            return
+        }
+        let expected = tmuxClientGrid()
+        guard tmuxSession?.lastClientGrid?.cols == expected.cols,
+              tmuxSession?.lastClientGrid?.rows == expected.rows
+        else {
+            let observed = tmuxSession?.lastClientGrid
+            tmuxSession?.gateway.tmuxCommand("kill-session")
+            writeSessionSmokeResult(
+                resultPath,
+                result: "failed tmux-native client-grid expected=\(expected.cols)x\(expected.rows) "
+                    + "observed=\(observed?.cols ?? -1)x\(observed?.rows ?? -1)\n"
+            )
+            return
+        }
+        guard let tab = lastSnapshot?.tabs.first,
+              let currentPaneId = activePaneId,
+              let targetPaneId = tab.panes.first(where: { $0 != currentPaneId })
+        else {
+            writeSessionSmokeResult(resultPath, result: "failed tmux-native action-context\n")
+            return
+        }
+        selectPane(targetPaneId)
+        terminalTextView.insertText(
+            "printf 'TMUX_FOCUS_%s\\n' COMMITTED\r",
+            replacementRange: NSRange(location: NSNotFound, length: 0)
+        )
+        waitForTmuxSmokeFocusInput(resultPath, paneId: targetPaneId, retries: 30)
+    }
+
+    private func waitForTmuxSmokeFocusInput(
+        _ resultPath: String,
+        paneId: Int,
+        retries: Int
+    ) {
+        let focusedInputVisible = (terminalPanes[paneId] as? RustTmuxPane)?
+            .controlScreenText()
+            .contains("TMUX_FOCUS_COMMITTED") == true
+        guard focusedInputVisible, activePaneId == paneId else {
+            if retries > 0 {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+                    self?.waitForTmuxSmokeFocusInput(
+                        resultPath,
+                        paneId: paneId,
+                        retries: retries - 1
+                    )
+                }
+            } else {
+                tmuxSession?.gateway.tmuxCommand("kill-session")
+                writeSessionSmokeResult(resultPath, result: "failed tmux-native focus-input=no\n")
+            }
+            return
+        }
+        continueTmuxSmokeActions(resultPath, paneId: paneId)
+    }
+
+    private func continueTmuxSmokeActions(_ resultPath: String, paneId: Int) {
+        guard let session = tmuxSession,
+              let tab = lastSnapshot?.tabs.first,
+              let pane = terminalPanes[paneId] as? RustTmuxPane
+        else {
+            writeSessionSmokeResult(resultPath, result: "failed tmux-native action-context\n")
+            return
+        }
+        guard runTmuxSmokeControl([
+            "command": "rename-tab",
+            "tab": tab.id,
+            "title": "tmux renamed",
+        ]) else {
+            session.gateway.tmuxCommand("kill-session")
+            writeSessionSmokeResult(resultPath, result: "failed tmux-native cli-rename=no\n")
+            return
+        }
+        let pasteAccepted = pane.pasteThroughTmux("printf 'TMUX_PASTE_OK\\n'")
+        let enterAccepted = pane.writeThroughTmux(Data([13]))
+        guard pasteAccepted, enterAccepted else {
+            session.gateway.tmuxCommand("kill-session")
+            writeSessionSmokeResult(
+                resultPath,
+                result: "failed tmux-native input-rejected "
+                    + "paste=\(pasteAccepted ? "yes" : "no") "
+                    + "enter=\(enterAccepted ? "yes" : "no")\n"
+            )
+            return
+        }
+        waitForTmuxSmokePaste(resultPath, retries: 30)
+    }
+
+    private func waitForTmuxSmokePaste(_ resultPath: String, retries: Int) {
+        let pasted = terminalPanes.values.contains { pane in
+            (pane as? RustTmuxPane)?.controlScreenText().contains("TMUX_PASTE_OK") == true
+        }
+        guard pasted else {
+            if retries > 0 {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+                    self?.waitForTmuxSmokePaste(resultPath, retries: retries - 1)
+                }
+            } else {
+                tmuxSession?.gateway.tmuxCommand("kill-session")
+                writeSessionSmokeResult(resultPath, result: "failed tmux-native paste-timeout\n")
+            }
+            return
+        }
+        toggleTmuxPaneZoom(nil)
+        waitForTmuxSmokeZoom(resultPath, retries: 30)
+    }
+
+    private func waitForTmuxSmokeZoom(_ resultPath: String, retries: Int) {
+        guard lastSnapshot?.tabs.first?.panes.count == 1,
+              tmuxSession?.activeWindowZoomed == true,
+              sessionControlTitle().contains("· Zoom")
+        else {
+            if retries > 0 {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+                    self?.waitForTmuxSmokeZoom(resultPath, retries: retries - 1)
+                }
+            } else {
+                tmuxSession?.gateway.tmuxCommand("kill-session")
+                writeSessionSmokeResult(resultPath, result: "failed tmux-native zoom-timeout\n")
+            }
+            return
+        }
+        toggleTmuxPaneZoom(nil)
+        waitForTmuxSmokeUnzoom(resultPath, retries: 30)
+    }
+
+    private func waitForTmuxSmokeUnzoom(_ resultPath: String, retries: Int) {
+        let paneTexts = terminalPanes.values.compactMap { pane in
+            (pane as? RustTmuxPane)?.controlScreenText()
+        }
+        let screenText = paneTexts.joined(separator: "\n")
+        let titleCorrect = lastSnapshot?.tabs.first?.title == "tmux renamed"
+        guard lastSnapshot?.tabs.first?.panes.count == 2,
+              tmuxSession?.activeWindowZoomed == false,
+              screenText.contains("TMUX_PASTE_OK"),
+              titleCorrect
+        else {
+            if retries > 0 {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+                    self?.waitForTmuxSmokeUnzoom(resultPath, retries: retries - 1)
+                }
+            } else {
+                let paneCount = lastSnapshot?.tabs.first?.panes.count ?? -1
+                let zoomed = tmuxSession?.activeWindowZoomed == true
+                let pasted = screenText.contains("TMUX_PASTE_OK")
+                let detail = paneTexts
+                    .map { $0.suffix(300).replacingOccurrences(of: "\n", with: "|") }
+                    .joined(separator: " <PANE> ")
+                tmuxSession?.gateway.tmuxCommand("kill-session")
+                writeSessionSmokeResult(
+                    resultPath,
+                    result: "failed tmux-native unzoom-or-paste "
+                        + "panes=\(paneCount) zoomed=\(zoomed ? "yes" : "no") "
+                        + "paste=\(pasted ? "yes" : "no") "
+                        + "title=\(titleCorrect ? "yes" : "no") detail=\(detail)\n"
+                )
+            }
+            return
+        }
+        guard runTmuxSmokeControl([
+            "command": "new-tab",
+            "title": "tmux cli tab",
+            "background": false,
+        ]) else {
+            tmuxSession?.gateway.tmuxCommand("kill-session")
+            writeSessionSmokeResult(resultPath, result: "failed tmux-native cli-new-tab=no\n")
+            return
+        }
+        waitForTmuxSmokeTab(resultPath, retries: 30)
+    }
+
+    private func waitForTmuxSmokeTab(_ resultPath: String, retries: Int) {
+        guard lastSnapshot?.tabs.count == 2 else {
+            if retries > 0 {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+                    self?.waitForTmuxSmokeTab(resultPath, retries: retries - 1)
+                }
+            } else {
+                tmuxSession?.gateway.tmuxCommand("kill-session")
+                writeSessionSmokeResult(resultPath, result: "failed tmux-native tab-timeout\n")
+            }
+            return
+        }
+        tmuxSession?.gateway.tmuxCommand("kill-session")
+        waitForTmuxSmokeExit(resultPath, retries: 30)
+    }
+
+    private func waitForTmuxSmokeExit(_ resultPath: String, retries: Int) {
+        guard tmuxSession == nil else {
+            if retries > 0 {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+                    self?.waitForTmuxSmokeExit(resultPath, retries: retries - 1)
+                }
+            } else {
+                writeSessionSmokeResult(resultPath, result: "failed tmux-native exit-timeout\n")
+            }
+            return
+        }
+        let restored = lastSnapshot?.tabs.contains { $0.panes.contains(activePaneId ?? -1) } == true
+        let attachmentCleared = currentSessionState()?.tmuxAttachment == nil
+        let result = restored && attachmentCleared
+            ? "ok tmux-native indicator=yes output=yes history=yes paste=yes zoom=yes "
+                + "rename=yes split=2 client-grid=full tabs=2 cli=yes live-cursor=yes "
+                + "ime=yes focus-input=yes return-repeat=yes kitty=yes "
+                + "shell-env=yes "
+                + "shell-restored=yes detach-clears=yes\n"
+            : "failed tmux-native shell-restored=\(restored ? "yes" : "no") "
+                + "detach-clears=\(attachmentCleared ? "yes" : "no")\n"
+        writeSessionSmokeResult(resultPath, result: result)
+    }
+
+    private func runTmuxSmokeControl(_ payload: [String: Any]) -> Bool {
+        var object = payload
+        object["id"] = 1
+        object["version"] = 1
+        guard let data = try? JSONSerialization.data(withJSONObject: object),
+              let request = try? JSONDecoder().decode(NativeControlRequest.self, from: data)
+        else {
+            return false
+        }
+        var succeeded = false
+        handleControlRequest(request) { result in
+            if case .success = result {
+                succeeded = true
+            }
+        }
+        return succeeded
+    }
+
+    func applyTmuxReattachSmokeScenario(
+        resultPath: String,
+        sessionName: String,
+        socketPath: String,
+        expectedContent: String
+    ) {
+        let attachment = NativeTmuxAttachment(
+            sessionName: sessionName,
+            socketPath: socketPath
+        )
+        guard let validated = validatedTmuxAttachment(attachment) else {
+            writeSessionSmokeResult(resultPath, result: "failed tmux-reattach invalid-descriptor\n")
+            return
+        }
+        pendingTmuxReattach = validated
+        schedulePendingTmuxReattach()
+        waitForTmuxReattachEntry(
+            resultPath,
+            attachment: validated,
+            expectedContent: expectedContent,
+            retries: 40
+        )
+    }
+
+    private func waitForTmuxReattachEntry(
+        _ resultPath: String,
+        attachment: NativeTmuxAttachment,
+        expectedContent: String,
+        retries: Int
+    ) {
+        guard let session = tmuxSession else {
+            if retries > 0 {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+                    self?.waitForTmuxReattachEntry(
+                        resultPath,
+                        attachment: attachment,
+                        expectedContent: expectedContent,
+                        retries: retries - 1
+                    )
+                }
+            } else {
+                writeSessionSmokeResult(resultPath, result: "failed tmux-reattach entry-timeout\n")
+            }
+            return
+        }
+        let descriptorSaved = currentSessionState()?.tmuxAttachment == attachment
+        guard session.sessionName == attachment.sessionName,
+              session.socketPath == attachment.socketPath,
+              descriptorSaved,
+              sessionControlTitle().hasPrefix("tmux · ")
+        else {
+            _ = session.gateway.tmuxCommand("detach-client")
+            writeSessionSmokeResult(
+                resultPath,
+                result: "failed tmux-reattach topology-or-descriptor\n"
+            )
+            return
+        }
+        let existingContentVisible = terminalPanes.values.contains { pane in
+            guard let tmuxPane = pane as? RustTmuxPane else {
+                return false
+            }
+            return tmuxPane.controlScreenText().contains(expectedContent)
+        }
+        guard existingContentVisible else {
+            if retries > 0 {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+                    self?.waitForTmuxReattachEntry(
+                        resultPath,
+                        attachment: attachment,
+                        expectedContent: expectedContent,
+                        retries: retries - 1
+                    )
+                }
+            } else {
+                _ = session.gateway.tmuxCommand("detach-client")
+                let detail = terminalPanes.values.compactMap { pane in
+                    (pane as? RustTmuxPane)?.controlScreenText()
+                }.joined(separator: " | ").prefix(800)
+                writeSessionSmokeResult(
+                    resultPath,
+                    result: "failed tmux-reattach existing-content=no detail=\(detail)\n"
+                )
+            }
+            return
+        }
+        guard let pane = activePaneId.flatMap({ terminalPanes[$0] as? RustTmuxPane }) else {
+            _ = session.gateway.tmuxCommand("detach-client")
+            writeSessionSmokeResult(resultPath, result: "failed tmux-reattach active-pane=no\n")
+            return
+        }
+        pane.write(Data("\u{1b}:qa!\r".utf8))
+        waitForTmuxReattachPrimaryRestore(resultPath, retries: 30)
+    }
+
+    private func waitForTmuxReattachPrimaryRestore(_ resultPath: String, retries: Int) {
+        let primaryVisible = activePaneId
+            .flatMap { terminalPanes[$0] as? RustTmuxPane }?
+            .controlScreenText()
+            .contains("SATIN_TMUX_REATTACH_PRIMARY_CONTENT") == true
+        guard primaryVisible else {
+            if retries > 0 {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+                    self?.waitForTmuxReattachPrimaryRestore(resultPath, retries: retries - 1)
+                }
+            } else {
+                _ = tmuxSession?.gateway.tmuxCommand("detach-client")
+                writeSessionSmokeResult(resultPath, result: "failed tmux-reattach primary-restore=no\n")
+            }
+            return
+        }
+        _ = tmuxSession?.gateway.tmuxCommand("detach-client")
+        waitForTmuxReattachDetach(resultPath, retries: 30)
+    }
+
+    private func waitForTmuxReattachDetach(_ resultPath: String, retries: Int) {
+        guard tmuxSession == nil else {
+            if retries > 0 {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+                    self?.waitForTmuxReattachDetach(resultPath, retries: retries - 1)
+                }
+            } else {
+                writeSessionSmokeResult(resultPath, result: "failed tmux-reattach detach-timeout\n")
+            }
+            return
+        }
+        let attachmentCleared = currentSessionState()?.tmuxAttachment == nil
+        let status = attachmentCleared ? "ok" : "failed"
+        writeSessionSmokeResult(
+            resultPath,
+            result: "\(status) tmux-reattach attached=yes descriptor=yes alternate=yes "
+                + "primary-restored=yes "
+                + "explicit-detach-clears=\(attachmentCleared ? "yes" : "no")\n"
+        )
+    }
+
+    func applyMissingTmuxReattachSmokeScenario(
+        resultPath: String,
+        sessionName: String,
+        socketPath: String
+    ) {
+        let attachment = NativeTmuxAttachment(
+            sessionName: sessionName,
+            socketPath: socketPath
+        )
+        guard let validated = validatedTmuxAttachment(attachment) else {
+            writeSessionSmokeResult(
+                resultPath,
+                result: "failed tmux-reattach-missing invalid-descriptor\n"
+            )
+            return
+        }
+        pendingTmuxReattach = validated
+        schedulePendingTmuxReattach()
+        waitForMissingTmuxReattach(resultPath, retries: 40)
+    }
+
+    private func waitForMissingTmuxReattach(_ resultPath: String, retries: Int) {
+        let terminalText = activePaneId
+            .flatMap { terminalPanes[$0] as? RustTerminalPane }?
+            .controlScreenText() ?? ""
+        let errorVisible = terminalText.contains("can't find session")
+        let attachmentCleared = currentSessionState()?.tmuxAttachment == nil
+        guard tmuxSession == nil, errorVisible, attachmentCleared else {
+            if retries > 0 {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+                    self?.waitForMissingTmuxReattach(resultPath, retries: retries - 1)
+                }
+            } else {
+                writeSessionSmokeResult(
+                    resultPath,
+                    result: "failed tmux-reattach-missing error-visible="
+                        + "\(errorVisible ? "yes" : "no")\n"
+                )
+            }
+            return
+        }
+        writeSessionSmokeResult(
+            resultPath,
+            result: "ok tmux-reattach-missing error-visible=yes shell-restored=yes\n"
         )
     }
 
     func applyTabBarActionsSmokeScenario(resultPath: String) {
-        let controlsReady = terminalTextView.performTabBarActionSmokeClicks()
+        waitForTabBarActionsSmokeScenario(resultPath: resultPath, retries: 20)
+    }
+
+    private func waitForTabBarActionsSmokeScenario(resultPath: String, retries: Int) {
+        view.layoutSubtreeIfNeeded()
+        let controlsReady = sessionControlButton.superview != nil
+            && toolbarActionControl.superview != nil
+            && (0..<3).allSatisfy { toolbarActionControl.image(forSegment: $0) != nil }
+        let shortcutsReady = mainMenuShortcutMatches(
+            actionName: "splitVertical:",
+            shortcut: settings.shortcut(for: .splitVertical)
+        ) && mainMenuShortcutMatches(
+            actionName: "splitHorizontal:",
+            shortcut: settings.shortcut(for: .splitHorizontal)
+        )
+        if !shortcutsReady, retries > 0 {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
+                self?.waitForTabBarActionsSmokeScenario(
+                    resultPath: resultPath,
+                    retries: retries - 1
+                )
+            }
+            return
+        }
+        let chromeReady = NativePlatformAppearance.toolbarControlsUseExpectedPresentation(
+            toolbarControlsView
+        )
+        let compactChrome = view.window?.toolbarStyle == .unifiedCompact
+            && (!NativePlatformAppearance.usesLiquidGlass
+                || toolbarControlsView.intrinsicContentSize.height <= 30)
+        let contentBelowChrome = metalView.frame.maxY <= view.safeAreaRect.maxY + 0.5
+        let backdropSpansWindow = backdropView.frame.maxY >= view.bounds.maxY - 0.5
+        if controlsReady {
+            newTab(nil)
+            splitVertical(nil)
+            splitHorizontal(nil)
+        }
         guard let snapshot = core.snapshot(),
               let activeTab = snapshot.tabs.first(where: { $0.index == snapshot.active_tab })
         else {
@@ -4426,6 +6518,11 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate, Te
         let metrics = paneLayoutMetrics(activeTab.layout)
         let axes = metrics.axes.sorted()
         let ok = controlsReady
+            && shortcutsReady
+            && chromeReady
+            && compactChrome
+            && contentBelowChrome
+            && backdropSpansWindow
             && snapshot.tabs.count == 2
             && snapshot.active_tab == 1
             && metrics.leaves == 3
@@ -4435,10 +6532,42 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate, Te
         writeSessionSmokeResult(
             resultPath,
             result: "\(status) tab-bar-actions controls=\(controlsReady ? "ready" : "invalid") "
+                + "shortcuts=\(shortcutsReady ? "ready" : "invalid") "
+                + "chrome=\(NativePlatformAppearance.usesLiquidGlass ? "glass" : "standard") "
+                + "density=\(compactChrome ? "compact" : "regular") "
+                + "content=\(contentBelowChrome ? "safe" : "under-titlebar") "
+                + "background=\(backdropSpansWindow ? "edge-to-edge" : "inset") "
                 + "tabs=\(snapshot.tabs.count) active=\(snapshot.active_tab) "
                 + "leaves=\(metrics.leaves) splits=\(metrics.splits) "
                 + "axes=\(axes.joined(separator: ","))\n"
         )
+    }
+
+    private func mainMenuShortcutMatches(
+        actionName: String,
+        shortcut: NativeKeyShortcut
+    ) -> Bool {
+        guard let item = mainMenuItem(in: NSApp.mainMenu, actionName: actionName) else {
+            return false
+        }
+        let modifiers = item.keyEquivalentModifierMask.intersection(.deviceIndependentFlagsMask)
+        let expected = shortcut.modifiers.intersection(.deviceIndependentFlagsMask)
+        return item.keyEquivalent == shortcut.keyEquivalent && modifiers == expected
+    }
+
+    private func mainMenuItem(in menu: NSMenu?, actionName: String) -> NSMenuItem? {
+        guard let menu else {
+            return nil
+        }
+        for item in menu.items {
+            if item.action.map(NSStringFromSelector) == actionName {
+                return item
+            }
+            if let match = mainMenuItem(in: item.submenu, actionName: actionName) {
+                return match
+            }
+        }
+        return nil
     }
 
     func applyHomeWorkingDirectorySmokeScenario(resultPath: String) {
@@ -4946,6 +7075,18 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate, Te
 
         DispatchQueue.main.asyncAfter(deadline: .now() + 2.8) { [weak self] in
             self?.writeNvimSkiaSmokeResult(resultPath, retries: 12)
+        }
+    }
+
+    func applyNvimImageSmokeScenario(resultPath: String) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+            self?.configureNvimSkiaSmoke()
+            self?.sendNvimImageSmokePlacement()
+            self?.metalView.resetSkiaFrameCount()
+        }
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.8) { [weak self] in
+            self?.writeNvimImageSmokeResult(resultPath, retries: 12)
         }
     }
 
@@ -5997,6 +8138,32 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate, Te
         }
     }
 
+    private func writeNvimImageSmokeResult(_ resultPath: String, retries: Int) {
+        let imageCount = activePaneId
+            .flatMap { terminalPane(for: $0)?.controlImageCount() } ?? 0
+        let skiaFrames = metalView.skiaFrames()
+        let ok = imageCount == 1 && skiaFrames > 0
+        if !ok, retries > 0 {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
+                self?.writeNvimImageSmokeResult(resultPath, retries: retries - 1)
+            }
+            return
+        }
+
+        let summary = [
+            "images=\(imageCount)",
+            "skia-frames=\(skiaFrames > 0 ? "yes" : "no")",
+            "count=\(skiaFrames)",
+            "geometry=\(terminalTextView.skiaGeometrySummary())",
+            "viewport=\(terminalTextView.skiaViewportSummary())",
+        ].joined(separator: " ")
+        let result = ok ? "ok nvim-image \(summary)\n" : "failed nvim-image \(summary)\n"
+        try? result.write(toFile: resultPath, atomically: true, encoding: .utf8)
+        if ProcessInfo.processInfo.environment["SATIN_NATIVE_SMOKE_KEEP_OPEN"] != "1" {
+            NSApp.terminate(nil)
+        }
+    }
+
     private func writeNvimUiSurfacesSmokeResult(_ resultPath: String, retries: Int) {
         let counts = terminalTextView.rendererModelWindowKindCounts()
         let hasModelFrames = terminalTextView.hasRendererModelFrames()
@@ -6551,6 +8718,18 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate, Te
         runNvimCommandOrWrite(command, fallback: Data(":enew\r".utf8))
     }
 
+    private func sendNvimImageSmokePlacement() {
+        let png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAA" +
+            "DUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg=="
+        let lua = [
+            "local e=string.char(27)",
+            "local packet=e..'[4;6H'..e..'_Ga=T,f=100,t=d,i=901,z=0,w=240,h=160,q=2;" +
+                png + "'..e..'\\\\'",
+            "require('satin.image').write(packet)",
+        ].joined(separator: ";")
+        runNvimCommandOrWrite("lua \(lua)", fallback: Data())
+    }
+
     private func openNvimSmokeBuffer(path: String, terminalCommand: String) {
         writeSmokeLines(path: path)
         switch activePaneMode() {
@@ -6715,12 +8894,28 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate, Te
     }
 
     private func selectTab(_ index: Int) {
+        if let session = tmuxSession,
+           let tab = lastSnapshot?.tabs.first(where: { $0.index == index }),
+           let windowId = session.tmuxWindowIds[tab.id] {
+            _ = session.gateway.tmuxCommand("select-window -t @\(windowId)")
+            focusTerminal()
+            return
+        }
         _ = core.selectTab(index)
         syncFromCore()
         focusTerminal()
     }
 
     private func selectPane(_ paneId: Int) {
+        if let session = tmuxSession, let tmuxPaneId = session.tmuxPaneIds[paneId] {
+            guard session.gateway.tmuxCommand("select-pane -t %\(tmuxPaneId)") else {
+                return
+            }
+            activePaneId = paneId
+            updateActiveFrame()
+            focusTerminal()
+            return
+        }
         guard core.selectPane(paneId) else {
             return
         }
@@ -6729,6 +8924,12 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate, Te
     }
 
     private func selectTabForContextMenu(_ index: Int) {
+        if let session = tmuxSession,
+           let tab = lastSnapshot?.tabs.first(where: { $0.index == index }),
+           let windowId = session.tmuxWindowIds[tab.id] {
+            _ = session.gateway.tmuxCommand("select-window -t @\(windowId)")
+            return
+        }
         guard core.selectTab(index) else {
             return
         }
@@ -6745,11 +8946,12 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate, Te
         if snapshot.active_tab < tabControl.segmentCount {
             tabControl.selectedSegment = snapshot.active_tab
         }
-        terminalTextView.updateTabs(
-            snapshot.tabs.map(\.title),
-            themes: snapshot.tabs.map(\.theme),
-            active: snapshot.active_tab
-        )
+        tabControl.sizeToFit()
+        let activeTheme = snapshot.tabs.first {
+            $0.index == snapshot.active_tab
+        }?.theme
+        backdropView.updateAccentColor(themeAccentColor(activeTheme))
+        updateSessionControl()
         syncingTabs = false
     }
 
@@ -6768,10 +8970,31 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate, Te
         visiblePaneFrames = frames
         terminalTextView.updatePaneFrames(frames, activePaneId: tab.active_pane)
         for (paneId, frame) in frames {
-            terminalPane(for: paneId)?.resize(
-                grid: terminalTextView.terminalGridSize(for: frame)
-            )
+            let pane = terminalPane(for: paneId)
+            if !(pane is RustTmuxPane) {
+                pane?.resize(grid: terminalTextView.terminalGridSize(for: frame))
+            }
         }
+        syncTmuxClientSize()
+    }
+
+    private func syncTmuxClientSize() {
+        guard let session = tmuxSession else {
+            return
+        }
+        let grid = tmuxClientGrid()
+        if session.lastClientGrid?.cols == grid.cols,
+           session.lastClientGrid?.rows == grid.rows {
+            return
+        }
+        guard session.gateway.tmuxCommand("refresh-client -C \(grid.cols),\(grid.rows)") else {
+            return
+        }
+        session.lastClientGrid = (grid.cols, grid.rows)
+    }
+
+    private func tmuxClientGrid() -> (rows: Int, cols: Int, widthPixels: Int, heightPixels: Int) {
+        terminalTextView.terminalGridSize(for: terminalTextView.terminalContentRect())
     }
 
     private func collectPaneFrames(
@@ -6786,8 +9009,9 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate, Te
         guard let axis = layout.axis, let first = layout.first, let second = layout.second else {
             return
         }
+        let ratio = CGFloat(min(max(layout.ratio ?? 0.5, 0.05), 0.95))
         if axis == "vertical" {
-            let firstWidth = floor(rect.width * 0.5)
+            let firstWidth = floor(rect.width * ratio)
             collectPaneFrames(
                 first,
                 rect: NSRect(x: rect.minX, y: rect.minY, width: firstWidth, height: rect.height),
@@ -6804,7 +9028,7 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate, Te
                 frames: &frames
             )
         } else {
-            let firstHeight = floor(rect.height * 0.5)
+            let firstHeight = floor(rect.height * ratio)
             collectPaneFrames(
                 first,
                 rect: NSRect(x: rect.minX, y: rect.minY, width: rect.width, height: firstHeight),
@@ -6852,15 +9076,274 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate, Te
 
     private func windowTitle(_ snapshot: TerminalCoreSnapshot) -> String {
         let tab = snapshot.tabs.first(where: { $0.index == snapshot.active_tab })
-        return "\(tab?.title ?? "Satin") — Satin"
+        if let session = tmuxSession {
+            return "\(tab?.title ?? session.sessionName) — tmux · \(session.sessionName) — "
+                + nativeApplicationName
+        }
+        return "\(tab?.title ?? nativeApplicationName) — \(nativeApplicationName)"
     }
 
     private func configureTabControl() {
         tabControl.translatesAutoresizingMaskIntoConstraints = false
-        tabControl.segmentStyle = .capsule
+        NativePlatformAppearance.configureTabControl(tabControl)
         tabControl.trackingMode = .selectOne
         tabControl.target = self
         tabControl.action = #selector(tabControlChanged(_:))
+        tabControl.setAccessibilityLabel("Terminal Tabs")
+    }
+
+    private func configureToolbarControls() {
+        sessionControlButton.title = "Local"
+        sessionControlButton.image = NSImage(
+            systemSymbolName: "terminal",
+            accessibilityDescription: "Local Terminal"
+        )
+        sessionControlButton.imagePosition = .imageLeading
+        sessionControlButton.imageHugsTitle = true
+        sessionControlButton.cell?.wraps = false
+        sessionControlButton.cell?.lineBreakMode = .byTruncatingTail
+        sessionControlButton.target = self
+        sessionControlButton.action = #selector(showSessionSwitcher(_:))
+        sessionControlButton.toolTip = "Switch between the local terminal and tmux sessions"
+        sessionControlButton.setAccessibilityLabel("Terminal Session")
+
+        toolbarActionControl.segmentCount = 3
+        toolbarActionControl.trackingMode = .momentary
+        toolbarActionControl.setImage(
+            NSImage(systemSymbolName: "plus", accessibilityDescription: "New Tab"),
+            forSegment: 0
+        )
+        toolbarActionControl.setImage(
+            NSImage(
+                systemSymbolName: "rectangle.split.2x1",
+                accessibilityDescription: "Split Left and Right"
+            ),
+            forSegment: 1
+        )
+        toolbarActionControl.setImage(
+            NSImage(
+                systemSymbolName: "rectangle.split.1x2",
+                accessibilityDescription: "Split Top and Bottom"
+            ),
+            forSegment: 2
+        )
+        for segment in 0..<3 {
+            toolbarActionControl.setWidth(30, forSegment: segment)
+        }
+        toolbarActionControl.sizeToFit()
+        toolbarActionControl.target = self
+        toolbarActionControl.action = #selector(toolbarActionChanged(_:))
+        toolbarActionControl.toolTip = "New Tab and Split Pane"
+        toolbarActionControl.setAccessibilityLabel("Tab and Pane Actions")
+    }
+
+    func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
+        [
+            SatinToolbarItemIdentifier.tabs,
+            .flexibleSpace,
+            SatinToolbarItemIdentifier.controls,
+        ]
+    }
+
+    func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
+        toolbarAllowedItemIdentifiers(toolbar)
+    }
+
+    func toolbar(
+        _ toolbar: NSToolbar,
+        itemForItemIdentifier itemIdentifier: NSToolbarItem.Identifier,
+        willBeInsertedIntoToolbar flag: Bool
+    ) -> NSToolbarItem? {
+        let item = NSToolbarItem(itemIdentifier: itemIdentifier)
+        switch itemIdentifier {
+        case SatinToolbarItemIdentifier.tabs:
+            item.label = "Tabs"
+            item.paletteLabel = "Terminal Tabs"
+            item.view = tabControl
+            item.visibilityPriority = .standard
+        case SatinToolbarItemIdentifier.controls:
+            item.label = "Session and Pane Actions"
+            item.paletteLabel = "Session and Pane Actions"
+            item.view = toolbarControlsView
+            item.visibilityPriority = .high
+        default:
+            return nil
+        }
+        return item
+    }
+
+    @objc private func toolbarActionChanged(_ sender: NSSegmentedControl) {
+        switch sender.selectedSegment {
+        case 0:
+            newTab(nil)
+        case 1:
+            splitVertical(nil)
+        case 2:
+            splitHorizontal(nil)
+        default:
+            return
+        }
+        focusTerminal()
+    }
+
+    @objc func showSessionSwitcher(_ sender: Any?) {
+        if sessionPopover?.isShown == true {
+            dismissSessionPopover()
+            return
+        }
+        let controller = TmuxSessionPopoverController(
+            sessions: discoveredTmuxSessions(),
+            currentSessionName: tmuxSession?.sessionName
+        )
+        controller.onSelectLocal = { [weak self] in
+            self?.dismissSessionPopover()
+            self?.detachTmuxSession()
+        }
+        controller.onSelectSession = { [weak self] descriptor in
+            self?.dismissSessionPopover()
+            self?.attachTmuxSession(descriptor)
+        }
+        controller.onCreateSession = { [weak self] name in
+            self?.dismissSessionPopover()
+            self?.createTmuxSession(named: name)
+        }
+
+        let popover = NSPopover()
+        popover.behavior = .transient
+        popover.animates = true
+        popover.contentViewController = controller
+        sessionPopover = popover
+        popover.show(
+            relativeTo: sessionControlButton.bounds,
+            of: sessionControlButton,
+            preferredEdge: .maxY
+        )
+    }
+
+    private func discoveredTmuxSessions() -> [NativeTmuxSessionDescriptor] {
+        let socketPath = tmuxSession?.socketPath
+        var descriptors = NativeTmuxSessionDiscovery.sessions(socketPath: socketPath)
+        if let session = tmuxSession,
+           !descriptors.contains(where: {
+               $0.name == session.sessionName && $0.socketPath == session.socketPath
+           }) {
+            descriptors.append(
+                NativeTmuxSessionDescriptor(
+                    name: session.sessionName,
+                    windowCount: lastSnapshot?.tabs.count ?? 1,
+                    socketPath: session.socketPath
+                )
+            )
+        }
+        return descriptors.sorted {
+            $0.name.localizedStandardCompare($1.name) == .orderedAscending
+        }
+    }
+
+    private func dismissSessionPopover() {
+        sessionPopover?.performClose(nil)
+        sessionPopover = nil
+    }
+
+    private func detachTmuxSession() {
+        guard let session = tmuxSession else {
+            focusTerminal()
+            return
+        }
+        if !session.gateway.tmuxCommand("detach-client") {
+            presentTmuxSessionError("Satin could not detach from the current tmux session.")
+        }
+    }
+
+    private func attachTmuxSession(_ descriptor: NativeTmuxSessionDescriptor) {
+        if let session = tmuxSession {
+            guard descriptor.socketPath == session.socketPath else {
+                presentTmuxSessionError(
+                    "Detach to Local Terminal before connecting to a different tmux server."
+                )
+                return
+            }
+            guard descriptor.name != session.sessionName else {
+                focusTerminal()
+                return
+            }
+            if !session.gateway.tmuxCommand(
+                "switch-client -t \(tmuxCommandArgument(descriptor.name))"
+            ) {
+                presentTmuxSessionError("Satin could not switch to that tmux session.")
+            }
+            return
+        }
+        runTmuxCommandInActiveShell(
+            "command tmux -S \(shellQuote(descriptor.socketPath)) -CC attach-session "
+                + "-t \(shellQuote(descriptor.name))"
+        )
+    }
+
+    private func createTmuxSession(named name: String) {
+        if let session = tmuxSession {
+            let argument = tmuxCommandArgument(name)
+            guard session.gateway.tmuxCommand("new-session -d -s \(argument)"),
+                  session.gateway.tmuxCommand("switch-client -t \(argument)")
+            else {
+                presentTmuxSessionError("Satin could not create that tmux session.")
+                return
+            }
+            return
+        }
+        runTmuxCommandInActiveShell(
+            "command tmux -CC new-session -s \(shellQuote(name))"
+        )
+    }
+
+    private func runTmuxCommandInActiveShell(_ command: String) {
+        guard let paneId = activePaneId,
+              terminalPanes[paneId] is RustTerminalPane
+        else {
+            presentTmuxSessionError("Select a terminal pane before connecting to tmux.")
+            return
+        }
+        var input = Data([21])
+        input.append(Data("\(command)\r".utf8))
+        writeToActivePane(input)
+    }
+
+    private func presentTmuxSessionError(_ message: String) {
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "tmux Session"
+        alert.informativeText = message
+        alert.addButton(withTitle: "OK")
+        if let window = view.window {
+            alert.beginSheetModal(for: window)
+        } else {
+            alert.runModal()
+        }
+    }
+
+    private func updateSessionControl() {
+        let title: String
+        let symbol: String
+        if let session = tmuxSession {
+            title = "tmux · \(session.sessionName)"
+                + (session.activeWindowZoomed ? " · Zoom" : "")
+            symbol = "rectangle.stack"
+        } else {
+            title = "Local"
+            symbol = "terminal"
+        }
+        sessionControlButton.title = title
+        sessionControlButton.image = NSImage(
+            systemSymbolName: symbol,
+            accessibilityDescription: title
+        )
+        sessionControlButton.setAccessibilityValue(title)
+        sessionControlButton.sizeToFit()
+        NativePlatformAppearance.toolbarControlContentSizeDidChange(toolbarControlsView)
+    }
+
+    private func sessionControlTitle() -> String {
+        sessionControlButton.title
     }
 
     private func tabWidth(for title: String) -> CGFloat {
@@ -7240,6 +9723,8 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate, Te
             UserDefaults.standard.removeObject(forKey: NativePreferenceKey.sessionState)
             return
         }
+        pendingTmuxReattach = state.tmuxAttachment.flatMap(validatedTmuxAttachment)
+        consumePersistedTmuxAttachment(state)
         for (index, saved) in state.tabs.enumerated() {
             if index > 0 {
                 core.newTab()
@@ -7261,9 +9746,17 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate, Te
 
     private func decodeSessionState(_ data: Data) -> NativeSessionState? {
         let decoder = JSONDecoder()
-        if let state = try? decoder.decode(NativeSessionState.self, from: data),
-           state.schemaVersion == currentSessionSchemaVersion {
-            return state
+        if let state = try? decoder.decode(NativeSessionState.self, from: data) {
+            if state.schemaVersion == currentSessionSchemaVersion {
+                return state
+            }
+            if state.schemaVersion == 2 {
+                return NativeSessionState(
+                    schemaVersion: currentSessionSchemaVersion,
+                    activeTab: state.activeTab,
+                    tabs: state.tabs
+                )
+            }
         }
         guard let legacy = try? decoder.decode(LegacyNativeSessionState.self, from: data) else {
             return nil
@@ -7284,6 +9777,50 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate, Te
                 )
             }
         )
+    }
+
+    private func consumePersistedTmuxAttachment(_ state: NativeSessionState) {
+        guard state.tmuxAttachment != nil else {
+            return
+        }
+        let consumed = sessionStateWithoutTmuxAttachment(state)
+        guard let data = try? JSONEncoder().encode(consumed) else {
+            NativeLog.sessionWarning("tmux_reattach_consume_encode_failed")
+            return
+        }
+        UserDefaults.standard.set(data, forKey: NativePreferenceKey.sessionState)
+    }
+
+    private func sessionStateWithoutTmuxAttachment(
+        _ state: NativeSessionState
+    ) -> NativeSessionState {
+        NativeSessionState(
+            schemaVersion: currentSessionSchemaVersion,
+            activeTab: state.activeTab,
+            tabs: state.tabs
+        )
+    }
+
+    private func schedulePendingTmuxReattach() {
+        guard let attachment = pendingTmuxReattach,
+              let paneId = activePaneId,
+              let gateway = terminalPanes[paneId] as? RustTerminalPane
+        else {
+            return
+        }
+        pendingTmuxReattach = nil
+        let command = "command tmux -S \(shellQuote(attachment.socketPath)) "
+            + "-CC attach-session -t \(shellQuote(attachment.sessionName))"
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self, weak gateway] in
+            guard let self, let gateway, self.tmuxSession == nil, !gateway.isExited() else {
+                return
+            }
+            gateway.write(Data("\(command)\r".utf8))
+            self.drainTerminalPanes()
+            NativeLog.lifecycleInfo(
+                "tmux_reattach_started session=\(attachment.sessionName)"
+            )
+        }
     }
 
     private func sessionSchemaVersion(in data: Data) -> Int? {
@@ -7490,17 +10027,28 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate, Te
         var activePaneChanged = false
         var exitedNvimPanes: [Int] = []
         var exitedTerminalPanes: [Int] = []
+        var tmuxEvents: [(paneId: Int, pane: RustTerminalPane, event: TmuxControlEvent)] = []
         for (paneId, pane) in terminalPanes {
             let changed = pane.drain()
             activePaneChanged = activePaneChanged || (changed && paneId == activePaneId)
             if let terminal = pane as? RustTerminalPane {
-                updateTerminalMetadata(terminal, paneId: paneId)
+                while let event = terminal.takeTmuxEvent() {
+                    tmuxEvents.append((paneId, terminal, event))
+                }
+                if terminal is RustTmuxPane {
+                    updateTerminalBells(terminal)
+                } else if tmuxSession?.gatewayPaneId != paneId {
+                    updateTerminalMetadata(terminal, paneId: paneId)
+                }
             }
             if pane.kind == .neovim && pane.isExited() {
                 exitedNvimPanes.append(paneId)
             } else if pane.kind == .terminal && pane.isExited() {
                 exitedTerminalPanes.append(paneId)
             }
+        }
+        for item in tmuxEvents {
+            handleTmuxEvent(item.event, gatewayPaneId: item.paneId, gateway: item.pane)
         }
         for paneId in exitedNvimPanes {
             replaceExitedNeovimPane(paneId)
@@ -7512,6 +10060,241 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate, Te
         if activePaneChanged {
             updateActiveFrame()
         }
+    }
+
+    private func handleTmuxEvent(
+        _ event: TmuxControlEvent,
+        gatewayPaneId: Int,
+        gateway: RustTerminalPane
+    ) {
+        switch event.kind {
+        case "entered":
+            beginTmuxSession(gatewayPaneId: gatewayPaneId, gateway: gateway)
+        case "pane_hydration":
+            guard let paneId = event.pane_id, let bytes = event.data else {
+                return
+            }
+            hydrateTmuxPane(paneId: paneId, data: Data(bytes))
+        case "pane_output":
+            guard let paneId = event.pane_id, let bytes = event.data else {
+                return
+            }
+            feedTmuxOutput(paneId: paneId, data: Data(bytes))
+        case "snapshot":
+            guard let snapshot = event.snapshot else {
+                return
+            }
+            applyTmuxSnapshot(snapshot, gatewayPaneId: gatewayPaneId, gateway: gateway)
+        case "protocol_error":
+            NativeLog.runtimeError("tmux_protocol_error message=\(event.message ?? "unknown")")
+            endTmuxSession(gatewayPaneId: gatewayPaneId)
+        case "command_error":
+            NativeLog.runtimeError("tmux_command_error message=\(event.message ?? "unknown")")
+        case "exited":
+            endTmuxSession(gatewayPaneId: gatewayPaneId)
+        default:
+            NativeLog.runtimeError("tmux_unknown_event kind=\(event.kind)")
+        }
+    }
+
+    private func beginTmuxSession(gatewayPaneId: Int, gateway: RustTerminalPane) {
+        guard tmuxSession == nil, let workspace = core.snapshot() else {
+            return
+        }
+        tmuxSession = NativeTmuxSession(
+            gatewayPaneId: gatewayPaneId,
+            gateway: gateway,
+            savedWorkspace: workspace
+        )
+        NativeLog.lifecycleInfo("tmux_control_entered gateway_pane=\(gatewayPaneId)")
+    }
+
+    private func feedTmuxOutput(paneId: UInt32, data: Data) {
+        guard let session = tmuxSession else {
+            return
+        }
+        if let nativePaneId = session.nativePaneIds[paneId],
+           let pane = terminalPanes[nativePaneId] as? RustTmuxPane {
+            pane.feed(data)
+            if nativePaneId == activePaneId {
+                updateActiveFrame()
+            }
+            return
+        }
+        session.bufferedOutput[paneId, default: Data()].append(data)
+    }
+
+    private func hydrateTmuxPane(paneId: UInt32, data: Data) {
+        guard let session = tmuxSession else {
+            return
+        }
+        if let nativePaneId = session.nativePaneIds[paneId],
+           let pane = terminalPanes[nativePaneId] as? RustTmuxPane {
+            pane.feed(data)
+            if let latest = session.latestPanes[paneId] {
+                pane.syncCursor(latest)
+            }
+            if nativePaneId == activePaneId {
+                updateActiveFrame()
+            }
+            return
+        }
+        session.bufferedOutput[paneId] = data
+    }
+
+    private func applyTmuxSnapshot(
+        _ snapshot: TmuxSnapshot,
+        gatewayPaneId: Int,
+        gateway: RustTerminalPane
+    ) {
+        if tmuxSession == nil {
+            beginTmuxSession(gatewayPaneId: gatewayPaneId, gateway: gateway)
+        }
+        guard let session = tmuxSession, session.gatewayPaneId == gatewayPaneId else {
+            return
+        }
+        session.sessionName = snapshot.session_name
+        session.socketPath = snapshot.socket_path
+        session.serverPid = snapshot.server_pid
+        session.activeWindowZoomed = snapshot.windows
+            .first(where: { $0.window_id == snapshot.active_window_id })?.zoomed ?? false
+        let paneSnapshots = snapshot.windows.flatMap(\.panes)
+        session.latestPanes = Dictionary(
+            uniqueKeysWithValues: paneSnapshots.map { ($0.pane_id, $0) }
+        )
+        let nextNativePaneIds = Dictionary(
+            uniqueKeysWithValues: paneSnapshots.map { ($0.pane_id, session.nativePaneId($0.pane_id)) }
+        )
+        let stalePaneIds = Set(session.nativePaneIds.values).subtracting(nextNativePaneIds.values)
+        for paneId in stalePaneIds {
+            removePaneRuntime(paneId)
+            paneModes.removeValue(forKey: paneId)
+            paneWorkingDirectories.removeValue(forKey: paneId)
+        }
+        for pane in paneSnapshots {
+            let nativePaneId = nextNativePaneIds[pane.pane_id] ?? session.nativePaneId(pane.pane_id)
+            paneWorkingDirectories[nativePaneId] = pane.current_path
+            let grid = tmuxPaneGrid(pane)
+            if let runtime = terminalPanes[nativePaneId] as? RustTmuxPane {
+                runtime.setCurrentCommand(pane.current_command)
+                runtime.resize(grid: grid)
+                runtime.syncCursor(pane)
+                continue
+            }
+            guard let runtime = RustTmuxPane(
+                grid: grid,
+                paneId: pane.pane_id,
+                gateway: session.gateway
+            ) else {
+                NativeLog.runtimeError("tmux_pane_create_failed pane=%\(pane.pane_id)")
+                return
+            }
+            terminalPanes[nativePaneId] = runtime
+            paneModes[nativePaneId] = .terminal
+            runtime.setOptionAsAlt(optionAsAltEnabled)
+            runtime.setCurrentCommand(pane.current_command)
+            if let buffered = session.bufferedOutput.removeValue(forKey: pane.pane_id) {
+                runtime.feed(buffered)
+            }
+            runtime.syncCursor(pane)
+        }
+        session.nativePaneIds = nextNativePaneIds
+        session.tmuxPaneIds = Dictionary(
+            uniqueKeysWithValues: nextNativePaneIds.map { ($0.value, $0.key) }
+        )
+        session.nativeTabIds = Dictionary(
+            uniqueKeysWithValues: snapshot.windows.map {
+                ($0.window_id, session.nativeTabId($0.window_id))
+            }
+        )
+        session.tmuxWindowIds = Dictionary(
+            uniqueKeysWithValues: session.nativeTabIds.map { ($0.value, $0.key) }
+        )
+        guard core.applyWorkspace(tmuxWorkspace(snapshot, session: session)) else {
+            NativeLog.runtimeError("tmux_workspace_apply_failed")
+            return
+        }
+        syncFromCore()
+        saveSessionState()
+    }
+
+    private func tmuxWorkspace(
+        _ snapshot: TmuxSnapshot,
+        session: NativeTmuxSession
+    ) -> TerminalCoreSnapshot {
+        let theme = session.savedWorkspace.tabs
+            .first(where: { $0.index == session.savedWorkspace.active_tab })?.theme ?? "Graphite"
+        let tabs = snapshot.windows.enumerated().map { index, window in
+            let visiblePanes = tmuxLayoutPaneIds(window.layout)
+            return TerminalCoreTabSnapshot(
+                id: session.nativeTabId(window.window_id),
+                index: index,
+                title: window.name,
+                active_pane: session.nativePaneId(window.active_pane_id),
+                theme: theme,
+                panes: window.panes
+                    .filter { visiblePanes.contains($0.pane_id) }
+                    .map { session.nativePaneId($0.pane_id) },
+                layout: tmuxLayout(window.layout, session: session)
+            )
+        }
+        let active = tabs.firstIndex {
+            $0.id == session.nativeTabId(snapshot.active_window_id)
+        } ?? 0
+        return TerminalCoreSnapshot(active_tab: active, tabs: tabs)
+    }
+
+    private func tmuxLayout(
+        _ layout: TmuxLayoutSnapshot,
+        session: NativeTmuxSession
+    ) -> PaneLayoutSnapshot {
+        if layout.kind == "leaf", let paneId = layout.pane_id {
+            return PaneLayoutSnapshot(kind: "leaf", paneId: session.nativePaneId(paneId))
+        }
+        return PaneLayoutSnapshot(
+            kind: "split",
+            axis: layout.axis,
+            ratio: layout.ratio,
+            first: layout.first.map { tmuxLayout($0, session: session) },
+            second: layout.second.map { tmuxLayout($0, session: session) }
+        )
+    }
+
+    private func tmuxLayoutPaneIds(_ layout: TmuxLayoutSnapshot) -> Set<UInt32> {
+        if layout.kind == "leaf", let paneId = layout.pane_id {
+            return [paneId]
+        }
+        return (layout.first.map(tmuxLayoutPaneIds) ?? [])
+            .union(layout.second.map(tmuxLayoutPaneIds) ?? [])
+    }
+
+    private func tmuxPaneGrid(
+        _ pane: TmuxPaneSnapshot
+    ) -> (rows: Int, cols: Int, widthPixels: Int, heightPixels: Int) {
+        let base = terminalTextView.terminalGridSize()
+        let width = max(1, base.widthPixels * Int(pane.cols) / max(1, base.cols))
+        let height = max(1, base.heightPixels * Int(pane.rows) / max(1, base.rows))
+        return (Int(pane.rows), Int(pane.cols), width, height)
+    }
+
+    private func endTmuxSession(gatewayPaneId: Int) {
+        guard let session = tmuxSession, session.gatewayPaneId == gatewayPaneId else {
+            return
+        }
+        for paneId in session.nativePaneIds.values {
+            removePaneRuntime(paneId)
+            paneModes.removeValue(forKey: paneId)
+            paneWorkingDirectories.removeValue(forKey: paneId)
+            paneTitles.removeValue(forKey: paneId)
+        }
+        tmuxSession = nil
+        guard core.applyWorkspace(session.savedWorkspace) else {
+            NativeLog.runtimeError("tmux_workspace_restore_failed")
+            return
+        }
+        syncFromCore()
+        saveSessionState()
+        NativeLog.lifecycleInfo("tmux_control_exited gateway_pane=\(gatewayPaneId)")
     }
 
     private func closeExitedTerminalPanes(_ paneIds: [Int]) -> Bool {
@@ -7588,6 +10371,14 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate, Te
             }
         }
         let bells = pane.takeBellCount()
+        handleTerminalBells(bells)
+    }
+
+    private func updateTerminalBells(_ pane: RustTerminalPane) {
+        handleTerminalBells(pane.takeBellCount())
+    }
+
+    private func handleTerminalBells(_ bells: UInt64) {
         guard bells > 0 else {
             return
         }
@@ -7602,6 +10393,7 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate, Te
               let pane = terminalPanes[paneId]
         else {
             terminalTextView.setRendererModel(nil)
+            terminalTextView.setTerminalCursor(nil)
             return
         }
 
@@ -7609,12 +10401,14 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate, Te
             if let scrollHint = model.scroll_hint {
                 lastNvimModelScrollShift = scrollHint.outputShift
             }
+            terminalTextView.setTerminalCursor(nil)
             terminalTextView.setRendererModel(model)
             metalView.needsDisplay = true
             return
         }
 
         terminalTextView.setRendererModel(nil)
+        terminalTextView.setTerminalCursor((pane as? RustTerminalPane)?.cursorPosition())
         metalView.needsDisplay = true
     }
 
@@ -7676,7 +10470,7 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate, Te
     }
 }
 
-final class SatinAppDelegate: NSObject, NSApplicationDelegate {
+final class SatinAppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     private var window: NSWindow?
     private var shellController: TerminalShellViewController?
     private let settingsStore = NativeSettingsStore()
@@ -7689,6 +10483,7 @@ final class SatinAppDelegate: NSObject, NSApplicationDelegate {
     private var updateProgressAlert: NSAlert?
     private var pendingFinderPaths: [String] = []
     private var launchedForFinderEditor = false
+    private var observesKeyWindow = false
 
     func applicationWillFinishLaunching(_ notification: Notification) {
         NSApp.servicesProvider = self
@@ -7783,13 +10578,28 @@ final class SatinAppDelegate: NSObject, NSApplicationDelegate {
             defer: false
         )
 
-        window.title = "Satin"
+        window.title = nativeApplicationName
+        NativePlatformAppearance.configureWindow(
+            window,
+            role: .terminal
+        )
         window.tabbingMode = .preferred
         controller.view.frame = NSRect(origin: .zero, size: contentRect.size)
         window.contentViewController = controller
-        window.makeKeyAndOrderFront(nil)
+        window.toolbar = controller.toolbar()
         self.window = window
         self.shellController = controller
+        if !observesKeyWindow {
+            NotificationCenter.default.addObserver(
+                self,
+                selector: #selector(keyWindowDidChange(_:)),
+                name: NSWindow.didBecomeKeyNotification,
+                object: nil
+            )
+            observesKeyWindow = true
+        }
+        NSApp.activate(ignoringOtherApps: true)
+        window.makeKeyAndOrderFront(nil)
         pendingFinderPaths.removeAll()
         let settingsController = NativeSettingsWindowController(store: settingsStore)
         settingsController.onChange = { [weak self] settings in
@@ -7801,7 +10611,6 @@ final class SatinAppDelegate: NSObject, NSApplicationDelegate {
         buildMainMenu()
         applySmokeScenarioIfNeeded(controller)
         controller.focusTerminal()
-        NSApp.activate(ignoringOtherApps: true)
         writeSmokeWindowIdIfNeeded(window)
         scheduleSmokeShotIfNeeded(window)
         scheduleAutomaticUpdateCheck()
@@ -7864,6 +10673,14 @@ final class SatinAppDelegate: NSObject, NSApplicationDelegate {
         shellController?.closeActivePane(sender)
     }
 
+    @objc private func keyWindowDidChange(_ notification: Notification) {
+        buildMainMenu()
+    }
+
+    @objc func showSessionSwitcher(_ sender: Any?) {
+        shellController?.showSessionSwitcher(sender)
+    }
+
     @objc func showSettings(_ sender: Any?) {
         settingsWindowController?.present()
     }
@@ -7885,6 +10702,9 @@ final class SatinAppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc func checkForUpdates(_ sender: Any?) {
+        guard !nativeIsDevelopmentBuild else {
+            return
+        }
         beginUpdateCheck(interactive: true)
     }
 
@@ -7901,7 +10721,9 @@ final class SatinAppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func scheduleAutomaticUpdateCheck() {
-        guard ProcessInfo.processInfo.environment["SATIN_NATIVE_SMOKE_SCENARIO"] == nil else {
+        guard !nativeIsDevelopmentBuild,
+              ProcessInfo.processInfo.environment["SATIN_NATIVE_SMOKE_SCENARIO"] == nil
+        else {
             return
         }
         guard settingsStore.shouldAutomaticallyCheckForUpdates() else {
@@ -8075,8 +10897,25 @@ final class SatinAppDelegate: NSObject, NSApplicationDelegate {
         mainMenu.addItem(editMenuItem())
         mainMenu.addItem(viewMenuItem())
         mainMenu.addItem(sessionMenuItem())
+        mainMenu.addItem(windowMenuItem())
         mainMenu.addItem(helpMenuItem())
         NSApp.mainMenu = mainMenu
+    }
+
+    func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        let action = menuItem.action
+        let requiresTerminalWindow = action == #selector(newTab(_:))
+            || action == #selector(splitVertical(_:))
+            || action == #selector(splitHorizontal(_:))
+            || action == #selector(renameActiveTab(_:))
+            || action == #selector(openNativeNeovim(_:))
+            || action == #selector(closeActivePane(_:))
+            || action == #selector(selectTabFromShortcut(_:))
+            || action == #selector(showSessionSwitcher(_:))
+            || action == #selector(zoomIn(_:))
+            || action == #selector(zoomOut(_:))
+            || action == #selector(resetZoom(_:))
+        return !requiresTerminalWindow || NSApp.keyWindow === window
     }
 
     private func applySmokeScenarioIfNeeded(_ controller: TerminalShellViewController) {
@@ -8101,6 +10940,32 @@ final class SatinAppDelegate: NSObject, NSApplicationDelegate {
         case "session-schema":
             if let path = environment["SATIN_NATIVE_SMOKE_RESULT"], !path.isEmpty {
                 controller.applySessionSchemaSmokeScenario(resultPath: path)
+            }
+        case "tmux-native":
+            if let path = environment["SATIN_NATIVE_SMOKE_RESULT"], !path.isEmpty {
+                controller.applyTmuxNativeSmokeScenario(resultPath: path)
+            }
+        case "tmux-reattach":
+            if let path = environment["SATIN_NATIVE_SMOKE_RESULT"], !path.isEmpty,
+               let sessionName = environment["SATIN_NATIVE_SMOKE_TMUX_SESSION"],
+               let socketPath = environment["SATIN_NATIVE_SMOKE_TMUX_SOCKET"],
+               let expectedContent = environment["SATIN_NATIVE_SMOKE_TMUX_CONTENT"] {
+                controller.applyTmuxReattachSmokeScenario(
+                    resultPath: path,
+                    sessionName: sessionName,
+                    socketPath: socketPath,
+                    expectedContent: expectedContent
+                )
+            }
+        case "tmux-reattach-missing":
+            if let path = environment["SATIN_NATIVE_SMOKE_RESULT"], !path.isEmpty,
+               let sessionName = environment["SATIN_NATIVE_SMOKE_TMUX_SESSION"],
+               let socketPath = environment["SATIN_NATIVE_SMOKE_TMUX_SOCKET"] {
+                controller.applyMissingTmuxReattachSmokeScenario(
+                    resultPath: path,
+                    sessionName: sessionName,
+                    socketPath: socketPath
+                )
             }
         case "tab-bar-actions":
             if let path = environment["SATIN_NATIVE_SMOKE_RESULT"], !path.isEmpty {
@@ -8157,6 +11022,10 @@ final class SatinAppDelegate: NSObject, NSApplicationDelegate {
         case "nvim-skia":
             if let path = environment["SATIN_NATIVE_SMOKE_RESULT"], !path.isEmpty {
                 controller.applyNvimSkiaSmokeScenario(resultPath: path)
+            }
+        case "nvim-image":
+            if let path = environment["SATIN_NATIVE_SMOKE_RESULT"], !path.isEmpty {
+                controller.applyNvimImageSmokeScenario(resultPath: path)
             }
         case "nvim-ui-surfaces":
             if let path = environment["SATIN_NATIVE_SMOKE_RESULT"], !path.isEmpty {
@@ -8340,7 +11209,7 @@ final class SatinAppDelegate: NSObject, NSApplicationDelegate {
         let item = NSMenuItem()
         let menu = NSMenu()
         menu.addItem(
-            withTitle: "About Satin",
+            withTitle: "About \(nativeApplicationName)",
             action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)),
             keyEquivalent: ""
         )
@@ -8355,7 +11224,7 @@ final class SatinAppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(settingsItem)
         menu.addItem(NSMenuItem.separator())
         menu.addItem(
-            withTitle: "Quit Satin",
+            withTitle: "Quit \(nativeApplicationName)",
             action: #selector(NSApplication.terminate(_:)),
             keyEquivalent: "q"
         )
@@ -8366,6 +11235,8 @@ final class SatinAppDelegate: NSObject, NSApplicationDelegate {
     private func sessionMenuItem() -> NSMenuItem {
         let item = NSMenuItem()
         let menu = NSMenu(title: "Session")
+        menu.addItem(targetedItem("Switch Terminal Session…", #selector(showSessionSwitcher(_:)), ""))
+        menu.addItem(NSMenuItem.separator())
         menu.addItem(commandItem("New Tab", #selector(newTab(_:)), .newTab))
         menu.addItem(commandItem("Split Vertical", #selector(splitVertical(_:)), .splitVertical))
         menu.addItem(commandItem("Split Horizontal", #selector(splitHorizontal(_:)), .splitHorizontal))
@@ -8416,17 +11287,37 @@ final class SatinAppDelegate: NSObject, NSApplicationDelegate {
         return item
     }
 
+    private func windowMenuItem() -> NSMenuItem {
+        let item = NSMenuItem()
+        let menu = NSMenu(title: "Window")
+        menu.addItem(
+            withTitle: "Close Window",
+            action: #selector(NSWindow.performClose(_:)),
+            keyEquivalent: "w"
+        )
+        menu.addItem(
+            withTitle: "Minimize",
+            action: #selector(NSWindow.performMiniaturize(_:)),
+            keyEquivalent: "m"
+        )
+        item.submenu = menu
+        NSApp.windowsMenu = menu
+        return item
+    }
+
     private func helpMenuItem() -> NSMenuItem {
         let item = NSMenuItem()
         let menu = NSMenu(title: "Help")
-        menu.addItem(
-            commandItem(
-                "Check for Updates…",
-                #selector(checkForUpdates(_:)),
-                .checkForUpdates
+        if !nativeIsDevelopmentBuild {
+            menu.addItem(
+                commandItem(
+                    "Check for Updates…",
+                    #selector(checkForUpdates(_:)),
+                    .checkForUpdates
+                )
             )
-        )
-        menu.addItem(NSMenuItem.separator())
+            menu.addItem(NSMenuItem.separator())
+        }
         let acknowledgements = NSMenuItem(
             title: "Acknowledgements…",
             action: #selector(showAcknowledgements(_:)),
@@ -8444,20 +11335,35 @@ final class SatinAppDelegate: NSObject, NSApplicationDelegate {
         _ command: NativeCommandID
     ) -> NSMenuItem {
         let shortcut = settingsStore.load().shortcut(for: command)
+        let terminalOwnsShortcuts = terminalWindowOwnsCommandShortcuts()
         let item = NSMenuItem(
             title: title,
             action: action,
-            keyEquivalent: shortcut.keyEquivalent
+            keyEquivalent: terminalOwnsShortcuts ? shortcut.keyEquivalent : ""
         )
         item.target = self
-        item.keyEquivalentModifierMask = shortcut.modifiers
+        item.keyEquivalentModifierMask = terminalOwnsShortcuts ? shortcut.modifiers : []
         return item
     }
 
     private func targetedItem(_ title: String, _ action: Selector, _ key: String) -> NSMenuItem {
-        let item = NSMenuItem(title: title, action: action, keyEquivalent: key)
+        let item = NSMenuItem(
+            title: title,
+            action: action,
+            keyEquivalent: terminalWindowOwnsCommandShortcuts() ? key : ""
+        )
         item.target = self
         return item
+    }
+
+    private func terminalWindowOwnsCommandShortcuts() -> Bool {
+        guard let window else {
+            return false
+        }
+        guard let keyWindow = NSApp.keyWindow else {
+            return window.isVisible
+        }
+        return keyWindow === window
     }
 }
 

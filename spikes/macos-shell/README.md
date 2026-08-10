@@ -31,12 +31,20 @@ That builds:
 
 - `target/debug/libsatin.a`
 - `spikes/macos-shell/.build/SatinApplication`
+- `just native-dev-app` additionally wraps the debug executables in
+  `spikes/macos-shell/.build/dev/Satin Dev.app`.
 
 Run the native host with:
 
 ```sh
 just terminal
 ```
+
+The development bundle is distinct from `/Applications/Satin.app`: its name is
+`Satin Dev`, its bundle ID is `dev.soyukke.satin.dev`, its settings/session
+domain and purple app icon are separate, and its control socket is stored below
+`~/Library/Application Support/Satin Dev`. Production update checks are disabled
+in this bundle.
 
 Run a non-interactive GUI smoke check with:
 
@@ -80,11 +88,18 @@ manifest marks the result as a development artifact.
 - All split leaves render into clipped regions of the shared Metal drawable.
   New panes inherit cwd, and native Neovim replacement is an explicit command.
 - Kitty image placements and extended terminal decorations are rendered by the
-  Rust Skia/Metal path.
+  Rust Skia/Metal path. Native Neovim image.nvim placements reach the same path
+  through an early Lua-to-RPC bridge instead of a synthetic TTY.
 - Runtime output wakes AppKit through dispatch sources; only active renderer
   animations schedule additional Metal frames.
-- Session schema v2 restores recursive splits, terminal/Neovim pane kinds,
-  working directories, and the active leaf with legacy migration.
+- Session schema v3 restores recursive splits, terminal/Neovim pane kinds,
+  working directories, the active leaf, and consume-once tmux reattach metadata
+  with legacy migration.
+- Explicit local `tmux -CC` projects byte-safe pane streams, bounded history,
+  alternate screens, modes, zoom, bells, and tmux-owned tab/pane actions through
+  native surfaces. The unified toolbar picker switches, creates, attaches, and
+  detaches sessions on the local server. Reattach checkpoints are limited to a
+  live local tmux socket.
 - `just native-smoke` verifies that the native host can launch and render a
   window snapshot, native tabs, dark terminal surface, and PTY text without
   manual interaction. It also requires `skia-frames=yes`.
@@ -92,3 +107,7 @@ manifest marks the result as a development artifact.
 `just native-resize-smoke`, `just native-session-smoke`, and
 `just native-soak` cover resize propagation, session compatibility, and
 repeated lifecycle/handoff scenarios.
+
+`just native-tmux-smoke` covers native projection, history, paste, zoom, Satin
+control actions, alternate-screen reattach, explicit detach, and missing-session
+recovery.

@@ -20,18 +20,23 @@ use rmpv::{Value, decode::read_value, encode::write_value};
 use crate::{
     neovide_render::NeovideRendererModelSnapshot,
     neovim_editor::{NeovimEditor, NeovimMessageSelectionResult},
-    terminal_runtime::TerminalGridSize,
+    terminal_runtime::{KittyGraphicsBridge, KittyImagePlacementSnapshot, TerminalGridSize},
     wakeup::{WakeupReceiver, WakeupSender},
 };
 
 #[cfg(target_os = "macos")]
 const F_SETNOSIGPIPE: libc::c_int = 73;
 
+const SATIN_IMAGE_BRIDGE_LUA: &str = include_str!("satin_image_bridge.lua");
+const SATIN_KITTY_NOTIFICATION: &str = "satin_kitty_graphics";
+const MAX_KITTY_NOTIFICATION_BYTES: usize = 64 * 1024;
+
 pub struct NativeNeovimRuntime {
     process: NeovimProcess,
     rx: Receiver<Value>,
     next_msg_id: u64,
     editor: NeovimEditor,
+    kitty_graphics: KittyGraphicsBridge,
     pending_message_selection_text: Option<String>,
     exited: bool,
     exit_code: Option<i32>,
@@ -76,6 +81,7 @@ impl NativeNeovimRuntime {
             rx,
             next_msg_id: 1,
             editor: NeovimEditor::new(size.cols, size.rows),
+            kitty_graphics: KittyGraphicsBridge::new(size)?,
             pending_message_selection_text: None,
             exited: false,
             exit_code: None,
@@ -89,6 +95,8 @@ impl NativeNeovimRuntime {
 
     pub fn resize(&mut self, size: TerminalGridSize) -> Result<()> {
         self.editor.resize_screen(size.cols, size.rows);
+        self.kitty_graphics.resize(size)?;
+        self.update_image_geometry(size)?;
         self.request(
             "nvim_ui_try_resize",
             vec![size.cols.into(), size.rows.into()],
@@ -187,6 +195,10 @@ impl NativeNeovimRuntime {
         self.editor.renderer_model_with_pending_scroll()
     }
 
+    pub fn kitty_placements(&self) -> Result<Vec<KittyImagePlacementSnapshot>> {
+        self.kitty_graphics.placements()
+    }
+
     pub fn advance_renderer_animations(&mut self, dt: f32) -> bool {
         self.editor.advance_renderer_animations(dt)
     }
@@ -196,6 +208,7 @@ impl NativeNeovimRuntime {
     }
 
     fn attach(&mut self, size: TerminalGridSize) -> Result<()> {
+        self.update_image_geometry(size)?;
         let options = Value::Map(vec![
             ("ext_linegrid".into(), true.into()),
             ("ext_multigrid".into(), true.into()),
@@ -206,6 +219,16 @@ impl NativeNeovimRuntime {
             "nvim_ui_attach",
             vec![size.cols.into(), size.rows.into(), options],
         )
+    }
+
+    fn update_image_geometry(&mut self, size: TerminalGridSize) -> Result<()> {
+        for (name, value) in [
+            ("satin_pixel_width", size.pixel_width),
+            ("satin_pixel_height", size.pixel_height),
+        ] {
+            self.request("nvim_set_var", vec![name.into(), u64::from(value).into()])?;
+        }
+        Ok(())
     }
 
     fn request(&mut self, method: &str, args: Vec<Value>) -> Result<()> {
@@ -247,10 +270,17 @@ impl NativeNeovimRuntime {
         if items.len() < 3 || items[0].as_i64() != Some(2) {
             return false;
         }
-        if items[1].as_str() != Some("redraw") {
-            return false;
+        match items[1].as_str() {
+            Some("redraw") => self.handle_redraw_batches(&items[2]),
+            Some(SATIN_KITTY_NOTIFICATION) => {
+                let Some(bytes) = kitty_notification_payload(&items[2]) else {
+                    return false;
+                };
+                self.kitty_graphics.feed(bytes);
+                true
+            }
+            _ => false,
         }
-        self.handle_redraw_batches(&items[2])
     }
 
     fn handle_redraw_batches(&mut self, batches: &Value) -> bool {
@@ -313,6 +343,8 @@ impl NeovimProcess {
             .arg("--cmd")
             .arg("let g:satin = v:true")
             .arg("--cmd")
+            .arg(satin_image_bridge_command())
+            .arg("--cmd")
             .arg("let g:auto_session_enabled = v:false")
             .args(arguments)
             .stdin(Stdio::piped())
@@ -347,6 +379,17 @@ impl NeovimProcess {
             rx,
         ))
     }
+}
+
+fn satin_image_bridge_command() -> String {
+    let source = serde_json::to_string(SATIN_IMAGE_BRIDGE_LUA)
+        .expect("embedded Satin image bridge must serialize");
+    format!("lua assert(load({source}, '@satin-image-bridge'))()")
+}
+
+fn kitty_notification_payload(value: &Value) -> Option<&[u8]> {
+    let payload = value.as_array()?.first()?.as_str()?.as_bytes();
+    (payload.len() <= MAX_KITTY_NOTIFICATION_BYTES).then_some(payload)
 }
 
 impl Drop for NeovimProcess {
@@ -559,5 +602,27 @@ mod tests {
         assert_eq!(nvim_input_notation(&[0x10]), "<C-p>");
         assert_eq!(nvim_input_notation(b"\x1b[A"), "<Up>");
         assert_eq!(nvim_input_notation(b":edit file\r"), ":edit file<CR>");
+    }
+
+    #[test]
+    fn accepts_bounded_kitty_graphics_notifications() {
+        let payload = Value::Array(vec!["\u{1b}_Ga=d,d=a\u{1b}\\".into()]);
+        assert_eq!(
+            kitty_notification_payload(&payload),
+            Some("\u{1b}_Ga=d,d=a\u{1b}\\".as_bytes())
+        );
+
+        let oversized = Value::Array(vec!["x".repeat(MAX_KITTY_NOTIFICATION_BYTES + 1).into()]);
+        assert_eq!(kitty_notification_payload(&oversized), None);
+    }
+
+    #[test]
+    fn embeds_the_image_bridge_before_user_configuration() {
+        let command = satin_image_bridge_command();
+        assert!(command.contains("satin_features"));
+        assert!(command.contains("kitty_graphics = true"));
+        assert!(!command.contains("vim.g.satin_kitty_graphics"));
+        assert!(command.contains("image/backends/kitty/helpers"));
+        assert!(command.contains("image/utils/term"));
     }
 }

@@ -26,6 +26,13 @@ targets Apple Silicon only.
   never repository state. The production path signs with a secure timestamp,
   submits to Apple's notary service, staples the ticket, and runs Gatekeeper
   assessment.
+- `just terminal` wraps the current debug binaries in `Satin Dev.app` rather
+  than launching an unbundled executable or replacing the installed release.
+  The development bundle uses `dev.soyukke.satin.dev`, the `Satin Dev`
+  Application Support directory, its own `UserDefaults` domain, and a purple
+  variant of the application icon. It omits Finder document/service registration
+  and production update checks, so it can run beside `/Applications/Satin.app`
+  without sharing session or control state.
 - Native development, packaging, and release scripts reject non-arm64 macOS
   hosts. `just native-release` produces an arm64 ZIP archive and
   schema-versioned SHA-256 manifest. Without Apple credentials it is explicitly

@@ -5,11 +5,11 @@
   <key>CFBundleDevelopmentRegion</key>
   <string>en</string>
   <key>CFBundleDisplayName</key>
-  <string>Satin</string>
+  <string>@DISPLAY_NAME@</string>
   <key>CFBundleExecutable</key>
-  <string>satin-app</string>
+  <string>@EXECUTABLE@</string>
   <key>CFBundleIdentifier</key>
-  <string>dev.soyukke.satin</string>
+  <string>@BUNDLE_ID@</string>
   <key>CFBundleIconFile</key>
   <string>AppIcon</string>
   <key>CFBundleDocumentTypes</key>
@@ -55,7 +55,7 @@
   <key>CFBundleInfoDictionaryVersion</key>
   <string>6.0</string>
   <key>CFBundleName</key>
-  <string>Satin</string>
+  <string>@DISPLAY_NAME@</string>
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleShortVersionString</key>
@@ -70,6 +70,10 @@
   <true/>
   <key>NSHumanReadableCopyright</key>
   <string>Copyright © 2026 soyukke</string>
+  <key>SatinDataDirectoryName</key>
+  <string>@DATA_DIRECTORY@</string>
+  <key>SatinDevelopmentBuild</key>
+  <@DEVELOPMENT_BUILD@/>
   <key>NSServices</key>
   <array>
     <dict>

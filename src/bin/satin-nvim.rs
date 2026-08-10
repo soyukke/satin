@@ -12,6 +12,7 @@ use anyhow::{Context, Result, anyhow};
 use satin::control::{ControlCommand, ControlRequest, send_control_request};
 
 const LAUNCHER_VERSION_FLAG: &str = "--satin-launcher-version";
+const SATIN_TUI_IMAGE_BRIDGE_LUA: &str = include_str!("../satin_tui_image_bridge.lua");
 
 fn main() {
     let arguments = env::args_os().skip(1).collect::<Vec<_>>();
@@ -27,6 +28,7 @@ fn main() {
     if let Some(exit_code) = try_native_launch(&real_nvim, &arguments) {
         std::process::exit(exit_code);
     }
+    let arguments = terminal_nvim_arguments(&arguments);
     exec_real_nvim(&real_nvim, &arguments);
 }
 
@@ -125,6 +127,24 @@ fn arguments_require_terminal_mode(arguments: &[OsString]) -> bool {
     })
 }
 
+fn terminal_nvim_arguments(arguments: &[OsString]) -> Vec<OsString> {
+    if env::var_os("TMUX").is_none()
+        || !stdin_and_stdout_are_terminals()
+        || arguments_require_terminal_mode(arguments)
+    {
+        return arguments.to_vec();
+    }
+    let mut bridged = Vec::with_capacity(arguments.len() + 2);
+    bridged.push("--cmd".into());
+    bridged.push(tui_image_bridge_command().into());
+    bridged.extend_from_slice(arguments);
+    bridged
+}
+
+fn tui_image_bridge_command() -> String {
+    format!("lua assert(load({SATIN_TUI_IMAGE_BRIDGE_LUA:?}))()")
+}
+
 fn resolve_real_nvim() -> Result<PathBuf> {
     let current = env::current_exe().context("resolve launcher executable")?;
     let current = fs::canonicalize(&current).unwrap_or(current);
@@ -219,5 +239,17 @@ mod tests {
             Path::new("/bin/zsh"),
             Path::new("/bin/bash")
         ));
+    }
+
+    #[test]
+    fn tui_image_bridge_command_preloads_the_kitty_transport() {
+        let command = tui_image_bridge_command();
+        assert!(command.starts_with("lua assert(load("));
+        assert!(command.contains("satin_features"));
+        assert!(command.contains("kitty_graphics = true"));
+        assert!(!command.contains("vim.g.satin_kitty_graphics"));
+        assert!(command.contains("image/backends/kitty/helpers"));
+        assert!(command.contains("transmit_medium.direct"));
+        assert!(command.ends_with(")()"));
     }
 }
