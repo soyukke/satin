@@ -41,17 +41,12 @@ jobs:
       - name: Verify source
         run: nix develop --command just verify
 
-      - name: Test update discovery
-        run: |
-          nix develop --command just native-update-test
-          nix develop --command just native-update-install-smoke
-
-      - name: Build arm64 release
+      - name: Build signed arm64 artifacts once
         env:
           UPDATE_SIGNING_PRIVATE_KEY_B64: ${{ secrets.UPDATE_SIGNING_PRIVATE_KEY_B64 }}
         run: |
           test -n "$UPDATE_SIGNING_PRIVATE_KEY_B64"
-          nix develop --command just native-release
+          nix develop --command just native-ci-build
           jq -e '
             .schemaVersion == 2
               and .signature.algorithm == "ed25519"
@@ -60,13 +55,7 @@ jobs:
           nix develop --command just native-update-release-smoke
 
       - name: Smoke-test application surfaces
-        run: |
-          nix develop --command just native-settings-smoke
-          nix develop --command just native-control-smoke
-          nix develop --command just native-kitty-smoke
-          nix develop --command just native-tab-bar-actions-smoke
-          nix develop --command just native-home-cwd-smoke
-          nix develop --command just native-package-smoke
+        run: nix develop --command just native-ci-smoke
 
       - name: Attest release provenance
         uses: actions/attest-build-provenance@v4
