@@ -2,11 +2,14 @@
 // MIT-licensed renderer. Copyright (c) 2023 Neovide Contributors.
 // See THIRD_PARTY_NOTICES.md for the audited source revision and license.
 
+mod block_elements;
+#[cfg(test)]
+mod block_elements_regression_tests;
+mod decorations;
+
 use crate::{
     neovide_render::NeovideLine,
-    terminal_runtime::{
-        TerminalCellSnapshot, TerminalCellStyle, TerminalColor, TerminalUnderlineStyle,
-    },
+    terminal_runtime::{TerminalCellSnapshot, TerminalCellStyle, TerminalColor},
 };
 use lru::LruCache;
 use skia_safe::{
@@ -92,6 +95,7 @@ impl NeovideTextRenderer {
         let key = PreparedLineKey::new(line, width);
         let baseline = self.shaper.baseline_offset();
         let geometry = self.geometry;
+        block_elements::draw_line(canvas, &line.cells, key.width, row, window_left, geometry);
         if let Some(runs) = self.prepared_lines.get(&key) {
             for run in runs {
                 Self::draw_run(canvas, run, row, window_left, baseline, geometry);
@@ -149,7 +153,15 @@ impl NeovideTextRenderer {
         for blob in run.blobs.iter() {
             canvas.draw_text_blob(blob, origin, &paint);
         }
-        Self::draw_decorations(canvas, run, row, window_left, &paint, geometry);
+        let start_col = window_left + run.start_col;
+        decorations::draw(
+            canvas,
+            start_col..start_col + run.cell_count,
+            run.style,
+            row,
+            &paint,
+            geometry,
+        );
     }
 
     fn run_origin(geometry: TextGridGeometry, row: f32, col: usize, baseline: f32) -> Point {
@@ -157,97 +169,6 @@ impl NeovideTextRenderer {
             geometry.origin_x + col as f32 * geometry.cell_width,
             geometry.origin_y + row * geometry.cell_height + baseline,
         )
-    }
-
-    fn draw_decorations(
-        canvas: &Canvas,
-        run: &PreparedTextRun,
-        row: f32,
-        left: usize,
-        paint: &Paint,
-        geometry: TextGridGeometry,
-    ) {
-        if !run.style.underline && !run.style.strikethrough && !run.style.overline {
-            return;
-        }
-        let start_x = geometry.origin_x + (left + run.start_col) as f32 * geometry.cell_width;
-        let end_x = start_x + run.cell_count as f32 * geometry.cell_width;
-        if run.style.underline {
-            let y = Self::decoration_y(geometry, row, 0.86);
-            let mut underline_paint = paint.clone();
-            if let Some(underline_color) = run.style.underline_color {
-                underline_paint.set_color(color(underline_color));
-            }
-            Self::draw_underline(
-                canvas,
-                start_x,
-                end_x,
-                y,
-                run.style.underline_style,
-                &underline_paint,
-                geometry,
-            );
-        }
-        if run.style.strikethrough {
-            let y = Self::decoration_y(geometry, row, 0.54);
-            canvas.draw_line((start_x, y), (end_x, y), paint);
-        }
-        if run.style.overline {
-            let y = Self::decoration_y(geometry, row, 0.12);
-            canvas.draw_line((start_x, y), (end_x, y), paint);
-        }
-    }
-
-    fn draw_underline(
-        canvas: &Canvas,
-        start_x: f32,
-        end_x: f32,
-        y: f32,
-        style: TerminalUnderlineStyle,
-        paint: &Paint,
-        geometry: TextGridGeometry,
-    ) {
-        match style {
-            TerminalUnderlineStyle::Double => {
-                canvas.draw_line((start_x, y - 1.5), (end_x, y - 1.5), paint);
-                canvas.draw_line((start_x, y + 1.5), (end_x, y + 1.5), paint);
-            }
-            TerminalUnderlineStyle::Curly => {
-                let step = (geometry.cell_width / 3.0).max(2.0);
-                let mut x = start_x;
-                let mut up = true;
-                while x < end_x {
-                    let next = (x + step).min(end_x);
-                    let next_y = if up { y - 1.5 } else { y + 1.5 };
-                    canvas.draw_line((x, y), (next, next_y), paint);
-                    x = next;
-                    up = !up;
-                }
-            }
-            TerminalUnderlineStyle::Dotted => {
-                let step = 3.0;
-                let mut x = start_x;
-                while x <= end_x {
-                    canvas.draw_circle((x, y), 0.8, paint);
-                    x += step;
-                }
-            }
-            TerminalUnderlineStyle::Dashed => {
-                let mut x = start_x;
-                while x < end_x {
-                    let dash_end = (x + 4.0).min(end_x);
-                    canvas.draw_line((x, y), (dash_end, y), paint);
-                    x += 7.0;
-                }
-            }
-            _ => {
-                canvas.draw_line((start_x, y), (end_x, y), paint);
-            }
-        }
-    }
-
-    fn decoration_y(geometry: TextGridGeometry, row: f32, ratio: f32) -> f32 {
-        geometry.origin_y + (row + ratio) * geometry.cell_height
     }
 }
 
@@ -321,7 +242,7 @@ fn collect_text_runs(cells: &[TerminalCellSnapshot], width: usize) -> Vec<TextRu
     let mut runs = Vec::new();
     let mut current = TextRunBuilder::default();
     for (col, cell) in cells.iter().take(width).enumerate() {
-        if cell.text.is_empty() {
+        if cell.text.is_empty() || block_elements::is_native(&cell.text) {
             current.flush(&mut runs);
         } else {
             current.push(col, cell, &mut runs);
