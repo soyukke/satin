@@ -11830,7 +11830,7 @@ struct SatinApplication {
         if ProcessInfo.processInfo.environment["SATIN_UPDATE_SELF_TEST"] == "1" {
             if !AppUpdateChecker.runSelfTests()
                 || !AppUpdateInstaller.runSelfTests()
-                || !NativeSettingsStore.runSelfTests()
+                || !runNativeApplicationDefaultsSelfTests()
                 || !NativeTmuxExecutableResolver.runSelfTests()
                 || !NativeFinderEditorLaunch.runSelfTests()
             {
@@ -11855,7 +11855,7 @@ struct SatinApplication {
             return
         }
 
-        NativeSettingsStore.migrateLegacyDefaultsIfNeeded()
+        prepareNativeApplicationDefaults()
         let app = NSApplication.shared
         let delegate = SatinAppDelegate()
         app.delegate = delegate
