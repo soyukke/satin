@@ -3,6 +3,13 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use anyhow::{Result, bail};
 use serde::Serialize;
 
+mod passthrough;
+mod session;
+
+use passthrough::TmuxDcsPassthroughDecoder;
+pub use session::TmuxSessionSummary;
+use session::parse_session_summaries;
+
 const CONTROL_START: &[u8] = b"\x1bP1000p";
 const CONTROL_END: &[u8] = b"\x1b\\";
 const MAX_CONTROL_LINE_BYTES: usize = 8 * 1024 * 1024;
@@ -11,6 +18,8 @@ const MAX_HYDRATION_HISTORY_LINES: u32 = 100_000;
 const MAX_HYDRATION_CAPTURE_BYTES: usize = 8 * 1024 * 1024;
 const MAX_REHYDRATION_PASSTHROUGH_BYTES: usize = 16 * 1024 * 1024;
 const FLOW_CONTROL_PAUSE_AFTER_SECONDS: u8 = 5;
+const SESSION_LIST_COMMAND: &str =
+    "list-sessions -F '#{q:session_name}|#{session_windows}|#{q:socket_path}'";
 const SNAPSHOT_FIELD_COUNT: usize = 40;
 const SYNC_FORMAT: &str = concat!(
     "#{q:session_id}\t#{q:session_name}\t#{q:socket_path}\t#{q:window_id}\t",
@@ -32,12 +41,30 @@ const SYNC_FORMAT: &str = concat!(
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum TmuxControlEvent {
     Entered,
-    PaneOutput { pane_id: u32, data: Vec<u8> },
-    PaneHydration { pane_id: u32, data: Vec<u8> },
-    Snapshot { snapshot: TmuxSnapshot },
-    CommandError { message: String },
-    ProtocolError { message: String },
-    Exited { reason: Option<String> },
+    PaneOutput {
+        pane_id: u32,
+        data: Vec<u8>,
+    },
+    PaneHydration {
+        pane_id: u32,
+        data: Vec<u8>,
+    },
+    Snapshot {
+        snapshot: TmuxSnapshot,
+    },
+    Sessions {
+        sessions: Vec<TmuxSessionSummary>,
+        session_error: Option<String>,
+    },
+    CommandError {
+        message: String,
+    },
+    ProtocolError {
+        message: String,
+    },
+    Exited {
+        reason: Option<String>,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -141,6 +168,7 @@ enum PendingCommand {
     Initial,
     Ignore,
     Snapshot,
+    Sessions,
     Resume { pane_id: u32 },
     AlternateBacking { pane: TmuxPaneSnapshot },
     Capture { pane: TmuxPaneSnapshot },
@@ -152,103 +180,6 @@ struct CommandResponse {
     guard: Vec<u8>,
     lines: Vec<Vec<u8>>,
     bytes: usize,
-}
-
-#[derive(Debug, Default)]
-struct TmuxDcsPassthroughDecoder {
-    state: TmuxDcsPassthroughState,
-}
-
-#[derive(Debug, Default, PartialEq, Eq)]
-struct DecodedTmuxOutput {
-    all: Vec<u8>,
-    passthrough: Vec<u8>,
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-enum TmuxDcsPassthroughState {
-    #[default]
-    Ground,
-    Escape,
-    Prefix {
-        matched: usize,
-    },
-    Body,
-    BodyEscape,
-}
-
-impl TmuxDcsPassthroughDecoder {
-    const PREFIX: &'static [u8] = b"tmux;";
-
-    fn decode(&mut self, bytes: &[u8]) -> DecodedTmuxOutput {
-        let mut decoded = DecodedTmuxOutput {
-            all: Vec::with_capacity(bytes.len()),
-            passthrough: Vec::new(),
-        };
-        for &byte in bytes {
-            let mut pending = Some(byte);
-            while let Some(current) = pending.take() {
-                match self.state {
-                    TmuxDcsPassthroughState::Ground => {
-                        if current == b'\x1b' {
-                            self.state = TmuxDcsPassthroughState::Escape;
-                        } else {
-                            decoded.all.push(current);
-                        }
-                    }
-                    TmuxDcsPassthroughState::Escape => {
-                        if current == b'P' {
-                            self.state = TmuxDcsPassthroughState::Prefix { matched: 0 };
-                        } else {
-                            decoded.all.push(b'\x1b');
-                            self.state = TmuxDcsPassthroughState::Ground;
-                            pending = Some(current);
-                        }
-                    }
-                    TmuxDcsPassthroughState::Prefix { matched } => {
-                        if Self::PREFIX.get(matched) == Some(&current) {
-                            if matched + 1 == Self::PREFIX.len() {
-                                self.state = TmuxDcsPassthroughState::Body;
-                            } else {
-                                self.state = TmuxDcsPassthroughState::Prefix {
-                                    matched: matched + 1,
-                                };
-                            }
-                        } else {
-                            decoded.all.extend_from_slice(b"\x1bP");
-                            decoded.all.extend_from_slice(&Self::PREFIX[..matched]);
-                            self.state = TmuxDcsPassthroughState::Ground;
-                            pending = Some(current);
-                        }
-                    }
-                    TmuxDcsPassthroughState::Body => {
-                        if current == b'\x1b' {
-                            self.state = TmuxDcsPassthroughState::BodyEscape;
-                        } else {
-                            decoded.all.push(current);
-                            decoded.passthrough.push(current);
-                        }
-                    }
-                    TmuxDcsPassthroughState::BodyEscape => match current {
-                        b'\x1b' => {
-                            decoded.all.push(b'\x1b');
-                            decoded.passthrough.push(b'\x1b');
-                            self.state = TmuxDcsPassthroughState::Body;
-                        }
-                        b'\\' => {
-                            self.state = TmuxDcsPassthroughState::Ground;
-                        }
-                        _ => {
-                            decoded.all.extend_from_slice(&[b'\x1b', current]);
-                            decoded.passthrough.extend_from_slice(&[b'\x1b', current]);
-                            self.state = TmuxDcsPassthroughState::Body;
-                        }
-                    },
-                }
-            }
-        }
-        decoded
-    }
 }
 
 impl TmuxControl {
@@ -282,7 +213,13 @@ impl TmuxControl {
         if !self.active || self.closing {
             return false;
         }
-        self.queue_command(command.into(), PendingCommand::Ignore);
+        let command = command.into();
+        let kind = if command == SESSION_LIST_COMMAND {
+            PendingCommand::Sessions
+        } else {
+            PendingCommand::Ignore
+        };
+        self.queue_command(command, kind);
         true
     }
 
@@ -611,6 +548,26 @@ impl TmuxControl {
             }
             PendingCommand::Snapshot => {
                 self.finish_snapshot_response(succeeded, &response.lines)?;
+            }
+            PendingCommand::Sessions => {
+                let result = succeeded
+                    .then(|| parse_session_summaries(&response.lines))
+                    .transpose();
+                let (sessions, session_error) = match result {
+                    Ok(Some(sessions)) => (sessions, None),
+                    Ok(None) => (
+                        Vec::new(),
+                        Some(response_lines_lossy(
+                            &response.lines,
+                            "tmux session discovery failed",
+                        )),
+                    ),
+                    Err(error) => (Vec::new(), Some(error.to_string())),
+                };
+                self.events.push_back(TmuxControlEvent::Sessions {
+                    sessions,
+                    session_error,
+                });
             }
             PendingCommand::Resume { pane_id } => {
                 if succeeded {
@@ -1826,6 +1783,39 @@ mod tests {
             })
         );
         assert!(control.is_active());
+    }
+
+    #[test]
+    fn session_discovery_uses_the_existing_control_client() {
+        let mut control = TmuxControl::default();
+        control.feed(b"\x1bP1000p").unwrap();
+        assert!(control.command(SESSION_LIST_COMMAND));
+        assert_eq!(
+            control.take_outgoing().unwrap(),
+            format!("{SESSION_LIST_COMMAND}\n").as_bytes()
+        );
+        control
+            .feed(b"%begin 1 2 0\nalpha|2|/tmp/tmux.sock\nbeta|1|/tmp/tmux.sock\n%end 1 2 0\n")
+            .unwrap();
+        assert_eq!(control.take_event(), Some(TmuxControlEvent::Entered));
+        assert_eq!(
+            control.take_event(),
+            Some(TmuxControlEvent::Sessions {
+                sessions: vec![
+                    TmuxSessionSummary {
+                        name: "alpha".to_owned(),
+                        window_count: 2,
+                        socket_path: "/tmp/tmux.sock".to_owned(),
+                    },
+                    TmuxSessionSummary {
+                        name: "beta".to_owned(),
+                        window_count: 1,
+                        socket_path: "/tmp/tmux.sock".to_owned(),
+                    },
+                ],
+                session_error: None,
+            })
+        );
     }
 
     #[test]

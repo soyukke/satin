@@ -115,11 +115,13 @@ Help → Check for Updates… → Update and Restart.
 
 ## tmux and Neovim
 
-Run `tmux -CC attach` or `tmux -CC new-session` inside Satin to project tmux
-windows and panes as native tabs and splits. The session picker in the toolbar
-can create, switch, attach, and detach local sessions. A clean Satin restart
-reattaches the last projected session; ordinary `tmux attach` stays inside the
-terminal as a TUI.
+Install tmux 3.2 or newer, then run `tmux -CC attach` or `tmux -CC new-session`
+inside Satin to project tmux windows and panes as native tabs and splits. The
+session picker in the toolbar can create, switch, attach, and detach local
+sessions. Satin detects the user-owned tmux from the configured login shell and
+uses its absolute path consistently; override it under Satin → Settings… →
+Terminal when needed. A clean Satin restart reattaches the last projected
+session; ordinary `tmux attach` stays inside the terminal as a TUI.
 
 Running interactive `nvim` directly from Satin's supported shell integration,
 or choosing File → Open Native Neovim, uses the native `nvim --embed`
@@ -167,9 +169,10 @@ Open Satin → Settings… or press `Command-,`.
 - Appearance selects a fixed-pitch font, font size, and the default theme for
   new tabs.
 - Terminal selects an executable absolute shell path, an existing startup
-  directory for new panes, and the executable opened by Finder document events.
-  Empty shell and directory values use the login shell and inherit the active
-  working directory; the Finder editor defaults to `nvim`.
+  directory for new panes, the tmux executable, and the executable opened by
+  Finder document events. Empty shell, directory, and tmux values use the login
+  shell, inherit the active working directory, and detect tmux automatically;
+  the Finder editor defaults to `nvim`.
 - Keybindings customizes session, pane, Neovim, zoom, and update commands.
   Invalid, duplicate, and standard app-reserved shortcuts are rejected.
 - Updates enables signed checks and selects every-launch, daily, or weekly

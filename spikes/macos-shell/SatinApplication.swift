@@ -68,292 +68,7 @@ private let themeAccentColors: [String: NSColor] = [
     "Rose": NSColor(calibratedRed: 0.78, green: 0.32, blue: 0.48, alpha: 1.0),
     "Paper": NSColor(calibratedRed: 0.78, green: 0.57, blue: 0.26, alpha: 1.0),
 ]
-private let currentSessionSchemaVersion = 3
-
-enum NativeTmuxSessionDiscovery {
-    static func sessions(socketPath: String?) -> [NativeTmuxSessionDescriptor] {
-        guard let executable = executableURL() else {
-            return []
-        }
-        let process = Process()
-        let output = Pipe()
-        process.executableURL = executable
-        process.standardOutput = output
-        process.standardError = FileHandle.nullDevice
-        var arguments: [String] = []
-        if let socketPath, !socketPath.isEmpty {
-            arguments += ["-S", socketPath]
-        }
-        arguments += [
-            "list-sessions",
-            "-F",
-            "#{session_name}\t#{session_windows}\t#{socket_path}",
-        ]
-        process.arguments = arguments
-
-        do {
-            try process.run()
-        } catch {
-            return []
-        }
-        let data = output.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
-        guard process.terminationStatus == 0 else {
-            return []
-        }
-        guard let value = String(data: data, encoding: .utf8) else {
-            return []
-        }
-        return value.split(whereSeparator: \.isNewline).compactMap { line in
-            let fields = line.split(separator: "\t", omittingEmptySubsequences: false)
-            guard fields.count == 3,
-                let windowCount = Int(fields[1]),
-                !fields[0].isEmpty,
-                !fields[2].isEmpty
-            else {
-                return nil
-            }
-            return NativeTmuxSessionDescriptor(
-                name: String(fields[0]),
-                windowCount: windowCount,
-                socketPath: String(fields[2])
-            )
-        }
-        .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
-    }
-
-    private static func executableURL() -> URL? {
-        let environmentPath = ProcessInfo.processInfo.environment["PATH"] ?? ""
-        let pathDirectories = environmentPath.split(separator: ":").map(String.init)
-        let fallbackDirectories = [
-            "/opt/homebrew/bin",
-            "/usr/local/bin",
-            "/run/current-system/sw/bin",
-            "/nix/var/nix/profiles/default/bin",
-            "/usr/bin",
-        ]
-        for directory in pathDirectories + fallbackDirectories {
-            let candidate = URL(fileURLWithPath: directory).appendingPathComponent("tmux")
-            if FileManager.default.isExecutableFile(atPath: candidate.path) {
-                return candidate
-            }
-        }
-        return nil
-    }
-}
-
-final class TmuxSessionPopoverController: NSViewController, NSSearchFieldDelegate {
-    var onSelectLocal: (() -> Void)?
-    var onSelectSession: ((NativeTmuxSessionDescriptor) -> Void)?
-    var onCreateSession: ((String) -> Void)?
-
-    private let sessions: [NativeTmuxSessionDescriptor]
-    private let currentSessionName: String?
-    private let searchField = NSSearchField(frame: .zero)
-    private let rows = NSStackView()
-    private let newSessionButton = NSButton(frame: .zero)
-    private let nameField = NSTextField(frame: .zero)
-    private let createButton = NSButton(frame: .zero)
-    private let creationRow = NSStackView()
-    private let validationLabel = NSTextField(labelWithString: "")
-
-    init(sessions: [NativeTmuxSessionDescriptor], currentSessionName: String?) {
-        self.sessions = sessions
-        self.currentSessionName = currentSessionName
-        super.init(nibName: nil, bundle: nil)
-        preferredContentSize = NSSize(
-            width: 320,
-            height: Self.preferredHeight(rowCount: sessions.count)
-        )
-    }
-
-    required init?(coder: NSCoder) {
-        nil
-    }
-
-    override func loadView() {
-        let root = NSView()
-        let heading = NSTextField(labelWithString: "Sessions")
-        heading.font = .systemFont(ofSize: 13, weight: .semibold)
-
-        searchField.placeholderString = "Search Sessions"
-        searchField.delegate = self
-        searchField.isHidden = sessions.count <= 5
-
-        rows.orientation = .vertical
-        rows.alignment = .leading
-        rows.spacing = 2
-        refreshSessionRows()
-
-        configureRowButton(
-            newSessionButton,
-            title: "New tmux Session…",
-            symbol: "plus",
-            action: #selector(beginCreatingSession(_:))
-        )
-
-        nameField.placeholderString = "Session name"
-        nameField.target = self
-        nameField.action = #selector(createSession(_:))
-        createButton.title = "Create"
-        createButton.bezelStyle = .rounded
-        createButton.target = self
-        createButton.action = #selector(createSession(_:))
-        creationRow.orientation = .horizontal
-        creationRow.alignment = .centerY
-        creationRow.spacing = 8
-        creationRow.addArrangedSubview(nameField)
-        creationRow.addArrangedSubview(createButton)
-        creationRow.isHidden = true
-
-        validationLabel.textColor = .systemRed
-        validationLabel.font = .systemFont(ofSize: 11)
-        validationLabel.maximumNumberOfLines = 2
-        validationLabel.isHidden = true
-
-        let separator = NSBox()
-        separator.boxType = .separator
-        let stack = NSStackView(views: [
-            heading,
-            searchField,
-            rows,
-            separator,
-            newSessionButton,
-            creationRow,
-            validationLabel,
-        ])
-        stack.orientation = .vertical
-        stack.alignment = .leading
-        stack.spacing = 8
-        stack.translatesAutoresizingMaskIntoConstraints = false
-        root.addSubview(stack)
-        NSLayoutConstraint.activate([
-            root.widthAnchor.constraint(equalToConstant: 320),
-            stack.topAnchor.constraint(equalTo: root.topAnchor, constant: 14),
-            stack.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 12),
-            stack.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -12),
-            stack.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -12),
-            searchField.widthAnchor.constraint(equalTo: stack.widthAnchor),
-            rows.widthAnchor.constraint(equalTo: stack.widthAnchor),
-            separator.widthAnchor.constraint(equalTo: stack.widthAnchor),
-            newSessionButton.widthAnchor.constraint(equalTo: stack.widthAnchor),
-            creationRow.widthAnchor.constraint(equalTo: stack.widthAnchor),
-            nameField.widthAnchor.constraint(greaterThanOrEqualToConstant: 190),
-            validationLabel.widthAnchor.constraint(equalTo: stack.widthAnchor),
-        ])
-        view = root
-    }
-
-    func controlTextDidChange(_ notification: Notification) {
-        refreshSessionRows()
-    }
-
-    private func refreshSessionRows() {
-        for child in rows.arrangedSubviews {
-            rows.removeArrangedSubview(child)
-            child.removeFromSuperview()
-        }
-        let query = searchField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        let filtered =
-            query.isEmpty
-            ? sessions
-            : sessions.filter { $0.name.localizedCaseInsensitiveContains(query) }
-
-        let local = NSButton(frame: .zero)
-        configureRowButton(
-            local,
-            title: "Local Terminal",
-            symbol: currentSessionName == nil ? "checkmark.circle.fill" : "terminal",
-            action: #selector(selectLocal(_:))
-        )
-        rows.addArrangedSubview(local)
-        for descriptor in filtered {
-            let button = NSButton(frame: .zero)
-            let suffix =
-                descriptor.windowCount == 1 ? "1 window" : "\(descriptor.windowCount) windows"
-            let symbol =
-                descriptor.name == currentSessionName ? "checkmark.circle.fill" : "rectangle.stack"
-            configureRowButton(
-                button,
-                title: "\(descriptor.name)  ·  \(suffix)",
-                symbol: symbol,
-                action: #selector(selectSession(_:))
-            )
-            button.tag = sessions.firstIndex(of: descriptor) ?? -1
-            rows.addArrangedSubview(button)
-        }
-        if filtered.isEmpty, !query.isEmpty {
-            let empty = NSTextField(labelWithString: "No matching tmux sessions")
-            empty.textColor = .secondaryLabelColor
-            empty.font = .systemFont(ofSize: 12)
-            rows.addArrangedSubview(empty)
-        }
-    }
-
-    private func configureRowButton(
-        _ button: NSButton,
-        title: String,
-        symbol: String,
-        action: Selector
-    ) {
-        button.title = title
-        button.bezelStyle = .inline
-        button.alignment = .left
-        button.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)
-        button.imagePosition = .imageLeading
-        button.contentTintColor = .labelColor
-        button.target = self
-        button.action = action
-        button.heightAnchor.constraint(equalToConstant: 28).isActive = true
-    }
-
-    @objc private func selectLocal(_ sender: Any?) {
-        onSelectLocal?()
-    }
-
-    @objc private func selectSession(_ sender: NSButton) {
-        guard sessions.indices.contains(sender.tag) else {
-            return
-        }
-        onSelectSession?(sessions[sender.tag])
-    }
-
-    @objc private func beginCreatingSession(_ sender: Any?) {
-        newSessionButton.isHidden = true
-        creationRow.isHidden = false
-        validationLabel.isHidden = true
-        preferredContentSize.height += 38
-        view.window?.makeFirstResponder(nameField)
-    }
-
-    @objc private func createSession(_ sender: Any?) {
-        let name = nameField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        if let error = validationError(for: name) {
-            validationLabel.stringValue = error
-            validationLabel.isHidden = false
-            return
-        }
-        onCreateSession?(name)
-    }
-
-    private func validationError(for name: String) -> String? {
-        if name.isEmpty {
-            return "Enter a session name."
-        }
-        if name.contains(":") || name.contains(".") {
-            return "tmux session names cannot contain a colon or period."
-        }
-        if sessions.contains(where: { $0.name == name }) {
-            return "A tmux session with that name already exists."
-        }
-        return nil
-    }
-
-    private static func preferredHeight(rowCount: Int) -> CGFloat {
-        let visibleRows = min(max(rowCount + 1, 2), 10)
-        return CGFloat(visibleRows * 30 + (rowCount > 5 ? 114 : 74))
-    }
-}
+private let currentSessionSchemaVersion = 4
 
 struct SkiaRenderGeometry {
     let originX: Float
@@ -3636,6 +3351,7 @@ final class NativeTmuxSession {
     var lastClientGrid: (cols: Int, rows: Int)?
     var sessionName = "tmux"
     var socketPath = ""
+    var executablePath = ""
     var serverPid: UInt32 = 0
     var activeWindowZoomed = false
 
@@ -3852,6 +3568,8 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
     private var paneModes: [Int: NativePaneMode] = [:]
     private var paneTitles: [Int: String] = [:]
     private var tmuxSession: NativeTmuxSession?
+    private var resolvedTmuxExecutable: NativeTmuxExecutable?
+    private var pendingTmuxExecutable: NativeTmuxExecutable?
     private var lastTmuxSocketPath: String?
     private var pendingTmuxReattach: NativeTmuxAttachment?
     private var sessionPopover: NSPopover?
@@ -4248,6 +3966,11 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
     func applySettings(_ settings: NativeSettings) {
         let previous = self.settings
         self.settings = settings
+        if previous.shellPath != settings.shellPath
+            || previous.tmuxExecutablePath != settings.tmuxExecutablePath
+        {
+            resolvedTmuxExecutable = nil
+        }
         optionAsAltEnabled = settings.optionAsAlt
         notificationsEnabled = settings.notifications
         for pane in terminalPanes.values {
@@ -5318,7 +5041,10 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
                 return validatedTmuxAttachment(
                     NativeTmuxAttachment(
                         sessionName: session.sessionName,
-                        socketPath: session.socketPath
+                        socketPath: session.socketPath,
+                        executablePath: session.executablePath.isEmpty
+                            ? resolvedTmuxExecutable?.path
+                            : session.executablePath
                     )
                 )
             }
@@ -5330,14 +5056,20 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
     ) -> NativeTmuxAttachment? {
         let name = attachment.sessionName
         let socket = attachment.socketPath
+        let executable = attachment.executablePath ?? ""
         guard !name.isEmpty,
             name.utf8.count <= 256,
             socket.utf8.count <= 1_024,
+            executable.utf8.count <= 1_024,
             (socket as NSString).isAbsolutePath,
+            executable.isEmpty || (executable as NSString).isAbsolutePath,
             name.unicodeScalars.allSatisfy({
                 !CharacterSet.controlCharacters.contains($0)
             }),
             socket.unicodeScalars.allSatisfy({
+                !CharacterSet.controlCharacters.contains($0)
+            }),
+            executable.unicodeScalars.allSatisfy({
                 !CharacterSet.controlCharacters.contains($0)
             })
         else {
@@ -5576,7 +5308,8 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
         let migrated = (try? JSONEncoder().encode(legacy)).flatMap(decodeSessionState)
         let attachment = NativeTmuxAttachment(
             sessionName: "persisted-session",
-            socketPath: "/tmp/persisted-tmux.sock"
+            socketPath: "/tmp/persisted-tmux.sock",
+            executablePath: "/usr/bin/tmux"
         )
         let attachedState = NativeSessionState(
             schemaVersion: currentSessionSchemaVersion,
@@ -5594,6 +5327,22 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
             try? JSONSerialization.data(withJSONObject: $0)
         }
         let versionTwoMigrated = versionTwoData.flatMap(decodeSessionState)
+        var versionThreeObject = attachedData.flatMap {
+            (try? JSONSerialization.jsonObject(with: $0)) as? [String: Any]
+        }
+        versionThreeObject?["schemaVersion"] = 3
+        var versionThreeAttachment =
+            versionThreeObject?["tmuxAttachment"] as? [String: Any]
+        versionThreeAttachment?.removeValue(forKey: "executablePath")
+        versionThreeObject?["tmuxAttachment"] = versionThreeAttachment
+        let versionThreeData = versionThreeObject.flatMap {
+            try? JSONSerialization.data(withJSONObject: $0)
+        }
+        let versionThreeMigrated = versionThreeData.flatMap(decodeSessionState)
+        let versionThreeExpected = NativeTmuxAttachment(
+            sessionName: attachment.sessionName,
+            socketPath: attachment.socketPath
+        )
         let corruptRejected = decodeSessionState(Data("{not-json".utf8)) == nil
         let futureData = Data("{\"schemaVersion\":999}".utf8)
         let futurePreserved = sessionSchemaVersion(in: futureData) == 999
@@ -5613,6 +5362,7 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
             && consumed.tmuxAttachment == nil
             && versionTwoMigrated?.schemaVersion == currentSessionSchemaVersion
             && versionTwoMigrated?.tmuxAttachment == nil
+            && versionThreeMigrated?.tmuxAttachment == versionThreeExpected
             && validatedTmuxAttachment(attachment) == attachment
             && validatedTmuxAttachment(
                 NativeTmuxAttachment(sessionName: "invalid", socketPath: "relative.sock")
@@ -6405,7 +6155,13 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
             }
             return
         }
-        let descriptorSaved = currentSessionState()?.tmuxAttachment == attachment
+        let savedAttachment = currentSessionState()?.tmuxAttachment
+        let savedExecutable = savedAttachment?.executablePath ?? ""
+        let descriptorSaved =
+            savedAttachment?.sessionName == attachment.sessionName
+            && savedAttachment?.socketPath == attachment.socketPath
+            && (savedExecutable as NSString).isAbsolutePath
+            && FileManager.default.isExecutableFile(atPath: savedExecutable)
         guard session.sessionName == attachment.sessionName,
             session.socketPath == attachment.socketPath,
             descriptorSaved,
@@ -6596,8 +6352,26 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
             return
         }
         let attachmentCleared = currentSessionState()?.tmuxAttachment == nil
-        let sessionListed = discoveredTmuxSessions().contains {
-            $0.name == attachment.sessionName && $0.socketPath == attachment.socketPath
+        let sessionListed: Bool
+        let discoveryDetail: String
+        if let executable = resolvedTmuxExecutable,
+            case let result = NativeTmuxSessionDiscovery.sessions(
+                executable: executable, socketPath: attachment.socketPath)
+        {
+            switch result {
+            case .sessions(let sessions):
+                sessionListed = sessions.contains {
+                    $0.name == attachment.sessionName && $0.socketPath == attachment.socketPath
+                }
+                discoveryDetail = sessions.map { "\($0.name):\($0.socketPath)" }.joined(
+                    separator: ",")
+            case .unavailable(let message):
+                sessionListed = false
+                discoveryDetail = message
+            }
+        } else {
+            sessionListed = false
+            discoveryDetail = "tmux executable unresolved"
         }
         let status = attachmentCleared && sessionListed ? "ok" : "failed"
         writeSessionSmokeResult(
@@ -6605,7 +6379,8 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
             result: "\(status) tmux-reattach attached=yes descriptor=yes alternate=yes "
                 + "primary-restored=yes nvim-scroll=yes "
                 + "local-list=\(sessionListed ? "yes" : "no") "
-                + "explicit-detach-clears=\(attachmentCleared ? "yes" : "no")\n"
+                + "explicit-detach-clears=\(attachmentCleared ? "yes" : "no") "
+                + "discovery=\(discoveryDetail)\n"
         )
     }
 
@@ -9572,7 +9347,6 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
             return
         }
         let controller = TmuxSessionPopoverController(
-            sessions: discoveredTmuxSessions(),
             currentSessionName: tmuxSession?.sessionName
         )
         controller.onSelectLocal = { [weak self] in
@@ -9598,11 +9372,74 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
             of: sessionControlButton,
             preferredEdge: .maxY
         )
+        loadTmuxSessions(into: controller)
     }
 
-    private func discoveredTmuxSessions() -> [NativeTmuxSessionDescriptor] {
-        let socketPath = preferredTmuxSocketPath()
-        var descriptors = NativeTmuxSessionDiscovery.sessions(socketPath: socketPath)
+    private func loadTmuxSessions(into controller: TmuxSessionPopoverController) {
+        if let session = tmuxSession {
+            guard session.gateway.tmuxCommand(nativeTmuxSessionListCommand) else {
+                controller.update(
+                    sessions: currentTmuxSessionAdded(to: []),
+                    status: "Satin could not query the attached tmux server.",
+                    canCreate: false,
+                    isError: true
+                )
+                return
+            }
+            return
+        }
+        NativeTmuxExecutableResolver.shared.resolve(
+            configuredPath: settings.tmuxExecutablePath,
+            shellPath: settings.shellPath
+        ) { [weak self, weak controller] resolution in
+            guard let self, let controller,
+                self.sessionPopover?.contentViewController === controller
+            else {
+                return
+            }
+            switch resolution {
+            case .available(let executable):
+                self.resolvedTmuxExecutable = executable
+                NativeTmuxSessionDiscovery.discover(
+                    executable: executable,
+                    socketPath: self.preferredTmuxSocketPath()
+                ) { [weak self, weak controller] result in
+                    guard let self, let controller,
+                        self.sessionPopover?.contentViewController === controller
+                    else {
+                        return
+                    }
+                    switch result {
+                    case .sessions(let sessions):
+                        controller.update(
+                            sessions: self.currentTmuxSessionAdded(to: sessions),
+                            status: sessions.isEmpty ? "No tmux sessions" : nil,
+                            canCreate: true
+                        )
+                    case .unavailable(let message):
+                        controller.update(
+                            sessions: self.currentTmuxSessionAdded(to: []),
+                            status: message,
+                            canCreate: false,
+                            isError: true
+                        )
+                    }
+                }
+            case .unavailable(let message):
+                controller.update(
+                    sessions: self.currentTmuxSessionAdded(to: []),
+                    status: message,
+                    canCreate: false,
+                    isError: true
+                )
+            }
+        }
+    }
+
+    private func currentTmuxSessionAdded(
+        to descriptors: [NativeTmuxSessionDescriptor]
+    ) -> [NativeTmuxSessionDescriptor] {
+        var descriptors = descriptors
         if let session = tmuxSession,
             !descriptors.contains(where: {
                 $0.name == session.sessionName && $0.socketPath == session.socketPath
@@ -9662,8 +9499,14 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
             }
             return
         }
+        guard let executable = resolvedTmuxExecutable else {
+            presentTmuxSessionError("Satin could not resolve the tmux executable.")
+            return
+        }
+        pendingTmuxExecutable = executable
         runTmuxCommandInActiveShell(
-            "command tmux -S \(shellQuote(descriptor.socketPath)) -CC attach-session "
+            "\(shellQuote(executable.path)) -S \(shellQuote(descriptor.socketPath)) "
+                + "-CC attach-session "
                 + "-t \(shellQuote(descriptor.name))"
         )
     }
@@ -9683,8 +9526,14 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
             preferredTmuxSocketPath().map {
                 "-S \(shellQuote($0)) "
             } ?? ""
+        guard let executable = resolvedTmuxExecutable else {
+            presentTmuxSessionError("Satin could not resolve the tmux executable.")
+            return
+        }
+        pendingTmuxExecutable = executable
         runTmuxCommandInActiveShell(
-            "command tmux \(socketArgument)-CC new-session -s \(shellQuote(name))"
+            "\(shellQuote(executable.path)) \(socketArgument)-CC new-session "
+                + "-s \(shellQuote(name))"
         )
     }
 
@@ -10164,11 +10013,12 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
             if state.schemaVersion == currentSessionSchemaVersion {
                 return state
             }
-            if state.schemaVersion == 2 {
+            if state.schemaVersion == 2 || state.schemaVersion == 3 {
                 return NativeSessionState(
                     schemaVersion: currentSessionSchemaVersion,
                     activeTab: state.activeTab,
-                    tabs: state.tabs
+                    tabs: state.tabs,
+                    tmuxAttachment: state.schemaVersion == 3 ? state.tmuxAttachment : nil
                 )
             }
         }
@@ -10223,8 +10073,41 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
             return
         }
         pendingTmuxReattach = nil
+        let persistedPath = attachment.executablePath ?? ""
+        let configuredPath =
+            FileManager.default.isExecutableFile(atPath: persistedPath)
+            ? persistedPath
+            : settings.tmuxExecutablePath
+        NativeTmuxExecutableResolver.shared.resolve(
+            configuredPath: configuredPath,
+            shellPath: settings.shellPath
+        ) { [weak self, weak gateway] resolution in
+            guard let self, let gateway, self.tmuxSession == nil, !gateway.isExited() else {
+                return
+            }
+            switch resolution {
+            case .available(let executable):
+                self.startTmuxReattach(
+                    attachment,
+                    executable: executable,
+                    gateway: gateway
+                )
+            case .unavailable(let message):
+                NativeLog.sessionWarning("tmux_reattach_resolve_failed message=\(message)")
+                gateway.write(Data("Satin tmux reattach skipped: \(message)\r\n".utf8))
+                self.drainTerminalPanes()
+            }
+        }
+    }
+
+    private func startTmuxReattach(
+        _ attachment: NativeTmuxAttachment,
+        executable: NativeTmuxExecutable,
+        gateway: RustTerminalPane
+    ) {
+        pendingTmuxExecutable = executable
         let command =
-            "command tmux -S \(shellQuote(attachment.socketPath)) "
+            "\(shellQuote(executable.path)) -S \(shellQuote(attachment.socketPath)) "
             + "-CC attach-session -t \(shellQuote(attachment.sessionName))"
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self, weak gateway] in
             guard let self, let gateway, self.tmuxSession == nil, !gateway.isExited() else {
@@ -10531,6 +10414,26 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
                 return
             }
             feedTmuxOutput(paneId: paneId, data: Data(bytes))
+        case "sessions":
+            guard
+                let controller = sessionPopover?.contentViewController
+                    as? TmuxSessionPopoverController
+            else {
+                return
+            }
+            let descriptors = (event.sessions ?? []).map {
+                NativeTmuxSessionDescriptor(
+                    name: $0.name,
+                    windowCount: $0.window_count,
+                    socketPath: $0.socket_path
+                )
+            }
+            controller.update(
+                sessions: currentTmuxSessionAdded(to: descriptors),
+                status: event.session_error,
+                canCreate: event.session_error == nil,
+                isError: event.session_error != nil
+            )
         case "snapshot":
             guard let snapshot = event.snapshot else {
                 return
@@ -10552,11 +10455,17 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
         guard tmuxSession == nil, let workspace = core.snapshot() else {
             return
         }
-        tmuxSession = NativeTmuxSession(
+        let session = NativeTmuxSession(
             gatewayPaneId: gatewayPaneId,
             gateway: gateway,
             savedWorkspace: workspace
         )
+        session.executablePath = pendingTmuxExecutable?.path ?? ""
+        if let pendingTmuxExecutable {
+            resolvedTmuxExecutable = pendingTmuxExecutable
+        }
+        self.pendingTmuxExecutable = nil
+        tmuxSession = session
         NativeLog.lifecycleInfo("tmux_control_entered gateway_pane=\(gatewayPaneId)")
     }
 
@@ -10612,6 +10521,16 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
             lastTmuxSocketPath = snapshot.socket_path
         }
         session.serverPid = snapshot.server_pid
+        if isLocalTmuxEndpoint(
+            socketPath: snapshot.socket_path,
+            serverPid: snapshot.server_pid
+        ),
+            let executablePath = NativeTmuxExecutableResolver.executablePath(
+                forProcessID: snapshot.server_pid
+            )
+        {
+            session.executablePath = executablePath
+        }
         session.activeWindowZoomed =
             snapshot.windows
             .first(where: { $0.window_id == snapshot.active_window_id })?.zoomed ?? false
@@ -11912,6 +11831,7 @@ struct SatinApplication {
             if !AppUpdateChecker.runSelfTests()
                 || !AppUpdateInstaller.runSelfTests()
                 || !NativeSettingsStore.runSelfTests()
+                || !NativeTmuxExecutableResolver.runSelfTests()
                 || !NativeFinderEditorLaunch.runSelfTests()
             {
                 failDiagnostic("update self-test failed")

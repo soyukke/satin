@@ -22,6 +22,19 @@ connection while native surfaces render the individual panes.
 - Keep ordinary `tmux`, `tmux attach`, and nested tmux sessions as terminal TUI
   content. Enter native integration only after the explicit `tmux -CC` DCS
   handshake appears on a Satin-owned local PTY.
+- Treat tmux as a user-owned external executable and require tmux 3.2 or newer;
+  do not bundle or install it with Satin. Resolve one absolute executable path
+  for native operations in this order: the explicit Terminal Settings override,
+  the configured login shell's `PATH`, the app environment, then known package
+  manager and system prefixes. Validate candidates with `tmux -V`, bound shell
+  environment and process probes with timeouts, cache the result per settings
+  identity, and surface a useful error when resolution fails.
+- Use that resolved executable identity for every native operation performed
+  outside control mode: session discovery, attach, create, and automatic
+  reattach. Never inject a bare `tmux` command and leave its identity to the
+  interactive shell. While attached, query sessions through the existing
+  control client so discovery observes exactly the connected server without
+  launching a second client or depending on the app's `PATH`.
 - Treat the original terminal runtime as a hidden gateway for the lifetime of
   control mode. Preserve the complete local Satin workspace and restore it when
   tmux emits `%exit` and closes the DCS boundary, so the original shell resumes
@@ -109,7 +122,10 @@ connection while native surfaces render the individual panes.
 - Continuously checkpoint the reattach descriptor while control mode is attached
   and clear it when the projection ends. Save it only when the socket is a local
   Unix socket and tmux's reported server PID is live, alongside the preserved
-  Satin workspace.
+  Satin workspace. Resolve the reported local server PID back to its executable
+  path and persist that executable identity with the socket and session. Older
+  descriptors without an executable path remain valid and fall back to normal
+  resolution; a persisted executable that no longer exists does the same.
   Consume this descriptor before issuing one automatic `tmux -S <socket> -CC
   attach-session -t <session>` after workspace restore. Validate both values and
   shell-quote them before writing the command to the restored local PTY.
@@ -129,6 +145,12 @@ the Neovim handoff remain independent. tmux survives Satin UI changes because
 Satin never owns its session state. A clean app restart returns to the exact
 local server and session that was projected, while explicit detach remains a
 durable request to stay in the ordinary workspace.
+
+Finder/Dock launches no longer depend on macOS's sparse GUI `PATH`, and Nix,
+Homebrew, MacPorts, and manually installed tmux binaries can all be selected
+without Satin taking ownership of those installations. Terminal Settings shows
+the detected path, version, and discovery source and provides an explicit path
+override for ambiguous environments.
 
 This contract targets an explicitly entered, local `tmux -CC` client. Native
 selection, search, copy, and scrollback continue to operate on each projected VT

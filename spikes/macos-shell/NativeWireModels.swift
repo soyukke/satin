@@ -22,6 +22,13 @@ struct NativeSessionState: Codable {
 struct NativeTmuxAttachment: Codable, Equatable {
     let sessionName: String
     let socketPath: String
+    let executablePath: String?
+
+    init(sessionName: String, socketPath: String, executablePath: String? = nil) {
+        self.sessionName = sessionName
+        self.socketPath = socketPath
+        self.executablePath = executablePath
+    }
 }
 
 struct NativeTmuxSessionDescriptor: Equatable {
@@ -131,8 +138,18 @@ struct TmuxControlEvent: Decodable {
     let pane_id: UInt32?
     let data: [UInt8]?
     let snapshot: TmuxSnapshot?
+    let sessions: [TmuxSessionSummary]?
+    let session_error: String?
     let reason: String?
     let message: String?
+}
+
+// Properties mirror Rust's serialized schema and intentionally use snake_case.
+// swift-format-ignore: AlwaysUseLowerCamelCase
+struct TmuxSessionSummary: Decodable {
+    let name: String
+    let window_count: Int
+    let socket_path: String
 }
 
 // Properties mirror Rust's serialized schema and intentionally use snake_case.

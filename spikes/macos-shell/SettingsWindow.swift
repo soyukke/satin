@@ -15,6 +15,7 @@ enum NativePreferenceKey {
     static let sessionState = "sessionState"
     static let defaultTheme = "defaultTheme"
     static let shellPath = "shellPath"
+    static let tmuxExecutablePath = "tmuxExecutablePath"
     static let startupDirectory = "startupDirectory"
     static let finderEditorCommand = "finderEditorCommand"
     static let automaticUpdateChecks = "automaticUpdateChecks"
@@ -32,6 +33,7 @@ enum NativePreferenceKey {
         sessionState,
         defaultTheme,
         shellPath,
+        tmuxExecutablePath,
         startupDirectory,
         finderEditorCommand,
         automaticUpdateChecks,
@@ -137,6 +139,7 @@ struct NativeSettings: Equatable {
     var sessionRestore: Bool
     var defaultTheme: String
     var shellPath: String
+    var tmuxExecutablePath: String
     var startupDirectory: String
     var finderEditorCommand: String
     var automaticUpdateChecks: Bool
@@ -200,6 +203,9 @@ final class NativeSettingsStore {
             shellPath: validShellPath(
                 defaults.string(forKey: NativePreferenceKey.shellPath) ?? ""
             ),
+            tmuxExecutablePath: validTmuxExecutablePath(
+                defaults.string(forKey: NativePreferenceKey.tmuxExecutablePath) ?? ""
+            ),
             startupDirectory: validStartupDirectory(
                 defaults.string(forKey: NativePreferenceKey.startupDirectory) ?? ""
             ),
@@ -229,6 +235,10 @@ final class NativeSettingsStore {
         defaults.set(settings.sessionRestore, forKey: NativePreferenceKey.sessionRestore)
         defaults.set(validTheme(settings.defaultTheme), forKey: NativePreferenceKey.defaultTheme)
         defaults.set(validShellPath(settings.shellPath), forKey: NativePreferenceKey.shellPath)
+        defaults.set(
+            validTmuxExecutablePath(settings.tmuxExecutablePath),
+            forKey: NativePreferenceKey.tmuxExecutablePath
+        )
         defaults.set(
             validStartupDirectory(settings.startupDirectory),
             forKey: NativePreferenceKey.startupDirectory
@@ -263,6 +273,7 @@ final class NativeSettingsStore {
             NativePreferenceKey.sessionRestore,
             NativePreferenceKey.defaultTheme,
             NativePreferenceKey.shellPath,
+            NativePreferenceKey.tmuxExecutablePath,
             NativePreferenceKey.startupDirectory,
             NativePreferenceKey.finderEditorCommand,
             NativePreferenceKey.automaticUpdateChecks,
@@ -295,88 +306,7 @@ final class NativeSettingsStore {
         defaults.set(date, forKey: NativePreferenceKey.lastUpdateCheck)
     }
 
-    static func runSelfTests() -> Bool {
-        let suiteName = "dev.soyukke.satin.settings-test.\(UUID().uuidString)"
-        guard let defaults = UserDefaults(suiteName: suiteName) else {
-            return false
-        }
-        defer {
-            defaults.removePersistentDomain(forName: suiteName)
-        }
-        let migrationSuiteName = "dev.soyukke.satin.migration-test.\(UUID().uuidString)"
-        guard let migrationDefaults = UserDefaults(suiteName: migrationSuiteName) else {
-            return false
-        }
-        defer {
-            migrationDefaults.removePersistentDomain(forName: migrationSuiteName)
-        }
-        let migratedSession = Data("legacy-session".utf8)
-        migrationDefaults.set(17.0, forKey: NativePreferenceKey.fontSize)
-        migrateLegacyValues(
-            [
-                NativePreferenceKey.fontSize: 22.0,
-                NativePreferenceKey.defaultTheme: "Rose",
-                NativePreferenceKey.sessionState: migratedSession,
-            ],
-            into: migrationDefaults
-        )
-        guard migrationDefaults.double(forKey: NativePreferenceKey.fontSize) == 17.0,
-            migrationDefaults.string(forKey: NativePreferenceKey.defaultTheme) == "Rose",
-            migrationDefaults.data(forKey: NativePreferenceKey.sessionState) == migratedSession
-        else {
-            return false
-        }
-        let store = NativeSettingsStore(defaults: defaults)
-        let initial = store.load()
-        guard initial.optionAsAlt,
-            initial.notifications,
-            initial.sessionRestore,
-            initial.automaticUpdateChecks,
-            initial.defaultTheme == "Graphite",
-            initial.finderEditorCommand == "nvim",
-            initial.fontSize == nativeDefaultFontSize,
-            NativeCommandID.allCases.allSatisfy({
-                NativeKeyShortcut.parse($0.defaultShortcut) != nil
-            })
-        else {
-            return false
-        }
-        var changed = initial
-        changed.fontFamily = "Menlo"
-        changed.fontSize = 19
-        changed.defaultTheme = "Harbor"
-        changed.finderEditorCommand = "vim"
-        changed.automaticUpdateChecks = false
-        changed.keyBindings[NativeCommandID.newTab.rawValue] = "cmd+shift+t"
-        store.save(changed)
-        guard store.load() == changed,
-            !store.shouldAutomaticallyCheckForUpdates()
-        else {
-            return false
-        }
-        defaults.set("/not/a/real/shell", forKey: NativePreferenceKey.shellPath)
-        defaults.set("/not/a/real/directory", forKey: NativePreferenceKey.startupDirectory)
-        defaults.set("nvim --clean", forKey: NativePreferenceKey.finderEditorCommand)
-        defaults.set(
-            [
-                NativeCommandID.newTab.rawValue: "cmd+q",
-                NativeCommandID.splitVertical.rawValue: "cmd+q",
-            ],
-            forKey: NativePreferenceKey.keyBindings
-        )
-        let repaired = store.load()
-        guard repaired.shellPath.isEmpty,
-            repaired.startupDirectory.isEmpty,
-            repaired.finderEditorCommand == "nvim",
-            repaired.keyBindings == store.defaultKeyBindings()
-        else {
-            return false
-        }
-        _ = store.reset()
-        return store.load() == initial
-    }
-
-    private static func migrateLegacyValues(
+    static func migrateLegacyValues(
         _ legacyValues: [String: Any],
         into defaults: UserDefaults
     ) {
@@ -407,7 +337,7 @@ final class NativeSettingsStore {
         return defaultKeyBindings().merging(stored) { _, saved in saved }
     }
 
-    fileprivate func defaultKeyBindings() -> [String: String] {
+    func defaultKeyBindings() -> [String: String] {
         Dictionary(
             uniqueKeysWithValues: NativeCommandID.allCases.map {
                 ($0.rawValue, $0.defaultShortcut)
@@ -432,6 +362,10 @@ final class NativeSettingsStore {
 
     private func validShellPath(_ value: String) -> String {
         Self.isValidShellPath(value) ? value : ""
+    }
+
+    private func validTmuxExecutablePath(_ value: String) -> String {
+        Self.isValidTmuxExecutablePath(value) ? value : ""
     }
 
     private func validStartupDirectory(_ value: String) -> String {
@@ -471,45 +405,6 @@ final class NativeSettingsStore {
         [0.0, 24.0, 168.0].contains(value) ? value : 24
     }
 
-    static func isValidShellPath(_ value: String) -> Bool {
-        guard !value.isEmpty else {
-            return true
-        }
-        return (value as NSString).isAbsolutePath
-            && FileManager.default.isExecutableFile(atPath: value)
-    }
-
-    static func isValidStartupDirectory(_ value: String) -> Bool {
-        guard !value.isEmpty, (value as NSString).isAbsolutePath else {
-            return value.isEmpty
-        }
-        var isDirectory: ObjCBool = false
-        return FileManager.default.fileExists(atPath: value, isDirectory: &isDirectory)
-            && isDirectory.boolValue
-    }
-
-    static func isValidFinderEditorCommand(_ value: String) -> Bool {
-        guard !value.isEmpty,
-            value.utf8.count <= 1_024,
-            value.unicodeScalars.allSatisfy({
-                !CharacterSet.controlCharacters.contains($0)
-            })
-        else {
-            return false
-        }
-        if value.contains("/") {
-            return (value as NSString).isAbsolutePath
-                && FileManager.default.isExecutableFile(atPath: value)
-        }
-        guard value != ".", value != ".." else {
-            return false
-        }
-        return value.unicodeScalars.allSatisfy { scalar in
-            scalar.isASCII
-                && (CharacterSet.alphanumerics.contains(scalar)
-                    || "._+-".unicodeScalars.contains(scalar))
-        }
-    }
 }
 
 final class NativeSettingsWindowController: NSWindowController, NSTextFieldDelegate {
@@ -527,8 +422,10 @@ final class NativeSettingsWindowController: NSWindowController, NSTextFieldDeleg
     private var notificationButton: NSButton?
     private var sessionRestoreButton: NSButton?
     private var shellField: NSTextField?
+    private var tmuxField: NSTextField?
     private var directoryField: NSTextField?
     private var finderEditorField: NSTextField?
+    private let tmuxStatusLabel = NSTextField(wrappingLabelWithString: "")
     private let terminalErrorLabel = NSTextField(labelWithString: "")
     private var automaticUpdatesButton: NSButton?
     private var updateIntervalPopup: NSPopUpButton?
@@ -565,6 +462,7 @@ final class NativeSettingsWindowController: NSWindowController, NSTextFieldDeleg
 
     func present() {
         refreshControls()
+        refreshTmuxStatus()
         if let requestedTab = ProcessInfo.processInfo.environment["SATIN_SETTINGS_TAB"],
             let index = ["general", "appearance", "terminal", "keybindings", "updates"]
                 .firstIndex(of: requestedTab.lowercased())
@@ -617,6 +515,10 @@ final class NativeSettingsWindowController: NSWindowController, NSTextFieldDeleg
             directoryField?.stringValue.trimmingCharacters(
                 in: .whitespacesAndNewlines
             ) ?? ""
+        let tmuxExecutablePath =
+            tmuxField?.stringValue.trimmingCharacters(
+                in: .whitespacesAndNewlines
+            ) ?? ""
         let finderEditorCommand =
             finderEditorField?.stringValue.trimmingCharacters(
                 in: .whitespacesAndNewlines
@@ -631,16 +533,28 @@ final class NativeSettingsWindowController: NSWindowController, NSTextFieldDeleg
                 "Startup directory must be an existing absolute directory."
             return
         }
+        guard NativeSettingsStore.isValidTmuxExecutablePath(tmuxExecutablePath) else {
+            terminalErrorLabel.stringValue =
+                "tmux must be an executable file at an absolute path, or empty for Automatic."
+            return
+        }
         guard NativeSettingsStore.isValidFinderEditorCommand(finderEditorCommand) else {
             terminalErrorLabel.stringValue =
                 "Finder editor must be a command name or an executable absolute path."
             return
         }
         terminalErrorLabel.stringValue = ""
+        let tmuxResolutionChanged =
+            settings.shellPath != shellPath
+            || settings.tmuxExecutablePath != tmuxExecutablePath
         settings.shellPath = shellPath
+        settings.tmuxExecutablePath = tmuxExecutablePath
         settings.startupDirectory = startupDirectory
         settings.finderEditorCommand = finderEditorCommand
         commit()
+        if tmuxResolutionChanged {
+            refreshTmuxStatus(force: true)
+        }
     }
 
     @objc private func chooseDirectory(_ sender: Any?) {
@@ -659,6 +573,30 @@ final class NativeSettingsWindowController: NSWindowController, NSTextFieldDeleg
         settings.startupDirectory = path
         directoryField?.stringValue = path
         commit()
+    }
+
+    @objc private func chooseTmuxExecutable(_ sender: Any?) {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        panel.allowsMultipleSelection = false
+        if !settings.tmuxExecutablePath.isEmpty {
+            panel.directoryURL = URL(fileURLWithPath: settings.tmuxExecutablePath)
+                .deletingLastPathComponent()
+        }
+        guard panel.runModal() == .OK, let path = panel.url?.path,
+            NativeSettingsStore.isValidTmuxExecutablePath(path)
+        else {
+            return
+        }
+        settings.tmuxExecutablePath = path
+        tmuxField?.stringValue = path
+        commit()
+        refreshTmuxStatus(force: true)
+    }
+
+    @objc private func redetectTmux(_ sender: Any?) {
+        refreshTmuxStatus(force: true)
     }
 
     @objc private func updateIntervalChanged(_ sender: NSPopUpButton) {
@@ -685,6 +623,7 @@ final class NativeSettingsWindowController: NSWindowController, NSTextFieldDeleg
     @objc private func resetDefaults(_ sender: Any?) {
         settings = store.reset()
         refreshControls()
+        refreshTmuxStatus(force: true)
         onChange?(settings)
     }
 
@@ -783,15 +722,40 @@ final class NativeSettingsWindowController: NSWindowController, NSTextFieldDeleg
         finderEditor.action = #selector(terminalPathChanged(_:))
         finderEditor.delegate = self
         finderEditorField = finderEditor
+
+        let tmux = NSTextField()
+        tmux.placeholderString = "Automatic"
+        tmux.target = self
+        tmux.action = #selector(terminalPathChanged(_:))
+        tmux.delegate = self
+        tmuxField = tmux
+        let chooseTmux = NSButton(
+            title: "Choose…", target: self, action: #selector(chooseTmuxExecutable(_:)))
+        let redetectTmux = NSButton(
+            image: NSImage(
+                systemSymbolName: "arrow.clockwise",
+                accessibilityDescription: "Re-detect tmux"
+            ) ?? NSImage(),
+            target: self,
+            action: #selector(redetectTmux(_:))
+        )
+        redetectTmux.toolTip = "Re-detect tmux"
+        let tmuxRow = NSStackView(views: [tmux, chooseTmux, redetectTmux])
+        tmuxRow.orientation = .horizontal
+        tmuxRow.spacing = 8
+        tmuxStatusLabel.textColor = .secondaryLabelColor
+        tmuxStatusLabel.maximumNumberOfLines = 2
         terminalErrorLabel.textColor = .systemRed
         terminalErrorLabel.maximumNumberOfLines = 2
         return formView(
             title: "Terminal",
-            description: "Shell, startup directory, and Finder editor changes apply to new panes.",
+            description: "Shell and tool paths apply to new panes and tmux connections.",
             rows: [
                 ("Shell", shell),
                 ("Startup directory", directoryRow),
                 ("Finder editor", finderEditor),
+                ("tmux executable", tmuxRow),
+                ("Detected tmux", tmuxStatusLabel),
             ],
             footer: terminalErrorLabel
         )
@@ -860,7 +824,9 @@ final class NativeSettingsWindowController: NSWindowController, NSTextFieldDeleg
         guard let field = notification.object as? NSTextField else {
             return
         }
-        if field === shellField || field === directoryField || field === finderEditorField {
+        if field === shellField || field === tmuxField || field === directoryField
+            || field === finderEditorField
+        {
             terminalPathChanged(field)
         } else if field.identifier != nil {
             shortcutChanged(field)
@@ -919,6 +885,7 @@ final class NativeSettingsWindowController: NSWindowController, NSTextFieldDeleg
         fontSizeField?.doubleValue = settings.fontSize
         themePopup?.selectItem(withTitle: settings.defaultTheme)
         shellField?.stringValue = settings.shellPath
+        tmuxField?.stringValue = settings.tmuxExecutablePath
         directoryField?.stringValue = settings.startupDirectory
         finderEditorField?.stringValue = settings.finderEditorCommand
         terminalErrorLabel.stringValue = ""
@@ -932,6 +899,34 @@ final class NativeSettingsWindowController: NSWindowController, NSTextFieldDeleg
                 settings.keyBindings[command.rawValue] ?? command.defaultShortcut
         }
         _ = validateShortcuts()
+    }
+
+    private func refreshTmuxStatus(force: Bool = false) {
+        let configuredPath = settings.tmuxExecutablePath
+        let shellPath = settings.shellPath
+        tmuxStatusLabel.stringValue = "Detecting…"
+        tmuxStatusLabel.textColor = .secondaryLabelColor
+        NativeTmuxExecutableResolver.shared.resolve(
+            configuredPath: configuredPath,
+            shellPath: shellPath,
+            force: force
+        ) { [weak self] resolution in
+            guard let self,
+                self.settings.tmuxExecutablePath == configuredPath,
+                self.settings.shellPath == shellPath
+            else {
+                return
+            }
+            switch resolution {
+            case .available(let executable):
+                self.tmuxStatusLabel.stringValue =
+                    "tmux \(executable.version) · \(executable.source.label)\n\(executable.path)"
+                self.tmuxStatusLabel.textColor = .secondaryLabelColor
+            case .unavailable(let message):
+                self.tmuxStatusLabel.stringValue = message
+                self.tmuxStatusLabel.textColor = .systemRed
+            }
+        }
     }
 
     private func tab(title: String, symbol: String, view: NSView) -> NSTabViewItem {
