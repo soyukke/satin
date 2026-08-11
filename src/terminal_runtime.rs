@@ -1027,10 +1027,15 @@ fn configure_shell_command(cmd: &mut CommandBuilder, config: &TerminalSpawnConfi
     }
     let locale = terminal_locale();
     cmd.env_remove("LC_ALL");
+    // Launcher-side presentation preferences describe the parent process, not
+    // the new terminal. Shell startup files can still opt back into NO_COLOR.
+    cmd.env_remove("NO_COLOR");
     cmd.env("LANG", &locale);
     cmd.env("LC_CTYPE", &locale);
     cmd.env("TERM", "xterm-256color");
     cmd.env("COLORTERM", "truecolor");
+    cmd.env("TERM_PROGRAM", "satin");
+    cmd.env("TERM_PROGRAM_VERSION", env!("CARGO_PKG_VERSION"));
     cmd.env("SHELL", shell);
     cmd.env("SATIN_PROTO", "libghostty-vt");
     cmd.env("NVTERM_PROTO", "libghostty-vt");
@@ -2405,6 +2410,9 @@ fn terminal_locale() -> String {
 }
 
 #[cfg(test)]
+mod terminal_environment_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -2884,21 +2892,6 @@ mod tests {
 
         assert!(configured_shell(path.to_str()).is_err());
         std::fs::remove_file(path).unwrap();
-    }
-
-    #[test]
-    fn shell_environment_matches_the_selected_shell_without_assuming_zsh() {
-        let config = TerminalSpawnConfig::default();
-        for shell in ["/bin/sh", "/usr/local/bin/fish"] {
-            let mut command = CommandBuilder::new(shell);
-            configure_shell_command(&mut command, &config, shell);
-
-            assert_eq!(command.get_env("SHELL"), Some(std::ffi::OsStr::new(shell)));
-            assert_eq!(
-                command.get_env("SATIN_SHELL_EXECUTABLE"),
-                Some(std::ffi::OsStr::new(shell))
-            );
-        }
     }
 
     #[test]
