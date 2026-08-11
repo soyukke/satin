@@ -10,9 +10,6 @@ The baseline is derived from:
 - the [OpenSSF Best Practices passing criteria](https://www.bestpractices.dev/en/criteria/0),
   especially its build, test, warning, static-analysis, vulnerability-reporting,
   and release requirements;
-- the [OpenSSF Scorecard checks](https://github.com/ossf/scorecard/blob/main/docs/checks.md),
-  especially pinned dependencies, token permissions, dangerous workflows,
-  SAST, branch protection, and signed releases;
 - GitHub's [community profile guidance](https://docs.github.com/en/communities/setting-up-your-project-for-healthy-contributions/about-community-profiles-for-public-repositories);
 - GitHub's [CodeQL guidance](https://docs.github.com/en/code-security/reference/code-scanning/codeql)
   and [Dependabot configuration guidance](https://docs.github.com/en/code-security/concepts/supply-chain-security/about-the-dependabot-yml-file);
@@ -111,14 +108,7 @@ These controls cannot be proven by a local lint command:
 - Project age, contributor diversity, and report-response history improve only
   through real maintenance activity and must not be simulated for a metric.
 
-## Measurement policy
-
-The public repository's initial OpenSSF Scorecard measurement on 2026-08-11 was
-4.2/10. The project uses Scorecard as a regression detector, with priority on
-repository-controlled high-risk checks: dangerous workflows, pinned
-dependencies, token permissions, SAST, security policy, and release integrity.
-The aggregate score is not a release gate because it also includes project age,
-contributor count, and independent human review.
+## Deferred controls
 
 REUSE compliance, SBOM publication, notarization, fuzzing, and expanded Swift
 CodeQL coverage are valuable follow-up work. They are not added merely to
