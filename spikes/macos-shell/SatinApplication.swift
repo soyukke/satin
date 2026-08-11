@@ -70,36 +70,6 @@ private let themeAccentColors: [String: NSColor] = [
 ]
 private let currentSessionSchemaVersion = 3
 
-struct NativeSessionState: Codable {
-    let schemaVersion: Int
-    let activeTab: Int
-    let tabs: [NativeSessionTab]
-    let tmuxAttachment: NativeTmuxAttachment?
-
-    init(
-        schemaVersion: Int,
-        activeTab: Int,
-        tabs: [NativeSessionTab],
-        tmuxAttachment: NativeTmuxAttachment? = nil
-    ) {
-        self.schemaVersion = schemaVersion
-        self.activeTab = activeTab
-        self.tabs = tabs
-        self.tmuxAttachment = tmuxAttachment
-    }
-}
-
-struct NativeTmuxAttachment: Codable, Equatable {
-    let sessionName: String
-    let socketPath: String
-}
-
-struct NativeTmuxSessionDescriptor: Equatable {
-    let name: String
-    let windowCount: Int
-    let socketPath: String
-}
-
 enum NativeTmuxSessionDiscovery {
     static func sessions(socketPath: String?) -> [NativeTmuxSessionDescriptor] {
         guard let executable = executableURL() else {
@@ -385,253 +355,6 @@ final class TmuxSessionPopoverController: NSViewController, NSSearchFieldDelegat
     }
 }
 
-struct NativeSessionTab: Codable {
-    let title: String
-    let theme: String
-    let layout: NativeSessionPane
-}
-
-final class NativeSessionPane: Codable {
-    let kind: String
-    let axis: String?
-    let ratio: Double?
-    let paneMode: String?
-    let cwd: String
-    let active: Bool
-    let first: NativeSessionPane?
-    let second: NativeSessionPane?
-
-    init(
-        kind: String,
-        axis: String? = nil,
-        ratio: Double? = nil,
-        paneMode: String? = nil,
-        cwd: String = "",
-        active: Bool = false,
-        first: NativeSessionPane? = nil,
-        second: NativeSessionPane? = nil
-    ) {
-        self.kind = kind
-        self.axis = axis
-        self.ratio = ratio
-        self.paneMode = paneMode
-        self.cwd = cwd
-        self.active = active
-        self.first = first
-        self.second = second
-    }
-}
-
-struct LegacyNativeSessionState: Codable {
-    let activeTab: Int
-    let tabs: [LegacyNativeSessionTab]
-}
-
-struct LegacyNativeSessionTab: Codable {
-    let title: String
-    let theme: String
-    let cwd: String
-}
-
-struct TerminalCoreSnapshot: Codable {
-    let active_tab: Int
-    let tabs: [TerminalCoreTabSnapshot]
-}
-
-struct TerminalCoreTabSnapshot: Codable {
-    let id: Int
-    let index: Int
-    let title: String
-    let active_pane: Int
-    let theme: String
-    let panes: [Int]
-    let layout: PaneLayoutSnapshot
-}
-
-final class PaneLayoutSnapshot: Codable {
-    let kind: String
-    let pane_id: Int?
-    let axis: String?
-    let ratio: Double?
-    let first: PaneLayoutSnapshot?
-    let second: PaneLayoutSnapshot?
-
-    init(
-        kind: String,
-        paneId: Int? = nil,
-        axis: String? = nil,
-        ratio: Double? = nil,
-        first: PaneLayoutSnapshot? = nil,
-        second: PaneLayoutSnapshot? = nil
-    ) {
-        self.kind = kind
-        self.pane_id = paneId
-        self.axis = axis
-        self.ratio = ratio
-        self.first = first
-        self.second = second
-    }
-}
-
-struct TmuxControlEvent: Decodable {
-    let kind: String
-    let pane_id: UInt32?
-    let data: [UInt8]?
-    let snapshot: TmuxSnapshot?
-    let reason: String?
-    let message: String?
-}
-
-struct TmuxSnapshot: Decodable {
-    let session_id: UInt32
-    let session_name: String
-    let socket_path: String
-    let server_pid: UInt32
-    let active_window_id: UInt32
-    let windows: [TmuxWindowSnapshot]
-}
-
-struct TmuxWindowSnapshot: Decodable {
-    let window_id: UInt32
-    let index: UInt32
-    let name: String
-    let active_pane_id: UInt32
-    let zoomed: Bool
-    let layout: TmuxLayoutSnapshot
-    let panes: [TmuxPaneSnapshot]
-}
-
-struct TmuxPaneSnapshot: Decodable {
-    let pane_id: UInt32
-    let index: UInt32
-    let active: Bool
-    let current_path: String
-    let cols: UInt16
-    let rows: UInt16
-    let cursor_x: UInt16
-    let cursor_y: UInt16
-    let cursor_visible: Bool
-    let origin_mode: Bool
-    let scroll_region_upper: UInt16
-    let current_command: String
-}
-
-final class TmuxLayoutSnapshot: Decodable {
-    let kind: String
-    let pane_id: UInt32?
-    let axis: String?
-    let ratio: Double?
-    let first: TmuxLayoutSnapshot?
-    let second: TmuxLayoutSnapshot?
-}
-
-struct NeovideRendererModelSnapshot: Decodable {
-    let background: TerminalColorSnapshot
-    let cursor: TerminalCursorSnapshot?
-    let cursor_parent_grid_id: Int?
-    let message_selection: NeovideMessageSelectionSnapshot?
-    let scrollbar: ScrollbarSnapshot?
-    let scroll_hint: FrameScrollHint?
-    let windows: [NeovideRenderedWindowSnapshot]
-}
-
-struct NeovideUiStateSnapshot: Decodable {
-    let cursor: TerminalCursorSnapshot?
-    let scroll_hint: FrameScrollHint?
-}
-
-struct NeovideMessageSelectionSnapshot: Decodable {
-    let grid_id: Int
-    let start: NeovideGridPositionSnapshot
-    let end: NeovideGridPositionSnapshot
-}
-
-struct NeovideGridPositionSnapshot: Decodable {
-    let row: Int
-    let col: Int
-}
-
-struct ScrollbarSnapshot: Decodable {
-    let top: UInt64
-    let visible: UInt64
-    let total: UInt64
-}
-
-struct NeovideRenderedWindowSnapshot: Decodable {
-    let grid_id: Int
-    let top: Int
-    let left: Int
-    let width: Int
-    let height: Int
-    let window_kind: String
-    let zindex: Int
-    let compindex: Int
-    let hidden: Bool
-    let scroll_position: Double
-    let lines: [NeovideLineSnapshot?]
-}
-
-struct NeovideLineSnapshot: Decodable {
-    let text: String
-    let cells: [TerminalCellSnapshot]
-}
-
-struct TerminalCellSnapshot: Decodable {
-    let text: String
-    let bg: TerminalColorSnapshot?
-    let blend: UInt8
-}
-
-struct TerminalColorSnapshot: Decodable {
-    let r: UInt8
-    let g: UInt8
-    let b: UInt8
-}
-
-struct TerminalCursorSnapshot: Decodable {
-    let x: UInt16
-    let y: UInt16
-    let style: String
-    let cell_percentage: UInt8
-    let blinkwait_ms: UInt64
-    let blinkon_ms: UInt64
-    let blinkoff_ms: UInt64
-}
-
-struct FrameScrollHint: Decodable {
-    let start_row: Int
-    let end_row: Int
-    let start_col: Int?
-    let end_col: Int?
-    let rows: Int
-
-    var outputShift: OutputScrollShift {
-        OutputScrollShift(
-            startRow: start_row,
-            endRow: end_row,
-            rows: rows,
-            startCol: start_col,
-            endCol: end_col
-        )
-    }
-}
-
-struct OutputScrollShift {
-    let startRow: Int
-    let endRow: Int
-    let startCol: Int?
-    let endCol: Int?
-    let rows: Int
-
-    init(startRow: Int, endRow: Int, rows: Int, startCol: Int? = nil, endCol: Int? = nil) {
-        self.startRow = startRow
-        self.endRow = endRow
-        self.startCol = startCol
-        self.endCol = endCol
-        self.rows = rows
-    }
-}
-
 struct SkiaRenderGeometry {
     let originX: Float
     let originY: Float
@@ -646,7 +369,7 @@ final class RustCore {
 
     init?(defaultTheme: String = nativeThemeNames[0]) {
         let handle = defaultTheme.withCString { value in
-            satin_core_create_with_theme(value)
+            satinCoreCreateWithTheme(value)
         }
         guard let handle else {
             return nil
@@ -655,11 +378,11 @@ final class RustCore {
     }
 
     deinit {
-        satin_core_destroy(handle)
+        satinCoreDestroy(handle)
     }
 
     func snapshot() -> TerminalCoreSnapshot? {
-        decode(satin_core_snapshot_json(handle), as: TerminalCoreSnapshot.self)
+        decode(satinCoreSnapshotJson(handle), as: TerminalCoreSnapshot.self)
     }
 
     func applyWorkspace(_ snapshot: TerminalCoreSnapshot) -> Bool {
@@ -669,55 +392,55 @@ final class RustCore {
             return false
         }
         return json.withCString { value in
-            satin_core_apply_workspace_json(handle, value) != 0
+            satinCoreApplyWorkspaceJson(handle, value) != 0
         }
     }
 
     @discardableResult
     func newTab() -> Int {
-        satin_core_new_tab(handle)
+        satinCoreNewTab(handle)
     }
 
     func splitActive(axis: UInt32) -> Int? {
-        let paneId = satin_core_split_active(handle, axis)
+        let paneId = satinCoreSplitActive(handle, axis)
         return paneId >= 0 ? paneId : nil
     }
 
     func resizeSplit(firstPaneId: Int, secondPaneId: Int, ratio: Double) -> Bool {
-        satin_core_resize_split(handle, firstPaneId, secondPaneId, ratio) != 0
+        satinCoreResizeSplit(handle, firstPaneId, secondPaneId, ratio) != 0
     }
 
     func closePane(_ paneId: Int) -> Bool {
-        satin_core_close_pane(handle, paneId) != 0
+        satinCoreClosePane(handle, paneId) != 0
     }
 
     func selectTab(_ index: Int) -> Bool {
-        satin_core_select_tab(handle, index) != 0
+        satinCoreSelectTab(handle, index) != 0
     }
 
     func moveTab(_ tabId: Int, to index: Int) -> Bool {
-        satin_core_move_tab(handle, tabId, index) != 0
+        satinCoreMoveTab(handle, tabId, index) != 0
     }
 
     func selectPane(_ paneId: Int) -> Bool {
-        satin_core_select_pane(handle, paneId) != 0
+        satinCoreSelectPane(handle, paneId) != 0
     }
 
     func renameTab(_ index: Int, title: String) {
         title.withCString { value in
-            _ = satin_core_rename_tab(handle, index, value)
+            _ = satinCoreRenameTab(handle, index, value)
         }
     }
 
     func setTheme(_ theme: String, tab index: Int) {
         theme.withCString { value in
-            _ = satin_core_set_tab_theme(handle, index, value)
+            _ = satinCoreSetTabTheme(handle, index, value)
         }
     }
 
     func setDefaultTheme(_ theme: String) {
         theme.withCString { value in
-            _ = satin_core_set_default_theme(handle, value)
+            _ = satinCoreSetDefaultTheme(handle, value)
         }
     }
 
@@ -728,7 +451,7 @@ final class RustCore {
             return nil
         }
         defer {
-            satin_string_free(pointer)
+            satinStringFree(pointer)
         }
 
         let json = String(cString: pointer)
@@ -752,13 +475,6 @@ protocol NativePane: AnyObject {
     func renderHandle() -> UnsafeMutableRawPointer?
     func controlScreenText() -> String
     func controlImageCount() -> Int
-}
-
-struct NativeTerminalSpawnConfiguration: Encodable {
-    let cwd: String?
-    let shell: String?
-    let environment: [String: String]
-    let startup_command: [String]
 }
 
 struct NativeFinderEditorLaunch {
@@ -900,7 +616,7 @@ class RustTerminalPane: NativePane {
             return nil
         }
         let handle = json.withCString { value in
-            satin_runtime_create_config(
+            satinRuntimeCreateConfig(
                 clampedUInt16(grid.rows),
                 clampedUInt16(grid.cols),
                 clampedUInt16(grid.widthPixels),
@@ -920,11 +636,11 @@ class RustTerminalPane: NativePane {
     }
 
     deinit {
-        satin_runtime_destroy(handle)
+        satinRuntimeDestroy(handle)
     }
 
     func resize(grid: (rows: Int, cols: Int, widthPixels: Int, heightPixels: Int)) {
-        _ = satin_runtime_resize(
+        _ = satinRuntimeResize(
             handle,
             clampedUInt16(grid.rows),
             clampedUInt16(grid.cols),
@@ -938,7 +654,7 @@ class RustTerminalPane: NativePane {
             guard let base = buffer.bindMemory(to: UInt8.self).baseAddress else {
                 return
             }
-            _ = satin_runtime_write(handle, base, buffer.count)
+            _ = satinRuntimeWrite(handle, base, buffer.count)
         }
     }
 
@@ -951,7 +667,7 @@ class RustTerminalPane: NativePane {
             let unshiftedBase = unshiftedBuffer.bindMemory(to: UInt8.self).baseAddress
             if let textData {
                 return textData.withUnsafeBytes { textBuffer in
-                    satin_runtime_key(
+                    satinRuntimeKey(
                         handle,
                         event.keyCode,
                         terminalModifierMask(event.modifierFlags),
@@ -964,7 +680,7 @@ class RustTerminalPane: NativePane {
                     ) != 0
                 }
             }
-            return satin_runtime_key(
+            return satinRuntimeKey(
                 handle,
                 event.keyCode,
                 terminalModifierMask(event.modifierFlags),
@@ -980,18 +696,18 @@ class RustTerminalPane: NativePane {
 
     func writeText(_ text: String) {
         withUtf8(text) { bytes, count in
-            _ = satin_runtime_text(handle, bytes, count)
+            _ = satinRuntimeText(handle, bytes, count)
         }
     }
 
     func paste(_ text: String) {
         withUtf8(text) { bytes, count in
-            _ = satin_runtime_paste(handle, bytes, count)
+            _ = satinRuntimePaste(handle, bytes, count)
         }
     }
 
     func mouse(_ input: NativeMouseInput) -> Bool {
-        satin_runtime_mouse(
+        satinRuntimeMouse(
             handle,
             terminalMouseAction(input.action),
             terminalMouseButton(input.button, action: input.action),
@@ -1004,11 +720,11 @@ class RustTerminalPane: NativePane {
     }
 
     func focus(_ focused: Bool) {
-        _ = satin_runtime_focus(handle, focused ? 1 : 0)
+        _ = satinRuntimeFocus(handle, focused ? 1 : 0)
     }
 
     func select(start: (row: Int, col: Int), end: (row: Int, col: Int), rectangular: Bool) {
-        _ = satin_runtime_select(
+        _ = satinRuntimeSelect(
             handle,
             UInt32(max(0, start.row)),
             clampedUInt16(start.col + 1) - 1,
@@ -1019,20 +735,20 @@ class RustTerminalPane: NativePane {
     }
 
     func selectAll() {
-        _ = satin_runtime_select_all(handle)
+        _ = satinRuntimeSelectAll(handle)
     }
 
     func clearSelection() {
-        _ = satin_runtime_clear_selection(handle)
+        _ = satinRuntimeClearSelection(handle)
     }
 
     func selectedText() -> String? {
-        ownedRustString(satin_runtime_selected_text(handle))
+        ownedRustString(satinRuntimeSelectedText(handle))
     }
 
     func hyperlink(row: Int, col: Int) -> String? {
         ownedRustString(
-            satin_runtime_hyperlink(
+            satinRuntimeHyperlink(
                 handle,
                 UInt32(max(0, row)),
                 clampedUInt16(col + 1) - 1
@@ -1041,42 +757,42 @@ class RustTerminalPane: NativePane {
     }
 
     func title() -> String? {
-        ownedRustString(satin_runtime_title(handle))
+        ownedRustString(satinRuntimeTitle(handle))
     }
 
     func takeBellCount() -> UInt64 {
-        satin_runtime_take_bell_count(handle)
+        satinRuntimeTakeBellCount(handle)
     }
 
     func find(_ query: String, backwards: Bool) -> Bool {
         query.withCString { value in
-            satin_runtime_find(handle, value, backwards ? 1 : 0) != 0
+            satinRuntimeFind(handle, value, backwards ? 1 : 0) != 0
         }
     }
 
     func setOptionAsAlt(_ enabled: Bool) {
-        _ = satin_runtime_set_option_as_alt(handle, enabled ? 1 : 0)
+        _ = satinRuntimeSetOptionAsAlt(handle, enabled ? 1 : 0)
     }
 
     @discardableResult
     func drain() -> Bool {
-        satin_runtime_drain(handle) != 0
+        satinRuntimeDrain(handle) != 0
     }
 
     func isExited() -> Bool {
-        satin_runtime_exited(handle) != 0
+        satinRuntimeExited(handle) != 0
     }
 
     func wakeupFD() -> Int32 {
-        satin_runtime_wakeup_fd(handle)
+        satinRuntimeWakeupFd(handle)
     }
 
     func currentWorkingDirectory() -> String? {
-        guard let pointer = satin_runtime_cwd(handle) else {
+        guard let pointer = satinRuntimeCwd(handle) else {
             return nil
         }
         defer {
-            satin_string_free(pointer)
+            satinStringFree(pointer)
         }
 
         let value = String(cString: pointer)
@@ -1084,15 +800,15 @@ class RustTerminalPane: NativePane {
     }
 
     func scroll(rows: Int) -> Int {
-        satin_runtime_scroll(handle, rows)
+        satinRuntimeScroll(handle, rows)
     }
 
     func rendererScrollPosition() -> Double {
-        Double(satin_runtime_renderer_scroll_position(handle))
+        Double(satinRuntimeRendererScrollPosition(handle))
     }
 
     func cursorPosition() -> (x: Int, y: Int)? {
-        let packed = satin_runtime_cursor_position(handle)
+        let packed = satinRuntimeCursorPosition(handle)
         guard packed != UInt32.max else {
             return nil
         }
@@ -1104,18 +820,18 @@ class RustTerminalPane: NativePane {
     }
 
     func controlScreenText() -> String {
-        ownedRustString(satin_runtime_screen_text(handle)) ?? ""
+        ownedRustString(satinRuntimeScreenText(handle)) ?? ""
     }
 
     func controlImageCount() -> Int {
-        satin_runtime_kitty_placement_count(handle)
+        satinRuntimeKittyPlacementCount(handle)
     }
 
     func takeTmuxEvent() -> TmuxControlEvent? {
-        guard let pointer = satin_runtime_take_tmux_event_json(handle) else {
+        guard let pointer = satinRuntimeTakeTmuxEventJson(handle) else {
             return nil
         }
-        defer { satin_string_free(pointer) }
+        defer { satinStringFree(pointer) }
         return try? JSONDecoder().decode(
             TmuxControlEvent.self, from: Data(String(cString: pointer).utf8))
     }
@@ -1123,7 +839,7 @@ class RustTerminalPane: NativePane {
     @discardableResult
     func tmuxCommand(_ command: String) -> Bool {
         command.withCString { value in
-            satin_runtime_tmux_command(handle, value) != 0
+            satinRuntimeTmuxCommand(handle, value) != 0
         }
     }
 
@@ -1144,7 +860,7 @@ final class RustTmuxPane: RustTerminalPane {
         gateway: RustTerminalPane
     ) {
         guard
-            let handle = satin_runtime_create_external(
+            let handle = satinRuntimeCreateExternal(
                 clampedUInt16(grid.rows),
                 clampedUInt16(grid.cols),
                 clampedUInt16(grid.widthPixels),
@@ -1171,7 +887,7 @@ final class RustTmuxPane: RustTerminalPane {
             guard let base = buffer.bindMemory(to: UInt8.self).baseAddress else {
                 return false
             }
-            return satin_runtime_tmux_write(
+            return satinRuntimeTmuxWrite(
                 gateway.handle,
                 handle,
                 tmuxPaneId,
@@ -1201,7 +917,7 @@ final class RustTmuxPane: RustTerminalPane {
         if commandIsShell {
             if currentShellCommand != command {
                 currentShellCommand = command
-                _ = satin_runtime_tmux_reset_prompt_tracking(handle)
+                _ = satinRuntimeTmuxResetPromptTracking(handle)
                 resetRepeatedReturnBackpressure()
             }
             shellOwnsPane = true
@@ -1220,7 +936,7 @@ final class RustTmuxPane: RustTerminalPane {
             resetRepeatedReturnBackpressure()
             return forwardKey(event, released: true)
         }
-        let promptState = satin_runtime_tmux_shell_prompt_state(handle)
+        let promptState = satinRuntimeTmuxShellPromptState(handle)
         let managesShellRepeat = isReturn && shellOwnsPane && promptState != 0
         if managesShellRepeat {
             if event.isARepeat, returnAwaitingPrompt {
@@ -1228,7 +944,7 @@ final class RustTmuxPane: RustTerminalPane {
                 return true
             }
             returnAwaitingPrompt = true
-            returnPromptGeneration = satin_runtime_tmux_prompt_generation(handle)
+            returnPromptGeneration = satinRuntimeTmuxPromptGeneration(handle)
         }
         let sent = forwardKey(event, released: released)
         if !sent, managesShellRepeat {
@@ -1247,7 +963,7 @@ final class RustTmuxPane: RustTerminalPane {
             let unshifted = unshiftedBuffer.bindMemory(to: UInt8.self).baseAddress
             if let textData {
                 return textData.withUnsafeBytes { textBuffer in
-                    satin_runtime_tmux_key(
+                    satinRuntimeTmuxKey(
                         gateway.handle,
                         handle,
                         tmuxPaneId,
@@ -1262,7 +978,7 @@ final class RustTmuxPane: RustTerminalPane {
                     ) != 0
                 }
             }
-            return satin_runtime_tmux_key(
+            return satinRuntimeTmuxKey(
                 gateway.handle,
                 handle,
                 tmuxPaneId,
@@ -1288,7 +1004,7 @@ final class RustTmuxPane: RustTerminalPane {
             return false
         }
         return withUtf8(text) { bytes, count in
-            satin_runtime_tmux_paste(
+            satinRuntimeTmuxPaste(
                 gateway.handle,
                 handle,
                 tmuxPaneId,
@@ -1302,7 +1018,7 @@ final class RustTmuxPane: RustTerminalPane {
         guard let gateway else {
             return false
         }
-        return satin_runtime_tmux_mouse(
+        return satinRuntimeTmuxMouse(
             gateway.handle,
             handle,
             tmuxPaneId,
@@ -1323,7 +1039,7 @@ final class RustTmuxPane: RustTerminalPane {
         if !focused {
             resetRepeatedReturnBackpressure()
         }
-        _ = satin_runtime_tmux_focus(
+        _ = satinRuntimeTmuxFocus(
             gateway.handle,
             handle,
             tmuxPaneId,
@@ -1340,7 +1056,7 @@ final class RustTmuxPane: RustTerminalPane {
             guard let base = buffer.bindMemory(to: UInt8.self).baseAddress else {
                 return false
             }
-            return satin_runtime_tmux_feed_pane(
+            return satinRuntimeTmuxFeedPane(
                 handle,
                 base,
                 buffer.count
@@ -1356,12 +1072,12 @@ final class RustTmuxPane: RustTerminalPane {
         guard returnAwaitingPrompt else {
             return
         }
-        let promptGeneration = satin_runtime_tmux_prompt_generation(handle)
-        let semanticPromptSeen = satin_runtime_tmux_semantic_prompt_seen(handle) != 0
+        let promptGeneration = satinRuntimeTmuxPromptGeneration(handle)
+        let semanticPromptSeen = satinRuntimeTmuxSemanticPromptSeen(handle) != 0
         let semanticPromptAdvanced = promptGeneration != returnPromptGeneration
         let fallbackPromptReady =
             !semanticPromptSeen
-            && satin_runtime_tmux_shell_prompt_state(handle) == 2
+            && satinRuntimeTmuxShellPromptState(handle) == 2
         guard semanticPromptAdvanced || fallbackPromptReady else {
             return
         }
@@ -1375,7 +1091,7 @@ final class RustTmuxPane: RustTerminalPane {
 
     private func resetRepeatedReturnBackpressure() {
         returnAwaitingPrompt = false
-        returnPromptGeneration = satin_runtime_tmux_prompt_generation(handle)
+        returnPromptGeneration = satinRuntimeTmuxPromptGeneration(handle)
         pendingRepeatedReturn = nil
     }
 }
@@ -1404,7 +1120,7 @@ final class RustNeovimPane: NativePane {
             return nil
         }
         let handle = json.withCString { value in
-            satin_nvim_create_with_config(
+            satinNvimCreateWithConfig(
                 clampedUInt16(grid.rows),
                 clampedUInt16(grid.cols),
                 clampedUInt16(grid.widthPixels),
@@ -1420,11 +1136,11 @@ final class RustNeovimPane: NativePane {
     }
 
     deinit {
-        satin_nvim_destroy(handle)
+        satinNvimDestroy(handle)
     }
 
     func resize(grid: (rows: Int, cols: Int, widthPixels: Int, heightPixels: Int)) {
-        _ = satin_nvim_resize(
+        _ = satinNvimResize(
             handle,
             clampedUInt16(grid.rows),
             clampedUInt16(grid.cols),
@@ -1438,7 +1154,7 @@ final class RustNeovimPane: NativePane {
             guard let base = buffer.bindMemory(to: UInt8.self).baseAddress else {
                 return
             }
-            _ = satin_nvim_input(handle, base, buffer.count)
+            _ = satinNvimInput(handle, base, buffer.count)
         }
     }
 
@@ -1446,7 +1162,7 @@ final class RustNeovimPane: NativePane {
         let result = input.button.withCString { button in
             input.action.withCString { action in
                 input.modifier.withCString { modifier in
-                    satin_nvim_mouse(
+                    satinNvimMouse(
                         handle,
                         button,
                         action,
@@ -1469,39 +1185,39 @@ final class RustNeovimPane: NativePane {
     }
 
     func takeMessageSelectionText() -> String? {
-        ownedRustString(satin_nvim_take_message_selection_text(handle))
+        ownedRustString(satinNvimTakeMessageSelectionText(handle))
     }
 
     func runCommand(_ command: String) -> Bool {
         command.withCString { value in
-            satin_nvim_command(handle, value) != 0
+            satinNvimCommand(handle, value) != 0
         }
     }
 
     @discardableResult
     func drain() -> Bool {
-        satin_nvim_drain(handle) != 0
+        satinNvimDrain(handle) != 0
     }
 
     func isExited() -> Bool {
-        satin_nvim_exited(handle) != 0
+        satinNvimExited(handle) != 0
     }
 
     func exitCode() -> Int {
-        let code = satin_nvim_exit_code(handle)
+        let code = satinNvimExitCode(handle)
         return code == Int32.min ? 1 : Int(code)
     }
 
     func wakeupFD() -> Int32 {
-        satin_nvim_wakeup_fd(handle)
+        satinNvimWakeupFd(handle)
     }
 
     func rendererModel() -> NeovideRendererModelSnapshot? {
-        decode(satin_nvim_renderer_model_json(handle), as: NeovideRendererModelSnapshot.self)
+        decode(satinNvimRendererModelJson(handle), as: NeovideRendererModelSnapshot.self)
     }
 
     func uiState() -> NeovideUiStateSnapshot? {
-        decode(satin_nvim_ui_state_json(handle), as: NeovideUiStateSnapshot.self)
+        decode(satinNvimUiStateJson(handle), as: NeovideUiStateSnapshot.self)
     }
 
     func renderHandle() -> UnsafeMutableRawPointer? {
@@ -1520,7 +1236,7 @@ final class RustNeovimPane: NativePane {
     }
 
     func controlImageCount() -> Int {
-        satin_nvim_kitty_placement_count(handle)
+        satinNvimKittyPlacementCount(handle)
     }
 
     private func decode<T: Decodable>(_ pointer: UnsafeMutablePointer<CChar>?, as type: T.Type)
@@ -1530,7 +1246,7 @@ final class RustNeovimPane: NativePane {
             return nil
         }
         defer {
-            satin_string_free(pointer)
+            satinStringFree(pointer)
         }
 
         let json = String(cString: pointer)
@@ -1662,7 +1378,7 @@ enum NativePaneDividerAxis: String {
     }
 }
 
-fileprivate struct NativePaneDivider {
+private struct NativePaneDivider {
     private static let hitWidth: CGFloat = 10
     private static let indicatorWidth: CGFloat = 2
     private static let minimumPaneLength: CGFloat = 80
@@ -3221,7 +2937,7 @@ private func ownedRustString(_ pointer: UnsafeMutablePointer<CChar>?) -> String?
         return nil
     }
     defer {
-        satin_string_free(pointer)
+        satinStringFree(pointer)
     }
     return String(cString: pointer)
 }
@@ -3565,7 +3281,7 @@ final class TerminalMetalView: MTKView, CAMetalDisplayLinkDelegate, MTKViewDeleg
     init(frame frameRect: NSRect) {
         guard let device = MTLCreateSystemDefaultDevice(),
             let commandQueue = device.makeCommandQueue(),
-            let skiaRenderer = satin_skia_metal_create(
+            let skiaRenderer = satinSkiaMetalCreate(
                 metalObjectPointer(device),
                 metalObjectPointer(commandQueue)
             )
@@ -3601,21 +3317,21 @@ final class TerminalMetalView: MTKView, CAMetalDisplayLinkDelegate, MTKViewDeleg
     static func isAvailable() -> Bool {
         guard let device = MTLCreateSystemDefaultDevice(),
             let commandQueue = device.makeCommandQueue(),
-            let renderer = satin_skia_metal_create(
+            let renderer = satinSkiaMetalCreate(
                 metalObjectPointer(device),
                 metalObjectPointer(commandQueue)
             )
         else {
             return false
         }
-        satin_skia_metal_destroy(renderer)
+        satinSkiaMetalDestroy(renderer)
         return true
     }
 
     deinit {
         nextFrameWorkItem?.cancel()
         frameDisplayLink?.invalidate()
-        satin_skia_metal_destroy(skiaRenderer)
+        satinSkiaMetalDestroy(skiaRenderer)
     }
 
     override func viewDidMoveToWindow() {
@@ -3791,20 +3507,20 @@ final class TerminalMetalView: MTKView, CAMetalDisplayLinkDelegate, MTKViewDeleg
     }
 
     func hasPendingSkiaFrame() -> Bool {
-        satin_skia_metal_needs_animation_frame(skiaRenderer) != 0
+        satinSkiaMetalNeedsAnimationFrame(skiaRenderer) != 0
     }
 
     func pendingSkiaFrameDelayMs() -> UInt64 {
-        satin_skia_metal_next_frame_delay_ms(skiaRenderer)
+        satinSkiaMetalNextFrameDelayMs(skiaRenderer)
     }
 
     func forgetRuntime(_ runtime: UnsafeMutableRawPointer?) {
-        satin_skia_metal_forget_runtime(skiaRenderer, runtime)
+        satinSkiaMetalForgetRuntime(skiaRenderer, runtime)
     }
 
     func setFontFamily(_ family: String) {
         family.withCString { value in
-            _ = satin_skia_metal_set_font_family(skiaRenderer, value)
+            _ = satinSkiaMetalSetFontFamily(skiaRenderer, value)
         }
         requestFrame()
     }
@@ -3812,7 +3528,7 @@ final class TerminalMetalView: MTKView, CAMetalDisplayLinkDelegate, MTKViewDeleg
     private func updateFrameScheduling(_ commandBuffer: MTLCommandBuffer) {
         nextFrameWorkItem?.cancel()
         nextFrameWorkItem = nil
-        let delayMs = satin_skia_metal_next_frame_delay_ms(skiaRenderer)
+        let delayMs = satinSkiaMetalNextFrameDelayMs(skiaRenderer)
         guard delayMs != UInt64.max else {
             if !usesSmokeFrameFallback {
                 frameDisplayLink?.isPaused = true
@@ -11198,7 +10914,7 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
             let ok: Bool
             if pane.kind == .terminal {
                 ok =
-                    satin_skia_metal_render_terminal(
+                    satinSkiaMetalRenderTerminal(
                         renderer,
                         renderHandle,
                         metalObjectPointer(texture),
@@ -11214,7 +10930,7 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
                     ) != 0
             } else {
                 ok =
-                    satin_skia_metal_render_nvim(
+                    satinSkiaMetalRenderNvim(
                         renderer,
                         renderHandle,
                         metalObjectPointer(texture),
@@ -11547,12 +11263,12 @@ final class SatinAppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidat
                     if interactive {
                         self.presentCurrentVersion(currentVersion)
                     }
-                case let .success(.available(update)):
+                case .success(.available(let update)):
                     NativeLog.lifecycleInfo(
                         "update_available current=\(currentVersion) latest=\(update.version)"
                     )
                     self.presentAvailableUpdate(update, currentVersion: currentVersion)
-                case let .failure(error):
+                case .failure(let error):
                     NativeLog.lifecycleError(
                         "update_check_failed error=\(error.localizedDescription)"
                     )
@@ -11615,7 +11331,7 @@ final class SatinAppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidat
                 window.endSheet(alert.window)
                 self.updateProgressAlert = nil
                 switch result {
-                case let .success(prepared):
+                case .success(let prepared):
                     do {
                         try self.updateInstaller.launch(prepared)
                         NativeLog.lifecycleInfo(
@@ -11629,7 +11345,7 @@ final class SatinAppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidat
                         )
                         self.presentUpdateInstallError(error, update: update)
                     }
-                case let .failure(error):
+                case .failure(let error):
                     NativeLog.lifecycleError(
                         "update_install_failed error=\(error.localizedDescription)"
                     )

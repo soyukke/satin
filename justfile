@@ -440,9 +440,13 @@ check:
 test:
     @if [[ -z "${IN_NIX_SHELL:-}" ]]; then exec nix develop --command just test; else cargo test; fi
 
-# Run source, repository, and operations lint gates.
+# Run every formatting, source, repository, and operations lint gate.
 lint:
-    @if [[ -z "${IN_NIX_SHELL:-}" ]]; then exec nix develop --command just lint; else cargo clippy --all-targets --all-features -- -D warnings && just repo-lint && just ops-lint; fi
+    @if [[ -z "${IN_NIX_SHELL:-}" ]]; then exec nix develop --command just lint; else just fmt-check && cargo clippy --all-targets --all-features -- -D warnings && just repo-lint && just ops-lint; fi
+
+# Lint Swift formatting, naming, safety, and language idioms.
+swift-lint:
+    @if [[ -z "${IN_NIX_SHELL:-}" ]]; then exec nix develop --command just swift-lint; else swift-format lint --strict --recursive --configuration .swift-format spikes/macos-shell; fi
 
 # Run the checks enforced by the Git pre-commit hook.
 precommit:
@@ -485,11 +489,11 @@ fmt:
 
 # Verify formatting without changing files.
 fmt-check:
-    @if [[ -z "${IN_NIX_SHELL:-}" ]]; then exec nix develop --command just fmt-check; else cargo fmt -- --check; swift-format lint --strict --recursive --configuration .swift-format spikes/macos-shell; mapfile -t shell_scripts < <(rg -l '^#!.*(bash|/sh)' scripts --glob '*' | sort); shfmt -d -i 2 -ci "${shell_scripts[@]}"; nixfmt --check flake.nix; fi
+    @if [[ -z "${IN_NIX_SHELL:-}" ]]; then exec nix develop --command just fmt-check; else cargo fmt -- --check; just swift-lint; mapfile -t shell_scripts < <(rg -l '^#!.*(bash|/sh)' scripts --glob '*' | sort); shfmt -d -i 2 -ci "${shell_scripts[@]}"; nixfmt --check flake.nix; fi
 
 # Verify formatting, type checking, linting, and tests.
 verify:
-    @if [[ -z "${IN_NIX_SHELL:-}" ]]; then exec nix develop --command just verify; else just fmt-check && cargo check && just lint && cargo test && just license-audit; fi
+    @if [[ -z "${IN_NIX_SHELL:-}" ]]; then exec nix develop --command just verify; else cargo check && just lint && cargo test && just license-audit; fi
 
 # Check Rust dependencies against the current RustSec advisory database.
 audit:

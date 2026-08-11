@@ -1,28 +1,30 @@
 import Foundation
 
 @_silgen_name("satin_control_create")
-private func satin_control_create(
+private func satinControlCreate(
     _ path: UnsafePointer<CChar>?
 ) -> UnsafeMutableRawPointer?
 
 @_silgen_name("satin_control_destroy")
-private func satin_control_destroy(_ handle: UnsafeMutableRawPointer?)
+private func satinControlDestroy(_ handle: UnsafeMutableRawPointer?)
 
 @_silgen_name("satin_control_wakeup_fd")
-private func satin_control_wakeup_fd(_ handle: UnsafeMutableRawPointer?) -> Int32
+private func satinControlWakeupFd(_ handle: UnsafeMutableRawPointer?) -> Int32
 
 @_silgen_name("satin_control_take_request_json")
-private func satin_control_take_request_json(
+private func satinControlTakeRequestJson(
     _ handle: UnsafeMutableRawPointer?
 ) -> UnsafeMutablePointer<CChar>?
 
 @_silgen_name("satin_control_respond")
-private func satin_control_respond(
+private func satinControlRespond(
     _ handle: UnsafeMutableRawPointer?,
     _ id: UInt64,
     _ response: UnsafePointer<CChar>?
 ) -> UInt8
 
+// Properties mirror the control protocol and intentionally retain its timeout_ms key.
+// swift-format-ignore: AlwaysUseLowerCamelCase
 struct NativeControlRequest: Decodable {
     let id: UInt64
     let version: UInt32
@@ -66,14 +68,14 @@ final class NativeControlServer {
 
     init?(socketPath: String) {
         let handle = socketPath.withCString { path in
-            satin_control_create(path)
+            satinControlCreate(path)
         }
         guard let handle else {
             return nil
         }
-        let descriptor = satin_control_wakeup_fd(handle)
+        let descriptor = satinControlWakeupFd(handle)
         guard descriptor >= 0 else {
-            satin_control_destroy(handle)
+            satinControlDestroy(handle)
             return nil
         }
         self.socketPath = socketPath
@@ -91,13 +93,13 @@ final class NativeControlServer {
 
     deinit {
         wakeupSource?.cancel()
-        satin_control_destroy(handle)
+        satinControlDestroy(handle)
     }
 
     private func drain() {
-        while let pointer = satin_control_take_request_json(handle) {
+        while let pointer = satinControlTakeRequestJson(handle) {
             let json = String(cString: pointer)
-            satin_string_free(pointer)
+            satinStringFree(pointer)
             guard let data = json.data(using: .utf8) else {
                 continue
             }
@@ -159,9 +161,9 @@ final class NativeControlServer {
     ) {
         let object: [String: Any]
         switch result {
-        case let .success(value):
+        case .success(let value):
             object = ["ok": true, "result": value]
-        case let .failure(error):
+        case .failure(let error):
             object = [
                 "ok": false,
                 "error": ["code": error.code, "message": error.message],
@@ -174,7 +176,7 @@ final class NativeControlServer {
             return
         }
         json.withCString { value in
-            _ = satin_control_respond(handle, id, value)
+            _ = satinControlRespond(handle, id, value)
         }
     }
 }

@@ -88,6 +88,7 @@ SATIN_CONTROL_SOCKET="$socket" \
   "$app" >"$app_log" 2>&1 &
 app_pid=$!
 
+# ShellCheck does not treat a trap handler name as a direct function call.
 # shellcheck disable=SC2329
 cleanup() {
   cleanup_status=$?

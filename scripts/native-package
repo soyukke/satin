@@ -80,6 +80,7 @@ env -u SDKROOT -u DEVELOPER_DIR \
   "${swift_feature_flags[@]}" \
   spikes/macos-shell/AppUpdateChecker.swift \
   spikes/macos-shell/ControlHost.swift \
+  spikes/macos-shell/NativeWireModels.swift \
   spikes/macos-shell/PerformanceRecorder.swift \
   spikes/macos-shell/SatinFFI.swift \
   spikes/macos-shell/SettingsWindow.swift \

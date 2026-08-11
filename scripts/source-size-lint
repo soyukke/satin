@@ -9,7 +9,7 @@ default_limit=1000
 
 limit_for() {
   case "$1" in
-    spikes/macos-shell/SatinApplication.swift) printf '12229\n' ;;
+    spikes/macos-shell/SatinApplication.swift) printf '11945\n' ;;
     src/terminal_runtime.rs) printf '3377\n' ;;
     src/artifact.rs) printf '2790\n' ;;
     src/neovim_editor.rs) printf '2731\n' ;;

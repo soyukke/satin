@@ -48,18 +48,29 @@ Every change must preserve all of the following.
 ### Language and repository lint coverage
 
 - Rust: `rustfmt`, `cargo check`, Clippy with denied warnings, and tests.
-- Swift: repository-pinned `swift-format`, safety lint rules, Swift compiler
-  warnings as errors, updater self-test, and native smoke.
+- Swift: repository-pinned `swift-format` default lint rules plus explicit bans
+  on force unwraps, force tries, and implicitly unwrapped optionals; Swift
+  compiler warnings as errors, updater self-test, and native smoke.
 - Shell: `shfmt`, ShellCheck, and syntax checks for the supported zsh startup
   files.
 - Nix: `nixfmt` and `deadnix`.
 - Documentation and metadata: markdownlint, typos, Actionlint, and zizmor.
 - Rust dependencies: `cargo-audit` against the RustSec advisory database.
 
-`just fmt-check`, `just lint`, and `just verify` are non-mutating gates.
-`just precommit` adds staged secret scanning. `just quality` is the local
-publication gate and adds worktree secret scanning, dependency auditing, native
-build, updater self-test, and native smoke.
+`just fmt-check` and `just swift-lint` are scoped formatting and Swift gates.
+`just lint` includes every supported formatter and linter, while `just verify`
+adds type checking, tests, and license validation. All four commands are
+non-mutating. `just precommit` adds staged secret scanning. `just quality` is
+the local publication gate and adds worktree secret scanning, dependency
+auditing, native build, updater self-test, and native smoke.
+
+Lint suppressions must be scoped to the smallest affected expression or rule
+site and include a reason. Repository-wide warning suppression is not allowed.
+The `swift-format` `rules` object replaces rather than extends its defaults, so
+`.swift-format` records the pinned tool's complete default rule map explicitly.
+Review that map when upgrading the tool. Snake-case Rust and control-protocol
+keys use type-scoped naming exceptions; Swift FFI identifiers remain camel-case
+while `@_silgen_name` preserves the exported C ABI symbol.
 
 ### Complexity and size ratchet
 

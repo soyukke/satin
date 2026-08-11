@@ -1,4 +1,7 @@
 config:
+  # Prose and generated command examples are wrapped by their owning formatters.
   MD013: false
+  # README media and centered badges require small, deliberate HTML fragments.
   MD033: false
+  # README begins with centered HTML and templates may intentionally omit an H1.
   MD041: false

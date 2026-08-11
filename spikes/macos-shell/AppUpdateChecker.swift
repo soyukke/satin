@@ -77,7 +77,7 @@ struct AppSemanticVersion: Comparable {
             let lhsNumber = Int(lhsIdentifier)
             let rhsNumber = Int(rhsIdentifier)
             switch (lhsNumber, rhsNumber) {
-            case let (.some(lhsValue), .some(rhsValue)):
+            case (.some(let lhsValue), .some(let rhsValue)):
                 return lhsValue < rhsValue
             case (.some, .none):
                 return true
@@ -162,7 +162,7 @@ enum AppUpdateError: LocalizedError {
             return "The latest update manifest has invalid release metadata."
         case .responseTooLarge:
             return "The update response exceeded the allowed size."
-        case let .serverStatus(status):
+        case .serverStatus(let status):
             return "GitHub returned HTTP status \(status)."
         }
     }
@@ -355,7 +355,7 @@ final class AppUpdateChecker {
         )
         guard let data = response.data(using: .utf8),
             let invalidData = invalidResponse.data(using: .utf8),
-            case let .available(update) = try? evaluate(
+            case .available(let update) = try? evaluate(
                 data: data,
                 currentVersion: "1.2.3"
             ),
@@ -380,9 +380,9 @@ final class AppUpdateChecker {
             switch result {
             case .success(.current):
                 value = "current"
-            case let .success(.available(update)):
+            case .success(.available(let update)):
                 value = "available:\(update.version)"
-            case let .failure(error):
+            case .failure(let error):
                 value = "error:\(error.localizedDescription)"
             }
             lock.lock()

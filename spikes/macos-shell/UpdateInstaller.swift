@@ -73,7 +73,7 @@ enum AppUpdateInstallError: LocalizedError {
             return "The Applications folder is not writable by the current user."
         case .missingInstallHelper:
             return "The bundled update installer is unavailable."
-        case let .toolFailed(tool):
+        case .toolFailed(let tool):
             return "\(tool) failed while preparing the update."
         }
     }
@@ -318,16 +318,16 @@ final class AppUpdateInstaller {
                 return
             }
             switch result {
-            case let .failure(error):
+            case .failure(let error):
                 Self.discard(root)
                 completion(.failure(error))
-            case let .success(manifest):
+            case .success(let manifest):
                 self.downloadArchive(update: update, into: root) { downloadResult in
                     switch downloadResult {
-                    case let .failure(error):
+                    case .failure(let error):
                         Self.discard(root)
                         completion(.failure(error))
-                    case let .success(archiveURL):
+                    case .success(let archiveURL):
                         self.workerQueue.async {
                             do {
                                 let prepared = try self.validateAndStage(
@@ -500,8 +500,8 @@ final class AppUpdateInstaller {
             .appendingPathComponent("Applications", isDirectory: true)
             .standardizedFileURL
         guard
-            (currentApp.lastPathComponent == Self.legacyAppName
-                || currentApp.lastPathComponent == Self.targetAppName),
+            currentApp.lastPathComponent == Self.legacyAppName
+                || currentApp.lastPathComponent == Self.targetAppName,
             currentApp.pathExtension == "app",
             parent == systemApplications || parent == userApplications
         else {
@@ -519,8 +519,8 @@ final class AppUpdateInstaller {
             isDirectory: true
         )
         guard
-            (currentApp == destination
-                || !FileManager.default.fileExists(atPath: destination.path))
+            currentApp == destination
+                || !FileManager.default.fileExists(atPath: destination.path)
         else {
             throw AppUpdateInstallError.invalidApplication
         }

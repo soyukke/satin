@@ -398,8 +398,8 @@ private func percentile(_ values: [Double], fraction: Double) -> Double? {
     return sorted[index]
 }
 
-private extension NSLock {
-    func withLock<Result>(_ operation: () -> Result) -> Result {
+extension NSLock {
+    fileprivate func withLock<Result>(_ operation: () -> Result) -> Result {
         lock()
         defer { unlock() }
         return operation()
