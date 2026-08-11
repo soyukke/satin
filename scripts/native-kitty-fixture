@@ -1,0 +1,57 @@
+#!/usr/bin/env python3
+import binascii
+import struct
+import sys
+import zlib
+from pathlib import Path
+
+
+WIDTH = 96
+HEIGHT = 64
+BLOCK_WIDTH = 12
+BLOCK_HEIGHT = 8
+COLORS = (
+    (250, 40, 100, 255),
+    (30, 200, 250, 255),
+    (255, 190, 20, 255),
+    (100, 220, 60, 255),
+)
+
+
+def png_chunk(chunk_type: bytes, payload: bytes) -> bytes:
+    checksum = binascii.crc32(chunk_type + payload) & 0xFFFFFFFF
+    return (
+        struct.pack(">I", len(payload))
+        + chunk_type
+        + payload
+        + struct.pack(">I", checksum)
+    )
+
+
+def fixture_pixels() -> bytes:
+    rows = bytearray()
+    for y in range(HEIGHT):
+        rows.append(0)
+        for x in range(WIDTH):
+            color_index = (x // BLOCK_WIDTH + y // BLOCK_HEIGHT) % len(COLORS)
+            rows.extend(COLORS[color_index])
+    return bytes(rows)
+
+
+def main() -> int:
+    if len(sys.argv) != 2:
+        raise SystemExit("usage: native-kitty-fixture OUTPUT.png")
+
+    header = struct.pack(">IIBBBBB", WIDTH, HEIGHT, 8, 6, 0, 0, 0)
+    png = (
+        b"\x89PNG\r\n\x1a\n"
+        + png_chunk(b"IHDR", header)
+        + png_chunk(b"IDAT", zlib.compress(fixture_pixels(), level=9))
+        + png_chunk(b"IEND", b"")
+    )
+    Path(sys.argv[1]).write_bytes(png)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

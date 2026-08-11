@@ -13,6 +13,8 @@ socket="$smoke_root/control.sock"
 window_id_file="$smoke_root/window-id"
 shot="spikes/macos-shell/.build/native-kitty-smoke.png"
 rm -f "$shot"
+fixture="$smoke_root/kitty-smoke-fixture.png"
+./scripts/native-kitty-fixture "$fixture"
 
 SATIN_CONTROL_SOCKET="$socket" \
   SATIN_NATIVE_SMOKE_SCENARIO=kitty \
@@ -57,8 +59,8 @@ send_image() {
 
 first_image="$smoke_root/tty-graphics-protocol-satin-first.png"
 second_image="$smoke_root/tty-graphics-protocol-satin-second.png"
-/usr/bin/ditto assets/app-icon.png "$first_image"
-/usr/bin/ditto assets/app-icon.png "$second_image"
+/usr/bin/ditto "$fixture" "$first_image"
+/usr/bin/ditto "$fixture" "$second_image"
 split="$("$cli" --socket "$socket" --json split --pane 1 --vertical --cwd "$smoke_root")"
 second_pane="$(jq -r '.result.pane' <<<"$split")"
 send_image 1 900 "$first_image"
@@ -105,7 +107,7 @@ jq -e --argjson second "$second_pane" '
 }
 
 replacement="$smoke_root/tty-graphics-protocol-satin-replacement.png"
-/usr/bin/ditto assets/app-icon.png "$replacement"
+/usr/bin/ditto "$fixture" "$replacement"
 send_image 1 902 "$replacement"
 for _ in {1..100}; do
   state="$("$cli" --socket "$socket" --json list)"
@@ -139,7 +141,7 @@ jq -e --argjson second "$second_pane" '
 ' <<<"$state" >/dev/null
 
 final_image="$smoke_root/tty-graphics-protocol-satin-final.png"
-/usr/bin/ditto assets/app-icon.png "$final_image"
+/usr/bin/ditto "$fixture" "$final_image"
 "$cli" --socket "$socket" send --pane 1 clear >/dev/null
 "$cli" --socket "$socket" key --pane 1 Enter >/dev/null
 sleep 0.1
