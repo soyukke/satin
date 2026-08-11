@@ -50,7 +50,7 @@ if [[ ! -s "$window_id_file" ]]; then
   exit 1
 fi
 
-window_id=$(tr -d '[:space:]' < "$window_id_file")
+window_id=$(tr -d '[:space:]' <"$window_id_file")
 if [[ -z "$window_id" ]]; then
   echo "native $name smoke failed: empty window id" >&2
   exit 1

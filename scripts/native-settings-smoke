@@ -62,7 +62,7 @@ for tab in general appearance terminal keybindings updates; do
   width="$(/usr/bin/sips -g pixelWidth "$shot" | awk '/pixelWidth/ {print $2}')"
   height="$(/usr/bin/sips -g pixelHeight "$shot" | awk '/pixelHeight/ {print $2}')"
   bytes="$(/usr/bin/stat -f '%z' "$shot")"
-  if (( width < 600 || height < 400 || bytes < 20000 )); then
+  if ((width < 600 || height < 400 || bytes < 20000)); then
     echo "settings smoke failed: $tab ${width}x${height} ${bytes} bytes" >&2
     exit 1
   fi

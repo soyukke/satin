@@ -25,21 +25,29 @@
           default = pkgs.mkShell {
             packages = [
               pkgs.actionlint
-              pkgs.clippy
               pkgs.cargo
               pkgs.cargo-about
+              pkgs.cargo-audit
+              pkgs.clippy
+              pkgs.deadnix
               pkgs.git
               pkgs.gitleaks
               pkgs.just
               pkgs.jq
+              pkgs.markdownlint-cli2
               pkgs.nerd-fonts.caskaydia-cove
               pkgs.neovim
+              pkgs.nixfmt
               pkgs.python3
               pkgs.ripgrep
               pkgs.rust-analyzer
               pkgs.rustc
               pkgs.rustfmt
               pkgs.shellcheck
+              pkgs.shfmt
+              pkgs.swift-format
+              pkgs.typos
+              pkgs.zizmor
               pkgs.zig_0_15
             ];
 

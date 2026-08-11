@@ -1,28 +1,30 @@
 import Foundation
 
 @_silgen_name("satin_control_create")
-private func satin_control_create(
+private func satinControlCreate(
     _ path: UnsafePointer<CChar>?
 ) -> UnsafeMutableRawPointer?
 
 @_silgen_name("satin_control_destroy")
-private func satin_control_destroy(_ handle: UnsafeMutableRawPointer?)
+private func satinControlDestroy(_ handle: UnsafeMutableRawPointer?)
 
 @_silgen_name("satin_control_wakeup_fd")
-private func satin_control_wakeup_fd(_ handle: UnsafeMutableRawPointer?) -> Int32
+private func satinControlWakeupFd(_ handle: UnsafeMutableRawPointer?) -> Int32
 
 @_silgen_name("satin_control_take_request_json")
-private func satin_control_take_request_json(
+private func satinControlTakeRequestJson(
     _ handle: UnsafeMutableRawPointer?
 ) -> UnsafeMutablePointer<CChar>?
 
 @_silgen_name("satin_control_respond")
-private func satin_control_respond(
+private func satinControlRespond(
     _ handle: UnsafeMutableRawPointer?,
     _ id: UInt64,
     _ response: UnsafePointer<CChar>?
 ) -> UInt8
 
+// Properties mirror the control protocol and intentionally retain its timeout_ms key.
+// swift-format-ignore: AlwaysUseLowerCamelCase
 struct NativeControlRequest: Decodable {
     let id: UInt64
     let version: UInt32
@@ -66,14 +68,14 @@ final class NativeControlServer {
 
     init?(socketPath: String) {
         let handle = socketPath.withCString { path in
-            satin_control_create(path)
+            satinControlCreate(path)
         }
         guard let handle else {
             return nil
         }
-        let descriptor = satin_control_wakeup_fd(handle)
+        let descriptor = satinControlWakeupFd(handle)
         guard descriptor >= 0 else {
-            satin_control_destroy(handle)
+            satinControlDestroy(handle)
             return nil
         }
         self.socketPath = socketPath
@@ -91,20 +93,22 @@ final class NativeControlServer {
 
     deinit {
         wakeupSource?.cancel()
-        satin_control_destroy(handle)
+        satinControlDestroy(handle)
     }
 
     private func drain() {
-        while let pointer = satin_control_take_request_json(handle) {
+        while let pointer = satinControlTakeRequestJson(handle) {
             let json = String(cString: pointer)
-            satin_string_free(pointer)
+            satinStringFree(pointer)
             guard let data = json.data(using: .utf8) else {
                 continue
             }
-            guard let request = try? JSONDecoder().decode(
-                NativeControlRequest.self,
-                from: data
-            ) else {
+            guard
+                let request = try? JSONDecoder().decode(
+                    NativeControlRequest.self,
+                    from: data
+                )
+            else {
                 if let envelope = try? JSONDecoder().decode(
                     NativeControlEnvelope.self,
                     from: data
@@ -157,22 +161,22 @@ final class NativeControlServer {
     ) {
         let object: [String: Any]
         switch result {
-        case let .success(value):
+        case .success(let value):
             object = ["ok": true, "result": value]
-        case let .failure(error):
+        case .failure(let error):
             object = [
                 "ok": false,
                 "error": ["code": error.code, "message": error.message],
             ]
         }
         guard JSONSerialization.isValidJSONObject(object),
-              let data = try? JSONSerialization.data(withJSONObject: object),
-              let json = String(data: data, encoding: .utf8)
+            let data = try? JSONSerialization.data(withJSONObject: object),
+            let json = String(data: data, encoding: .utf8)
         else {
             return
         }
         json.withCString { value in
-            _ = satin_control_respond(handle, id, value)
+            _ = satinControlRespond(handle, id, value)
         }
     }
 }
@@ -181,7 +185,8 @@ enum NativeControlEnvironment {
     static func socketPath() -> String {
         if let override = ProcessInfo.processInfo.environment["SATIN_CONTROL_SOCKET"]
             ?? ProcessInfo.processInfo.environment["NVTERM_CONTROL_SOCKET"],
-           !override.isEmpty {
+            !override.isEmpty
+        {
             return override
         }
         if ProcessInfo.processInfo.environment["SATIN_NATIVE_SMOKE_SCENARIO"] != nil {
@@ -193,11 +198,13 @@ enum NativeControlEnvironment {
                 .appendingPathComponent("control.sock")
                 .path
         }
-        let base = FileManager.default.urls(
-            for: .applicationSupportDirectory,
-            in: .userDomainMask
-        ).first ?? FileManager.default.homeDirectoryForCurrentUser
-        let runDirectory = base
+        let base =
+            FileManager.default.urls(
+                for: .applicationSupportDirectory,
+                in: .userDomainMask
+            ).first ?? FileManager.default.homeDirectoryForCurrentUser
+        let runDirectory =
+            base
             .appendingPathComponent(nativeApplicationDataDirectoryName, isDirectory: true)
             .appendingPathComponent("run", isDirectory: true)
         return runDirectory.appendingPathComponent("control.sock").path
@@ -238,7 +245,8 @@ enum NativeControlEnvironment {
             .appendingPathComponent("ShellIntegration", isDirectory: true)
             .appendingPathComponent("zsh", isDirectory: true)
         if let bundled,
-           FileManager.default.fileExists(atPath: bundled.appendingPathComponent(".zshrc").path) {
+            FileManager.default.fileExists(atPath: bundled.appendingPathComponent(".zshrc").path)
+        {
             return bundled.path
         }
         return URL(

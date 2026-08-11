@@ -31,7 +31,7 @@ acquire_lock() {
       rmdir "$lock_dir" 2>/dev/null || true
       continue
     fi
-    if (( waits >= 600 )); then
+    if ((waits >= 600)); then
       echo "native build lock timed out: $lock_dir" >&2
       exit 75
     fi
@@ -53,7 +53,7 @@ sdk="$(env -u SDKROOT -u DEVELOPER_DIR /usr/bin/xcrun --sdk macosx --show-sdk-pa
 satin_sdk_version="$(env -u SDKROOT -u DEVELOPER_DIR /usr/bin/xcrun --sdk macosx --show-sdk-version)"
 satin_sdk_major="${satin_sdk_version%%.*}"
 swift_feature_flags=()
-if [[ "$satin_sdk_major" =~ ^[0-9]+$ ]] && (( satin_sdk_major >= 26 )); then
+if [[ "$satin_sdk_major" =~ ^[0-9]+$ ]] && ((satin_sdk_major >= 26)); then
   swift_feature_flags=(-D SATIN_HAS_LIQUID_GLASS_SDK)
 fi
 portable_ldflags=("-L$sdk/usr/lib")
@@ -76,8 +76,11 @@ env -u SDKROOT -u DEVELOPER_DIR \
   -sdk "$sdk" \
   -target "$swift_target" \
   "${swift_feature_flags[@]}" \
+  spikes/macos-shell/AppUpdateChecker.swift \
   spikes/macos-shell/ControlHost.swift \
+  spikes/macos-shell/NativeWireModels.swift \
   spikes/macos-shell/PerformanceRecorder.swift \
+  spikes/macos-shell/SatinFFI.swift \
   spikes/macos-shell/SettingsWindow.swift \
   spikes/macos-shell/SatinApplication.swift \
   spikes/macos-shell/UpdateInstaller.swift \

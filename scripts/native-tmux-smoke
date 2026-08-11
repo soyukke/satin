@@ -33,9 +33,9 @@ tmux -S "$socket_path" send-keys -t "$session_name" \
 
 content_ready=false
 for _ in {1..40}; do
-  if [[ "$(tmux -S "$socket_path" display-message -p -t "$session_name" '#{alternate_on}')" == 1 ]] \
-    && tmux -S "$socket_path" capture-pane -p -t "$session_name" \
-      | rg --fixed-strings --quiet "$existing_marker"; then
+  if [[ "$(tmux -S "$socket_path" display-message -p -t "$session_name" '#{alternate_on}')" == 1 ]] &&
+    tmux -S "$socket_path" capture-pane -p -t "$session_name" |
+    rg --fixed-strings --quiet "$existing_marker"; then
     content_ready=true
     break
   fi

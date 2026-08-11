@@ -11,11 +11,12 @@ private struct NativePerformanceConfiguration {
         _ environment: [String: String] = ProcessInfo.processInfo.environment
     ) -> NativePerformanceConfiguration? {
         guard let resultPath = environment["SATIN_PERF_RESULT"], !resultPath.isEmpty,
-              let startPath = environment["SATIN_PERF_START"], !startPath.isEmpty
+            let startPath = environment["SATIN_PERF_START"], !startPath.isEmpty
         else {
             return nil
         }
-        let requestedDuration = environment["SATIN_PERF_DURATION_SECONDS"]
+        let requestedDuration =
+            environment["SATIN_PERF_DURATION_SECONDS"]
             .flatMap(TimeInterval.init) ?? 8
         return NativePerformanceConfiguration(
             resultPath: resultPath,
@@ -194,7 +195,8 @@ final class NativePerformanceRecorder: @unchecked Sendable {
                 return false
             }
             if startedAt == nil,
-               FileManager.default.fileExists(atPath: configuration.startPath) {
+                FileManager.default.fileExists(atPath: configuration.startPath)
+            {
                 startedAt = now
             }
             if startedAt != nil, !finishScheduled {
@@ -237,7 +239,8 @@ final class NativePerformanceRecorder: @unchecked Sendable {
         committedAt: CFTimeInterval
     ) {
         let latency = milliseconds(CACurrentMediaTime() - committedAt)
-        let gpuDuration = commandBuffer.gpuEndTime > commandBuffer.gpuStartTime
+        let gpuDuration =
+            commandBuffer.gpuEndTime > commandBuffer.gpuStartTime
             ? milliseconds(commandBuffer.gpuEndTime - commandBuffer.gpuStartTime)
             : nil
         lock.withLock {
@@ -283,10 +286,10 @@ final class NativePerformanceRecorder: @unchecked Sendable {
             return makeReport(startedAt: startedAt, duration: configuration.duration)
         }
         guard let report,
-              let data = try? JSONSerialization.data(
-                  withJSONObject: report,
-                  options: [.prettyPrinted, .sortedKeys]
-              )
+            let data = try? JSONSerialization.data(
+                withJSONObject: report,
+                options: [.prettyPrinted, .sortedKeys]
+            )
         else {
             return
         }
@@ -395,8 +398,8 @@ private func percentile(_ values: [Double], fraction: Double) -> Double? {
     return sorted[index]
 }
 
-private extension NSLock {
-    func withLock<Result>(_ operation: () -> Result) -> Result {
+extension NSLock {
+    fileprivate func withLock<Result>(_ operation: () -> Result) -> Result {
         lock()
         defer { unlock() }
         return operation()
