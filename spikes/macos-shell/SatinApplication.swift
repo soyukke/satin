@@ -5792,6 +5792,132 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
         )
     }
 
+    func applyTmuxRestartCheckpointSmokeScenario(
+        resultPath: String,
+        sessionName: String,
+        socketPath: String,
+        expectedContent: String
+    ) {
+        let attachment = NativeTmuxAttachment(
+            sessionName: sessionName,
+            socketPath: socketPath
+        )
+        guard let validated = validatedTmuxAttachment(attachment) else {
+            writeSessionSmokeResult(
+                resultPath,
+                result: "failed tmux-restart-checkpoint invalid-descriptor\n"
+            )
+            return
+        }
+        pendingTmuxReattach = validated
+        schedulePendingTmuxReattach()
+        waitForTmuxRestartSmoke(
+            resultPath,
+            stage: "checkpoint",
+            attachment: validated,
+            expectedContent: expectedContent,
+            retries: 40
+        )
+    }
+
+    func applyTmuxRestartRestoreSmokeScenario(
+        resultPath: String,
+        sessionName: String,
+        socketPath: String,
+        expectedContent: String
+    ) {
+        let attachment = NativeTmuxAttachment(
+            sessionName: sessionName,
+            socketPath: socketPath
+        )
+        guard let validated = validatedTmuxAttachment(attachment) else {
+            writeSessionSmokeResult(
+                resultPath,
+                result: "failed tmux-restart-restore invalid-descriptor\n"
+            )
+            return
+        }
+        waitForTmuxRestartSmoke(
+            resultPath,
+            stage: "restore",
+            attachment: validated,
+            expectedContent: expectedContent,
+            retries: 40
+        )
+    }
+
+    private func waitForTmuxRestartSmoke(
+        _ resultPath: String,
+        stage: String,
+        attachment: NativeTmuxAttachment,
+        expectedContent: String,
+        retries: Int
+    ) {
+        let sessionMatches =
+            tmuxSession?.sessionName == attachment.sessionName
+            && tmuxSession?.socketPath == attachment.socketPath
+        let contentVisible = terminalPanes.values.contains { pane in
+            (pane as? RustTmuxPane)?.controlScreenText().contains(expectedContent) == true
+        }
+        let savedAttachment = currentSessionState()?.tmuxAttachment
+        let descriptorSaved =
+            savedAttachment?.sessionName == attachment.sessionName
+            && savedAttachment?.socketPath == attachment.socketPath
+            && savedAttachment?.executablePath.map {
+                ($0 as NSString).isAbsolutePath
+                    && FileManager.default.isExecutableFile(atPath: $0)
+            } == true
+        guard sessionMatches, contentVisible, descriptorSaved else {
+            if retries > 0 {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+                    self?.waitForTmuxRestartSmoke(
+                        resultPath,
+                        stage: stage,
+                        attachment: attachment,
+                        expectedContent: expectedContent,
+                        retries: retries - 1
+                    )
+                }
+            } else {
+                writeSessionSmokeResult(
+                    resultPath,
+                    result: "failed tmux-restart-\(stage) attached="
+                        + "\(sessionMatches ? "yes" : "no") content="
+                        + "\(contentVisible ? "yes" : "no") descriptor="
+                        + "\(descriptorSaved ? "yes" : "no")\n"
+                )
+            }
+            return
+        }
+        closeWindowAfterWritingSessionSmokeResult(
+            resultPath,
+            result: "ok tmux-restart-\(stage) attached=yes content=yes descriptor=yes "
+                + "window-close=yes\n"
+        )
+    }
+
+    func saveLegacyTmuxRestartStateForSmoke() -> Bool {
+        guard let state = currentSessionState(),
+            let attachment = state.tmuxAttachment
+        else {
+            return false
+        }
+        let legacyState = NativeSessionState(
+            schemaVersion: 3,
+            activeTab: state.activeTab,
+            tabs: state.tabs,
+            tmuxAttachment: NativeTmuxAttachment(
+                sessionName: attachment.sessionName,
+                socketPath: attachment.socketPath
+            )
+        )
+        guard let data = try? JSONEncoder().encode(legacyState) else {
+            return false
+        }
+        UserDefaults.standard.set(data, forKey: NativePreferenceKey.sessionState)
+        return sessionSchemaVersion(in: data) == 3
+    }
+
     private func waitForTmuxReattachEntry(
         _ resultPath: String,
         attachment: NativeTmuxAttachment,
@@ -6372,6 +6498,18 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
     private func writeSessionSmokeResult(_ path: String, result: String) {
         try? result.write(toFile: path, atomically: true, encoding: .utf8)
         NSApp.terminate(nil)
+    }
+
+    private func closeWindowAfterWritingSessionSmokeResult(
+        _ path: String,
+        result: String
+    ) {
+        try? result.write(toFile: path, atomically: true, encoding: .utf8)
+        guard let window = view.window else {
+            NSApp.terminate(nil)
+            return
+        }
+        window.performClose(nil)
     }
 
     func applyTerminalBottomInputSmokeScenario(resultPath: String) {
@@ -9859,7 +9997,8 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
 
     private func restoreSessionIfNeeded() {
         let environment = ProcessInfo.processInfo.environment
-        guard environment["SATIN_NATIVE_SMOKE_SCENARIO"] == nil,
+        let smokeScenario = environment["SATIN_NATIVE_SMOKE_SCENARIO"]
+        guard smokeScenario == nil || smokeScenario == "tmux-restart-restore",
             preferredBool(NativePreferenceKey.sessionRestore, defaultValue: true),
             let data = UserDefaults.standard.data(forKey: NativePreferenceKey.sessionState)
         else {
@@ -10933,10 +11072,18 @@ final class SatinAppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidat
     }
 
     func applicationWillTerminate(_ notification: Notification) {
-        if ProcessInfo.processInfo.environment["SATIN_NATIVE_SMOKE_SCENARIO"] == nil,
-            !launchedForFinderEditor
+        let smokeScenario = ProcessInfo.processInfo.environment["SATIN_NATIVE_SMOKE_SCENARIO"]
+        let restartSmoke =
+            smokeScenario == "tmux-restart-checkpoint"
+            || smokeScenario == "tmux-restart-restore"
+        guard smokeScenario == nil || restartSmoke, !launchedForFinderEditor else {
+            return
+        }
+        shellController?.saveSessionState()
+        if smokeScenario == "tmux-restart-checkpoint",
+            shellController?.saveLegacyTmuxRestartStateForSmoke() != true
         {
-            shellController?.saveSessionState()
+            NativeLog.sessionWarning("tmux_restart_smoke_legacy_state_failed")
         }
     }
 
@@ -11274,6 +11421,32 @@ final class SatinAppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidat
                     resultPath: path,
                     sessionName: sessionName,
                     socketPath: socketPath
+                )
+            }
+        case "tmux-restart-checkpoint":
+            if let path = environment["SATIN_NATIVE_SMOKE_RESULT"], !path.isEmpty,
+                let sessionName = environment["SATIN_NATIVE_SMOKE_TMUX_SESSION"],
+                let socketPath = environment["SATIN_NATIVE_SMOKE_TMUX_SOCKET"],
+                let expectedContent = environment["SATIN_NATIVE_SMOKE_TMUX_CONTENT"]
+            {
+                controller.applyTmuxRestartCheckpointSmokeScenario(
+                    resultPath: path,
+                    sessionName: sessionName,
+                    socketPath: socketPath,
+                    expectedContent: expectedContent
+                )
+            }
+        case "tmux-restart-restore":
+            if let path = environment["SATIN_NATIVE_SMOKE_RESULT"], !path.isEmpty,
+                let sessionName = environment["SATIN_NATIVE_SMOKE_TMUX_SESSION"],
+                let socketPath = environment["SATIN_NATIVE_SMOKE_TMUX_SOCKET"],
+                let expectedContent = environment["SATIN_NATIVE_SMOKE_TMUX_CONTENT"]
+            {
+                controller.applyTmuxRestartRestoreSmokeScenario(
+                    resultPath: path,
+                    sessionName: sessionName,
+                    socketPath: socketPath,
+                    expectedContent: expectedContent
                 )
             }
         case "tab-bar-actions":
