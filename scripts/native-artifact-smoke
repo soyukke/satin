@@ -66,6 +66,7 @@ assert_eq!(status, "pass");
 MARKDOWN
 rich_registration="$($cli --socket "$socket" --json artifact add \
   --kind markdown --title "リッチレポート" --language ja-JP --file "$rich_source")"
+rich_id="$(jq -r '.result.id' <<<"$rich_registration")"
 rich_document="$(jq -r '.result.document' <<<"$rich_registration")"
 rich_asset="$(jq -r '.result.assets[0]' <<<"$rich_registration")"
 rich_directory="$(dirname "$(dirname "$(dirname "$rich_document")")")"
@@ -75,6 +76,7 @@ rm -f "$rich_source" "$rich_image"
 
 SATIN_CONTROL_SOCKET="$socket" \
   SATIN_NATIVE_SMOKE_SCENARIO=artifact-popover \
+  SATIN_NATIVE_SMOKE_ARTIFACT="$rich_id" \
   SATIN_NATIVE_SMOKE_RESULT="$popover_result" \
   "$app" >"$app_log" 2>&1 &
 app_pid=$!
