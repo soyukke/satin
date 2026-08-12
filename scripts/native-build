@@ -5,6 +5,9 @@ if [[ -z "${IN_NIX_SHELL:-}" ]]; then
   exec nix develop --command just native-build
 fi
 
+# shellcheck source=scripts/native-swift-sources
+source scripts/native-swift-sources
+
 build_dir="spikes/macos-shell/.build"
 output="$build_dir/SatinApplication"
 tmp_output="$build_dir/SatinApplication.$$"
@@ -52,9 +55,9 @@ trap cleanup EXIT INT TERM
 sdk="$(env -u SDKROOT -u DEVELOPER_DIR /usr/bin/xcrun --sdk macosx --show-sdk-path)"
 satin_sdk_version="$(env -u SDKROOT -u DEVELOPER_DIR /usr/bin/xcrun --sdk macosx --show-sdk-version)"
 satin_sdk_major="${satin_sdk_version%%.*}"
-swift_feature_flags=()
+swift_feature_flags=(-D SATIN_SMOKE_SCENARIOS)
 if [[ "$satin_sdk_major" =~ ^[0-9]+$ ]] && ((satin_sdk_major >= 26)); then
-  swift_feature_flags=(-D SATIN_HAS_LIQUID_GLASS_SDK)
+  swift_feature_flags+=(-D SATIN_HAS_LIQUID_GLASS_SDK)
 fi
 portable_ldflags=("-L$sdk/usr/lib")
 read -r -a inherited_ldflags <<<"${NIX_LDFLAGS:-}"
@@ -76,25 +79,8 @@ env -u SDKROOT -u DEVELOPER_DIR \
   -sdk "$sdk" \
   -target "$swift_target" \
   "${swift_feature_flags[@]}" \
-  spikes/macos-shell/AppUpdateChecker.swift \
-  spikes/macos-shell/ApplicationDefaults.swift \
-  spikes/macos-shell/ControlHost.swift \
-  spikes/macos-shell/NativeAppearance.swift \
-  spikes/macos-shell/NativePaneRuntime.swift \
-  spikes/macos-shell/NativeSettingsSelfTests.swift \
-  spikes/macos-shell/NativeSettingsValidation.swift \
-  spikes/macos-shell/NativeShellModels.swift \
-  spikes/macos-shell/NativeTmux.swift \
-  spikes/macos-shell/NativeWireModels.swift \
-  spikes/macos-shell/PerformanceRecorder.swift \
-  spikes/macos-shell/SatinAppDelegate.swift \
-  spikes/macos-shell/SatinFFI.swift \
-  spikes/macos-shell/SatinMain.swift \
-  spikes/macos-shell/SettingsWindow.swift \
-  spikes/macos-shell/TabControls.swift \
-  spikes/macos-shell/TerminalMetalView.swift \
-  spikes/macos-shell/SatinApplication.swift \
-  spikes/macos-shell/UpdateInstaller.swift \
+  "${native_swift_sources[@]}" \
+  "${native_smoke_swift_sources[@]}" \
   target/debug/libsatin.a \
   -framework AppKit \
   -framework CryptoKit \

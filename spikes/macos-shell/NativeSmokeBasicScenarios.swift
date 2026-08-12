@@ -1,0 +1,741 @@
+import AppKit
+import Foundation
+
+#if SATIN_SMOKE_SCENARIOS
+    extension TerminalShellViewController {
+        func applySmokeScenario(resultPath: String?) {
+            core.newTab()
+            core.renameTab(1, title: "native smoke")
+            core.setTheme("Harbor", tab: 1)
+            _ = core.splitActive(axis: ffiSplitVertical)
+            syncFromCore()
+            writeToActivePane(
+                Data(
+                    ("printf 'native pty view ready: renderer text marker\\n"
+                        + "native pty view ready: second text marker\\n'\r").utf8))
+            guard let resultPath, !resultPath.isEmpty else {
+                return
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
+                self?.writeNativeSmokeResult(resultPath, retries: 12)
+            }
+        }
+
+        func applySessionSchemaSmokeScenario(resultPath: String) {
+            _ = core.splitActive(axis: ffiSplitVertical)
+            _ = core.splitActive(axis: ffiSplitHorizontal)
+            _ = core.resizeSplit(firstPaneId: 1, secondPaneId: 2, ratio: 0.35)
+            _ = core.resizeSplit(firstPaneId: 2, secondPaneId: 3, ratio: 0.65)
+            syncFromCore()
+            guard let state = currentSessionState(),
+                let data = try? JSONEncoder().encode(state),
+                let decoded = decodeSessionState(data)
+            else {
+                writeSessionSmokeResult(resultPath, result: "failed session-schema encode\n")
+                return
+            }
+            let legacy = LegacyNativeSessionState(
+                activeTab: 0,
+                tabs: [LegacyNativeSessionTab(title: "legacy", theme: "Graphite", cwd: "/tmp")]
+            )
+            let migrated = (try? JSONEncoder().encode(legacy)).flatMap(decodeSessionState)
+            let attachment = NativeTmuxAttachment(
+                sessionName: "persisted-session",
+                socketPath: "/tmp/persisted-tmux.sock",
+                executablePath: "/usr/bin/tmux"
+            )
+            let attachedState = NativeSessionState(
+                schemaVersion: currentSessionSchemaVersion,
+                activeTab: state.activeTab,
+                tabs: state.tabs,
+                tmuxAttachment: attachment
+            )
+            let attachedData = try? JSONEncoder().encode(attachedState)
+            let attachedRoundTrip = attachedData.flatMap(decodeSessionState)
+            let consumed = sessionStateWithoutTmuxAttachment(attachedState)
+            var versionTwoObject = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+            versionTwoObject?["schemaVersion"] = 2
+            versionTwoObject?.removeValue(forKey: "tmuxAttachment")
+            let versionTwoData = versionTwoObject.flatMap {
+                try? JSONSerialization.data(withJSONObject: $0)
+            }
+            let versionTwoMigrated = versionTwoData.flatMap(decodeSessionState)
+            var versionThreeObject = attachedData.flatMap {
+                (try? JSONSerialization.jsonObject(with: $0)) as? [String: Any]
+            }
+            versionThreeObject?["schemaVersion"] = 3
+            var versionThreeAttachment =
+                versionThreeObject?["tmuxAttachment"] as? [String: Any]
+            versionThreeAttachment?.removeValue(forKey: "executablePath")
+            versionThreeObject?["tmuxAttachment"] = versionThreeAttachment
+            let versionThreeData = versionThreeObject.flatMap {
+                try? JSONSerialization.data(withJSONObject: $0)
+            }
+            let versionThreeMigrated = versionThreeData.flatMap(decodeSessionState)
+            let versionThreeExpected = NativeTmuxAttachment(
+                sessionName: attachment.sessionName,
+                socketPath: attachment.socketPath
+            )
+            let corruptRejected = decodeSessionState(Data("{not-json".utf8)) == nil
+            let futureData = Data("{\"schemaVersion\":999}".utf8)
+            let futurePreserved = sessionSchemaVersion(in: futureData) == 999
+            let counts = sessionPaneCounts(decoded.tabs[decoded.activeTab].layout)
+            let ratiosRetained =
+                decoded.tabs[decoded.activeTab].layout.ratio == 0.35
+                && decoded.tabs[decoded.activeTab].layout.second?.ratio == 0.65
+            let ok =
+                decoded.schemaVersion == currentSessionSchemaVersion
+                && counts.leaves == 3
+                && counts.splits == 2
+                && counts.activeLeaves == 1
+                && ratiosRetained
+                && migrated?.schemaVersion == currentSessionSchemaVersion
+                && migrated?.tabs.first?.layout.kind == "leaf"
+                && attachedRoundTrip?.tmuxAttachment == attachment
+                && consumed.tmuxAttachment == nil
+                && versionTwoMigrated?.schemaVersion == currentSessionSchemaVersion
+                && versionTwoMigrated?.tmuxAttachment == nil
+                && versionThreeMigrated?.tmuxAttachment == versionThreeExpected
+                && validatedTmuxAttachment(attachment) == attachment
+                && validatedTmuxAttachment(
+                    NativeTmuxAttachment(sessionName: "invalid", socketPath: "relative.sock")
+                ) == nil
+                && corruptRejected
+                && futurePreserved
+            let status = ok ? "ok" : "failed"
+            writeSessionSmokeResult(
+                resultPath,
+                result: "\(status) session-schema version=\(decoded.schemaVersion) "
+                    + "leaves=\(counts.leaves) splits=\(counts.splits) active=\(counts.activeLeaves) "
+                    + "ratios=\(ratiosRetained ? "retained" : "lost") "
+                    + "migration=\(migrated == nil ? "failed" : "ok") "
+                    + "reattach=\(attachedRoundTrip?.tmuxAttachment == attachment ? "ok" : "failed") "
+                    + "consume-once=\(consumed.tmuxAttachment == nil ? "ok" : "failed") "
+                    + "corruption=rejected future=preserved\n"
+            )
+        }
+
+        func applyTabBarActionsSmokeScenario(resultPath: String) {
+            waitForTabBarActionsSmokeScenario(resultPath: resultPath, retries: 20)
+        }
+
+        func waitForTabBarActionsSmokeScenario(resultPath: String, retries: Int) {
+            view.layoutSubtreeIfNeeded()
+            let controlsReady =
+                sessionControlButton.superview != nil
+                && toolbarActionControl.superview != nil
+                && (0..<SatinToolbarActionSegment.count).allSatisfy {
+                    toolbarActionControl.image(forSegment: $0) != nil
+                }
+            let shortcutsReady =
+                mainMenuShortcutMatches(
+                    actionName: "splitVertical:",
+                    shortcut: settings.shortcut(for: .splitVertical)
+                )
+                && mainMenuShortcutMatches(
+                    actionName: "splitHorizontal:",
+                    shortcut: settings.shortcut(for: .splitHorizontal)
+                )
+            if !shortcutsReady, retries > 0 {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
+                    self?.waitForTabBarActionsSmokeScenario(
+                        resultPath: resultPath,
+                        retries: retries - 1
+                    )
+                }
+                return
+            }
+            let chromeReady = NativePlatformAppearance.toolbarControlsUseExpectedPresentation(
+                toolbarControlsView
+            )
+            let compactChrome =
+                view.window?.toolbarStyle == .unifiedCompact
+                && (!NativePlatformAppearance.usesLiquidGlass
+                    || toolbarControlsView.intrinsicContentSize.height <= 30)
+            let contentBelowChrome = metalView.frame.maxY <= view.safeAreaRect.maxY + 0.5
+            let backdropSpansWindow = backdropView.frame.maxY >= view.bounds.maxY - 0.5
+            if controlsReady {
+                newTab(nil)
+                splitVertical(nil)
+                splitHorizontal(nil)
+            }
+            guard let snapshot = core.snapshot(),
+                let activeTab = snapshot.tabs.first(where: { $0.index == snapshot.active_tab })
+            else {
+                writeSessionSmokeResult(
+                    resultPath, result: "failed tab-bar-actions snapshot=missing\n")
+                return
+            }
+            let metrics = paneLayoutMetrics(activeTab.layout)
+            let axes = metrics.axes.sorted()
+            let dividersReady =
+                terminalTextView.splitDividerCount(for: .vertical) == 1
+                && terminalTextView.splitDividerCount(for: .horizontal) == 1
+            let cursorsReady =
+                terminalTextView.splitDividerUsesResizeCursor(for: .vertical)
+                && terminalTextView.splitDividerUsesResizeCursor(for: .horizontal)
+            let firstRootPaneId = firstPaneId(in: activeTab.layout)
+            let firstWidthBefore = firstRootPaneId.flatMap { paneStore.visibleFrames[$0]?.width }
+            let dividerDragged = terminalTextView.resizeFirstDividerForSmoke(
+                axis: .vertical,
+                ratio: 0.35
+            )
+            let firstWidthAfter = firstRootPaneId.flatMap { paneStore.visibleFrames[$0]?.width }
+            let paneFrameUpdated =
+                if let firstWidthBefore, let firstWidthAfter {
+                    firstWidthAfter < firstWidthBefore - 10
+                } else {
+                    false
+                }
+            let resizedRatio = core.snapshot()?.tabs
+                .first(where: { $0.index == snapshot.active_tab })?.layout.ratio
+            let ratioUpdated = resizedRatio.map { abs($0 - 0.35) < 0.001 } ?? false
+            let contextMenuReady = tabControl.contextMenuReadyForSmoke(segment: snapshot.active_tab)
+            let renamePromptReady = NativeRenamePanel.smokeLayoutReady()
+            let originalRenameHandler = tabControl.onRenameRequested
+            var renameRequestedSegment: Int?
+            tabControl.onRenameRequested = { segment in
+                renameRequestedSegment = segment
+            }
+            tabControl.simulateDoubleClickForSmoke(segment: snapshot.active_tab)
+            tabControl.onRenameRequested = originalRenameHandler
+            let renamedTitle = "renamed by tab click"
+            if let renameRequestedSegment {
+                core.renameTab(renameRequestedSegment, title: renamedTitle)
+                syncFromCore()
+            }
+            let renameReady =
+                renameRequestedSegment == snapshot.active_tab
+                && core.snapshot()?.tabs.first(where: {
+                    $0.index == snapshot.active_tab
+                })?.title == renamedTitle
+                && tabControl.label(forSegment: snapshot.active_tab) == renamedTitle
+            let closeTarget = tabControl.closeButtonHitTargetForSmoke(segment: 0)
+            let closeTargetHasMinimumWidth = (closeTarget?.width ?? 0) >= 20
+            let closeTargetFitsHorizontally =
+                closeTarget.map {
+                    $0.minX >= tabControl.bounds.minX && $0.maxX <= tabControl.bounds.maxX
+                } ?? false
+            let closeTargetFitsVertically =
+                closeTarget.map {
+                    $0.minY >= tabControl.bounds.minY && $0.maxY <= tabControl.bounds.maxY
+                } ?? false
+            let closeTargetReady =
+                closeTargetHasMinimumWidth
+                && closeTargetFitsHorizontally
+                && closeTargetFitsVertically
+            let originalCloseHandler = tabControl.onCloseRequested
+            let tabWidthBeforeClose = tabControl.frame.width
+            var closeRequestedSegment: Int?
+            tabControl.onCloseRequested = { segment in
+                closeRequestedSegment = segment
+                return true
+            }
+            _ = tabControl.simulateCloseForSmoke(segment: 0)
+            tabControl.onCloseRequested = originalCloseHandler
+            if let closeRequestedSegment {
+                _ = closeTab(at: closeRequestedSegment)
+            }
+            let closedSnapshot = core.snapshot()
+            let closeReady =
+                closeTargetReady
+                && closeRequestedSegment == 0
+                && closedSnapshot?.tabs.count == 1
+                && closedSnapshot?.active_tab == 0
+                && closedSnapshot?.tabs.first?.title == renamedTitle
+                && tabControl.segmentCount == 1
+                && tabControl.label(forSegment: 0) == renamedTitle
+                && tabControl.frame.width < tabWidthBeforeClose
+            let ok =
+                controlsReady
+                && shortcutsReady
+                && chromeReady
+                && compactChrome
+                && contentBelowChrome
+                && backdropSpansWindow
+                && snapshot.tabs.count == 2
+                && snapshot.active_tab == 1
+                && metrics.leaves == 3
+                && metrics.splits == 2
+                && axes == ["horizontal", "vertical"]
+                && dividersReady
+                && cursorsReady
+                && dividerDragged
+                && ratioUpdated
+                && paneFrameUpdated
+                && contextMenuReady
+                && renamePromptReady
+                && renameReady
+                && closeReady
+            let status = ok ? "ok" : "failed"
+            writeSessionSmokeResult(
+                resultPath,
+                result: "\(status) tab-bar-actions controls=\(controlsReady ? "ready" : "invalid") "
+                    + "shortcuts=\(shortcutsReady ? "ready" : "invalid") "
+                    + "chrome=\(NativePlatformAppearance.usesLiquidGlass ? "glass" : "standard") "
+                    + "density=\(compactChrome ? "compact" : "regular") "
+                    + "content=\(contentBelowChrome ? "safe" : "under-titlebar") "
+                    + "background=\(backdropSpansWindow ? "edge-to-edge" : "inset") "
+                    + "tabs=\(snapshot.tabs.count) active=\(snapshot.active_tab) "
+                    + "leaves=\(metrics.leaves) splits=\(metrics.splits) "
+                    + "axes=\(axes.joined(separator: ",")) "
+                    + "dividers=\(dividersReady ? "ready" : "missing") "
+                    + "cursors=\(cursorsReady ? "resize" : "missing") "
+                    + "ratio=\(ratioUpdated ? "updated" : "stale") "
+                    + "frame=\(paneFrameUpdated ? "resized" : "stale") "
+                    + "context=\(contextMenuReady ? "right-click" : "missing") "
+                    + "prompt=\(renamePromptReady ? "icon-free" : "invalid") "
+                    + "rename=\(renameReady ? "double-click" : "missing") "
+                    + "close=\(closeReady ? "x-button" : "missing")\n"
+            )
+        }
+
+        func mainMenuShortcutMatches(
+            actionName: String,
+            shortcut: NativeKeyShortcut
+        ) -> Bool {
+            guard let item = mainMenuItem(in: NSApp.mainMenu, actionName: actionName) else {
+                return false
+            }
+            let modifiers = item.keyEquivalentModifierMask.intersection(.deviceIndependentFlagsMask)
+            let expected = shortcut.modifiers.intersection(.deviceIndependentFlagsMask)
+            return item.keyEquivalent == shortcut.keyEquivalent && modifiers == expected
+        }
+
+        func mainMenuItem(in menu: NSMenu?, actionName: String) -> NSMenuItem? {
+            guard let menu else {
+                return nil
+            }
+            for item in menu.items {
+                if item.action.map(NSStringFromSelector) == actionName {
+                    return item
+                }
+                if let match = mainMenuItem(in: item.submenu, actionName: actionName) {
+                    return match
+                }
+            }
+            return nil
+        }
+
+        func applyHomeWorkingDirectorySmokeScenario(resultPath: String) {
+            let expected = FileManager.default.homeDirectoryForCurrentUser.standardizedFileURL.path
+            let actual = activeWorkingDirectory()
+            let processDirectory = FileManager.default.currentDirectoryPath
+            let ok =
+                settings.startupDirectory.isEmpty
+                && processDirectory == "/"
+                && actual == expected
+            let status = ok ? "ok" : "failed"
+            writeSessionSmokeResult(
+                resultPath,
+                result: "\(status) home-cwd startup=default "
+                    + "process=\(processDirectory == "/" ? "root" : "other") "
+                    + "pane=\(actual == expected ? "home" : "other")\n"
+            )
+        }
+
+        func applyTerminalResizeSmokeScenario(resultPath: String) {
+            guard let window = view.window else {
+                writeSessionSmokeResult(resultPath, result: "failed terminal-resize no-window\n")
+                return
+            }
+            window.setContentSize(NSSize(width: 780, height: 480))
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self, weak window] in
+                guard let self, let window else {
+                    return
+                }
+                let initial = terminalTextView.terminalGridSize()
+                metalView.resetResizeDiagnostics()
+                window.setContentSize(NSSize(width: 1120, height: 760))
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+                    guard let self else {
+                        return
+                    }
+                    resizeTerminalPanesToGrid()
+                    let resized = terminalTextView.terminalGridSize()
+                    let ok =
+                        resized.rows > initial.rows
+                        && resized.cols > initial.cols
+                        && paneStore.runtimes[activePaneId ?? -1] != nil
+                        && metalView.drawableSizesMatchView()
+                    let status = ok ? "ok" : "failed"
+                    writeSessionSmokeResult(
+                        resultPath,
+                        result: "\(status) terminal-resize "
+                            + "from=\(initial.cols)x\(initial.rows) to=\(resized.cols)x\(resized.rows) "
+                            + "\(metalView.resizeDiagnosticsSummary())\n"
+                    )
+                }
+            }
+        }
+
+        func sessionPaneCounts(
+            _ pane: NativeSessionPane
+        ) -> (leaves: Int, splits: Int, activeLeaves: Int) {
+            if pane.kind == "leaf" {
+                return (1, 0, pane.active ? 1 : 0)
+            }
+            let empty = (leaves: 0, splits: 0, activeLeaves: 0)
+            let first = pane.first.map(sessionPaneCounts) ?? empty
+            let second = pane.second.map(sessionPaneCounts) ?? empty
+            return (
+                first.leaves + second.leaves,
+                first.splits + second.splits + 1,
+                first.activeLeaves + second.activeLeaves
+            )
+        }
+
+        func paneLayoutMetrics(
+            _ pane: PaneLayoutSnapshot
+        ) -> (leaves: Int, splits: Int, axes: Set<String>) {
+            if pane.kind == "leaf" {
+                return (1, 0, [])
+            }
+            let empty = (leaves: 0, splits: 0, axes: Set<String>())
+            let first = pane.first.map(paneLayoutMetrics) ?? empty
+            let second = pane.second.map(paneLayoutMetrics) ?? empty
+            var axes = first.axes.union(second.axes)
+            if let axis = pane.axis {
+                axes.insert(axis)
+            }
+            return (
+                first.leaves + second.leaves,
+                first.splits + second.splits + 1,
+                axes
+            )
+        }
+
+        func writeSessionSmokeResult(_ path: String, result: String) {
+            try? result.write(toFile: path, atomically: true, encoding: .utf8)
+            NSApp.terminate(nil)
+        }
+
+        func closeWindowAfterWritingSessionSmokeResult(
+            _ path: String,
+            result: String
+        ) {
+            try? result.write(toFile: path, atomically: true, encoding: .utf8)
+            guard let window = view.window else {
+                NSApp.terminate(nil)
+                return
+            }
+            window.performClose(nil)
+        }
+
+        func applyTerminalBottomInputSmokeScenario(resultPath: String) {
+            let command = [
+                "i=0",
+                "while [ $i -lt 80 ]; do printf '\\n'; i=$((i + 1)); done",
+            ].joined(separator: "; ")
+            writeToActivePane(Data("\(command)\r".utf8))
+
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [weak self] in
+                self?.waitForTerminalBottomInputIdleThenType(resultPath, retries: 24)
+            }
+        }
+
+        func applyTerminalExitClosesTabSmokeScenario(resultPath: String) {
+            core.newTab()
+            syncFromCore()
+
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
+                self?.writeToActivePane(Data("exit\r".utf8))
+            }
+
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
+                self?.writeTerminalExitClosesTabSmokeResult(resultPath, retries: 16)
+            }
+        }
+
+        func applyTerminalNvimHandoffSmokeScenario(resultPath: String) {
+            openNativeNeovim(nil)
+
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
+                self?.runNvimCommandOrWrite(
+                    "enew | call setline(1, 'HANDOFFNVIM') | call cursor(1, 1)",
+                    fallback: Data()
+                )
+                self?.metalView.resetSkiaFrameCount()
+            }
+
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.4) { [weak self] in
+                self?.writeTerminalNvimHandoffSmokeResult(resultPath, retries: 16)
+            }
+        }
+
+        func applyFinderEditorSmokeScenario(resultPath: String) {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+                self?.writeFinderEditorSmokeResult(resultPath, retries: 48)
+            }
+        }
+
+        func writeFinderEditorSmokeResult(_ resultPath: String, retries: Int) {
+            let marker = "SATIN_FINDER_EDITOR_MARKER"
+            let snapshot = core.snapshot()
+            let oneTab = snapshot?.tabs.count == 1
+            let onePane = snapshot?.tabs.first?.panes.count == 1
+            let actualMode = activePaneMode()
+            let expectedMode =
+                ProcessInfo.processInfo.environment[
+                    "SATIN_NATIVE_SMOKE_FINDER_MODE"
+                ] == "terminal" ? NativePaneMode.terminal : .neovim
+            let expectedPaneMode = actualMode == expectedMode
+            let markerCount: Int
+            if actualMode == .terminal,
+                let paneId = activePaneId,
+                let pane = paneStore.runtimes[paneId]
+            {
+                markerCount = pane.controlScreenText().components(separatedBy: marker).count - 1
+            } else {
+                markerCount = terminalTextView.rendererModelTextOccurrences(marker)
+            }
+            let ok = oneTab && onePane && expectedPaneMode && markerCount == 1
+            if !ok, retries > 0 {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
+                    self?.writeFinderEditorSmokeResult(resultPath, retries: retries - 1)
+                }
+                return
+            }
+            let summary = [
+                "simple=\(oneTab && onePane ? "yes" : "no")",
+                "mode=\(actualMode.sessionValue)",
+                "marker=\(markerCount)",
+            ].joined(separator: " ")
+            let result =
+                ok
+                ? "ok finder-editor \(summary)\n"
+                : "failed finder-editor \(summary)\n"
+            try? result.write(toFile: resultPath, atomically: true, encoding: .utf8)
+            NSApp.terminate(nil)
+        }
+
+        func applyShellNvimNativeSmokeScenario(resultPath: String) {
+            let fixture = "/tmp/satin-shell-nvim-native-smoke.txt"
+            let before = "/tmp/satin-shell-nvim-native-before.txt"
+            let after = "/tmp/satin-shell-nvim-native-after.txt"
+            let forwarded = "/tmp/satin-shell-nvim-native-environment.txt"
+            writeSmokeLines(path: fixture)
+            try? FileManager.default.removeItem(atPath: before)
+            try? FileManager.default.removeItem(atPath: after)
+            try? FileManager.default.removeItem(atPath: forwarded)
+            let command = [
+                "export SATIN_SHELL_CONTINUITY=preserved",
+                "export SATIN_LAUNCH_ENVIRONMENT=forwarded",
+                "printf '%s' \"$$\" > \(shellQuote(before))",
+                "nvim -Nu NONE -n \(shellQuote(fixture))",
+                "printf '%s:%s:%s' \"$$\" \"$SATIN_SHELL_CONTINUITY\" \"$?\" "
+                    + "> \(shellQuote(after))",
+            ].joined(separator: "; ")
+            writeToActivePane(Data("\(command)\r".utf8))
+            waitForShellNvimNativeContent(
+                resultPath,
+                beforePath: before,
+                afterPath: after,
+                retries: 48
+            )
+        }
+
+        func waitForShellNvimNativeContent(
+            _ resultPath: String,
+            beforePath: String,
+            afterPath: String,
+            retries: Int
+        ) {
+            let ready =
+                activePaneMode() == .neovim
+                && terminalTextView.rendererModelContainsTexts([nvimSmokeReadyMarker])
+            guard ready else {
+                if retries > 0 {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
+                        self?.waitForShellNvimNativeContent(
+                            resultPath,
+                            beforePath: beforePath,
+                            afterPath: afterPath,
+                            retries: retries - 1
+                        )
+                    }
+                    return
+                }
+                writeShellNvimNativeSmokeFailure(resultPath, reason: "native-launch-timeout")
+                return
+            }
+            runNvimCommandOrWrite(
+                "call writefile([$SATIN_LAUNCH_ENVIRONMENT], "
+                    + "'\(vimSingleQuote("/tmp/satin-shell-nvim-native-environment.txt"))')",
+                fallback: Data()
+            )
+            runNvimCommandOrWrite(
+                "topleft vertical 24new | terminal",
+                fallback: Data()
+            )
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
+                guard let self else {
+                    return
+                }
+                runNvimCommandOrWrite("wincmd l", fallback: Data())
+                clearSmokeScrollShift()
+                metalView.resetSkiaFrameCount()
+                writeToActivePane(Data([0x04]))
+                waitForShellNvimNativeScroll(
+                    resultPath,
+                    beforePath: beforePath,
+                    afterPath: afterPath,
+                    retries: 24
+                )
+            }
+        }
+
+        func waitForShellNvimNativeScroll(
+            _ resultPath: String,
+            beforePath: String,
+            afterPath: String,
+            retries: Int
+        ) {
+            let shift = peekSmokeScrollShift()
+            let skiaFrames = metalView.skiaFrames()
+            let ok =
+                shift.map { value in
+                    abs(value.rows) > maxOutputScrollAnimationRows && (value.startCol ?? 0) > 0
+                } ?? false
+            guard ok && skiaFrames >= 2 else {
+                if retries > 0 {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+                        self?.waitForShellNvimNativeScroll(
+                            resultPath,
+                            beforePath: beforePath,
+                            afterPath: afterPath,
+                            retries: retries - 1
+                        )
+                    }
+                    return
+                }
+                writeShellNvimNativeSmokeFailure(resultPath, reason: "split-scroll-missing")
+                return
+            }
+            let summary = nvimAnimationSmokeSummary(
+                shift,
+                hasModelFrames: terminalTextView.hasRendererModelFrames(),
+                skiaFrames: skiaFrames
+            )
+            runNvimCommandOrWrite("cquit! 7", fallback: Data())
+            waitForShellNvimResume(
+                resultPath,
+                beforePath: beforePath,
+                afterPath: afterPath,
+                scrollSummary: summary,
+                retries: 48
+            )
+        }
+
+        func waitForShellNvimResume(
+            _ resultPath: String,
+            beforePath: String,
+            afterPath: String,
+            scrollSummary: String,
+            retries: Int
+        ) {
+            let before = try? String(contentsOfFile: beforePath, encoding: .utf8)
+            let after = try? String(contentsOfFile: afterPath, encoding: .utf8)
+            let forwarded = try? String(
+                contentsOfFile: "/tmp/satin-shell-nvim-native-environment.txt",
+                encoding: .utf8
+            )
+            let resumed =
+                activePaneMode() == .terminal
+                && before.map { "\($0):preserved:7" } == after
+                && forwarded == "forwarded\n"
+            guard resumed else {
+                if retries > 0 {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+                        self?.waitForShellNvimResume(
+                            resultPath,
+                            beforePath: beforePath,
+                            afterPath: afterPath,
+                            scrollSummary: scrollSummary,
+                            retries: retries - 1
+                        )
+                    }
+                    return
+                }
+                writeShellNvimNativeSmokeFailure(resultPath, reason: "shell-resume-timeout")
+                return
+            }
+            let result =
+                "ok shell-nvim-native terminal-split=yes same-shell=yes "
+                + "environment=yes exit-status=yes \(scrollSummary)\n"
+            try? result.write(toFile: resultPath, atomically: true, encoding: .utf8)
+            NSApp.terminate(nil)
+        }
+
+        func writeShellNvimNativeSmokeFailure(_ resultPath: String, reason: String) {
+            let result =
+                "failed shell-nvim-native reason=\(reason) mode=\(activePaneMode()) "
+                + "\(terminalTextView.rendererViewportSummary())\n"
+            try? result.write(toFile: resultPath, atomically: true, encoding: .utf8)
+            NSApp.terminate(nil)
+        }
+
+        func applyArtifactPopoverSmokeScenario(resultPath: String) {
+            smokeState.artifactPopoverResultPath = resultPath
+            smokeState.artifactPopoverOpenPath = "\(resultPath).open"
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
+                guard let self,
+                    self.toolbarActionControl.superview != nil,
+                    self.toolbarActionControl.segmentCount == SatinToolbarActionSegment.count,
+                    self.toolbarActionControl.image(
+                        forSegment: SatinToolbarActionSegment.artifacts
+                    ) != nil
+                else {
+                    self?.writeArtifactPopoverSmokeResult(
+                        resultPath,
+                        result: "failed artifact-popover button=unavailable\n"
+                    )
+                    return
+                }
+                self.showArtifactsPopover(relativeTo: self.toolbarActionControl)
+            }
+        }
+
+        func waitForArtifactPopoverSmokeOpen(
+            _ content: NativeArtifactsPopoverViewController,
+            attempts: Int
+        ) {
+            guard let path = smokeState.artifactPopoverOpenPath, attempts > 0 else {
+                return
+            }
+            if FileManager.default.fileExists(atPath: path) {
+                smokeState.artifactPopoverOpenPath = nil
+                content.performFirstSelectionForSmoke()
+                return
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self, weak content] in
+                guard let self, let content else {
+                    return
+                }
+                self.waitForArtifactPopoverSmokeOpen(content, attempts: attempts - 1)
+            }
+        }
+
+        func captureArtifactPopover(_ view: NSView, path: String) -> Bool {
+            view.layoutSubtreeIfNeeded()
+            guard let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) else {
+                return false
+            }
+            view.cacheDisplay(in: view.bounds, to: bitmap)
+            guard let data = bitmap.representation(using: .png, properties: [:]) else {
+                return false
+            }
+            do {
+                try data.write(to: URL(fileURLWithPath: path), options: .atomic)
+                return true
+            } catch {
+                return false
+            }
+        }
+
+        func writeArtifactPopoverSmokeResult(_ path: String, result: String) {
+            try? result.write(toFile: path, atomically: true, encoding: .utf8)
+        }
+
+    }
+#endif

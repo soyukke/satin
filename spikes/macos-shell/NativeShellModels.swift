@@ -4,27 +4,6 @@ import Foundation
 protocol TerminalContextMenuProvider: AnyObject {
     func terminalContextMenu(tabIndex: Int?) -> NSMenu
 }
-struct NativePaneControlStatus {
-    let status: String
-    let summary: String
-    let revision: UInt64
-    let updatedAt: Date
-
-    var json: [String: Any] {
-        [
-            "status": status,
-            "summary": summary,
-            "revision": revision,
-            "updatedAt": updatedAt.timeIntervalSince1970,
-        ]
-    }
-}
-
-struct NativeStatusWaiter {
-    let token: UUID
-    let reply: NativeControlReply
-    let timeout: DispatchWorkItem
-}
 
 final class NativeSuspendedTerminalSession {
     let pane: RustTerminalPane

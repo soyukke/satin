@@ -15,32 +15,41 @@ reachable there.
 
 ## Decision
 
-- Keep the terminal shell controller in `SatinApplication.swift` while moving
-  independent top-level responsibilities behind file boundaries:
+- Remove `SatinApplication.swift`. The executable entry point and AppKit
+  lifecycle live in `SatinMain.swift` and `SatinAppDelegate.swift`.
+- Split native runtime and presentation by ownership:
   - Rust-backed pane lifecycle and FFI adapters live in
     `NativePaneRuntime.swift`.
   - macOS appearance compatibility and ambient chrome live in
     `NativeAppearance.swift`.
-  - tmux projection, toolbar identifiers, and artifact popover models live in
-    `NativeShellModels.swift`.
-  - application lifecycle, menus, updates, and Finder routing live in
-    `SatinAppDelegate.swift`.
-  - the executable entry point lives in `SatinMain.swift`.
-- Keep extracted files below the default 1,000-line source limit. Reduce the
-  remaining `SatinApplication.swift` exception to 9,500 lines so future work
-  cannot silently restore the removed responsibilities.
-- Treat this as a mechanical ownership change. Do not change renderer, tmux,
-  terminal, persistence, or UI behavior in the extraction.
-- Continue shrinking the controller through focused follow-up changes. New pane
-  navigation, pane chrome, and artifact behavior must be placed in their owning
-  component rather than growing the application lifecycle file again.
+  - pane runtime collections live behind `NativePaneStore`; control status
+    revision, waiter, and timeout invariants live behind
+    `NativePaneStatusStore`.
+  - text rendering, native text input, and smoke-only inspection use separate
+    `TerminalTextView` source units.
+  - shell control routing, commands, presentation, pane interaction, session
+    restore, Neovim dispatch, and runtime/tmux integration use separate
+    `TerminalShell` source units.
+- Compile smoke orchestration only when `SATIN_SMOKE_SCENARIOS` is defined.
+  `native-build` enables it for the behavior suites; `native-package` does not,
+  so test scenarios and their state are absent from the release executable.
+- Keep every new source unit below the default 1,000-line limit and remove the
+  `SatinApplication.swift` source-size exception entirely.
+- Preserve renderer, tmux, terminal, persistence, and UI behavior during this
+  ownership change. Functional changes remain separate pull requests.
+- New pane navigation, pane chrome, and artifact behavior must enter the
+  corresponding owner instead of rebuilding an application-controller
+  monolith.
 
 ## Consequences
 
-Native builds list the new Swift sources explicitly, and a few helpers become
-module-internal instead of file-private where extracted runtime types require
-them. They remain unavailable outside the executable module.
+Native builds list the source units explicitly. Shell extensions share a
+module-internal controller surface, while state with independent invariants is
+owned by dedicated stores. Nothing becomes a public API outside the executable
+module.
 
-Code review can now distinguish runtime, appearance, shell-model, and lifecycle
-changes. `SatinApplication.swift` remains larger than the default limit, so this
-decision creates a ratchet rather than declaring the decomposition complete.
+Code review can distinguish production behavior from smoke orchestration and
+can review control, pane, session, and tmux changes independently. The
+controller extensions remain coordination seams rather than fully independent
+services; future stateful behavior should move behind a store or coordinator
+instead of adding another controller dictionary.
