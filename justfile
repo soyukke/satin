@@ -112,6 +112,7 @@ native-ci-smoke:
     @if [[ -z "${IN_NIX_SHELL:-}" ]]; then \
         exec nix develop .#ci-native --command just native-ci-smoke; \
     else \
+        export SATIN_ALLOW_SCREEN_CAPTURE=1; \
         test -x spikes/macos-shell/.build/SatinApplication; \
         test -d "spikes/macos-shell/.build/package/Satin.app"; \
         ./scripts/native-smoke; \
@@ -161,9 +162,13 @@ native-artifact-smoke:
 native-kitty-smoke:
     @if [[ -z "${IN_NIX_SHELL:-}" ]]; then exec nix develop --command just native-kitty-smoke; else just native-build && ./scripts/native-kitty-smoke; fi
 
-# Build, launch briefly, capture the native shell view, and exit.
+# Build, launch briefly, verify a rendered frame without OS capture, and exit.
 native-smoke:
     @if [[ -z "${IN_NIX_SHELL:-}" ]]; then exec nix develop --command just native-smoke; else just native-build && ./scripts/native-smoke; fi
+
+# Explicitly allow the macOS screen-recording API for pixel-level visual verification.
+native-visual-smoke:
+    @if [[ -z "${IN_NIX_SHELL:-}" ]]; then exec nix develop --command just native-visual-smoke; else just native-build && SATIN_ALLOW_SCREEN_CAPTURE=1 ./scripts/native-smoke; fi
 
 # Verify the exact Release executable inside the application bundle through its control socket.
 native-package-smoke:

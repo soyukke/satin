@@ -689,23 +689,6 @@ import Foundation
             }
         }
 
-        func captureArtifactPopover(_ view: NSView, path: String) -> Bool {
-            view.layoutSubtreeIfNeeded()
-            guard let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) else {
-                return false
-            }
-            view.cacheDisplay(in: view.bounds, to: bitmap)
-            guard let data = bitmap.representation(using: .png, properties: [:]) else {
-                return false
-            }
-            do {
-                try data.write(to: URL(fileURLWithPath: path), options: .atomic)
-                return true
-            } catch {
-                return false
-            }
-        }
-
         func writeArtifactPopoverSmokeResult(_ path: String, result: String) {
             try? result.write(toFile: path, atomically: true, encoding: .utf8)
         }

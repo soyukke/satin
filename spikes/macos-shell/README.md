@@ -46,14 +46,18 @@ domain and purple app icon are separate, and its control socket is stored below
 `~/Library/Application Support/Satin Dev`. Production update checks are disabled
 in this bundle.
 
-Run a non-interactive GUI smoke check with:
+Run a non-interactive GUI smoke check without requesting screen or system-audio
+recording permission with:
 
 ```sh
 just native-smoke
 ```
 
-The smoke check launches the app briefly, writes
-`spikes/macos-shell/.build/native-smoke.png`, and exits.
+The standard smoke launches the app briefly and checks its deterministic Skia
+frame counter. Pixel capture is intentionally opt-in because macOS groups it
+under the Screen & System Audio Recording permission. Run `just
+native-visual-smoke` only when that permission prompt and a PNG artifact are
+explicitly wanted.
 
 Build a release bundle and distributable archive with:
 

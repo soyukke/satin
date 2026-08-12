@@ -10,16 +10,8 @@ cli="${SATIN_CONTROL_EXECUTABLE:-target/debug/satin}"
 cli="$(cd "$(dirname "$cli")" && pwd)/$(basename "$cli")"
 smoke_root="$(mktemp -d "${TMPDIR:-/tmp}/satin-artifact-smoke.XXXXXX")"
 socket="$smoke_root/control.sock"
-window_id_file="$smoke_root/window-id"
 popover_result="$smoke_root/popover.result"
-popover_shot="spikes/macos-shell/.build/native-artifact-popover-smoke.png"
-popover_card_shot="spikes/macos-shell/.build/native-artifact-popover-card-smoke.png"
-rich_markdown_shot="spikes/macos-shell/.build/native-artifact-rich-markdown-smoke.png"
-table_shot="spikes/macos-shell/.build/native-artifact-table-smoke.png"
-image_shot="spikes/macos-shell/.build/native-artifact-image-smoke.png"
 app_log="$smoke_root/app.log"
-rm -f "$popover_shot" "$popover_card_shot" "$rich_markdown_shot" \
-  "$table_shot" "$image_shot"
 
 "$cli" --socket "$socket" artifact policy set \
   --max-columns 80 --max-rows 32 --language ja-JP --overflow compact >/dev/null
@@ -84,7 +76,6 @@ rm -f "$rich_source" "$rich_image"
 SATIN_CONTROL_SOCKET="$socket" \
   SATIN_NATIVE_SMOKE_SCENARIO=artifact-popover \
   SATIN_NATIVE_SMOKE_RESULT="$popover_result" \
-  SATIN_NATIVE_SMOKE_WINDOW_ID="$window_id_file" \
   "$app" >"$app_log" 2>&1 &
 app_pid=$!
 
@@ -105,12 +96,12 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 for _ in {1..100}; do
-  if [[ -S "$socket" && -s "$window_id_file" ]] && kill -0 "$app_pid" 2>/dev/null; then
+  if [[ -S "$socket" ]] && kill -0 "$app_pid" 2>/dev/null; then
     break
   fi
   sleep 0.05
 done
-if [[ ! -S "$socket" || ! -s "$window_id_file" ]]; then
+if [[ ! -S "$socket" ]]; then
   cat "$app_log" >&2
   echo "artifact smoke failed: application did not become ready" >&2
   exit 1
@@ -122,23 +113,12 @@ for _ in {1..100}; do
   fi
   sleep 0.05
 done
-if [[ "$(cat "$popover_result" 2>/dev/null || true)" != ok\ artifact-popover*capture=ok* ]]; then
+if [[ "$(cat "$popover_result" 2>/dev/null || true)" != ok\ artifact-popover* ]]; then
   cat "$app_log" >&2
   echo "artifact smoke failed: recent artifact popover did not load" >&2
   exit 1
 fi
 
-window_id="$(tr -d '[:space:]' <"$window_id_file")"
-cp "$popover_result.png" "$popover_card_shot"
-test -s "$popover_card_shot"
-sleep 0.3
-for _ in {1..40}; do
-  if ./scripts/native-window-capture "$window_id" "$popover_shot" && [[ -s "$popover_shot" ]]; then
-    break
-  fi
-  sleep 0.05
-done
-test -s "$popover_shot"
 state_before="$($cli --socket "$socket" --json list)"
 rich_pane="$(jq -r '.result.tabs[] | select(.active) | .activePane' <<<"$state_before")"
 pane_count_before="$(jq -r '.result.panes | length' <<<"$state_before")"
@@ -186,16 +166,6 @@ jq -e --argjson pane "$rich_pane" '
   any(.result.panes[]; .id == $pane and .kittyImages == 1)
 ' <<<"$state" >/dev/null
 
-sleep 0.5
-for _ in {1..40}; do
-  if ./scripts/native-window-capture "$window_id" "$rich_markdown_shot" &&
-    [[ -s "$rich_markdown_shot" ]]; then
-    break
-  fi
-  sleep 0.15
-done
-test -s "$rich_markdown_shot"
-
 "$cli" --socket "$socket" key --pane "$rich_pane" q >/dev/null
 for _ in {1..100}; do
   state="$($cli --socket "$socket" --json list)"
@@ -229,14 +199,6 @@ if ! grep -Fq "テスト結果" <<<"${table_screen:-}"; then
   echo "artifact smoke failed: table preview did not render" >&2
   exit 1
 fi
-sleep 0.5
-for _ in {1..40}; do
-  if ./scripts/native-window-capture "$window_id" "$table_shot" && [[ -s "$table_shot" ]]; then
-    break
-  fi
-  sleep 0.15
-done
-test -s "$table_shot"
 "$cli" --socket "$socket" key --pane "$table_pane" q >/dev/null
 for _ in {1..100}; do
   state="$($cli --socket "$socket" --json list)"
@@ -276,18 +238,4 @@ if ! grep -Fq "q close" <<<"$image_screen"; then
   exit 1
 fi
 
-sleep 0.5
-for _ in {1..40}; do
-  if ./scripts/native-window-capture "$window_id" "$image_shot" && [[ -s "$image_shot" ]]; then
-    break
-  fi
-  sleep 0.15
-done
-test -s "$image_shot"
-
 echo "native artifact smoke passed"
-echo "$popover_shot"
-echo "$popover_card_shot"
-echo "$rich_markdown_shot"
-echo "$table_shot"
-echo "$image_shot"

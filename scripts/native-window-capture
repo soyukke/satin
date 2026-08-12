@@ -6,6 +6,13 @@ if [[ $# -ne 2 ]]; then
   exit 64
 fi
 
+if [[ "${SATIN_ALLOW_SCREEN_CAPTURE:-0}" != 1 ]]; then
+  echo \
+    "native window capture is disabled; use an explicit visual-smoke command outside self-host" \
+    >&2
+  exit 77
+fi
+
 window_id="$1"
 output="$2"
 full_capture="${output}.full.png"
