@@ -14,59 +14,106 @@ case "${SATIN_USE_PREBUILT_PACKAGE:-0}" in
     ;;
 esac
 app_path="$(pwd)/spikes/macos-shell/.build/package/Satin.app"
+app_executable="$app_path/Contents/MacOS/satin-app"
+control_executable="$app_path/Contents/MacOS/satin"
 smoke_root="$(mktemp -d "${TMPDIR:-/tmp}/satin-finder-editor-smoke.XXXXXX")"
-fixture="$smoke_root/file with spaces.txt"
+active_pid=""
+mkdir -p "$smoke_root"/{config,data,state,cache}
+
+stop_active_app() {
+  if [[ "$active_pid" =~ ^[0-9]+$ ]] && kill -0 "$active_pid" 2>/dev/null; then
+    local command remainder
+    command="$(ps -ww -p "$active_pid" -o command=)"
+    remainder="${command#"$app_executable"}"
+    if [[ "$command" != "$app_executable" && "${remainder:0:1}" != " " ]]; then
+      echo "refusing to stop unexpected Finder smoke process: $command" >&2
+      return 1
+    fi
+    kill "$active_pid"
+    for _ in {1..40}; do
+      kill -0 "$active_pid" 2>/dev/null || break
+      sleep 0.05
+    done
+    if kill -0 "$active_pid" 2>/dev/null; then
+      echo "Finder smoke process did not stop: $active_pid" >&2
+      return 1
+    fi
+  fi
+  active_pid=""
+}
 
 # shellcheck disable=SC2329 # Invoked indirectly by the EXIT trap.
 cleanup() {
+  stop_active_app || true
   rm -rf -- "$smoke_root"
 }
 trap cleanup EXIT INT TERM
-
-printf '%s\n%s\n' \
-  'SATIN_FINDER_EDITOR_MARKER' \
-  'opened through a LaunchServices document event' >"$fixture"
 
 run_editor_case() {
   local label="$1"
   local editor="$2"
   local mode="$3"
-  local result_file="$smoke_root/$label.result"
+  local fixture="$smoke_root/$label file with spaces.txt"
   local stdout_log="$smoke_root/$label.stdout.log"
   local stderr_log="$smoke_root/$label.stderr.log"
   local socket_path="$smoke_root/$label.sock"
+  local list="" screen=""
+  active_pid=""
+  printf '%s\n%s\n' \
+    'SATIN_FINDER_EDITOR_MARKER' \
+    'opened through a LaunchServices document event' >"$fixture"
 
   if ! /usr/bin/open \
     -n \
-    -W \
     --stdout "$stdout_log" \
     --stderr "$stderr_log" \
     --env "PATH=$PATH" \
     --env "SATIN_CONTROL_SOCKET=$socket_path" \
-    --env "SATIN_NATIVE_SMOKE_SCENARIO=finder-editor" \
-    --env "SATIN_NATIVE_SMOKE_RESULT=$result_file" \
-    --env "SATIN_NATIVE_SMOKE_CLEAN_NVIM=1" \
-    --env "SATIN_NATIVE_SMOKE_FINDER_EDITOR=$editor" \
-    --env "SATIN_NATIVE_SMOKE_FINDER_MODE=$mode" \
-    --env "SATIN_NATIVE_SMOKE_FINDER_SHELL=/bin/bash" \
+    --env "XDG_CONFIG_HOME=$smoke_root/config" \
+    --env "XDG_DATA_HOME=$smoke_root/data" \
+    --env "XDG_STATE_HOME=$smoke_root/state" \
+    --env "XDG_CACHE_HOME=$smoke_root/cache" \
     -a "$app_path" \
-    "$fixture"; then
+    "$fixture" \
+    --args -restoreSession NO -automaticUpdateChecks NO \
+    -finderEditorCommand "$editor" -shellPath /bin/bash; then
     cat "$stdout_log" >&2 || true
     cat "$stderr_log" >&2 || true
     echo "Finder editor smoke failed: LaunchServices could not open Satin ($label)" >&2
     return 1
   fi
 
-  if ! grep -Fx \
-    "ok finder-editor simple=yes mode=$mode marker=1" \
-    "$result_file"; then
-    cat "$stdout_log" >&2 || true
-    cat "$stderr_log" >&2 || true
-    test ! -f "$result_file" || cat "$result_file" >&2
-    echo "Finder editor smoke failed: editor launch was not observed ($label)" >&2
-    return 1
-  fi
+  for _ in {1..240}; do
+    if [[ -S "$socket_path" ]]; then
+      if [[ -z "$active_pid" ]]; then
+        active_pid="$(/usr/sbin/lsof -t -a -U "$socket_path" 2>/dev/null | head -1 || true)"
+      fi
+      list="$($control_executable --socket "$socket_path" --json list 2>/dev/null || true)"
+      if jq -e --arg mode "$mode" --arg cwd "$smoke_root" '
+        .ok and (.result.tabs | length) == 1 and (.result.panes | length) == 1
+          and .result.panes[0].kind == $mode and .result.panes[0].cwd == $cwd
+      ' <<<"$list" >/dev/null; then
+        pane_id="$(jq -r '.result.panes[0].id' <<<"$list")"
+        screen="$($control_executable --socket "$socket_path" read-screen \
+          --pane "$pane_id" 2>/dev/null || true)"
+        marker_count="$(awk -F'SATIN_FINDER_EDITOR_MARKER' \
+          '{ count += NF - 1 } END { print count + 0 }' <<<"$screen")"
+        if [[ "$marker_count" == 1 ]]; then
+          stop_active_app
+          echo "native Finder editor smoke passed: $label mode=$mode"
+          return 0
+        fi
+      fi
+    fi
+    sleep 0.05
+  done
+
+  printf '%s\n' "$list" "$screen" >&2
+  cat "$stdout_log" >&2 || true
+  cat "$stderr_log" >&2 || true
+  echo "Finder editor smoke failed: editor launch was not observed ($label)" >&2
+  return 1
 }
 
-run_editor_case nvim nvim neovim
 run_editor_case vim /usr/bin/vim terminal
+run_editor_case nvim nvim neovim

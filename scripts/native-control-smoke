@@ -8,9 +8,9 @@ fi
 app="${SATIN_NATIVE_EXECUTABLE:-spikes/macos-shell/.build/SatinApplication}"
 cli="${SATIN_CONTROL_EXECUTABLE:-target/debug/satin}"
 cli="$(cd "$(dirname "$cli")" && pwd)/$(basename "$cli")"
-app_arguments=()
+app_arguments=(-restoreSession NO)
 if [[ -n "${SATIN_CONTROL_SMOKE_SHELL:-}" ]]; then
-  app_arguments=(-shellPath "$SATIN_CONTROL_SMOKE_SHELL")
+  app_arguments+=(-shellPath "$SATIN_CONTROL_SMOKE_SHELL")
 fi
 smoke_root="$(mktemp -d "${TMPDIR:-/tmp}/satin-control-smoke.XXXXXX")"
 socket="$smoke_root/control.sock"

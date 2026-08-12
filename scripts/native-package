@@ -5,6 +5,9 @@ if [[ -z "${IN_NIX_SHELL:-}" ]]; then
   exec nix develop --command ./scripts/native-package "$@"
 fi
 
+# shellcheck source=scripts/native-swift-sources
+source scripts/native-swift-sources
+
 version="$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')"
 build_number="${SATIN_BUILD_NUMBER:-$(git rev-list --count HEAD 2>/dev/null || printf '1')}"
 package_root="spikes/macos-shell/.build/package"
@@ -78,20 +81,7 @@ env -u SDKROOT -u DEVELOPER_DIR \
   -sdk "$sdk" \
   -target "$swift_target" \
   "${swift_feature_flags[@]}" \
-  spikes/macos-shell/AppUpdateChecker.swift \
-  spikes/macos-shell/ApplicationDefaults.swift \
-  spikes/macos-shell/ControlHost.swift \
-  spikes/macos-shell/NativeSettingsSelfTests.swift \
-  spikes/macos-shell/NativeSettingsValidation.swift \
-  spikes/macos-shell/NativeTmux.swift \
-  spikes/macos-shell/NativeWireModels.swift \
-  spikes/macos-shell/PerformanceRecorder.swift \
-  spikes/macos-shell/SatinFFI.swift \
-  spikes/macos-shell/SettingsWindow.swift \
-  spikes/macos-shell/TabControls.swift \
-  spikes/macos-shell/TerminalMetalView.swift \
-  spikes/macos-shell/SatinApplication.swift \
-  spikes/macos-shell/UpdateInstaller.swift \
+  "${native_swift_sources[@]}" \
   target/release/libsatin.a \
   -framework AppKit \
   -framework CryptoKit \

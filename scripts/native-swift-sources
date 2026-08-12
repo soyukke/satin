@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+
+# Shared by native-build and native-package. Release builds intentionally omit
+# the smoke-only sources below.
+# shellcheck disable=SC2034
+native_swift_sources=(
+  spikes/macos-shell/AppUpdateChecker.swift
+  spikes/macos-shell/ApplicationDefaults.swift
+  spikes/macos-shell/ControlHost.swift
+  spikes/macos-shell/NativeAppearance.swift
+  spikes/macos-shell/NativePaneRuntime.swift
+  spikes/macos-shell/NativePaneStatusStore.swift
+  spikes/macos-shell/NativePaneStore.swift
+  spikes/macos-shell/NativeSettingsSelfTests.swift
+  spikes/macos-shell/NativeSettingsValidation.swift
+  spikes/macos-shell/NativeShellModels.swift
+  spikes/macos-shell/NativeTmux.swift
+  spikes/macos-shell/NativeWireModels.swift
+  spikes/macos-shell/PerformanceRecorder.swift
+  spikes/macos-shell/SatinAppDelegate.swift
+  spikes/macos-shell/SatinFFI.swift
+  spikes/macos-shell/SatinMain.swift
+  spikes/macos-shell/SettingsWindow.swift
+  spikes/macos-shell/TabControls.swift
+  spikes/macos-shell/TerminalMetalView.swift
+  spikes/macos-shell/TerminalShellCommands.swift
+  spikes/macos-shell/TerminalShellControl.swift
+  spikes/macos-shell/TerminalShellNeovimRuntime.swift
+  spikes/macos-shell/TerminalShellPaneInteraction.swift
+  spikes/macos-shell/TerminalShellPresentation.swift
+  spikes/macos-shell/TerminalShellRuntime.swift
+  spikes/macos-shell/TerminalShellSession.swift
+  spikes/macos-shell/TerminalShellViewController.swift
+  spikes/macos-shell/TerminalTextView.swift
+  spikes/macos-shell/TerminalTextViewInput.swift
+  spikes/macos-shell/UpdateInstaller.swift
+)
+
+# shellcheck disable=SC2034
+native_smoke_swift_sources=(
+  spikes/macos-shell/NativeSmokeBasicScenarios.swift
+  spikes/macos-shell/NativeSmokeBootstrap.swift
+  spikes/macos-shell/NativeSmokeNvimHelpers.swift
+  spikes/macos-shell/NativeSmokeNvimLayoutScenarios.swift
+  spikes/macos-shell/NativeSmokeNvimScenarios.swift
+  spikes/macos-shell/NativeSmokeNvimVisualScenarios.swift
+  spikes/macos-shell/NativeSmokeState.swift
+  spikes/macos-shell/NativeSmokeTmuxReattachScenarios.swift
+  spikes/macos-shell/NativeSmokeTmuxScenarios.swift
+  spikes/macos-shell/TerminalTextViewSmoke.swift
+)
