@@ -1002,83 +1002,6 @@ private func isLocalTmuxEndpoint(socketPath: String, serverPid: UInt32) -> Bool 
 private func vimSingleQuote(_ value: String) -> String {
     value.replacingOccurrences(of: "'", with: "''")
 }
-
-final class RenameTextField: NSTextField, NSTextFieldDelegate {
-    var onCommit: (() -> Void)?
-
-    override init(frame frameRect: NSRect) {
-        super.init(frame: frameRect)
-        delegate = self
-    }
-
-    required init?(coder: NSCoder) {
-        super.init(coder: coder)
-        delegate = self
-    }
-
-    func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector)
-        -> Bool
-    {
-        if commandSelector == #selector(NSResponder.insertNewline(_:)) {
-            onCommit?()
-            return true
-        }
-        return false
-    }
-}
-
-final class NativeTabControl: NSSegmentedControl {
-    var onRenameRequested: ((Int) -> Void)?
-    var onContextMenuRequested: ((Int, NSEvent, NSView) -> Void)?
-
-    override func mouseDown(with event: NSEvent) {
-        super.mouseDown(with: event)
-        handleCompletedClick(clickCount: event.clickCount, segment: selectedSegment)
-    }
-
-    fileprivate func simulateDoubleClickForSmoke(segment: Int) {
-        handleCompletedClick(clickCount: 2, segment: segment)
-    }
-
-    private func handleCompletedClick(clickCount: Int, segment: Int) {
-        guard clickCount == 2, segment >= 0, segment < segmentCount else {
-            return
-        }
-        onRenameRequested?(segment)
-    }
-
-    override func rightMouseDown(with event: NSEvent) {
-        let point = convert(event.locationInWindow, from: nil)
-        guard let segment = segmentIndex(at: point) else {
-            super.rightMouseDown(with: event)
-            return
-        }
-        selectedSegment = segment
-        onContextMenuRequested?(segment, event, self)
-    }
-
-    private func segmentIndex(at point: NSPoint) -> Int? {
-        guard bounds.contains(point), segmentCount > 0 else {
-            return nil
-        }
-        let widths = (0..<segmentCount).map { width(forSegment: $0) }
-        let contentWidth = widths.reduce(0, +)
-        let leadingInset = max(0, (bounds.width - contentWidth) / 2)
-        let position = point.x - bounds.minX - leadingInset
-        guard position >= 0 else {
-            return 0
-        }
-        var trailingEdge: CGFloat = 0
-        for (segment, width) in widths.enumerated() {
-            trailingEdge += width
-            if position <= trailingEdge {
-                return segment
-            }
-        }
-        return segmentCount - 1
-    }
-}
-
 enum NativePaneDividerAxis: String {
     case vertical
     case horizontal
@@ -5178,6 +5101,10 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
         let renameItem = menuItem("Rename Tab…", #selector(renameTabFromContextMenu(_:)))
         renameItem.representedObject = index
         menu.addItem(renameItem)
+        menu.addItem(NSMenuItem.separator())
+        let closeItem = menuItem("Close Tab", #selector(closeTabFromContextMenu(_:)))
+        closeItem.representedObject = index
+        menu.addItem(closeItem)
         NSMenu.popUpContextMenu(menu, with: event, for: view)
     }
 
@@ -5186,6 +5113,45 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
             return
         }
         renameTab(at: index)
+    }
+
+    @objc private func closeTabFromContextMenu(_ sender: NSMenuItem) {
+        guard let index = sender.representedObject as? Int else {
+            return
+        }
+        closeTab(at: index)
+    }
+
+    @discardableResult
+    private func closeTab(at index: Int) -> Bool {
+        guard let snapshot = lastSnapshot,
+            let tab = snapshot.tabs.first(where: { $0.index == index })
+        else {
+            return false
+        }
+        if let session = tmuxSession {
+            guard let windowId = session.tmuxWindowIds[tab.id],
+                session.gateway.tmuxCommand("kill-window -t @\(windowId)")
+            else {
+                return false
+            }
+            focusTerminal()
+            return true
+        }
+
+        for paneId in tab.panes {
+            guard core.closePane(paneId) else {
+                return false
+            }
+            discardPaneState(paneId)
+        }
+        guard let updated = core.snapshot(), !updated.tabs.isEmpty else {
+            NSApp.terminate(nil)
+            return true
+        }
+        syncFromCore()
+        focusTerminal()
+        return true
     }
 
     @objc func toggleTmuxPaneZoom(_ sender: Any?) {
@@ -6524,6 +6490,38 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
                 $0.index == snapshot.active_tab
             })?.title == renamedTitle
             && tabControl.label(forSegment: snapshot.active_tab) == renamedTitle
+        let closeTarget = tabControl.closeButtonHitTargetForSmoke(segment: 0)
+        let closeTargetHasMinimumWidth = (closeTarget?.width ?? 0) >= 20
+        let closeTargetFitsHorizontally =
+            closeTarget.map {
+                $0.minX >= tabControl.bounds.minX && $0.maxX <= tabControl.bounds.maxX
+            } ?? false
+        let closeTargetFitsVertically =
+            closeTarget.map {
+                $0.minY >= tabControl.bounds.minY && $0.maxY <= tabControl.bounds.maxY
+            } ?? false
+        let closeTargetReady =
+            closeTargetHasMinimumWidth
+            && closeTargetFitsHorizontally
+            && closeTargetFitsVertically
+        let originalCloseHandler = tabControl.onCloseRequested
+        var closeRequestedSegment: Int?
+        tabControl.onCloseRequested = { segment in
+            closeRequestedSegment = segment
+        }
+        tabControl.simulateCloseForSmoke(segment: 0)
+        tabControl.onCloseRequested = originalCloseHandler
+        if let closeRequestedSegment {
+            _ = closeTab(at: closeRequestedSegment)
+        }
+        let closedSnapshot = core.snapshot()
+        let closeReady =
+            closeTargetReady
+            && closeRequestedSegment == 0
+            && closedSnapshot?.tabs.count == 1
+            && closedSnapshot?.active_tab == 0
+            && closedSnapshot?.tabs.first?.title == renamedTitle
+            && tabControl.label(forSegment: 0) == renamedTitle
         let ok =
             controlsReady
             && shortcutsReady
@@ -6542,6 +6540,7 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
             && ratioUpdated
             && paneFrameUpdated
             && renameReady
+            && closeReady
         let status = ok ? "ok" : "failed"
         writeSessionSmokeResult(
             resultPath,
@@ -6558,7 +6557,8 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
                 + "cursors=\(cursorsReady ? "resize" : "missing") "
                 + "ratio=\(ratioUpdated ? "updated" : "stale") "
                 + "frame=\(paneFrameUpdated ? "resized" : "stale") "
-                + "rename=\(renameReady ? "double-click" : "missing")\n"
+                + "rename=\(renameReady ? "double-click" : "missing") "
+                + "close=\(closeReady ? "x-button" : "missing")\n"
         )
     }
 
@@ -9009,7 +9009,7 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
             tabControl.setLabel(tab.title, forSegment: idx)
             tabControl.setWidth(tabWidth(for: tab.title), forSegment: idx)
             tabControl.setToolTip(
-                "Click to select; double-click or right-click to rename",
+                "Click to select; use × to close; double-click or right-click for tab actions",
                 forSegment: idx
             )
         }
@@ -9228,12 +9228,16 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
         tabControl.onRenameRequested = { [weak self] index in
             self?.renameTab(at: index)
         }
+        tabControl.onCloseRequested = { [weak self] index in
+            self?.closeTab(at: index)
+        }
         tabControl.onContextMenuRequested = { [weak self] index, event, view in
             self?.showTabContextMenu(index: index, event: event, view: view)
         }
         tabControl.setAccessibilityLabel("Terminal Tabs")
         tabControl.setAccessibilityHelp(
-            "Click a tab to select it. Double-click or right-click a tab to rename it."
+            "Click a tab to select it, use its close button to close it, "
+                + "or double-click or right-click for tab actions."
         )
     }
 
@@ -9592,7 +9596,7 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
         let measured = (title as NSString).size(withAttributes: [
             .font: NSFont.systemFont(ofSize: 13, weight: .semibold)
         ])
-        return min(max(measured.width + 34, 112), 190)
+        return min(max(measured.width + 58, 112), 214)
     }
 
     private func configureTerminalTextView() {
