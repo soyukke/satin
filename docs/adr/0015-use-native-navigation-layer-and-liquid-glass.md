@@ -2,7 +2,7 @@
 
 Date: 2026-08-08
 
-Amended: 2026-08-12
+Amended: 2026-08-13
 
 Status: Accepted
 
@@ -43,6 +43,9 @@ Tahoe-only custom glass view.
 - Do not place glass or controls over terminal or Neovim cells. Retain the full
   pane bounds for layout and split resizing, but pass only the area below its
   header to grid sizing, mouse coordinates, and Skia-Metal rendering.
+- Let the grid reach the left, right, and bottom pane edges without decorative
+  padding. Draw outlines at one backing pixel, using adaptive neutral gray for
+  inactive panes and subdued system blue for the active pane.
 - Treat Command +/-/0 as pane-local font zoom. Keep the configured Appearance
   font size as the shared baseline, retain an in-memory offset per pane ID, and
   use that pane's effective cell metrics consistently for PTY/Neovim resize,

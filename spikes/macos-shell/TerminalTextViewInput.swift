@@ -212,10 +212,10 @@ extension TerminalTextView {
 
     func terminalContentRect() -> NSRect {
         NSRect(
-            x: terminalHorizontalInset,
-            y: 0,
-            width: max(1, bounds.width - terminalHorizontalInset * 2),
-            height: max(1, bounds.height - terminalTextBottomInset)
+            x: bounds.minX,
+            y: bounds.minY,
+            width: max(1, bounds.width),
+            height: max(1, bounds.height)
         )
     }
 

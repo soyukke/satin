@@ -624,12 +624,16 @@ final class TerminalTextView: NSView, NSTextInputClient {
         guard paneBounds.count > 1 else {
             return
         }
+        let scale = window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 1
+        let lineWidth = 1 / max(1, scale)
         for (paneId, rect) in paneBounds {
-            let path = NSBezierPath(rect: rect.insetBy(dx: 0.5, dy: 0.5))
-            path.lineWidth = paneId == activePaneId ? 2 : 1
+            let path = NSBezierPath(
+                rect: rect.insetBy(dx: lineWidth / 2, dy: lineWidth / 2)
+            )
+            path.lineWidth = lineWidth
             (paneId == activePaneId
-                ? NSColor.controlAccentColor
-                : NSColor.separatorColor).setStroke()
+                ? NSColor.systemBlue.withAlphaComponent(0.55)
+                : NSColor.separatorColor.withAlphaComponent(0.24)).setStroke()
             path.stroke()
         }
     }
