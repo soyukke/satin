@@ -48,8 +48,6 @@ enum NativeLog {
 
 let ffiSplitVertical: UInt32 = 0
 let ffiSplitHorizontal: UInt32 = 1
-let terminalHorizontalInset: CGFloat = 12
-let terminalTextBottomInset: CGFloat = 10
 let defaultTerminalFontSize = CGFloat(nativeDefaultFontSize)
 let minTerminalFontSize = CGFloat(nativeMinimumFontSize)
 let maxTerminalFontSize = CGFloat(nativeMaximumFontSize)

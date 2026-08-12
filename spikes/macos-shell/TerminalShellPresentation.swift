@@ -147,7 +147,7 @@ extension TerminalShellViewController {
         dividers: inout [NativePaneDivider]
     ) {
         if layout.kind == "leaf", let paneId = layout.pane_id {
-            frames[paneId] = rect.insetBy(dx: 1, dy: 1)
+            frames[paneId] = rect
             return
         }
         guard let axis = layout.axis, let first = layout.first, let second = layout.second else {
