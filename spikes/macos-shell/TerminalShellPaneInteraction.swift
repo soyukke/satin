@@ -163,13 +163,25 @@ extension TerminalShellViewController {
         updateActiveFrame()
     }
 
+    func resizePaneForZoom(_ paneId: Int) {
+        guard let frame = paneStore.visibleFrames[paneId],
+            let pane = terminalPane(for: paneId)
+        else {
+            return
+        }
+        if !(pane is RustTmuxPane) {
+            pane.resize(grid: terminalTextView.terminalGridSize(for: frame, paneId: paneId))
+        }
+        updateActiveFrame()
+    }
+
     func paneGridSize(
         _ paneId: Int
     ) -> (rows: Int, cols: Int, widthPixels: Int, heightPixels: Int) {
         guard let frame = paneStore.visibleFrames[paneId] else {
             return terminalTextView.terminalGridSize()
         }
-        return terminalTextView.terminalGridSize(for: frame)
+        return terminalTextView.terminalGridSize(for: frame, paneId: paneId)
     }
 
     func writeToActivePane(_ data: Data) {

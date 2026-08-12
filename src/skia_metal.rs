@@ -58,7 +58,7 @@ mod platform {
     pub struct NativeSkiaMetalRenderer {
         context: DirectContext,
         _backend: BackendContext,
-        text_renderer: NeovideTextRenderer,
+        primary_font_family: Option<String>,
         runtime_states: HashMap<usize, RuntimeRenderState>,
         kitty_images: HashMap<(usize, u32), CachedKittyImage>,
         reported_kitty_failures: HashSet<usize>,
@@ -79,7 +79,7 @@ mod platform {
             Some(Self {
                 context,
                 _backend: backend,
-                text_renderer: NeovideTextRenderer::new(),
+                primary_font_family: None,
                 runtime_states: HashMap::new(),
                 kitty_images: HashMap::new(),
                 reported_kitty_failures: HashSet::new(),
@@ -118,7 +118,11 @@ mod platform {
                 }
             };
             retain_visible_kitty_images(&mut self.kitty_images, runtime_id, &placements);
-            let state = self.runtime_states.entry(runtime_id).or_default();
+            let primary_font_family = self.primary_font_family.as_deref();
+            let state = self
+                .runtime_states
+                .entry(runtime_id)
+                .or_insert_with(|| RuntimeRenderState::with_font_family(primary_font_family));
             let dt = state.animation_dt();
             state.scroll_animation_active =
                 runtime.advance_renderer_animations(dt) || runtime.has_active_renderer_animation();
@@ -128,7 +132,7 @@ mod platform {
             state.text_blink_active = model_has_blink(&model);
             draw_model(
                 surface.canvas(),
-                &mut self.text_renderer,
+                &mut state.text_renderer,
                 &state.cursor_animation,
                 state.cursor_blink.should_render(),
                 &model,
@@ -176,7 +180,11 @@ mod platform {
                 }
             };
             retain_visible_kitty_images(&mut self.kitty_images, runtime_id, &placements);
-            let state = self.runtime_states.entry(runtime_id).or_default();
+            let primary_font_family = self.primary_font_family.as_deref();
+            let state = self
+                .runtime_states
+                .entry(runtime_id)
+                .or_insert_with(|| RuntimeRenderState::with_font_family(primary_font_family));
             let dt = state.animation_dt();
             let Some(model) = prepare_terminal_renderer_model(state, runtime, dt) else {
                 return false;
@@ -186,7 +194,7 @@ mod platform {
             state.text_blink_active = model_has_blink(&model);
             draw_model(
                 surface.canvas(),
-                &mut self.text_renderer,
+                &mut state.text_renderer,
                 &state.cursor_animation,
                 state.cursor_blink.should_render(),
                 &model,
@@ -207,7 +215,10 @@ mod platform {
         }
 
         pub fn set_font_family(&mut self, family: Option<&str>) {
-            self.text_renderer.set_primary_font_family(family);
+            self.primary_font_family = family.map(str::to_owned);
+            for state in self.runtime_states.values_mut() {
+                state.text_renderer.set_primary_font_family(family);
+            }
         }
 
         pub fn forget_runtime(&mut self, runtime_id: usize) {
@@ -251,6 +262,7 @@ mod platform {
 
     #[derive(Default)]
     struct RuntimeRenderState {
+        text_renderer: NeovideTextRenderer,
         cursor_animation: CursorAnimationState,
         cursor_blink: CursorBlinkState,
         last_frame_at: Option<Instant>,
@@ -259,6 +271,12 @@ mod platform {
     }
 
     impl RuntimeRenderState {
+        fn with_font_family(family: Option<&str>) -> Self {
+            let mut state = Self::default();
+            state.text_renderer.set_primary_font_family(family);
+            state
+        }
+
         fn animation_dt(&mut self) -> f32 {
             let now = Instant::now();
             let dt = self

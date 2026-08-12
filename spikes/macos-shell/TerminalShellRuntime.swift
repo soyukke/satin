@@ -346,6 +346,7 @@ extension TerminalShellViewController {
         for paneId in stalePaneIds {
             removePaneRuntime(paneId)
             discardArtifactBackingPane(paneId)
+            terminalTextView.discardPaneZoom(paneId)
             paneStore.modes.removeValue(forKey: paneId)
             paneStore.workingDirectories.removeValue(forKey: paneId)
         }
@@ -469,6 +470,7 @@ extension TerminalShellViewController {
         for paneId in session.nativePaneIds.values {
             removePaneRuntime(paneId)
             discardArtifactBackingPane(paneId)
+            terminalTextView.discardPaneZoom(paneId)
             paneStore.modes.removeValue(forKey: paneId)
             paneStore.workingDirectories.removeValue(forKey: paneId)
             paneStore.titles.removeValue(forKey: paneId)
@@ -489,6 +491,7 @@ extension TerminalShellViewController {
             removeControlState(paneId)
             removePaneRuntime(paneId)
             discardArtifactBackingPane(paneId)
+            terminalTextView.discardPaneZoom(paneId)
             paneStore.scrollRemainders.removeValue(forKey: paneId)
             paneStore.workingDirectories.removeValue(forKey: paneId)
             paneStore.modes.removeValue(forKey: paneId)
@@ -630,7 +633,10 @@ extension TerminalShellViewController {
             else {
                 continue
             }
-            let geometry = terminalTextView.skiaRenderGeometry(for: entry.value)
+            let geometry = terminalTextView.skiaRenderGeometry(
+                for: entry.value,
+                paneId: entry.key
+            )
             let clear: UInt8 = index == 0 ? 1 : 0
             let ok: Bool
             if pane.kind == .terminal {
