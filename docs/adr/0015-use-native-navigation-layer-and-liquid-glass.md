@@ -43,6 +43,15 @@ Tahoe-only custom glass view.
 - Do not place glass or controls over terminal or Neovim cells. Retain the full
   pane bounds for layout and split resizing, but pass only the area below its
   header to grid sizing, mouse coordinates, and Skia-Metal rendering.
+- Treat Command +/-/0 as pane-local font zoom. Keep the configured Appearance
+  font size as the shared baseline, retain an in-memory offset per pane ID, and
+  use that pane's effective cell metrics consistently for PTY/Neovim resize,
+  Skia rendering, mouse coordinates, and input-method placement. Keep the text
+  shaper and prepared-line cache per runtime so mixed zoom levels do not evict
+  one another's shaped lines on every frame.
+- Keep projected tmux panes on the configured baseline. One tmux control client
+  negotiates a shared cell grid, so applying a different cell size to one
+  projected pane would clip or stretch that pane instead of reflowing it.
 - Keep Settings on its standard toolbar-style `NSTabViewController` and use the
   same unified titlebar treatment.
 - Validate menu commands against the key window. Terminal mutations are disabled

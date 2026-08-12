@@ -442,18 +442,37 @@ extension TerminalShellViewController {
     }
 
     @objc func zoomIn(_ sender: Any?) {
+        guard activePaneSupportsLocalZoom() else {
+            focusTerminal()
+            return
+        }
         _ = terminalTextView.zoomIn()
         focusTerminal()
     }
 
     @objc func zoomOut(_ sender: Any?) {
+        guard activePaneSupportsLocalZoom() else {
+            focusTerminal()
+            return
+        }
         _ = terminalTextView.zoomOut()
         focusTerminal()
     }
 
     @objc func resetZoom(_ sender: Any?) {
+        guard activePaneSupportsLocalZoom() else {
+            focusTerminal()
+            return
+        }
         _ = terminalTextView.resetZoom()
         focusTerminal()
+    }
+
+    private func activePaneSupportsLocalZoom() -> Bool {
+        guard let paneId = activePaneId else {
+            return false
+        }
+        return projectedTmuxPane(paneId) == nil
     }
 
     func selectTabFromShortcut(_ shortcutNumber: Int) {

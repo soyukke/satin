@@ -22,7 +22,7 @@ final class TerminalTextView: NSView, NSTextInputClient {
     var onZoomIn: (() -> Void)?
     var onZoomOut: (() -> Void)?
     var onResetZoom: (() -> Void)?
-    var onFontSizeChanged: ((CGFloat) -> Void)?
+    var onPaneZoomChanged: ((Int) -> Void)?
 
     required init?(coder: NSCoder) {
         nil
@@ -42,6 +42,8 @@ final class TerminalTextView: NSView, NSTextInputClient {
     var terminalFont = NSFont.monospacedSystemFont(
         ofSize: defaultTerminalFontSize, weight: .regular)
     var terminalFontFamily = ""
+    var paneFontSizeOffsets: [Int: CGFloat] = [:]
+    var paneFonts: [Int: NSFont] = [:]
     var markedText = NSMutableAttributedString()
     var markedSelection = NSRange(location: 0, length: 0)
     var interpretingKeyEvent: NSEvent?
@@ -475,21 +477,6 @@ final class TerminalTextView: NSView, NSTextInputClient {
     }
 
     @discardableResult
-    func setTerminalFontSize(_ size: CGFloat) -> Bool {
-        let clampedSize = min(max(size, minTerminalFontSize), maxTerminalFontSize)
-        guard abs(clampedSize - terminalFontSize) > 0.01 else {
-            return false
-        }
-
-        terminalFontSize = clampedSize
-        terminalFont = configuredTerminalFont(family: terminalFontFamily, size: clampedSize)
-        onFontSizeChanged?(clampedSize)
-        needsDisplay = true
-        onGeometryChanged?()
-        return true
-    }
-
-    @discardableResult
     func setTerminalFont(family: String, size: CGFloat) -> Bool {
         let clampedSize = min(max(size, minTerminalFontSize), maxTerminalFontSize)
         let normalizedFamily = family.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -502,32 +489,108 @@ final class TerminalTextView: NSView, NSTextInputClient {
         terminalFontFamily = normalizedFamily
         terminalFontSize = clampedSize
         terminalFont = configuredTerminalFont(family: normalizedFamily, size: clampedSize)
-        onFontSizeChanged?(clampedSize)
+        paneFonts = Dictionary(
+            uniqueKeysWithValues: paneFontSizeOffsets.keys.map { paneId in
+                (paneId, configuredTerminalFont(family: normalizedFamily, size: fontSize(paneId)))
+            }
+        )
         needsDisplay = true
         onGeometryChanged?()
         return true
     }
 
     func zoomIn() -> Bool {
-        setTerminalFontSize(terminalFontSize + 1)
+        adjustActivePaneZoom(by: 1)
     }
 
     func zoomOut() -> Bool {
-        setTerminalFontSize(terminalFontSize - 1)
+        adjustActivePaneZoom(by: -1)
     }
 
     func resetZoom() -> Bool {
-        setTerminalFontSize(defaultTerminalFontSize)
+        guard let paneId = activePaneId,
+            paneFontSizeOffsets.removeValue(forKey: paneId) != nil
+        else {
+            return false
+        }
+        paneFonts.removeValue(forKey: paneId)
+        paneZoomDidChange(paneId)
+        return true
+    }
+
+    func discardPaneZoom(_ paneId: Int) {
+        paneFontSizeOffsets.removeValue(forKey: paneId)
+        paneFonts.removeValue(forKey: paneId)
+    }
+
+    func fontSize(_ paneId: Int?) -> CGFloat {
+        guard let paneId else {
+            return terminalFontSize
+        }
+        return min(
+            max(
+                terminalFontSize + (paneFontSizeOffsets[paneId] ?? 0),
+                minTerminalFontSize
+            ),
+            maxTerminalFontSize
+        )
+    }
+
+    func fontForPane(_ paneId: Int?) -> NSFont {
+        guard let paneId else {
+            return terminalFont
+        }
+        return paneFonts[paneId] ?? terminalFont
+    }
+
+    private func adjustActivePaneZoom(by delta: CGFloat) -> Bool {
+        guard let paneId = activePaneId else {
+            return false
+        }
+        let previousSize = fontSize(paneId)
+        let nextSize = min(
+            max(previousSize + delta, minTerminalFontSize),
+            maxTerminalFontSize
+        )
+        guard abs(nextSize - previousSize) > 0.01 else {
+            return false
+        }
+        let offset = nextSize - terminalFontSize
+        if abs(offset) <= 0.01 {
+            paneFontSizeOffsets.removeValue(forKey: paneId)
+            paneFonts.removeValue(forKey: paneId)
+        } else {
+            paneFontSizeOffsets[paneId] = offset
+            paneFonts[paneId] = configuredTerminalFont(
+                family: terminalFontFamily,
+                size: nextSize
+            )
+        }
+        paneZoomDidChange(paneId)
+        return true
+    }
+
+    private func paneZoomDidChange(_ paneId: Int) {
+        invalidateInputCoordinates()
+        needsDisplay = true
+        onPaneZoomChanged?(paneId)
     }
 
     func terminalGridSize() -> (rows: Int, cols: Int, widthPixels: Int, heightPixels: Int) {
-        terminalGridSize(for: terminalTextRect())
+        terminalGridSize(for: terminalTextRect(), paneId: activePaneId)
     }
 
     func terminalGridSize(
         for textRect: NSRect
     ) -> (rows: Int, cols: Int, widthPixels: Int, heightPixels: Int) {
-        let cellSize = terminalCellSize()
+        terminalGridSize(for: textRect, paneId: activePaneId)
+    }
+
+    func terminalGridSize(
+        for textRect: NSRect,
+        paneId: Int?
+    ) -> (rows: Int, cols: Int, widthPixels: Int, heightPixels: Int) {
+        let cellSize = terminalCellSize(for: paneId)
         let cols = max(1, Int(textRect.width / cellSize.width))
         let rows = max(1, Int(textRect.height / cellSize.height))
         let scale = window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 1
@@ -537,11 +600,15 @@ final class TerminalTextView: NSView, NSTextInputClient {
     }
 
     func skiaRenderGeometry() -> SkiaRenderGeometry {
-        skiaRenderGeometry(for: terminalTextRect())
+        skiaRenderGeometry(for: terminalTextRect(), paneId: activePaneId)
     }
 
     func skiaRenderGeometry(for textRect: NSRect) -> SkiaRenderGeometry {
-        let cellSize = terminalCellSize()
+        skiaRenderGeometry(for: textRect, paneId: activePaneId)
+    }
+
+    func skiaRenderGeometry(for textRect: NSRect, paneId: Int?) -> SkiaRenderGeometry {
+        let cellSize = terminalCellSize(for: paneId)
         let scale = window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 1
         return SkiaRenderGeometry(
             originX: Float(textRect.minX * scale),

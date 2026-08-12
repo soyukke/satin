@@ -37,7 +37,7 @@ extension TerminalTextView {
         let textRect = terminalTextRect()
         let cell = terminalCellSize()
         let attributes: [NSAttributedString.Key: Any] = [
-            .font: terminalFont,
+            .font: fontForPane(activePaneId),
             .foregroundColor: NSColor.textColor,
             .backgroundColor: NSColor.selectedTextBackgroundColor,
             .underlineStyle: NSUnderlineStyle.single.rawValue,
@@ -220,8 +220,13 @@ extension TerminalTextView {
     }
 
     func terminalCellSize() -> NSSize {
-        let measured = ("M" as NSString).size(withAttributes: [.font: terminalFont])
-        let lineHeight = terminalFont.ascender - terminalFont.descender + terminalFont.leading
+        terminalCellSize(for: activePaneId)
+    }
+
+    func terminalCellSize(for paneId: Int?) -> NSSize {
+        let font = fontForPane(paneId)
+        let measured = ("M" as NSString).size(withAttributes: [.font: font])
+        let lineHeight = font.ascender - font.descender + font.leading
         return NSSize(width: max(1, measured.width), height: max(1, lineHeight))
     }
 

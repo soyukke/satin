@@ -232,6 +232,7 @@ extension TerminalShellViewController {
         discardSuspendedTerminalSession(paneId)
         removePaneRuntime(paneId)
         discardArtifactBackingPane(paneId)
+        terminalTextView.discardPaneZoom(paneId)
         paneStore.discardMetadata(for: paneId)
     }
 

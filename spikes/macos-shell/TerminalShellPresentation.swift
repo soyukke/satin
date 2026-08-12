@@ -109,7 +109,9 @@ extension TerminalShellViewController {
         for (paneId, frame) in frames {
             let pane = terminalPane(for: paneId)
             if !(pane is RustTmuxPane) {
-                pane?.resize(grid: terminalTextView.terminalGridSize(for: frame))
+                pane?.resize(
+                    grid: terminalTextView.terminalGridSize(for: frame, paneId: paneId)
+                )
             }
         }
         syncTmuxClientSize()
@@ -133,7 +135,8 @@ extension TerminalShellViewController {
 
     func tmuxClientGrid() -> (rows: Int, cols: Int, widthPixels: Int, heightPixels: Int) {
         terminalTextView.terminalGridSize(
-            for: nativePaneContentFrame(terminalTextView.terminalContentRect())
+            for: nativePaneContentFrame(terminalTextView.terminalContentRect()),
+            paneId: nil
         )
     }
 
