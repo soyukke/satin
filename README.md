@@ -24,13 +24,13 @@
 <p align="center">
   <a href="assets/satin-demo.mp4">
     <img src="assets/satin-demo.gif" width="880"
-      alt="Satin showing native tmux panes, terminal scrollback, and Neovim">
+      alt="Satin showing a truecolor terminal beside native Neovim and tmux panes">
   </a>
 </p>
 
 <p align="center">
   <sub>Native tmux projection, terminal scrollback, and smooth native Neovim
-  scrolling. Click for the 17-second MP4.</sub>
+  scrolling. Click for the 19-second MP4.</sub>
 </p>
 
 ## Why Satin
@@ -84,13 +84,13 @@ by Satin itself, so there is no separate plugin to install.
 <p align="center">
   <a href="assets/satin-artifact-demo.mp4">
     <img src="assets/satin-artifact-demo.gif" width="880"
-      alt="An AI creating a Satin artifact and opening it in a native split">
+      alt="A truecolor Satin terminal opening an artifact with the current app icon">
   </a>
 </p>
 
 <p align="center">
   <sub>One prompt becomes a Markdown report with a table, highlighted code, and
-  a snapshotted image. Click for the 27-second MP4.</sub>
+  the current Satin icon. Click for the 16-second MP4.</sub>
 </p>
 
 ## Requirements

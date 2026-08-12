@@ -351,12 +351,31 @@ def verify_ui_surfaces(width: int, height: int, pixels, result_path: str) -> Non
             f"average={stats['average']} expected={expected} distance={distance:.1f}"
         )
 
+    float_cell = parse_named_cell(result, "float-cell", "float")
+    float_x, float_y, float_width, float_height = captured_cell_rect(
+        origin_x,
+        origin_y,
+        cell_width,
+        cell_height,
+        float_cell["row"],
+        float_cell["col"],
+    )
+    float_stats = cell_ink_stats(
+        pixels,
+        float_x,
+        float_y,
+        float_width,
+        float_height,
+    )
+    if not glyph_region_visible(float_stats, float_width, float_height, "float"):
+        raise SystemExit(f"ui surface overlapping float glyph pixels missing: {float_stats}")
+
     print(
         "native ui surfaces verified: "
         f"{width}x{height} origin={origin_x:.2f},{origin_y:.2f} "
         f"cell={cell_width:.2f}x{cell_height:.2f} "
         f"blend={blend['row']}:{blend['col']} "
-        f"average={stats['average']} expected={expected}"
+        f"average={stats['average']} expected={expected} float-ink={float_stats['ink']}"
     )
 
 
