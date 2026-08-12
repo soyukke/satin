@@ -10,8 +10,7 @@ final class TerminalMetalView: MTKView, CAMetalDisplayLinkDelegate, MTKViewDeleg
     private let commandQueue: MTLCommandQueue
     private let usesSmokeFrameFallback: Bool = {
         let scenario = ProcessInfo.processInfo.environment["SATIN_NATIVE_SMOKE_SCENARIO"]
-        return scenario?.hasPrefix("nvim-cursor-") == true
-            || scenario == "nvim-layout-redraw"
+        return nativeSmokeUsesDeterministicFrames(scenario)
     }()
     private var skiaRenderer: UnsafeMutableRawPointer?
     private var skiaFrameCount = 0
