@@ -167,22 +167,12 @@ jq -e --argjson pane "$rich_pane" '
 ' <<<"$state" >/dev/null
 
 "$cli" --socket "$socket" key --pane "$rich_pane" q >/dev/null
-for _ in {1..100}; do
-  state="$($cli --socket "$socket" --json list)"
-  restored_screen="$($cli --socket "$socket" read-screen --pane "$rich_pane")"
-  if ! grep -Fq "リッチレポート" <<<"$restored_screen" &&
-    jq -e --argjson pane "$rich_pane" --argjson count "$pane_count_before" '
-      (.result.panes | length) == $count
-        and any(.result.panes[]; .id == $pane)
-    ' <<<"$state" >/dev/null; then
-    break
-  fi
-  sleep 0.05
-done
-jq -e --argjson pane "$rich_pane" --argjson count "$pane_count_before" '
-  (.result.panes | length) == $count
-    and any(.result.panes[]; .id == $pane)
-' <<<"$state" >/dev/null
+sleep 0.1
+rich_screen="$($cli --socket "$socket" read-screen --pane "$rich_pane")"
+if ! grep -Fq "リッチレポート" <<<"$rich_screen"; then
+  echo "artifact smoke failed: q unexpectedly dismissed the GUI artifact" >&2
+  exit 1
+fi
 
 table_show="$($cli --socket "$socket" --json artifact show \
   "$table_id" --pane 1 --vertical --background)"
@@ -200,6 +190,13 @@ if ! grep -Fq "テスト結果" <<<"${table_screen:-}"; then
   exit 1
 fi
 "$cli" --socket "$socket" key --pane "$table_pane" q >/dev/null
+sleep 0.1
+table_screen="$($cli --socket "$socket" read-screen --pane "$table_pane")"
+if ! grep -Fq "テスト結果" <<<"$table_screen"; then
+  echo "artifact smoke failed: q unexpectedly dismissed the split artifact" >&2
+  exit 1
+fi
+"$cli" --socket "$socket" close-pane --pane "$table_pane" >/dev/null
 for _ in {1..100}; do
   state="$($cli --socket "$socket" --json list)"
   if jq -e --argjson pane "$table_pane" \
@@ -232,9 +229,10 @@ jq -e --argjson pane "$image_pane" '
   any(.result.panes[]; .id == $pane and .kittyImages == 1)
 ' <<<"$state" >/dev/null
 image_screen="$($cli --socket "$socket" read-screen --pane "$image_pane")"
-if ! grep -Fq "q close" <<<"$image_screen"; then
+if ! grep -Fq "Satin image preview" <<<"$image_screen" ||
+  grep -Fq "q close" <<<"$image_screen"; then
   printf '%s\n' "$image_screen" >&2
-  echo "artifact smoke failed: image preview footer did not render" >&2
+  echo "artifact smoke failed: image preview chrome is incorrect" >&2
   exit 1
 fi
 

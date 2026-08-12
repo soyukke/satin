@@ -24,6 +24,8 @@ const MIN_MAX_COLUMNS: u16 = 40;
 const MIN_MAX_ROWS: u16 = 12;
 const MAX_MAX_COLUMNS: u16 = 240;
 const MAX_MAX_ROWS: u16 = 120;
+const MAX_VIEW_COLUMNS: u16 = 512;
+const MAX_VIEW_ROWS: u16 = 240;
 const STORE_VERSION: u32 = 1;
 const MAX_TEXT_BYTES: u64 = 8 * 1024 * 1024;
 const MAX_IMAGE_BYTES: u64 = 16 * 1024 * 1024;
@@ -632,11 +634,11 @@ pub fn render_artifact(
     terminal_rows: Option<u16>,
 ) -> Result<RenderedArtifact> {
     let columns = terminal_columns
-        .unwrap_or(policy.max_columns)
-        .min(policy.max_columns);
+        .map(|columns| columns.min(MAX_VIEW_COLUMNS))
+        .unwrap_or(policy.max_columns);
     let rows = terminal_rows
-        .unwrap_or(policy.max_rows)
-        .min(policy.max_rows);
+        .map(|rows| rows.min(MAX_VIEW_ROWS))
+        .unwrap_or(policy.max_rows);
     if columns < 20 || rows < 8 {
         bail!("artifact pane requires at least 20 columns and 8 rows");
     }
@@ -645,7 +647,7 @@ pub fn render_artifact(
     } else {
         render_body(manifest, policy, columns, rows)?
     };
-    Ok(render_card(manifest, columns, rows, body))
+    Ok(render_document(manifest, columns, rows, body))
 }
 
 pub fn view_artifact(socket: &Path, id: &str, wait: bool) -> Result<()> {
@@ -663,7 +665,7 @@ pub fn view_artifact(socket: &Path, id: &str, wait: bool) -> Result<()> {
     stdout.flush()?;
     drop(stdout);
     if interactive {
-        wait_for_close()?;
+        wait_until_closed()?;
     }
     Ok(())
 }
@@ -695,8 +697,8 @@ fn render_body(
     columns: u16,
     rows: u16,
 ) -> Result<BodyRender> {
-    let inner_width = usize::from(columns.saturating_sub(2)).max(1);
-    let body_rows = usize::from(rows.saturating_sub(7)).max(1);
+    let inner_width = usize::from(columns).max(1);
+    let body_rows = usize::from(rows.saturating_sub(3)).max(1);
     match manifest.kind {
         ArtifactKind::Image => render_image_body(manifest),
         ArtifactKind::Table => render_table_body(manifest, inner_width, body_rows),
@@ -909,69 +911,42 @@ fn deferred_body(manifest: &ArtifactManifest) -> BodyRender {
     }
 }
 
-fn render_card(
+fn render_document(
     manifest: &ArtifactManifest,
     columns: u16,
     rows: u16,
     body: BodyRender,
 ) -> RenderedArtifact {
     if body.lines.is_empty() && body.images.len() == 1 {
-        return render_image_card(manifest, columns, rows, &body, &body.images[0].bytes);
+        return render_image_document(manifest, columns, rows, &body, &body.images[0].bytes);
     }
     let width = usize::from(columns);
-    let inner = width.saturating_sub(2);
-    let body_rows = usize::from(rows.saturating_sub(7)).max(1);
+    let body_rows = usize::from(rows.saturating_sub(3)).max(1);
     let mut ansi = String::new();
     let mut plain = Vec::new();
-    push_card_line(
-        &mut ansi,
-        &mut plain,
-        &format!("╭{}╮", "─".repeat(inner)),
-        LineStyle::Accent,
-    );
-    push_bordered_line(
+    push_document_line(
         &mut ansi,
         &mut plain,
         &manifest.title,
-        inner,
+        width,
         LineStyle::Heading,
     );
-    let meta = format!(
+    let mut meta = format!(
         "{} · v{} · {} · {}",
         manifest.kind.as_str(),
         manifest.version,
         manifest.language,
         format_bytes(manifest.source_bytes)
     );
-    push_bordered_line(&mut ansi, &mut plain, &meta, inner, LineStyle::Muted);
-    push_card_line(
-        &mut ansi,
-        &mut plain,
-        &format!("├{}┤", "─".repeat(inner)),
-        LineStyle::Muted,
-    );
-    let rendered_rows = push_body_rows(&mut ansi, &mut plain, &body, inner, body_rows);
-    for _ in rendered_rows..body_rows {
-        push_bordered_line(&mut ansi, &mut plain, "", inner, LineStyle::Normal);
+    if body.omitted_items > 0 {
+        meta.push_str(&format!(" · +{} omitted", body.omitted_items));
     }
-    push_card_line(
-        &mut ansi,
-        &mut plain,
-        &format!("├{}┤", "─".repeat(inner)),
-        LineStyle::Muted,
-    );
-    let footer = if body.omitted_items > 0 {
-        format!("q close · +{} omitted · snapshot saved", body.omitted_items)
-    } else {
-        "q close · snapshot saved".to_owned()
-    };
-    push_bordered_line(&mut ansi, &mut plain, &footer, inner, LineStyle::Muted);
-    push_card_line(
-        &mut ansi,
-        &mut plain,
-        &format!("╰{}╯", "─".repeat(inner)),
-        LineStyle::Accent,
-    );
+    push_document_line(&mut ansi, &mut plain, &meta, width, LineStyle::Muted);
+    push_document_line(&mut ansi, &mut plain, "", width, LineStyle::Normal);
+    let rendered_rows = push_body_rows(&mut ansi, &mut plain, &body, width, body_rows);
+    for _ in rendered_rows..body_rows {
+        push_document_line(&mut ansi, &mut plain, "", width, LineStyle::Normal);
+    }
     RenderedArtifact {
         ansi,
         plain_lines: plain,
@@ -995,21 +970,21 @@ fn push_body_rows(
             && used < limit
         {
             let rows = image.rows.min(limit - used);
-            push_bordered_image(ansi, plain, image, width, rows);
+            push_document_image(ansi, plain, image, width, rows);
             used += rows;
             image_index += 1;
         }
         if let Some(line) = body.lines.get(line_index)
             && used < limit
         {
-            push_bordered_styled_line(ansi, plain, line, width);
+            push_document_styled_line(ansi, plain, line, width);
             used += 1;
         }
     }
     used
 }
 
-fn push_bordered_image(
+fn push_document_image(
     ansi: &mut String,
     plain: &mut Vec<String>,
     image: &BodyImage,
@@ -1020,29 +995,23 @@ fn push_bordered_image(
         return;
     }
     let diagnostic = format!("[image: {}]", image.alt);
-    plain.push(format!(
-        "│{}│",
-        pad_display(&truncate_display(&diagnostic, width), width)
-    ));
-    ansi.push_str(style_escape(LineStyle::Normal));
-    ansi.push('│');
-    ansi.push_str("\x1b[0m");
+    plain.push(pad_display(&truncate_display(&diagnostic, width), width));
     let columns = image.columns.min(width).max(1);
     let left_padding = width.saturating_sub(columns) / 2;
     let right_padding = width.saturating_sub(columns + left_padding);
+    ansi.push_str(style_escape(LineStyle::Normal));
     ansi.push_str(&" ".repeat(left_padding));
     ansi.push_str("\x1b[0m");
     ansi.push_str(&kitty_image(&image.bytes, columns, rows));
     ansi.push_str(style_escape(LineStyle::Normal));
     ansi.push_str(&" ".repeat(columns + right_padding));
-    ansi.push('│');
     ansi.push_str("\x1b[0m\r\n");
     for _ in 1..rows {
-        push_bordered_line(ansi, plain, "", width, LineStyle::Normal);
+        push_document_line(ansi, plain, "", width, LineStyle::Normal);
     }
 }
 
-fn render_image_card(
+fn render_image_document(
     manifest: &ArtifactManifest,
     columns: u16,
     rows: u16,
@@ -1050,21 +1019,14 @@ fn render_image_card(
     image: &[u8],
 ) -> RenderedArtifact {
     let width = usize::from(columns);
-    let inner = width.saturating_sub(2);
-    let image_rows = usize::from(rows.saturating_sub(5)).max(1);
+    let image_rows = usize::from(rows.saturating_sub(2)).max(1);
     let mut ansi = String::new();
     let mut plain = Vec::new();
-    push_card_line(
-        &mut ansi,
-        &mut plain,
-        &format!("╭{}╮", "─".repeat(inner)),
-        LineStyle::Accent,
-    );
-    push_bordered_line(
+    push_document_line(
         &mut ansi,
         &mut plain,
         &manifest.title,
-        inner,
+        width,
         LineStyle::Heading,
     );
     let meta = format!(
@@ -1074,21 +1036,8 @@ fn render_image_card(
         manifest.language,
         format_bytes(manifest.source_bytes)
     );
-    push_bordered_line(&mut ansi, &mut plain, &meta, inner, LineStyle::Muted);
-    push_bordered_line(
-        &mut ansi,
-        &mut plain,
-        "q close · snapshot saved",
-        inner,
-        LineStyle::Muted,
-    );
-    push_card_line(
-        &mut ansi,
-        &mut plain,
-        &format!("├{}┤", "─".repeat(inner)),
-        LineStyle::Muted,
-    );
-    ansi.push_str(&kitty_image(image, inner, image_rows));
+    push_document_line(&mut ansi, &mut plain, &meta, width, LineStyle::Muted);
+    ansi.push_str(&kitty_image(image, width, image_rows));
     plain.extend((0..image_rows).map(|_| String::new()));
     RenderedArtifact {
         ansi,
@@ -1098,7 +1047,7 @@ fn render_image_card(
     }
 }
 
-fn push_bordered_line(
+fn push_document_line(
     ansi: &mut String,
     plain: &mut Vec<String>,
     text: &str,
@@ -1106,11 +1055,13 @@ fn push_bordered_line(
     style: LineStyle,
 ) {
     let fitted = pad_display(&truncate_display(text, width), width);
-    let line = format!("│{fitted}│");
-    push_card_line(ansi, plain, &line, style);
+    plain.push(fitted.clone());
+    ansi.push_str(style_escape(style));
+    ansi.push_str(&fitted);
+    ansi.push_str("\x1b[0m\r\n");
 }
 
-fn push_bordered_styled_line(
+fn push_document_styled_line(
     ansi: &mut String,
     plain: &mut Vec<String>,
     line: &StyledLine,
@@ -1122,10 +1073,8 @@ fn push_bordered_styled_line(
         .map(|span| span.text.as_str())
         .collect::<String>();
     let padding = width.saturating_sub(UnicodeWidthStr::width(text.as_str()));
-    plain.push(format!("│{text}{}│", " ".repeat(padding)));
+    plain.push(format!("{text}{}", " ".repeat(padding)));
 
-    ansi.push_str(style_escape(line.style));
-    ansi.push('│');
     for span in spans {
         push_span_style(ansi, span.style);
         ansi.push_str(&span.text);
@@ -1133,14 +1082,6 @@ fn push_bordered_styled_line(
     ansi.push_str("\x1b[0m");
     ansi.push_str(style_escape(line.style));
     ansi.push_str(&" ".repeat(padding));
-    ansi.push('│');
-    ansi.push_str("\x1b[0m\r\n");
-}
-
-fn push_card_line(ansi: &mut String, plain: &mut Vec<String>, line: &str, style: LineStyle) {
-    plain.push(line.to_owned());
-    ansi.push_str(style_escape(style));
-    ansi.push_str(line);
     ansi.push_str("\x1b[0m\r\n");
 }
 
@@ -2359,14 +2300,13 @@ impl Drop for TerminalPresentation {
     }
 }
 
-fn wait_for_close() -> Result<()> {
-    let mut byte = [0u8; 1];
-    loop {
-        io::stdin().read_exact(&mut byte)?;
-        if matches!(byte[0], b'q' | b'Q' | b'\r' | b'\n' | 3 | 27) {
-            return Ok(());
-        }
+fn wait_until_closed() -> Result<()> {
+    let mut bytes = [0u8; 64];
+    while io::stdin().read(&mut bytes)? != 0 {
+        // GUI artifact panes own dismissal through their shared pane close
+        // action. Standalone viewers remain interruptible through Ctrl-C.
     }
+    Ok(())
 }
 
 fn effective_uid() -> u32 {
@@ -2512,6 +2452,49 @@ mod tests {
                 .plain_lines
                 .iter()
                 .all(|line| UnicodeWidthStr::width(line.as_str()) <= 40)
+        );
+    }
+
+    #[test]
+    fn viewer_uses_pane_dimensions_without_card_chrome() {
+        let directory = TestDirectory::new("pane-width");
+        let source = directory.0.join("wide.txt");
+        fs::write(&source, format!("{}\n", "x".repeat(100))).unwrap();
+        let policy = ArtifactPolicy::default();
+        let manifest = register_artifact(
+            &directory.socket(),
+            &policy,
+            RegisterArtifact {
+                id: None,
+                kind: ArtifactKind::Text,
+                title: "Wide artifact",
+                language: Some("en-US"),
+                source: &source,
+                owner_tab: None,
+                owner_pane: None,
+            },
+        )
+        .unwrap();
+
+        let rendered = render_artifact(&manifest, &policy, Some(120), Some(20)).unwrap();
+        let screen = rendered.plain_lines.join("\n");
+
+        assert_eq!(rendered.plain_lines.len(), 20);
+        assert!(
+            rendered
+                .plain_lines
+                .iter()
+                .all(|line| UnicodeWidthStr::width(line.as_str()) == 120)
+        );
+        assert!(screen.contains(&"x".repeat(100)));
+        assert!(!screen.contains("q close"));
+        assert!(!screen.contains('╭'));
+        assert!(!screen.contains('╰'));
+        assert!(
+            rendered
+                .plain_lines
+                .iter()
+                .all(|line| !line.starts_with('│') && !line.ends_with('│'))
         );
     }
 

@@ -329,4 +329,5 @@ struct NativeTerminalSpawnConfiguration: Encodable {
     let shell: String?
     let environment: [String: String]
     let startup_command: [String]
+    let direct_startup: Bool
 }

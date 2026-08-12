@@ -40,6 +40,13 @@ use crate::neovide_render::{
 use crate::tmux_control::{TmuxControl, TmuxControlEvent};
 use crate::wakeup::{WakeupReceiver, WakeupSender};
 
+mod spawn;
+
+use self::spawn::{
+    configure_shell_command, configure_terminal_environment, direct_startup_command,
+    startup_command_input,
+};
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TerminalGridSize {
     pub rows: u16,
@@ -162,6 +169,8 @@ pub struct TerminalSpawnConfig {
     pub environment: BTreeMap<String, String>,
     #[serde(default)]
     pub startup_command: Vec<String>,
+    #[serde(default)]
+    pub direct_startup: bool,
 }
 
 pub struct NativeTerminalRuntime {
@@ -892,9 +901,16 @@ impl RuntimePty {
         let pty_system = native_pty_system();
         let pair = pty_system.openpty(size.pty_size())?;
         let shell = configured_shell(config.shell.as_deref())?;
-        let startup_input = startup_command_input(&config.startup_command)?;
-        let mut cmd = CommandBuilder::new(&shell);
-        configure_shell_command(&mut cmd, config, &shell);
+        let (mut cmd, startup_input) = if config.direct_startup {
+            (direct_startup_command(&config.startup_command)?, None)
+        } else {
+            let mut cmd = CommandBuilder::new(&shell);
+            configure_shell_command(&mut cmd, config, &shell);
+            (cmd, startup_command_input(&config.startup_command)?)
+        };
+        if config.direct_startup {
+            configure_terminal_environment(&mut cmd, config, &shell);
+        }
 
         let child = pair.slave.spawn_command(cmd)?;
         let process_group_id = child.process_id().and_then(|pid| i32::try_from(pid).ok());
@@ -1016,103 +1032,6 @@ fn terminate_pty_process_tree(child: &mut dyn Child, process_group_id: Option<i3
 fn terminate_pty_process_tree(child: &mut dyn Child, _process_group_id: Option<i32>) {
     let _ = child.kill();
     let _ = child.wait();
-}
-
-fn configure_shell_command(cmd: &mut CommandBuilder, config: &TerminalSpawnConfig, shell: &str) {
-    cmd.arg("-l");
-    cmd.arg("-i");
-    if let Some(cwd) = config.cwd.clone().or_else(|| env::current_dir().ok()) {
-        cmd.cwd(&cwd);
-        cmd.env("PWD", cwd);
-    }
-    let locale = terminal_locale();
-    cmd.env_remove("LC_ALL");
-    // Launcher-side presentation preferences describe the parent process, not
-    // the new terminal. Shell startup files can still opt back into NO_COLOR.
-    cmd.env_remove("NO_COLOR");
-    cmd.env("LANG", &locale);
-    cmd.env("LC_CTYPE", &locale);
-    cmd.env("TERM", "xterm-256color");
-    cmd.env("COLORTERM", "truecolor");
-    cmd.env("TERM_PROGRAM", "satin");
-    cmd.env("TERM_PROGRAM_VERSION", env!("CARGO_PKG_VERSION"));
-    cmd.env("SHELL", shell);
-    cmd.env("SATIN_PROTO", "libghostty-vt");
-    cmd.env("NVTERM_PROTO", "libghostty-vt");
-    for (key, value) in &config.environment {
-        if allowed_terminal_environment_key(key) {
-            cmd.env(key, value);
-        }
-    }
-    cmd.env("SATIN_SHELL_EXECUTABLE", shell);
-    configure_zsh_integration(cmd, config, shell);
-}
-
-fn startup_command_input(arguments: &[String]) -> Result<Option<Vec<u8>>> {
-    const MAX_ARGUMENTS: usize = 256;
-    const MAX_INPUT_BYTES: usize = 64 * 1024;
-
-    if arguments.is_empty() {
-        return Ok(None);
-    }
-    if arguments.len() > MAX_ARGUMENTS
-        || arguments[0].is_empty()
-        || arguments
-            .iter()
-            .any(|argument| argument.chars().any(char::is_control))
-    {
-        bail!("invalid terminal startup command");
-    }
-    let mut input = arguments
-        .iter()
-        .map(|argument| shell_quote(argument))
-        .collect::<Vec<_>>()
-        .join(" ")
-        .into_bytes();
-    input.extend_from_slice(b"; exit $?\r");
-    if input.len() > MAX_INPUT_BYTES {
-        bail!("terminal startup command is too large");
-    }
-    Ok(Some(input))
-}
-
-fn shell_quote(value: &str) -> String {
-    let mut quoted = String::with_capacity(value.len().saturating_add(2));
-    quoted.push('\'');
-    for character in value.chars() {
-        if character == '\'' {
-            quoted.push_str("'\\''");
-        } else {
-            quoted.push(character);
-        }
-    }
-    quoted.push('\'');
-    quoted
-}
-
-fn configure_zsh_integration(cmd: &mut CommandBuilder, config: &TerminalSpawnConfig, shell: &str) {
-    if Path::new(shell).file_name().and_then(|name| name.to_str()) != Some("zsh") {
-        return;
-    }
-    let Some(integration) = config
-        .environment
-        .get("SATIN_ZSH_INTEGRATION_DIR")
-        .map(Path::new)
-        .filter(|path| path.is_absolute() && path.is_dir())
-    else {
-        return;
-    };
-    let original = env::var("ZDOTDIR")
-        .ok()
-        .filter(|value| !value.is_empty())
-        .or_else(|| env::var("HOME").ok())
-        .unwrap_or_else(|| "/tmp".to_owned());
-    cmd.env("SATIN_USER_ZDOTDIR", original);
-    cmd.env("ZDOTDIR", integration);
-}
-
-fn allowed_terminal_environment_key(key: &str) -> bool {
-    key.starts_with("SATIN_") || key.starts_with("NVTERM_") || key == "PATH"
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -2892,46 +2811,6 @@ mod tests {
 
         assert!(configured_shell(path.to_str()).is_err());
         std::fs::remove_file(path).unwrap();
-    }
-
-    #[test]
-    fn startup_command_is_argv_quoted_and_exits_the_shell() {
-        let input = startup_command_input(&[
-            "nvim".to_owned(),
-            "--".to_owned(),
-            "/tmp/file with spaces.txt".to_owned(),
-            "/tmp/it's-safe.txt".to_owned(),
-            "/tmp/$(touch nope);still-safe.txt".to_owned(),
-        ])
-        .unwrap()
-        .unwrap();
-        assert_eq!(
-            String::from_utf8(input).unwrap(),
-            concat!(
-                "'nvim' '--' '/tmp/file with spaces.txt' '/tmp/it'\\''s-safe.txt' ",
-                "'/tmp/$(touch nope);still-safe.txt'; exit $?\r"
-            )
-        );
-    }
-
-    #[test]
-    fn startup_command_rejects_invalid_or_oversized_argv() {
-        assert!(startup_command_input(&[]).unwrap().is_none());
-        assert!(startup_command_input(&[String::new()]).is_err());
-        assert!(startup_command_input(&["nvim\0bad".to_owned()]).is_err());
-        assert!(startup_command_input(&["nvim\nbad".to_owned()]).is_err());
-        assert!(startup_command_input(&vec!["x".to_owned(); 257]).is_err());
-        assert!(startup_command_input(&["x".repeat(64 * 1024)]).is_err());
-    }
-
-    #[test]
-    fn terminal_environment_allows_control_discovery_without_arbitrary_injection() {
-        assert!(allowed_terminal_environment_key("SATIN_SOCKET"));
-        assert!(allowed_terminal_environment_key("SATIN_CLI"));
-        assert!(allowed_terminal_environment_key("NVTERM_SOCKET"));
-        assert!(allowed_terminal_environment_key("PATH"));
-        assert!(!allowed_terminal_environment_key("HOME"));
-        assert!(!allowed_terminal_environment_key("DYLD_INSERT_LIBRARIES"));
     }
 
     #[test]

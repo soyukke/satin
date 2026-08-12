@@ -254,13 +254,15 @@ class RustTerminalPane: NativePane {
         cwd: String? = nil,
         shell: String? = nil,
         environment: [String: String] = [:],
-        startupCommand: [String] = []
+        startupCommand: [String] = [],
+        directStartup: Bool = false
     ) {
         let configuration = NativeTerminalSpawnConfiguration(
             cwd: cwd,
             shell: shell?.isEmpty == false ? shell : nil,
             environment: environment,
-            startup_command: startupCommand
+            startup_command: startupCommand,
+            direct_startup: directStartup
         )
         guard let data = try? JSONEncoder().encode(configuration),
             let json = String(data: data, encoding: .utf8)

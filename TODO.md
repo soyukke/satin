@@ -1,4 +1,3 @@
-- [ ] Artifact を pane 幅いっぱいに枠なしで表示し、terminal flash と `q close` をなくす。
 - [ ] Command +/-/0 を active pane 単位のズームに変更する。
 - [ ] Appearance の theme を現在の tab / pane に即時反映する。
 - [ ] 警告三角形と Claude Code TODO spinner の emoji/font fallback を修正する。

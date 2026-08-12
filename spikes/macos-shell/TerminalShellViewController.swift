@@ -354,6 +354,7 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
     var notificationsEnabled: Bool
     var pendingPaneWorkingDirectory: String?
     var pendingPaneStartupCommand: [String]?
+    var pendingPaneDirectStartup = false
     var pendingPaneMode: NativePaneMode?
     let initialFinderLaunch: NativeFinderEditorLaunch?
     var activePaneId: Int?
@@ -695,7 +696,8 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
                     "artifact",
                     "view",
                     artifact,
-                ]
+                ],
+                directStartup: true
             )
         else {
             return false

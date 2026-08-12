@@ -40,6 +40,8 @@ extension TerminalShellViewController {
         pendingPaneWorkingDirectory = nil
         let startupCommand = pendingPaneStartupCommand
         pendingPaneStartupCommand = nil
+        let directStartup = pendingPaneDirectStartup
+        pendingPaneDirectStartup = false
         let mode = paneStore.modes[paneId] ?? pendingPaneMode ?? defaultPaneMode
         pendingPaneMode = nil
         guard
@@ -48,7 +50,8 @@ extension TerminalShellViewController {
                 grid: paneGridSize(paneId),
                 cwd: cwd,
                 mode: mode,
-                startupCommand: startupCommand
+                startupCommand: startupCommand,
+                directStartup: directStartup
             )
         else {
             return nil
@@ -72,7 +75,8 @@ extension TerminalShellViewController {
         grid: (rows: Int, cols: Int, widthPixels: Int, heightPixels: Int),
         cwd: String,
         mode: NativePaneMode,
-        startupCommand: [String]? = nil
+        startupCommand: [String]? = nil,
+        directStartup: Bool = false
     ) -> NativePane? {
         switch mode {
         case .terminal:
@@ -81,7 +85,8 @@ extension TerminalShellViewController {
                 cwd: cwd,
                 shell: settings.shellPath,
                 environment: controlEnvironment(paneId: paneId),
-                startupCommand: startupCommand ?? []
+                startupCommand: startupCommand ?? [],
+                directStartup: directStartup
             )
         case .neovim:
             let environment = ProcessInfo.processInfo.environment
@@ -169,6 +174,7 @@ extension TerminalShellViewController {
 
     func writeToActivePane(_ data: Data) {
         guard let paneId = activePaneId,
+            paneStore.artifactSelectors[paneId] == nil,
             let pane = terminalPane(for: paneId)
         else {
             return
@@ -178,9 +184,13 @@ extension TerminalShellViewController {
     }
 
     func sendKeyToActivePane(_ event: NSEvent, released: Bool) -> Bool {
-        guard let paneId = activePaneId,
-            let pane = terminalPane(for: paneId) as? RustTerminalPane
-        else {
+        guard let paneId = activePaneId else {
+            return false
+        }
+        guard paneStore.artifactSelectors[paneId] == nil else {
+            return true
+        }
+        guard let pane = terminalPane(for: paneId) as? RustTerminalPane else {
             return false
         }
         let handled = pane.key(event, released: released)
@@ -194,6 +204,7 @@ extension TerminalShellViewController {
 
     func writeTextToActivePane(_ text: String) {
         guard let paneId = activePaneId,
+            paneStore.artifactSelectors[paneId] == nil,
             let pane = terminalPane(for: paneId)
         else {
             return

@@ -405,11 +405,13 @@ extension TerminalShellViewController {
             "view",
             artifact,
         ]
+        pendingPaneDirectStartup = true
         pendingPaneMode = .terminal
         let splitAxis = axis == "horizontal" ? ffiSplitHorizontal : ffiSplitVertical
         guard let newPane = core.splitActive(axis: splitAxis) else {
             pendingPaneWorkingDirectory = nil
             pendingPaneStartupCommand = nil
+            pendingPaneDirectStartup = false
             pendingPaneMode = nil
             return nil
         }
