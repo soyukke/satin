@@ -36,7 +36,11 @@ jobs:
             full=false
             while IFS= read -r path; do
               case "$path" in
-                README.md | docs/* | assets/satin-demo.* | assets/satin-artifact-demo.*)
+                .github/workflows/macos.yml)
+                  full=true
+                  break
+                  ;;
+                .github/* | README.md | docs/* | assets/satin-demo.* | assets/satin-artifact-demo.*)
                   ;;
                 *)
                   full=true
@@ -47,6 +51,21 @@ jobs:
           fi
           echo "full=$full" >>"$GITHUB_OUTPUT"
           echo "Full production gate: $full" >>"$GITHUB_STEP_SUMMARY"
+
+  static:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Install Nix
+        uses: DeterminateSystems/determinate-nix-action@61cbfe2efc2d4e7a8a6d56967c3c1058e846c858 # v3
+
+      - name: Verify formatting and repository policy
+        run: nix develop .#ci-static --command just ci-static
 
   production:
     needs: scope
@@ -63,13 +82,13 @@ jobs:
         uses: DeterminateSystems/determinate-nix-action@61cbfe2efc2d4e7a8a6d56967c3c1058e846c858 # v3
 
       - name: Verify Rust
-        run: nix develop --command just verify
+        run: nix develop .#ci-native --command just ci-rust
 
       - name: Build native artifacts once
-        run: nix develop --command just native-ci-build
+        run: nix develop .#ci-native --command just native-ci-build
 
       - name: Run native smoke
-        run: nix develop --command just native-ci-smoke
+        run: nix develop .#ci-native --command just native-ci-smoke
 
       - name: Upload release archive
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
@@ -84,6 +103,7 @@ jobs:
     if: always()
     needs:
       - scope
+      - static
       - production
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -92,9 +112,11 @@ jobs:
         env:
           FULL: ${{ needs.scope.outputs.full }}
           SCOPE_RESULT: ${{ needs.scope.result }}
+          STATIC_RESULT: ${{ needs.static.result }}
           PRODUCTION_RESULT: ${{ needs.production.result }}
         run: |
           test "$SCOPE_RESULT" = success
+          test "$STATIC_RESULT" = success
           if [[ "$FULL" == true ]]; then
             test "$PRODUCTION_RESULT" = success
           else

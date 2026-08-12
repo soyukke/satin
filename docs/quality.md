@@ -57,9 +57,10 @@ Every change must preserve all of the following.
 `just fmt-check` and `just swift-lint` are scoped formatting and Swift gates.
 `just lint` includes every supported formatter and linter, while `just verify`
 adds type checking, tests, and license validation. All four commands are
-non-mutating. `just precommit` adds staged secret scanning. `just quality` is
-the local publication gate and adds worktree secret scanning, dependency
-auditing, native build, updater self-test, and native smoke.
+non-mutating. `just ci-static` and `just ci-rust` expose the two CI subsets that
+`just verify` composes. `just precommit` adds staged secret scanning. `just
+quality` is the local publication gate and adds worktree secret scanning,
+dependency auditing, native build, updater self-test, and native smoke.
 
 Lint suppressions must be scoped to the smallest affected expression or rule
 site and include a reason. Repository-wide warning suppression is not allowed.
@@ -81,8 +82,9 @@ artificial file splitting, or abstractions without a clear owner and purpose.
 
 ### CI and supply chain
 
-- Pull requests run the same `just verify` gate used locally plus the native
-  build and smoke suite.
+- Pull requests run the same checks composed by local `just verify`. CI runs
+  the platform-independent `just ci-static` subset on Linux in parallel with
+  `just ci-rust`, the native build, and the smoke suite on macOS.
 - GitHub Actions are pinned to full commit SHAs and checked by zizmor.
 - Workflow permissions default to read-only; write permissions are scoped to
   the job that needs them.
