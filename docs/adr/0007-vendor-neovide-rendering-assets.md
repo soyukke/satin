@@ -102,13 +102,18 @@ blink animations remain testable under a locked compositor. Other smoke cases
 continue to exercise the display link. Remove this fallback when the smoke
 runner guarantees an active display, or replace it with an offscreen drawable
 path; it must not be enabled in the packaged application.
-Like Neovide's per-window surface draw, each visible retained window clears its
-entire grid rectangle to the default background before cached lines are drawn.
-This lets a resized foreground grid cover stale root-grid separators after a
-split such as Neo-tree closes, even when Neovim does not resend every blank
-foreground line. Standard eight-field `win_float_pos` events are placed from
-their anchor type, parent grid, and anchor coordinates; Neovim's optional
-composed screen coordinates take precedence when present.
+Like Neovide's per-window surface draw, each visible retained normal window
+clears its entire grid rectangle to the default background before cached lines
+are drawn. This lets a resized foreground grid cover stale root-grid separators
+after a split such as Neo-tree closes, even when Neovim does not resend every
+blank foreground line. Overlapping floating grids instead share a layer: Satin
+clears their combined rectangular footprint before drawing any member, then
+composites them in `zindex` / `compindex` order. Message grids remain isolated
+layers. This preserves Telescope results and prompt text when a later
+transparent border grid overlaps their content. Standard eight-field
+`win_float_pos` events are placed from their anchor type, parent grid, and
+anchor coordinates; Neovim's optional composed screen coordinates take
+precedence when present.
 
 The Rust Skia/Metal adapter also owns Neovim text shaping. It uses a
 Neovide-derived `swash` shaping path, groups cell text into grid-positioned
