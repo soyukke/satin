@@ -165,7 +165,7 @@ native-kitty-smoke:
 native-smoke:
     @if [[ -z "${IN_NIX_SHELL:-}" ]]; then exec nix develop --command just native-smoke; else just native-build && ./scripts/native-smoke; fi
 
-# Launch and visually verify the exact Release executable inside the application bundle.
+# Verify the exact Release executable inside the application bundle through its control socket.
 native-package-smoke:
     @./scripts/native-package-smoke
 

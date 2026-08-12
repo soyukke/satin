@@ -119,4 +119,6 @@ env -i PATH=/usr/bin:/bin "$nvim_launcher" --satin-launcher-version |
 
 env -u SATIN_FONT -u NVTERM_FONT \
   SATIN_NATIVE_EXECUTABLE="$executable" \
-  ./scripts/native-smoke
+  SATIN_CONTROL_EXECUTABLE="$control_executable" \
+  SATIN_CONTROL_SMOKE_SHELL=/bin/bash \
+  ./scripts/native-control-smoke
