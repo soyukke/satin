@@ -43,6 +43,10 @@ const SHAPE_CACHE_ENTRIES: usize = 10_000;
 const PREPARED_LINE_CACHE_ENTRIES: usize = 1_024;
 const FONT_SIZE_RATIO: f32 = 0.82;
 const FLOAT_EPSILON: f32 = 0.01;
+const MONOCHROME_SYMBOL_FAMILY: &str = "Menlo";
+const MONOCHROME_CLI_SYMBOLS: &[char] = &[
+    '\u{26a0}', '\u{2722}', '\u{2733}', '\u{2736}', '\u{273b}', '\u{273d}',
+];
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct TextGridGeometry {
@@ -466,6 +470,9 @@ impl CachingShaper {
         if let Some(font) = self.primary_font_for_cluster(&mut cluster, style) {
             return (cluster, font);
         }
+        if let Some(font) = self.preferred_symbol_font_for_cluster(&mut cluster, style) {
+            return (cluster, font);
+        }
         if let Some(font) = self.loaded_font_for_cluster(&mut cluster) {
             return (cluster, font);
         }
@@ -491,6 +498,22 @@ impl CachingShaper {
             }
         }
         best
+    }
+
+    fn preferred_symbol_font_for_cluster(
+        &mut self,
+        cluster: &mut CharCluster,
+        style: CoarseStyle,
+    ) -> Option<Rc<FontPair>> {
+        let character = cluster.chars().first()?.ch;
+        if !MONOCHROME_CLI_SYMBOLS.contains(&character) {
+            return None;
+        }
+        let font = self.font_loader.get_or_load(&FontKey::Family {
+            family: MONOCHROME_SYMBOL_FAMILY.to_owned(),
+            style,
+        })?;
+        (map_cluster(cluster, &font) == Status::Complete).then_some(font)
     }
 
     fn loaded_font_for_cluster(&mut self, cluster: &mut CharCluster) -> Option<Rc<FontPair>> {
@@ -914,5 +937,32 @@ mod tests {
                     .is_empty()
             );
         }
+    }
+
+    #[test]
+    fn cli_status_symbols_use_monochrome_system_fallback() {
+        fn mapped_family(shaper: &mut CachingShaper, text: &str) -> String {
+            let key = ShapeKey::new(vec![text.to_owned()], CoarseStyle::default());
+            let cluster = parse_clusters(&key)
+                .into_iter()
+                .next()
+                .expect("test text must produce a cluster");
+            shaper
+                .map_cluster_to_font(cluster, CoarseStyle::default())
+                .1
+                .skia_font
+                .typeface()
+                .family_name()
+        }
+
+        let mut shaper = CachingShaper::new();
+        assert_ne!(mapped_family(&mut shaper, "✅"), MONOCHROME_SYMBOL_FAMILY);
+        for character in MONOCHROME_CLI_SYMBOLS {
+            assert_eq!(
+                mapped_family(&mut shaper, &character.to_string()),
+                MONOCHROME_SYMBOL_FAMILY
+            );
+        }
+        assert_eq!(mapped_family(&mut shaper, "⚠️"), MONOCHROME_SYMBOL_FAMILY);
     }
 }
