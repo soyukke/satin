@@ -31,26 +31,18 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
-          full=true
           if [[ "$EVENT_NAME" == pull_request ]]; then
-            full=false
-            while IFS= read -r path; do
-              case "$path" in
-                .github/workflows/macos.yml)
-                  full=true
-                  break
-                  ;;
-                .github/* | README.md | docs/* | assets/satin-demo.* | assets/satin-artifact-demo.*)
-                  ;;
-                *)
-                  full=true
-                  break
-                  ;;
-              esac
-            done < <(git diff --name-only "$BASE_SHA" "$HEAD_SHA")
+            classification="$(./scripts/ci-change-scope "$BASE_SHA" "$HEAD_SHA")"
+          else
+            classification=$'full=true\nreason=manual-dispatch'
           fi
-          echo "full=$full" >>"$GITHUB_OUTPUT"
-          echo "Full production gate: $full" >>"$GITHUB_STEP_SUMMARY"
+          full="$(awk -F= '$1 == "full" { print $2 }' <<<"$classification")"
+          reason="$(awk -F= '$1 == "reason" { print $2 }' <<<"$classification")"
+          [[ "$full" == true || "$full" == false ]]
+          test -n "$reason"
+          printf '%s\n' "$classification" >>"$GITHUB_OUTPUT"
+          printf 'Full production gate: %s (%s)\n' "$full" "$reason" \
+            >>"$GITHUB_STEP_SUMMARY"
 
   static:
     runs-on: ubuntu-latest

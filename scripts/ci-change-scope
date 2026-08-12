@@ -1,0 +1,122 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if (($# != 2)); then
+  echo "usage: $0 <base-commit> <head-commit>" >&2
+  exit 64
+fi
+
+base_ref="$1"
+head_ref="$2"
+git rev-parse --verify "${base_ref}^{commit}" >/dev/null
+git rev-parse --verify "${head_ref}^{commit}" >/dev/null
+
+changed_paths=()
+while IFS= read -r path; do
+  changed_paths+=("$path")
+done < <(git diff --name-only --diff-filter=ACDMRTUXB "$base_ref" "$head_ref")
+
+manifest_version() {
+  git show "$1:Cargo.toml" | awk '
+    $0 == "[package]" { in_package = 1; next }
+    in_package && /^\[/ { in_package = 0 }
+    in_package && /^version = "/ {
+      value = $0
+      sub(/^version = "/, "", value)
+      sub(/"$/, "", value)
+      print value
+      exit
+    }
+  '
+}
+
+lock_version() {
+  git show "$1:Cargo.lock" | awk '
+    $0 == "[[package]]" { in_package = 1; satin = 0; next }
+    in_package && $0 == "name = \"satin\"" { satin = 1; next }
+    satin && /^version = "/ {
+      value = $0
+      sub(/^version = "/, "", value)
+      sub(/"$/, "", value)
+      print value
+      exit
+    }
+  '
+}
+
+normalize_manifest() {
+  git show "$1:Cargo.toml" | awk '
+    $0 == "[package]" { in_package = 1 }
+    in_package && /^\[/ && $0 != "[package]" { in_package = 0 }
+    in_package && /^version = "/ {
+      print "version = \"__SATIN_VERSION__\""
+      seen += 1
+      next
+    }
+    { print }
+    END { if (seen != 1) exit 1 }
+  '
+}
+
+normalize_lock() {
+  git show "$1:Cargo.lock" | awk '
+    $0 == "[[package]]" { in_package = 1; satin = 0 }
+    in_package && $0 == "name = \"satin\"" { satin = 1 }
+    satin && /^version = "/ {
+      print "version = \"__SATIN_VERSION__\""
+      satin = 0
+      seen += 1
+      next
+    }
+    { print }
+    END { if (seen != 1) exit 1 }
+  '
+}
+
+is_version_only_release_bump() {
+  ((${#changed_paths[@]} == 2)) || return 1
+  [[ " ${changed_paths[*]} " == *" Cargo.toml "* ]] || return 1
+  [[ " ${changed_paths[*]} " == *" Cargo.lock "* ]] || return 1
+
+  local base_manifest head_manifest base_lock head_lock
+  base_manifest="$(manifest_version "$base_ref")"
+  head_manifest="$(manifest_version "$head_ref")"
+  base_lock="$(lock_version "$base_ref")"
+  head_lock="$(lock_version "$head_ref")"
+  [[ "$base_manifest" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || return 1
+  [[ "$head_manifest" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || return 1
+  [[ "$base_manifest" == "$base_lock" ]] || return 1
+  [[ "$head_manifest" == "$head_lock" ]] || return 1
+  [[ "$base_manifest" != "$head_manifest" ]] || return 1
+  diff -q \
+    <(normalize_manifest "$base_ref") \
+    <(normalize_manifest "$head_ref") >/dev/null || return 1
+  diff -q \
+    <(normalize_lock "$base_ref") \
+    <(normalize_lock "$head_ref") >/dev/null || return 1
+}
+
+if is_version_only_release_bump; then
+  printf 'full=false\nreason=version-only-release-bump\n'
+  exit 0
+fi
+
+full=false
+reason=non-runtime-only
+for path in "${changed_paths[@]}"; do
+  case "$path" in
+    .github/workflows/macos.yml | scripts/ci-change-scope)
+      full=true
+      reason=production-gate-definition
+      break
+      ;;
+    .github/* | README.md | docs/* | assets/satin-demo.* | assets/satin-artifact-demo.*) ;;
+    *)
+      full=true
+      reason=runtime-or-build-change
+      break
+      ;;
+  esac
+done
+
+printf 'full=%s\nreason=%s\n' "$full" "$reason"

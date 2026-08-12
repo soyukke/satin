@@ -453,6 +453,10 @@ lint:
 ci-static:
     @if [[ -z "${IN_NIX_SHELL:-}" ]]; then exec nix develop .#ci-static --command just ci-static; else just fmt-check && just repo-lint && just ops-lint; fi
 
+# Classify whether a commit range requires the full macOS production gate.
+ci-scope base head:
+    @./scripts/ci-change-scope "{{base}}" "{{head}}"
+
 # Run Rust compile, lint, test, and license checks used by native CI.
 ci-rust:
     @if [[ -z "${IN_NIX_SHELL:-}" ]]; then exec nix develop .#ci-native --command just ci-rust; else cargo check && cargo clippy --all-targets --all-features -- -D warnings && cargo test && just license-audit; fi

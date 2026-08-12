@@ -97,7 +97,9 @@ targets Apple Silicon only.
   verifies Rust, builds the native host and release archive, and exercises
   native rendering, resize, session, and lifecycle smoke paths. Documentation,
   demo, and workflow-only changes outside the macOS gate skip the native lane;
-  the aggregate gate still requires the Linux checks. `just native-soak`
+  a release bump also skips it only when normalized `Cargo.toml` and
+  `Cargo.lock` content proves that the root package version is the sole change.
+  The aggregate gate still requires the Linux checks. `just native-soak`
   repeats high-risk native lifecycle scenarios locally.
 
 ## Consequences
