@@ -1,6 +1,7 @@
 # 0007: Vendor Neovide rendering assets for native Neovim quality
 
 Date: 2026-07-02
+Amended: 2026-08-13
 
 Status: Accepted
 
@@ -120,8 +121,13 @@ Neovide-derived `swash` shaping path, groups cell text into grid-positioned
 clusters, caches Skia `TextBlob`s with `lru`, uses `$SATIN_FONT` as the
 primary font, falls back through Skia `FontMgr::match_family_style_character`,
 and vendors Neovide's default Nerd Font and LastResort font assets for stable
-fallback behavior. Cell snapshots carry bold, italic, underline, and
-strikethrough style from Neovim highlights and terminal SGR state so renderer
+fallback behavior. Before generic system fallback, the warning sign and the
+five dingbats used by Claude Code's terminal spinner prefer Menlo's monochrome
+glyphs. This narrow override prevents one animation frame from resolving to
+Apple Color Emoji while preserving configured-font precedence and normal emoji
+fallback for every other character. Cell snapshots carry bold, italic,
+underline, and strikethrough style from Neovim highlights and terminal SGR
+state so renderer
 text runs can choose coarse font style and draw grid-aligned decorations without
 inventing a second style channel. Neovim highlight `blend` is retained on cells
 and the Skia/Metal adapter applies it as alpha-composited background paint for
