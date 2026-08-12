@@ -661,13 +661,17 @@ pub fn view_artifact(socket: &Path, id: &str, wait: bool) -> Result<()> {
     if interactive {
         stdout.write_all(b"\x1b[2J\x1b[H\x1b[?25l")?;
     }
-    stdout.write_all(rendered.ansi.as_bytes())?;
+    stdout.write_all(viewer_terminal_output(&rendered).as_bytes())?;
     stdout.flush()?;
     drop(stdout);
     if interactive {
         wait_until_closed()?;
     }
     Ok(())
+}
+
+fn viewer_terminal_output(rendered: &RenderedArtifact) -> &str {
+    rendered.ansi.strip_suffix("\r\n").unwrap_or(&rendered.ansi)
 }
 
 fn preview_summary(
@@ -2313,6 +2317,10 @@ fn effective_uid() -> u32 {
     // SAFETY: `geteuid` has no preconditions.
     unsafe { libc::geteuid() }
 }
+
+#[cfg(test)]
+#[path = "artifact/viewer_tests.rs"]
+mod viewer_tests;
 
 #[cfg(test)]
 mod tests {

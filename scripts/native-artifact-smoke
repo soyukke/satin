@@ -172,7 +172,7 @@ jq -e --argjson pane "$rich_pane" '
 sleep 0.1
 rich_screen="$($cli --socket "$socket" read-screen --pane "$rich_pane")"
 if ! grep -Fq "リッチレポート" <<<"$rich_screen"; then
-  echo "artifact smoke failed: q unexpectedly dismissed the GUI artifact" >&2
+  echo "artifact smoke failed: GUI artifact changed after ignored q input" >&2
   exit 1
 fi
 
@@ -195,7 +195,7 @@ fi
 sleep 0.1
 table_screen="$($cli --socket "$socket" read-screen --pane "$table_pane")"
 if ! grep -Fq "テスト結果" <<<"$table_screen"; then
-  echo "artifact smoke failed: q unexpectedly dismissed the split artifact" >&2
+  echo "artifact smoke failed: split artifact changed after ignored q input" >&2
   exit 1
 fi
 "$cli" --socket "$socket" close-pane --pane "$table_pane" >/dev/null
