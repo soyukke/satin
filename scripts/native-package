@@ -88,6 +88,7 @@ env -u SDKROOT -u DEVELOPER_DIR \
   spikes/macos-shell/PerformanceRecorder.swift \
   spikes/macos-shell/SatinFFI.swift \
   spikes/macos-shell/SettingsWindow.swift \
+  spikes/macos-shell/TabControls.swift \
   spikes/macos-shell/TerminalMetalView.swift \
   spikes/macos-shell/SatinApplication.swift \
   spikes/macos-shell/UpdateInstaller.swift \
