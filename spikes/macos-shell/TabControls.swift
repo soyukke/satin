@@ -24,6 +24,138 @@ final class RenameTextField: NSTextField, NSTextFieldDelegate {
     }
 }
 
+final class NativeRenamePanel {
+    private enum Metrics {
+        static let width: CGFloat = 360
+        static let contentHeight: CGFloat = 94
+        static let horizontalInset: CGFloat = 20
+        static let verticalInset: CGFloat = 16
+        static let buttonWidth: CGFloat = 88
+    }
+
+    private let panel: NSPanel
+    private let input = RenameTextField(frame: .zero)
+
+    init(title: String, value: String) {
+        panel = NSPanel(
+            contentRect: NSRect(
+                x: 0,
+                y: 0,
+                width: Metrics.width,
+                height: Metrics.contentHeight
+            ),
+            styleMask: [.titled],
+            backing: .buffered,
+            defer: false
+        )
+        panel.title = title
+        panel.isReleasedWhenClosed = false
+        panel.standardWindowButton(.closeButton)?.isHidden = true
+        panel.standardWindowButton(.miniaturizeButton)?.isHidden = true
+        panel.standardWindowButton(.zoomButton)?.isHidden = true
+
+        let content = NSView(frame: .zero)
+        panel.contentView = content
+
+        input.translatesAutoresizingMaskIntoConstraints = false
+        input.stringValue = value
+        input.isEditable = true
+        input.isSelectable = true
+        input.setAccessibilityLabel("Tab name")
+
+        let cancelButton = NSButton(title: "Cancel", target: self, action: #selector(cancel))
+        cancelButton.translatesAutoresizingMaskIntoConstraints = false
+        cancelButton.keyEquivalent = "\u{1b}"
+
+        let renameButton = NSButton(title: "Rename", target: self, action: #selector(accept))
+        renameButton.translatesAutoresizingMaskIntoConstraints = false
+        renameButton.keyEquivalent = "\r"
+        renameButton.bezelStyle = .rounded
+
+        content.addSubview(input)
+        content.addSubview(cancelButton)
+        content.addSubview(renameButton)
+        NSLayoutConstraint.activate([
+            input.topAnchor.constraint(equalTo: content.topAnchor, constant: Metrics.verticalInset),
+            input.leadingAnchor.constraint(
+                equalTo: content.leadingAnchor,
+                constant: Metrics.horizontalInset
+            ),
+            input.trailingAnchor.constraint(
+                equalTo: content.trailingAnchor,
+                constant: -Metrics.horizontalInset
+            ),
+            cancelButton.topAnchor.constraint(equalTo: input.bottomAnchor, constant: 14),
+            cancelButton.trailingAnchor.constraint(
+                equalTo: renameButton.leadingAnchor, constant: -8),
+            cancelButton.widthAnchor.constraint(equalToConstant: Metrics.buttonWidth),
+            renameButton.trailingAnchor.constraint(
+                equalTo: content.trailingAnchor,
+                constant: -Metrics.horizontalInset
+            ),
+            renameButton.widthAnchor.constraint(equalToConstant: Metrics.buttonWidth),
+            renameButton.bottomAnchor.constraint(
+                equalTo: content.bottomAnchor,
+                constant: -Metrics.verticalInset
+            ),
+        ])
+        panel.defaultButtonCell = renameButton.cell as? NSButtonCell
+        panel.initialFirstResponder = input
+        input.onCommit = { [weak renameButton] in
+            renameButton?.performClick(nil)
+        }
+    }
+
+    func runModal(relativeTo parent: NSWindow?) -> String? {
+        if let parent {
+            panel.setFrameOrigin(
+                NSPoint(
+                    x: parent.frame.midX - panel.frame.width / 2,
+                    y: parent.frame.midY - panel.frame.height / 2
+                )
+            )
+        } else {
+            panel.center()
+        }
+        panel.makeKeyAndOrderFront(nil)
+        panel.makeFirstResponder(input)
+        input.selectText(nil)
+        let response = NSApp.runModal(for: panel)
+        panel.orderOut(nil)
+        parent?.makeKey()
+        guard response == .OK else {
+            return nil
+        }
+        return input.stringValue
+    }
+
+    func usesCompactIconFreeLayoutForSmoke() -> Bool {
+        panel.contentLayoutRect.height <= 100
+            && panel.frame.width <= 400
+            && !containsImageView(panel.contentView)
+    }
+
+    static func smokeLayoutReady() -> Bool {
+        NativeRenamePanel(title: "Rename Tab", value: "smoke")
+            .usesCompactIconFreeLayoutForSmoke()
+    }
+
+    @objc private func accept() {
+        NSApp.stopModal(withCode: .OK)
+    }
+
+    @objc private func cancel() {
+        NSApp.stopModal(withCode: .cancel)
+    }
+
+    private func containsImageView(_ view: NSView?) -> Bool {
+        guard let view else {
+            return false
+        }
+        return view is NSImageView || view.subviews.contains(where: containsImageView)
+    }
+}
+
 final class NativeTabControl: NSSegmentedControl {
     private enum Metrics {
         static let closeHitWidth: CGFloat = 26
@@ -32,8 +164,13 @@ final class NativeTabControl: NSSegmentedControl {
     }
 
     var onRenameRequested: ((Int) -> Void)?
-    var onCloseRequested: ((Int) -> Void)?
-    var onContextMenuRequested: ((Int, NSEvent, NSView) -> Void)?
+    var onCloseRequested: ((Int) -> Bool)?
+    var contextMenuProvider: ((Int) -> NSMenu?)?
+    private var contextEventMonitor: Any?
+
+    deinit {
+        removeContextEventMonitor()
+    }
 
     override func mouseDown(with event: NSEvent) {
         let point = convert(event.locationInWindow, from: nil)
@@ -55,11 +192,87 @@ final class NativeTabControl: NSSegmentedControl {
         handleCompletedClick(clickCount: 2, segment: segment)
     }
 
-    func simulateCloseForSmoke(segment: Int) {
+    @discardableResult
+    func simulateCloseForSmoke(segment: Int) -> Bool {
         guard let target = closeButtonRect(forSegment: segment) else {
+            return false
+        }
+        return handleClose(at: NSPoint(x: target.midX, y: target.midY))
+    }
+
+    func verifyAsyncCloseForSmoke(
+        open: () -> Bool,
+        modelState: @escaping () -> (count: Int, active: Int)?,
+        completion: @escaping (String?) -> Void
+    ) {
+        guard open() else {
+            completion("tab-open=no")
             return
         }
-        _ = handleClose(at: NSPoint(x: target.midX, y: target.midY))
+        waitForOpenForSmoke(
+            modelState: modelState,
+            retries: 30,
+            completion: completion
+        )
+    }
+
+    private func waitForOpenForSmoke(
+        modelState: @escaping () -> (count: Int, active: Int)?,
+        retries: Int,
+        completion: @escaping (String?) -> Void
+    ) {
+        guard let state = modelState(), state.count == 2, segmentCount == 2 else {
+            guard retries > 0 else {
+                completion("tab-open-timeout")
+                return
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+                self?.waitForOpenForSmoke(
+                    modelState: modelState,
+                    retries: retries - 1,
+                    completion: completion
+                )
+            }
+            return
+        }
+        let widthBeforeClose = frame.width
+        guard simulateCloseForSmoke(segment: state.active) else {
+            completion("tab-close-request=no")
+            return
+        }
+        waitForCloseForSmoke(
+            modelState: modelState,
+            widthBeforeClose: widthBeforeClose,
+            retries: 30,
+            completion: completion
+        )
+    }
+
+    private func waitForCloseForSmoke(
+        modelState: @escaping () -> (count: Int, active: Int)?,
+        widthBeforeClose: CGFloat,
+        retries: Int,
+        completion: @escaping (String?) -> Void
+    ) {
+        if modelState()?.count == 1,
+            segmentCount == 1,
+            frame.width < widthBeforeClose
+        {
+            completion(nil)
+            return
+        }
+        guard retries > 0 else {
+            completion("tab-close-redraw=no")
+            return
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+            self?.waitForCloseForSmoke(
+                modelState: modelState,
+                widthBeforeClose: widthBeforeClose,
+                retries: retries - 1,
+                completion: completion
+            )
+        }
     }
 
     func closeButtonHitTargetForSmoke(segment: Int) -> NSRect? {
@@ -79,18 +292,79 @@ final class NativeTabControl: NSSegmentedControl {
         else {
             return false
         }
-        onCloseRequested?(segment)
-        return true
+        return onCloseRequested?(segment) ?? false
     }
 
-    override func rightMouseDown(with event: NSEvent) {
+    override func menu(for event: NSEvent) -> NSMenu? {
         let point = convert(event.locationInWindow, from: nil)
         guard let segment = segmentIndex(at: point) else {
-            super.rightMouseDown(with: event)
+            return super.menu(for: event)
+        }
+        return contextMenuProvider?(segment)
+    }
+
+    func contextMenuForSmoke(segment: Int) -> NSMenu? {
+        guard segment >= 0, segment < segmentCount else {
+            return nil
+        }
+        return contextMenuProvider?(segment)
+    }
+
+    func contextMenuMonitorReadyForSmoke() -> Bool {
+        contextEventMonitor != nil
+    }
+
+    func contextMenuReadyForSmoke(segment: Int) -> Bool {
+        let menu = contextMenuForSmoke(segment: segment)
+        return contextMenuMonitorReadyForSmoke()
+            && menu?.items.map(\.title) == ["Rename Tab…", "", "Close Tab"]
+            && menu?.items.first?.representedObject as? Int == segment
+            && menu?.items.last?.representedObject as? Int == segment
+    }
+
+    func finishSnapshotSync(previousFrame: NSRect) {
+        sizeToFit()
+        invalidateIntrinsicContentSize()
+        needsLayout = true
+        needsDisplay = true
+        if let container = superview {
+            container.needsLayout = true
+            container.setNeedsDisplay(previousFrame.union(frame))
+        }
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        removeContextEventMonitor()
+        guard window != nil else {
             return
         }
-        selectedSegment = segment
-        onContextMenuRequested?(segment, event, self)
+        contextEventMonitor = NSEvent.addLocalMonitorForEvents(matching: .rightMouseDown) {
+            [weak self] event in
+            self?.handleContextEvent(event) ?? event
+        }
+    }
+
+    private func handleContextEvent(_ event: NSEvent) -> NSEvent? {
+        guard event.window === window else {
+            return event
+        }
+        let point = convert(event.locationInWindow, from: nil)
+        guard let segment = segmentIndex(at: point),
+            let menu = contextMenuProvider?(segment)
+        else {
+            return event
+        }
+        NSMenu.popUpContextMenu(menu, with: event, for: self)
+        return nil
+    }
+
+    private func removeContextEventMonitor() {
+        guard let contextEventMonitor else {
+            return
+        }
+        NSEvent.removeMonitor(contextEventMonitor)
+        self.contextEventMonitor = nil
     }
 
     private func drawCloseGlyph(forSegment segment: Int) {
