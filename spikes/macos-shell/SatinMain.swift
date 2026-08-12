@@ -36,6 +36,7 @@ struct SatinApplication {
                 || !runNativeApplicationDefaultsSelfTests()
                 || !NativeTmuxExecutableResolver.runSelfTests()
                 || !NativeFinderEditorLaunch.runSelfTests()
+                || !RustCore.runSelfTests()
             {
                 failDiagnostic("update self-test failed")
             }

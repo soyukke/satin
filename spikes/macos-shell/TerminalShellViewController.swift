@@ -754,9 +754,7 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
             resizeTerminalPanesToGrid()
         }
         if previous.defaultTheme != settings.defaultTheme {
-            core.setDefaultTheme(settings.defaultTheme)
-            if let activeTab = core.snapshot()?.active_tab {
-                core.setTheme(settings.defaultTheme, tab: activeTab)
+            if core.applyThemePreference(settings.defaultTheme) {
                 syncFromCore()
             }
         }
