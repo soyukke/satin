@@ -19,6 +19,9 @@
 - 大きな設計変更は実装とあわせて ADR を更新する。
 - Rust は zero-debt を守る。clippy warning、fmt 差分、幅超過、長すぎる関数を放置しない。
 - 既存の未関係な dirty change は戻さない。
+- self-host 中は screen / system-audio 権限を使う visual smoke や
+  `native-window-capture` を実行しない。pixel capture が必要な場合は、ユーザーの明示確認後に
+  Satin 外から `just native-visual-smoke` を実行する。
 
 ## Renderer 方針
 

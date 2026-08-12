@@ -2,6 +2,5 @@
 - [ ] Command +/-/0 を active pane 単位のズームに変更する。
 - [ ] Appearance の theme を現在の tab / pane に即時反映する。
 - [ ] 警告三角形と Claude Code TODO spinner の emoji/font fallback を修正する。
-- [ ] visual smoke の画面・システムオーディオ権限を繰り返し要求しないようにする。
 - [ ] nvim scroll / jump / tmux reattach smoke に deterministic frame fallback を適用する。
 - [ ] 各修正を分割 PR で merge し、全体確認後に release を作成する。

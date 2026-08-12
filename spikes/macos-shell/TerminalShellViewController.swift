@@ -607,15 +607,9 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
                     self.smokeState.artifactPopoverResultPath = nil
                     DispatchQueue.main.async {
                         let status = artifacts.isEmpty ? "failed" : "ok"
-                        let window = content.view.window?.windowNumber ?? 0
-                        let captured = self.captureArtifactPopover(
-                            content.view,
-                            path: "\(resultPath).png"
-                        )
                         self.writeArtifactPopoverSmokeResult(
                             resultPath,
-                            result: "\(status) artifact-popover items=\(artifacts.count) "
-                                + "window=\(window) capture=\(captured ? "ok" : "failed")\n"
+                            result: "\(status) artifact-popover items=\(artifacts.count)\n"
                         )
                         if !artifacts.isEmpty {
                             self.waitForArtifactPopoverSmokeOpen(content, attempts: 300)
