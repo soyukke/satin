@@ -20,6 +20,13 @@
         system:
         let
           pkgs = import nixpkgs { inherit system; };
+          font = pkgs.nerd-fonts.caskaydia-cove;
+          nativeShellHook = ''
+            export SATIN_FONT="${font}/share/fonts/truetype/NerdFonts/CaskaydiaCove/CaskaydiaCoveNerdFontMono-Regular.ttf"
+            echo "zig: $(zig version)"
+            echo "rustc: $(rustc --version)"
+            echo "font: $SATIN_FONT"
+          '';
         in
         {
           default = pkgs.mkShell {
@@ -35,7 +42,7 @@
               pkgs.just
               pkgs.jq
               pkgs.markdownlint-cli2
-              pkgs.nerd-fonts.caskaydia-cove
+              font
               pkgs.neovim
               pkgs.nixfmt
               pkgs.python3
@@ -51,12 +58,48 @@
               pkgs.zig_0_15
             ];
 
-            shellHook = ''
-              export SATIN_FONT="${pkgs.nerd-fonts.caskaydia-cove}/share/fonts/truetype/NerdFonts/CaskaydiaCove/CaskaydiaCoveNerdFontMono-Regular.ttf"
-              echo "zig: $(zig version)"
-              echo "rustc: $(rustc --version)"
-              echo "font: $SATIN_FONT"
-            '';
+            shellHook = nativeShellHook;
+          };
+
+          # Keep macOS CI off the much larger formatting and policy-tool closure.
+          ci-native = pkgs.mkShell {
+            packages = [
+              pkgs.cargo
+              pkgs.cargo-about
+              pkgs.clippy
+              pkgs.git
+              pkgs.just
+              pkgs.jq
+              font
+              pkgs.neovim
+              pkgs.python3
+              pkgs.ripgrep
+              pkgs.rustc
+              pkgs.zig_0_15
+            ];
+
+            shellHook = nativeShellHook;
+          };
+
+          # These checks are platform-independent and run in parallel on Linux.
+          ci-static = pkgs.mkShellNoCC {
+            packages = [
+              pkgs.actionlint
+              pkgs.cargo
+              pkgs.deadnix
+              pkgs.git
+              pkgs.just
+              pkgs.markdownlint-cli2
+              pkgs.nixfmt
+              pkgs.ripgrep
+              pkgs.rustfmt
+              pkgs.shellcheck
+              pkgs.shfmt
+              pkgs.swift-format
+              pkgs.typos
+              pkgs.zizmor
+              pkgs.zsh
+            ];
           };
         }
       );
