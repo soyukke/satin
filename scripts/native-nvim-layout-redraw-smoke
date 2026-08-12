@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+app="spikes/macos-shell/.build/SatinApplication"
+result_file="spikes/macos-shell/.build/native-nvim-layout-redraw.result"
+log_file="/tmp/satin-nvim-layout-redraw.log"
+
+rm -f -- "$result_file" "$log_file"
+SATIN_NATIVE_PANE=nvim \
+  SATIN_NATIVE_SMOKE_CLEAN_NVIM=1 \
+  SATIN_NATIVE_SMOKE_SCENARIO=nvim-layout-redraw \
+  SATIN_NATIVE_SMOKE_RESULT="$result_file" \
+  "$app" >"$log_file" 2>&1
+
+if [[ ! -s "$result_file" ]]; then
+  echo "native Neovim layout redraw smoke failed before result was written" >&2
+  sed -n '1,160p' "$log_file" >&2 || true
+  exit 1
+fi
+
+result="$(cat "$result_file")"
+printf '%s\n' "$result"
+[[ "$result" == ok\ nvim-layout-redraw* ]]
+[[ "$(grep -o 'pending=no' <<<"$result" | wc -l | tr -d '[:space:]')" == "2" ]]

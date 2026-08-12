@@ -108,6 +108,9 @@ manifest marks the result as a development artifact.
 `just native-soak` cover resize propagation, session compatibility, and
 repeated lifecycle/handoff scenarios.
 
+`just nvim-layout-redraw-smoke` covers Neovim redraw delivery after closing the
+active sibling pane and after resizing the host window.
+
 `just native-tmux-smoke` covers native projection, history, paste, zoom, Satin
 control actions, alternate-screen reattach, explicit detach, and missing-session
 recovery.
