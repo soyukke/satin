@@ -54,15 +54,15 @@ def main() -> int:
         verify_nvim_image(width, height, pixels, sys.argv[3])
         return 0
 
-    blue = 0
+    focus_blue = 0
     dark_surface = 0
     terminal_text = 0
 
     for y in range(height):
         for x in range(width):
             r, g, b, a = pixels[y][x]
-            if a > 200 and r < 40 and 90 < g < 180 and b > 180:
-                blue += 1
+            if a > 200 and b > 100 and g > 45 and b - r > 75 and b - g > 45:
+                focus_blue += 1
             if y > height // 4 and a > 200 and r < 35 and g < 40 and b < 50:
                 dark_surface += 1
             if y > height // 8 and a > 200 and r > 170 and g > 170 and b > 160:
@@ -70,8 +70,10 @@ def main() -> int:
 
     if width < 800 or height < 500:
         raise SystemExit(f"native smoke image is too small: {width}x{height}")
-    if mode == "terminal" and blue < 500:
-        raise SystemExit(f"native smoke tab pixels missing: blue={blue}")
+    if mode == "terminal" and focus_blue < 150:
+        raise SystemExit(
+            f"native smoke active pane outline missing: focus_blue={focus_blue}"
+        )
     if dark_surface < 100_000:
         raise SystemExit(f"native smoke terminal surface missing: dark={dark_surface}")
     # The native toolbar no longer contributes custom white tab labels to this
@@ -84,7 +86,7 @@ def main() -> int:
         verify_native_smoke_result(sys.argv[3])
 
     print(
-        f"native smoke verified: mode={mode} {width}x{height} blue={blue} "
+        f"native smoke verified: mode={mode} {width}x{height} focus_blue={focus_blue} "
         f"dark_surface={dark_surface} terminal_text={terminal_text}"
     )
     return 0
