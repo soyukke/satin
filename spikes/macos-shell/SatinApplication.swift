@@ -1589,6 +1589,12 @@ final class TerminalTextView: NSView, NSTextInputClient {
         }.map { $0.left + $0.width }
     }
 
+    func rendererRootGridSize() -> (cols: Int, rows: Int)? {
+        rendererModelSnapshot?.windows.first {
+            $0.grid_id == 1 && !$0.hidden && $0.width > 0 && $0.height > 0
+        }.map { ($0.width, $0.height) }
+    }
+
     func rendererModelOccupiedCellCount(column: Int) -> Int {
         guard let rendererModelSnapshot, column >= 0 else {
             return 0
@@ -2971,338 +2977,6 @@ func metalObjectPointer(_ object: AnyObject) -> UnsafeMutableRawPointer {
 protocol TerminalContextMenuProvider: AnyObject {
     func terminalContextMenu(tabIndex: Int?) -> NSMenu
 }
-
-final class TerminalMetalView: MTKView, CAMetalDisplayLinkDelegate, MTKViewDelegate {
-    weak var contextMenuProvider: TerminalContextMenuProvider?
-    var renderProvider: ((MTLTexture, UnsafeMutableRawPointer?) -> Bool)?
-
-    private let commandQueue: MTLCommandQueue
-    private let usesSmokeFrameFallback: Bool = {
-        let scenario = ProcessInfo.processInfo.environment["SATIN_NATIVE_SMOKE_SCENARIO"]
-        return scenario?.hasPrefix("nvim-cursor-") == true
-    }()
-    private var skiaRenderer: UnsafeMutableRawPointer?
-    private var skiaFrameCount = 0
-    private var nextFrameWorkItem: DispatchWorkItem?
-    private var frameDisplayLink: CAMetalDisplayLink?
-    private var displayRefreshInterval: CFTimeInterval?
-    private var lastRenderedTextureSize: (width: Int, height: Int)?
-    private var rejectedDrawableCount = 0
-
-    required init(coder: NSCoder) {
-        fatalError("init(coder:) is not supported")
-    }
-
-    init(frame frameRect: NSRect) {
-        guard let device = MTLCreateSystemDefaultDevice(),
-            let commandQueue = device.makeCommandQueue(),
-            let skiaRenderer = satinSkiaMetalCreate(
-                metalObjectPointer(device),
-                metalObjectPointer(commandQueue)
-            )
-        else {
-            fatalError("Metal/Skia initialization failed after capability preflight")
-        }
-
-        self.commandQueue = commandQueue
-        self.skiaRenderer = skiaRenderer
-        super.init(frame: frameRect, device: device)
-        colorPixelFormat = .bgra8Unorm
-        clearColor = MTLClearColor(red: 0.078, green: 0.086, blue: 0.102, alpha: 1.0)
-        delegate = self
-        if usesSmokeFrameFallback {
-            enableSetNeedsDisplay = true
-            isPaused = true
-            needsDisplay = true
-            return
-        }
-        enableSetNeedsDisplay = false
-        isPaused = true
-        guard let metalLayer = layer as? CAMetalLayer else {
-            fatalError("MTKView did not create a CAMetalLayer")
-        }
-        let displayLink = CAMetalDisplayLink(metalLayer: metalLayer)
-        displayLink.delegate = self
-        displayLink.preferredFrameLatency = 1
-        displayLink.isPaused = true
-        displayLink.add(to: .main, forMode: .common)
-        frameDisplayLink = displayLink
-    }
-
-    static func isAvailable() -> Bool {
-        guard let device = MTLCreateSystemDefaultDevice(),
-            let commandQueue = device.makeCommandQueue(),
-            let renderer = satinSkiaMetalCreate(
-                metalObjectPointer(device),
-                metalObjectPointer(commandQueue)
-            )
-        else {
-            return false
-        }
-        satinSkiaMetalDestroy(renderer)
-        return true
-    }
-
-    deinit {
-        nextFrameWorkItem?.cancel()
-        frameDisplayLink?.invalidate()
-        satinSkiaMetalDestroy(skiaRenderer)
-    }
-
-    override func viewDidMoveToWindow() {
-        super.viewDidMoveToWindow()
-        if usesSmokeFrameFallback {
-            requestFrame()
-            return
-        }
-        guard let window else {
-            frameDisplayLink?.isPaused = true
-            return
-        }
-        let displayRate = min(120, max(30, window.screen?.maximumFramesPerSecond ?? 60))
-        let rate = Float(displayRate)
-        displayRefreshInterval = 1 / CFTimeInterval(displayRate)
-        frameDisplayLink?.preferredFrameRateRange = CAFrameRateRange(
-            minimum: rate,
-            maximum: rate,
-            preferred: rate
-        )
-        requestFrame()
-    }
-
-    override var acceptsFirstResponder: Bool {
-        true
-    }
-
-    override func rightMouseDown(with event: NSEvent) {
-        guard let menu = contextMenuProvider?.terminalContextMenu(tabIndex: nil) else {
-            return
-        }
-        NSMenu.popUpContextMenu(menu, with: event, for: self)
-    }
-
-    func metalDisplayLink(
-        _ link: CAMetalDisplayLink,
-        needsUpdate update: CAMetalDisplayLink.Update
-    ) {
-        renderFrame(
-            update.drawable,
-            displayLink: link,
-            targetTimestamp: update.targetTimestamp,
-            targetPresentationTimestamp: update.targetPresentationTimestamp
-        )
-    }
-
-    func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {
-        if let metalLayer = view.layer as? CAMetalLayer,
-            roundedSize(metalLayer.drawableSize) != roundedSize(size)
-        {
-            metalLayer.drawableSize = size
-        }
-        requestFrame()
-    }
-
-    func draw(in view: MTKView) {
-        guard usesSmokeFrameFallback, let drawable = currentDrawable else {
-            return
-        }
-        renderFrame(
-            drawable,
-            displayLink: nil,
-            targetTimestamp: nil,
-            targetPresentationTimestamp: nil
-        )
-    }
-
-    private func renderFrame(
-        _ drawable: CAMetalDrawable,
-        displayLink: CAMetalDisplayLink?,
-        targetTimestamp: CFTimeInterval?,
-        targetPresentationTimestamp: CFTimeInterval?
-    ) {
-        guard prepareDrawableForRendering(drawable.texture) else {
-            requestFrame()
-            return
-        }
-        let performanceRecorder = NativePerformanceRecorder.shared
-        let frameStartedAt = performanceRecorder.isEnabled ? CACurrentMediaTime() : 0
-        let performanceToken = performanceRecorder.beginFrame(
-            at: frameStartedAt,
-            targetTimestamp: targetTimestamp,
-            targetPresentationTimestamp: targetPresentationTimestamp,
-            expectedInterval: displayRefreshInterval
-        )
-        guard let commandBuffer = commandQueue.makeCommandBuffer() else {
-            displayLink?.isPaused = true
-            return
-        }
-
-        if renderProvider?(drawable.texture, skiaRenderer) == true {
-            skiaFrameCount += 1
-        } else {
-            let descriptor = MTLRenderPassDescriptor()
-            descriptor.colorAttachments[0].texture = drawable.texture
-            descriptor.colorAttachments[0].loadAction = .clear
-            descriptor.colorAttachments[0].storeAction = .store
-            descriptor.colorAttachments[0].clearColor = clearColor
-            let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: descriptor)
-            encoder?.endEncoding()
-        }
-        let rendererFinishedAt = performanceToken == nil ? 0 : CACurrentMediaTime()
-        updateFrameScheduling(commandBuffer)
-        commandBuffer.present(drawable)
-        let committedAt = performanceToken == nil ? 0 : CACurrentMediaTime()
-        performanceRecorder.observeCommandBuffer(
-            commandBuffer,
-            drawable: drawable,
-            token: performanceToken,
-            committedAt: committedAt
-        )
-        commandBuffer.commit()
-        let submissionFinishedAt = performanceToken == nil ? 0 : CACurrentMediaTime()
-        performanceRecorder.recordFrameSubmission(
-            performanceToken,
-            rendererFinishedAt: rendererFinishedAt,
-            committedAt: submissionFinishedAt
-        )
-    }
-
-    func requestFrame() {
-        NativePerformanceRecorder.shared.recordFrameRequest()
-        nextFrameWorkItem?.cancel()
-        nextFrameWorkItem = nil
-        if usesSmokeFrameFallback {
-            needsDisplay = true
-            return
-        }
-        frameDisplayLink?.isPaused = false
-    }
-
-    func hasSkiaFrames() -> Bool {
-        skiaFrameCount > 0
-    }
-
-    func skiaFrames() -> Int {
-        skiaFrameCount
-    }
-
-    func resetSkiaFrameCount() {
-        skiaFrameCount = 0
-    }
-
-    func resetResizeDiagnostics() {
-        lastRenderedTextureSize = nil
-        rejectedDrawableCount = 0
-    }
-
-    func resizeDiagnosticsSummary() -> String {
-        let viewSize = expectedDrawableSize()
-        let mtkSize = roundedSize(drawableSize)
-        let layerSize = roundedSize((layer as? CAMetalLayer)?.drawableSize ?? .zero)
-        let textureSize = lastRenderedTextureSize ?? (0, 0)
-        return "view=\(viewSize.width)x\(viewSize.height) "
-            + "mtk=\(mtkSize.width)x\(mtkSize.height) "
-            + "layer=\(layerSize.width)x\(layerSize.height) "
-            + "texture=\(textureSize.width)x\(textureSize.height) "
-            + "rejected=\(rejectedDrawableCount)"
-    }
-
-    func drawableSizesMatchView() -> Bool {
-        guard let lastRenderedTextureSize else {
-            return false
-        }
-        let expected = expectedDrawableSize()
-        guard roundedSize(drawableSize) == expected,
-            let metalLayer = layer as? CAMetalLayer
-        else {
-            return false
-        }
-        return roundedSize(metalLayer.drawableSize) == expected
-            && lastRenderedTextureSize == expected
-    }
-
-    func hasPendingSkiaFrame() -> Bool {
-        satinSkiaMetalNeedsAnimationFrame(skiaRenderer) != 0
-    }
-
-    func pendingSkiaFrameDelayMs() -> UInt64 {
-        satinSkiaMetalNextFrameDelayMs(skiaRenderer)
-    }
-
-    func forgetRuntime(_ runtime: UnsafeMutableRawPointer?) {
-        satinSkiaMetalForgetRuntime(skiaRenderer, runtime)
-    }
-
-    func setFontFamily(_ family: String) {
-        family.withCString { value in
-            _ = satinSkiaMetalSetFontFamily(skiaRenderer, value)
-        }
-        requestFrame()
-    }
-
-    private func updateFrameScheduling(_ commandBuffer: MTLCommandBuffer) {
-        nextFrameWorkItem?.cancel()
-        nextFrameWorkItem = nil
-        let delayMs = satinSkiaMetalNextFrameDelayMs(skiaRenderer)
-        guard delayMs != UInt64.max else {
-            if !usesSmokeFrameFallback {
-                frameDisplayLink?.isPaused = true
-            }
-            return
-        }
-        if usesSmokeFrameFallback {
-            commandBuffer.addCompletedHandler { [weak self] _ in
-                let milliseconds = Int(min(delayMs, UInt64(Int.max)))
-                DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(milliseconds)) {
-                    self?.requestFrame()
-                }
-            }
-            return
-        }
-        guard delayMs > 0 else {
-            requestFrame()
-            return
-        }
-
-        frameDisplayLink?.isPaused = true
-        let workItem = DispatchWorkItem { [weak self] in
-            guard let self else {
-                return
-            }
-            self.nextFrameWorkItem = nil
-            self.requestFrame()
-        }
-        nextFrameWorkItem = workItem
-        let milliseconds = Int(min(delayMs, UInt64(Int.max)))
-        DispatchQueue.main.asyncAfter(
-            deadline: .now() + .milliseconds(milliseconds),
-            execute: workItem
-        )
-    }
-
-    private func prepareDrawableForRendering(_ texture: MTLTexture) -> Bool {
-        let textureSize = (texture.width, texture.height)
-        if textureSize != expectedDrawableSize() {
-            rejectedDrawableCount += 1
-            return false
-        }
-        lastRenderedTextureSize = textureSize
-        return true
-    }
-
-    private func expectedDrawableSize() -> (width: Int, height: Int) {
-        let scale = window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 1
-        return (
-            max(1, Int((bounds.width * scale).rounded())),
-            max(1, Int((bounds.height * scale).rounded()))
-        )
-    }
-
-    private func roundedSize(_ size: CGSize) -> (width: Int, height: Int) {
-        (max(1, Int(size.width.rounded())), max(1, Int(size.height.rounded())))
-    }
-}
-
 struct NativePaneControlStatus {
     let status: String
     let summary: String
@@ -7113,6 +6787,19 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
         }
     }
 
+    func applyNvimLayoutRedrawSmokeScenario(resultPath: String) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+            guard let self else {
+                return
+            }
+            runNvimCommandOrWrite(
+                "enew! | call setline(1, ['\(nvimSmokeReadyMarker)', 'LAYOUT_REDRAW'])",
+                fallback: Data()
+            )
+            waitForNvimLayoutRedrawReady(resultPath, retries: 24)
+        }
+    }
+
     func applyNvimImageSmokeScenario(resultPath: String) {
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
             self?.configureNvimSkiaSmoke()
@@ -7407,6 +7094,174 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
 
         DispatchQueue.main.asyncAfter(deadline: .now() + nvimJumpBaselineDelay) { [weak self] in
             self?.moveNvimSmokeToBottomThenJump(resultPath, attempts: 4)
+        }
+    }
+
+    private func waitForNvimLayoutRedrawReady(_ resultPath: String, retries: Int) {
+        guard terminalTextView.rendererModelContainsTexts([nvimSmokeReadyMarker]),
+            let nvimPaneId = activePaneId
+        else {
+            if retries > 0 {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
+                    self?.waitForNvimLayoutRedrawReady(resultPath, retries: retries - 1)
+                }
+                return
+            }
+            writeNvimLayoutRedrawFailure(resultPath, phase: "ready")
+            return
+        }
+
+        pendingPaneMode = .terminal
+        pendingPaneWorkingDirectory = nativeWorkingDirectory()
+        guard let disposablePaneId = core.splitActive(axis: ffiSplitVertical) else {
+            writeNvimLayoutRedrawFailure(resultPath, phase: "split")
+            return
+        }
+        syncFromCore()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+            self?.closeNvimLayoutSmokeSplit(
+                resultPath,
+                nvimPaneId: nvimPaneId,
+                disposablePaneId: disposablePaneId
+            )
+        }
+    }
+
+    private func closeNvimLayoutSmokeSplit(
+        _ resultPath: String,
+        nvimPaneId: Int,
+        disposablePaneId: Int
+    ) {
+        metalView.resetSkiaFrameCount()
+        guard core.closePane(disposablePaneId) else {
+            writeNvimLayoutRedrawFailure(resultPath, phase: "close")
+            return
+        }
+        discardPaneState(disposablePaneId)
+        guard let snapshot = core.snapshot(), !snapshot.tabs.isEmpty else {
+            writeNvimLayoutRedrawFailure(resultPath, phase: "close-snapshot")
+            return
+        }
+        lastSnapshot = snapshot
+        syncTabs(snapshot)
+        syncPaneLayout(snapshot)
+        syncActivePane(snapshot)
+        waitForNvimLayoutCloseRedraw(resultPath, nvimPaneId: nvimPaneId, retries: 16)
+    }
+
+    private func waitForNvimLayoutCloseRedraw(
+        _ resultPath: String,
+        nvimPaneId: Int,
+        retries: Int
+    ) {
+        drainTerminalPanes()
+        let expected = paneGridSize(nvimPaneId)
+        let actual = terminalTextView.rendererRootGridSize()
+        let ready =
+            activePaneId == nvimPaneId
+            && terminalTextView.rendererModelContainsTexts([nvimSmokeReadyMarker])
+            && actual?.cols == expected.cols
+            && actual?.rows == expected.rows
+            && metalView.skiaFrames() > 0
+            && !metalView.hasPendingFrameRequest()
+            && metalView.drawableSizesMatchView()
+        guard ready else {
+            if retries > 0 {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
+                    self?.waitForNvimLayoutCloseRedraw(
+                        resultPath,
+                        nvimPaneId: nvimPaneId,
+                        retries: retries - 1
+                    )
+                }
+                return
+            }
+            writeNvimLayoutRedrawFailure(resultPath, phase: "close-redraw")
+            return
+        }
+
+        let closeSummary = nvimLayoutRedrawSummary(expected: expected, actual: actual)
+        guard let window = view.window else {
+            writeNvimLayoutRedrawFailure(resultPath, phase: "resize-window")
+            return
+        }
+        metalView.resetSkiaFrameCount()
+        let size = window.contentLayoutRect.size
+        window.setContentSize(NSSize(width: size.width + 120, height: size.height + 80))
+        view.layoutSubtreeIfNeeded()
+        resizeTerminalPanesToGrid()
+        waitForNvimWindowResizeRedraw(
+            resultPath,
+            nvimPaneId: nvimPaneId,
+            closeSummary: closeSummary,
+            retries: 16
+        )
+    }
+
+    private func waitForNvimWindowResizeRedraw(
+        _ resultPath: String,
+        nvimPaneId: Int,
+        closeSummary: String,
+        retries: Int
+    ) {
+        drainTerminalPanes()
+        let expected = paneGridSize(nvimPaneId)
+        let actual = terminalTextView.rendererRootGridSize()
+        let ready =
+            terminalTextView.rendererModelContainsTexts([nvimSmokeReadyMarker])
+            && actual?.cols == expected.cols
+            && actual?.rows == expected.rows
+            && metalView.skiaFrames() > 0
+            && !metalView.hasPendingFrameRequest()
+            && metalView.drawableSizesMatchView()
+        if !ready, retries > 0 {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
+                self?.waitForNvimWindowResizeRedraw(
+                    resultPath,
+                    nvimPaneId: nvimPaneId,
+                    closeSummary: closeSummary,
+                    retries: retries - 1
+                )
+            }
+            return
+        }
+
+        let resizeSummary = nvimLayoutRedrawSummary(expected: expected, actual: actual)
+        let status = ready ? "ok" : "failed"
+        let geometry = terminalTextView.skiaGeometrySummary()
+        let viewport = terminalTextView.skiaViewportSummary()
+        let marker = terminalTextView.rendererModelTextStartSummary(
+            label: "marker",
+            text: nvimSmokeReadyMarker
+        )
+        let result =
+            "\(status) nvim-layout-redraw close={\(closeSummary)} "
+            + "resize={\(resizeSummary)} geometry=\(geometry) viewport=\(viewport) "
+            + "marker=\(marker)\n"
+        try? result.write(toFile: resultPath, atomically: true, encoding: .utf8)
+        if ProcessInfo.processInfo.environment["SATIN_NATIVE_SMOKE_KEEP_OPEN"] != "1" {
+            NSApp.terminate(nil)
+        }
+    }
+
+    private func nvimLayoutRedrawSummary(
+        expected: (rows: Int, cols: Int, widthPixels: Int, heightPixels: Int),
+        actual: (cols: Int, rows: Int)?
+    ) -> String {
+        let actualSize = actual.map { "\($0.cols)x\($0.rows)" } ?? "none"
+        return "expected=\(expected.cols)x\(expected.rows) actual=\(actualSize) "
+            + "skia=\(metalView.skiaFrames()) \(metalView.frameRequestDiagnosticsSummary()) "
+            + metalView.resizeDiagnosticsSummary()
+    }
+
+    private func writeNvimLayoutRedrawFailure(_ resultPath: String, phase: String) {
+        let result =
+            "failed nvim-layout-redraw phase=\(phase) "
+            + "\(metalView.frameRequestDiagnosticsSummary()) "
+            + "model=\(terminalTextView.rendererModelWindowTextSummary())\n"
+        try? result.write(toFile: resultPath, atomically: true, encoding: .utf8)
+        if ProcessInfo.processInfo.environment["SATIN_NATIVE_SMOKE_KEEP_OPEN"] != "1" {
+            NSApp.terminate(nil)
         }
     }
 
@@ -11445,6 +11300,10 @@ final class SatinAppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidat
         case "nvim-skia":
             if let path = environment["SATIN_NATIVE_SMOKE_RESULT"], !path.isEmpty {
                 controller.applyNvimSkiaSmokeScenario(resultPath: path)
+            }
+        case "nvim-layout-redraw":
+            if let path = environment["SATIN_NATIVE_SMOKE_RESULT"], !path.isEmpty {
+                controller.applyNvimLayoutRedrawSmokeScenario(resultPath: path)
             }
         case "nvim-image":
             if let path = environment["SATIN_NATIVE_SMOKE_RESULT"], !path.isEmpty {

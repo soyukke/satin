@@ -225,6 +225,10 @@ terminal-nvim-quit-smoke:
 nvim-skia-smoke:
     @if [[ -z "${IN_NIX_SHELL:-}" ]]; then exec nix develop --command just nvim-skia-smoke; else just native-build && ./scripts/native-nvim-smoke; fi
 
+# Verify pane-close and host-window resize redraws cannot lose their Metal frame request.
+nvim-layout-redraw-smoke:
+    @if [[ -z "${IN_NIX_SHELL:-}" ]]; then exec nix develop --command just nvim-layout-redraw-smoke; else just native-build && ./scripts/native-nvim-layout-redraw-smoke; fi
+
 # Verify image.nvim-compatible Kitty graphics over native Neovim RPC and Skia/Metal.
 nvim-image-smoke:
     @if [[ -z "${IN_NIX_SHELL:-}" ]]; then exec nix develop --command just nvim-image-smoke; else just native-build && ./scripts/native-nvim-smoke nvim-image native-nvim-image-smoke nvim-image; fi
@@ -240,6 +244,7 @@ nvim-smoke-all:
         just _nvim-smoke nvim-side-pane; \
         just _nvim-smoke nvim-commandline; \
         just _nvim-smoke nvim-cursor-move; \
+        ./scripts/native-nvim-layout-redraw-smoke; \
         just _nvim-smoke nvim-file-tree-cursor-move; \
         ./scripts/native-nvim-file-tree-close-smoke; \
         just _nvim-smoke nvim-shaped-text; \
