@@ -4,8 +4,8 @@ use anyhow::{Result, bail};
 use serde::{Deserialize, Serialize};
 
 use super::layout::{
-    MAX_SPLIT_RATIO, MIN_SPLIT_RATIO, PaneId, PaneLayout, PaneLayoutInput, PaneLayoutSnapshot,
-    SplitAxis,
+    MAX_SPLIT_RATIO, MIN_SPLIT_RATIO, PaneDirection, PaneId, PaneLayout, PaneLayoutInput,
+    PaneLayoutSnapshot, SplitAxis,
 };
 
 const DEFAULT_THEME_NAME: &str = "Graphite";
@@ -130,6 +130,12 @@ impl TerminalCore {
         true
     }
 
+    pub fn pane_in_direction(&self, direction: PaneDirection) -> Option<usize> {
+        self.active_tab()
+            .and_then(|tab| tab.layout.pane_in_direction(tab.active_pane, direction))
+            .map(|pane_id| pane_id.0)
+    }
+
     pub fn rename_tab(&mut self, index: usize, title: impl Into<String>) -> bool {
         let Some(tab) = self.tabs.get_mut(index) else {
             return false;
@@ -231,6 +237,10 @@ impl TerminalCore {
 
     fn active_tab_mut(&mut self) -> Option<&mut TerminalCoreTab> {
         self.tabs.get_mut(self.active_tab)
+    }
+
+    fn active_tab(&self) -> Option<&TerminalCoreTab> {
+        self.tabs.get(self.active_tab)
     }
 
     fn alloc_pane_id(&mut self) -> PaneId {
@@ -455,6 +465,43 @@ mod tests {
         assert_eq!(core.snapshot().tabs[0].active_pane, 1);
         assert!(!core.select_pane(99));
         assert_eq!(core.snapshot().tabs[0].active_pane, 1);
+    }
+
+    #[test]
+    fn finds_neighboring_panes_in_a_grid_without_wrapping() {
+        let mut core = TerminalCore::new();
+        assert_eq!(core.split_active(SplitAxis::Vertical), Some(2));
+        assert!(core.select_pane(1));
+        assert_eq!(core.split_active(SplitAxis::Horizontal), Some(3));
+        assert!(core.select_pane(2));
+        assert_eq!(core.split_active(SplitAxis::Horizontal), Some(4));
+
+        assert!(core.select_pane(1));
+        assert_eq!(core.pane_in_direction(PaneDirection::Left), None);
+        assert_eq!(core.pane_in_direction(PaneDirection::Up), None);
+        assert_eq!(core.pane_in_direction(PaneDirection::Right), Some(2));
+        assert_eq!(core.pane_in_direction(PaneDirection::Down), Some(3));
+
+        assert!(core.select_pane(4));
+        assert_eq!(core.pane_in_direction(PaneDirection::Left), Some(3));
+        assert_eq!(core.pane_in_direction(PaneDirection::Up), Some(2));
+        assert_eq!(core.pane_in_direction(PaneDirection::Right), None);
+        assert_eq!(core.pane_in_direction(PaneDirection::Down), None);
+    }
+
+    #[test]
+    fn chooses_the_nearest_aligned_pane_in_an_unbalanced_layout() {
+        let mut core = TerminalCore::new();
+        assert_eq!(core.split_active(SplitAxis::Vertical), Some(2));
+        assert_eq!(core.split_active(SplitAxis::Horizontal), Some(3));
+
+        assert!(core.select_pane(1));
+        assert_eq!(core.pane_in_direction(PaneDirection::Right), Some(2));
+        assert!(core.select_pane(2));
+        assert_eq!(core.pane_in_direction(PaneDirection::Down), Some(3));
+        assert!(core.select_pane(3));
+        assert_eq!(core.pane_in_direction(PaneDirection::Left), Some(1));
+        assert_eq!(core.pane_in_direction(PaneDirection::Up), Some(2));
     }
 
     #[test]

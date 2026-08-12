@@ -216,6 +216,7 @@ security boundary.
 - `Command-T`: new tab
 - `Command-D` / `Command-Shift-D`: vertical / horizontal split
 - `Command-W`: close the active pane
+- `Control-Command-H/J/K/L`: focus the pane to the left / down / up / right
 - `Command-N`: open the unified native Neovim UI while retaining the current shell
 - `Command-C`, `Command-V`, `Command-A`, `Command-F`: copy, paste, select all,
   and scrollback search

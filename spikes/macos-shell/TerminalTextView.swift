@@ -115,7 +115,8 @@ final class TerminalTextView: NSView, NSTextInputClient {
 
     override func accessibilityHelp() -> String? {
         "Interactive terminal. Drag split borders to resize panes, Command-click links, "
-            + "and use Command-F to search scrollback."
+            + "use Control-Command-H/J/K/L to move between panes, and Command-F to search "
+            + "scrollback."
     }
 
     override func setFrameSize(_ newSize: NSSize) {
