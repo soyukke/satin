@@ -9,6 +9,7 @@ native_swift_sources=(
   spikes/macos-shell/ControlHost.swift
   spikes/macos-shell/NativeAppearance.swift
   spikes/macos-shell/NativeCoreTheme.swift
+  spikes/macos-shell/NativeFrameScheduling.swift
   spikes/macos-shell/NativeKeyBindings.swift
   spikes/macos-shell/PaneChromeView.swift
   spikes/macos-shell/NativePaneRuntime.swift

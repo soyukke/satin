@@ -94,15 +94,14 @@ Rust reports an immediately active animation, then pauses again at rest. Future
 cursor or text-blink deadlines use one replaceable timer, while input resumes
 the link for one frame. Rendering therefore neither spins a zero-delay dispatch
 loop nor blocks the main thread in `CAMetalLayer.nextDrawable()`.
-Native pixel-smoke processes are the exception: the test runner can execute
-while `loginwindow` is frontmost, in which case macOS suppresses display-link
-callbacks even though the Rust renderer still requests an immediate frame.
-The delayed cursor-shape pixel-smoke processes are the exception: they use
-`MTKView` one-shot invalidation with the same Skia renderer so their cursor and
-blink animations remain testable under a locked compositor. Other smoke cases
-continue to exercise the display link. Remove this fallback when the smoke
-runner guarantees an active display, or replace it with an offscreen drawable
-path; it must not be enabled in the packaged application.
+Native smoke processes can execute while `loginwindow` is frontmost, in which
+case macOS suppresses display-link callbacks even though the Rust renderer
+still requests an immediate frame. Smoke scenarios that depend on delayed or
+multiple frames therefore use `MTKView` one-shot invalidation with the same
+Skia renderer: cursor animation, layout redraw, Neovim scroll and jump, and
+tmux reattach. Other smoke cases continue to exercise the display link, and
+production never enables the fallback. Remove it when the smoke runner
+guarantees an active display, or replace it with an offscreen drawable path.
 Like Neovide's per-window surface draw, each visible retained normal window
 clears its entire grid rectangle to the default background before cached lines
 are drawn. This lets a resized foreground grid cover stale root-grid separators
