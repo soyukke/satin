@@ -213,9 +213,9 @@ extension TerminalTextView {
     func terminalContentRect() -> NSRect {
         NSRect(
             x: terminalHorizontalInset,
-            y: terminalTextTop,
+            y: 0,
             width: max(1, bounds.width - terminalHorizontalInset * 2),
-            height: max(1, bounds.height - terminalTextTop - terminalTextBottomInset)
+            height: max(1, bounds.height - terminalTextBottomInset)
         )
     }
 

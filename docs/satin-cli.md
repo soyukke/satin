@@ -174,14 +174,14 @@ artifacts/
 JSON is internal metadata; Markdown is the human-facing document. `INDEX.md`
 and each `README.md` link to the current and prior snapshots.
 
-The Artifacts action in the native toolbar opens a popover with the five most
-recent titles, versions, update times, and short previews. Selecting a row opens
-its latest version in a right split and moves focus to it. CLI `artifact show`
-validates its selector and atomically creates a terminal split whose startup
-command is the bundled, release-matched artifact viewer. Omitting `--pane`
-targets `SATIN_PANE_ID`; `--background` restores the previous focus after the
-viewer starts. Press `q`, Escape, Enter, or Ctrl+C to close the viewer and its
-temporary pane.
+The Artifacts action in each native pane header opens a popover with the five
+most recent titles, versions, update times, and short previews. Selecting a row
+replaces that pane's visible runtime with the bundled artifact viewer; selecting
+another artifact replaces the viewer in place. The underlying terminal, Neovim,
+or tmux runtime stays alive. CLI `artifact show` keeps its automation-oriented
+contract: it validates the selector and atomically creates a terminal split.
+Omitting `--pane` targets `SATIN_PANE_ID`; `--background` restores the previous
+focus after the viewer starts.
 
 `artifact view ID` is normally launched by `artifact show`. `--no-wait` emits
 one rendered frame for diagnostics without entering the alternate screen.

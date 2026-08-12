@@ -75,9 +75,14 @@ import Foundation
             }
             let projectedPane = tmuxSession?.latestPanes.values.first { $0.active }
             let currentGrid = tmuxClientGrid()
+            let projectedGridIsSettled =
+                projectedPane.map {
+                    Int($0.cols) == currentGrid.cols && Int($0.rows) == currentGrid.rows
+                } ?? false
             let gridIsSettled =
                 tmuxSession?.lastClientGrid?.cols == currentGrid.cols
                 && tmuxSession?.lastClientGrid?.rows == currentGrid.rows
+                && projectedGridIsSettled
             guard let tmuxCursor = tmuxPane.cursorPosition(),
                 tmuxCursor.x > 0,
                 let projectedPane,

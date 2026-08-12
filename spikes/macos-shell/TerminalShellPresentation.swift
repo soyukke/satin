@@ -75,6 +75,7 @@ extension TerminalShellViewController {
             tabControl.selectedSegment = snapshot.active_tab
         }
         tabControl.finishSnapshotSync(previousFrame: previousFrame)
+        tabStripView.contentSizeDidChange()
         let activeTheme = snapshot.tabs.first {
             $0.index == snapshot.active_tab
         }?.theme
@@ -86,20 +87,22 @@ extension TerminalShellViewController {
     func syncPaneLayout(_ snapshot: TerminalCoreSnapshot) {
         guard let tab = snapshot.tabs.first(where: { $0.index == snapshot.active_tab }) else {
             paneStore.visibleFrames = [:]
-            terminalTextView.updatePaneFrames([:], activePaneId: nil)
+            terminalTextView.updatePaneFrames([:], paneBounds: [:], activePaneId: nil)
             return
         }
-        var frames: [Int: NSRect] = [:]
+        var paneBounds: [Int: NSRect] = [:]
         var dividers: [NativePaneDivider] = []
         collectPaneFrames(
             tab.layout,
             rect: terminalTextView.terminalContentRect(),
-            frames: &frames,
+            frames: &paneBounds,
             dividers: &dividers
         )
+        let frames = paneBounds.mapValues(nativePaneContentFrame)
         paneStore.visibleFrames = frames
         terminalTextView.updatePaneFrames(
             frames,
+            paneBounds: paneBounds,
             activePaneId: tab.active_pane,
             dividers: dividers
         )
@@ -129,7 +132,9 @@ extension TerminalShellViewController {
     }
 
     func tmuxClientGrid() -> (rows: Int, cols: Int, widthPixels: Int, heightPixels: Int) {
-        terminalTextView.terminalGridSize(for: terminalTextView.terminalContentRect())
+        terminalTextView.terminalGridSize(
+            for: nativePaneContentFrame(terminalTextView.terminalContentRect())
+        )
     }
 
     func collectPaneFrames(
@@ -297,6 +302,8 @@ extension TerminalShellViewController {
             "Click a tab to select it, use its close button to close it, "
                 + "or double-click or right-click for tab actions."
         )
+        newTabButton.target = self
+        newTabButton.action = #selector(newTab(_:))
     }
 
     func configureToolbarControls() {
@@ -313,42 +320,6 @@ extension TerminalShellViewController {
         sessionControlButton.action = #selector(showSessionSwitcher(_:))
         sessionControlButton.toolTip = "Switch between the local terminal and tmux sessions"
         sessionControlButton.setAccessibilityLabel("Terminal Session")
-
-        toolbarActionControl.segmentCount = SatinToolbarActionSegment.count
-        toolbarActionControl.trackingMode = .momentary
-        toolbarActionControl.setImage(
-            NSImage(systemSymbolName: "plus", accessibilityDescription: "New Tab"),
-            forSegment: SatinToolbarActionSegment.newTab
-        )
-        toolbarActionControl.setImage(
-            NSImage(
-                systemSymbolName: "rectangle.split.2x1",
-                accessibilityDescription: "Split Left and Right"
-            ),
-            forSegment: SatinToolbarActionSegment.splitVertical
-        )
-        toolbarActionControl.setImage(
-            NSImage(
-                systemSymbolName: "rectangle.split.1x2",
-                accessibilityDescription: "Split Top and Bottom"
-            ),
-            forSegment: SatinToolbarActionSegment.splitHorizontal
-        )
-        toolbarActionControl.setImage(
-            NSImage(
-                systemSymbolName: "doc.on.doc",
-                accessibilityDescription: "Recent Artifacts"
-            ),
-            forSegment: SatinToolbarActionSegment.artifacts
-        )
-        for segment in 0..<SatinToolbarActionSegment.count {
-            toolbarActionControl.setWidth(30, forSegment: segment)
-        }
-        toolbarActionControl.sizeToFit()
-        toolbarActionControl.target = self
-        toolbarActionControl.action = #selector(toolbarActionChanged(_:))
-        toolbarActionControl.toolTip = "New Tab, Split Pane, and Recent Artifacts"
-        toolbarActionControl.setAccessibilityLabel("Tab, Pane, and Artifact Actions")
     }
 
     func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
@@ -373,34 +344,17 @@ extension TerminalShellViewController {
         case SatinToolbarItemIdentifier.tabs:
             item.label = "Tabs"
             item.paletteLabel = "Terminal Tabs"
-            item.view = tabControl
+            item.view = tabStripView
             item.visibilityPriority = .standard
         case SatinToolbarItemIdentifier.controls:
-            item.label = "Session and Pane Actions"
-            item.paletteLabel = "Session and Pane Actions"
-            item.view = toolbarControlsView
+            item.label = "Session"
+            item.paletteLabel = "Terminal Session"
+            item.view = sessionControlButton
             item.visibilityPriority = .high
         default:
             return nil
         }
         return item
-    }
-
-    @objc func toolbarActionChanged(_ sender: NSSegmentedControl) {
-        switch sender.selectedSegment {
-        case SatinToolbarActionSegment.newTab:
-            newTab(nil)
-        case SatinToolbarActionSegment.splitVertical:
-            splitVertical(nil)
-        case SatinToolbarActionSegment.splitHorizontal:
-            splitHorizontal(nil)
-        case SatinToolbarActionSegment.artifacts:
-            showArtifactsPopover(relativeTo: sender)
-            return
-        default:
-            return
-        }
-        focusTerminal()
     }
 
     @objc func showSessionSwitcher(_ sender: Any?) {
@@ -643,7 +597,8 @@ extension TerminalShellViewController {
         )
         sessionControlButton.setAccessibilityValue(title)
         sessionControlButton.sizeToFit()
-        NativePlatformAppearance.toolbarControlContentSizeDidChange(toolbarControlsView)
+        sessionControlButton.invalidateIntrinsicContentSize()
+        sessionControlButton.superview?.needsLayout = true
     }
 
     func sessionControlTitle() -> String {

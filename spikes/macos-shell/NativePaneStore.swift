@@ -11,6 +11,9 @@ final class NativePaneStore {
     var wakeupSources: [Int: DispatchSourceRead] = [:]
     var suspendedWakeupSources: [Int: DispatchSourceRead] = [:]
     var suspendedSessions: [Int: NativeSuspendedTerminalSession] = [:]
+    var artifactBackingWakeupSources: [Int: DispatchSourceRead] = [:]
+    var artifactBackingRuntimes: [Int: NativePane] = [:]
+    var artifactSelectors: [Int: String] = [:]
 
     func discardMetadata(for paneId: Int) {
         scrollRemainders.removeValue(forKey: paneId)

@@ -1,6 +1,8 @@
-# 0015: Use the native navigation layer and system Liquid Glass
+# 0015: Use native navigation and pane-local action chrome
 
 Date: 2026-08-08
+
+Amended: 2026-08-12
 
 Status: Accepted
 
@@ -19,38 +21,28 @@ Tahoe-only custom glass view.
 
 ## Decision
 
-- Put terminal tabs, the persistent Local/tmux session control, and grouped new
-  tab/split actions in a standard unified compact `NSToolbar`. Keep the custom
-  glass controls at the platform's compact control height and size the session
-  surface from its icon and title instead of a fixed wide badge.
+- Put terminal tabs, a borderless new-tab action immediately after them, and the
+  persistent Local/tmux session control in a standard unified compact
+  `NSToolbar`. Put close, split, and artifact actions in a reserved 24-point
+  header inside every pane so pane-scoped actions have an explicit target and
+  remain available away from the active pane.
 - Present session discovery, attach, detach, switch, and creation from a standard
   transient `NSPopover`. Keep the Session menu as a secondary keyboard/menu-bar
   entry point to the same control.
-- Use standard AppKit controls and SF Symbols. On macOS Tahoe they receive the
-  system Liquid Glass material, interaction response, contrast adaptation, and
-  accessibility behavior automatically. On macOS 14 and 15 they retain the
-  platform-appropriate AppKit appearance.
-- Route platform appearance decisions through `NativePlatformAppearance`.
-  Availability checks, full-size titlebar configuration, and construction of
-  custom toolbar material must not leak into terminal or session code. Future
-  macOS appearance changes should be adopted in that adapter, preferring newer
-  standard AppKit behavior before adding another custom presentation path.
-- Compile references to macOS 26 glass classes only when the selected macOS SDK
-  advertises that API. Runtime availability still selects the glass path; builds
-  made with an older supported SDK compile the same standard AppKit fallback.
-- On macOS 26, wrap the custom Local/tmux and pane-action controls in regular
-  `NSGlassEffectView` surfaces inside one `NSGlassEffectContainerView`. These
-  remain semantic `NSButton` and `NSSegmentedControl` instances; the container
-  only supplies system material and proximity merging. On earlier supported
-  releases, present the same controls in a standard `NSStackView` with the
-  platform's normal bezel styles.
+- Use standard AppKit controls and SF Symbols. On macOS Tahoe, toolbar controls
+  receive the system navigation material automatically. Pane-header controls
+  retain the platform-appropriate AppKit appearance, interaction response,
+  contrast adaptation, and accessibility behavior on every supported release.
+- Route titlebar availability and window appearance decisions through
+  `NativePlatformAppearance`. Pane headers remain semantic AppKit controls and
+  do not introduce a second custom glass-material implementation.
 - Extend a theme-derived ambient content background beneath the transparent
   titlebar on macOS 26 so refraction has meaningful content to sample. Constrain
   the opaque Metal terminal surface to the window safe area, ensuring terminal
   and Neovim glyphs never render beneath navigation controls.
-- Do not place glass over terminal or Neovim content. Keep the Skia-Metal surface
-  opaque and move navigation out of its geometry, leaving only content padding,
-  pane focus borders, scrollbars, and input composition overlays in that view.
+- Do not place glass or controls over terminal or Neovim cells. Retain the full
+  pane bounds for layout and split resizing, but pass only the area below its
+  header to grid sizing, mouse coordinates, and Skia-Metal rendering.
 - Keep Settings on its standard toolbar-style `NSTabViewController` and use the
   same unified titlebar treatment.
 - Validate menu commands against the key window. Terminal mutations are disabled
@@ -60,11 +52,11 @@ Tahoe-only custom glass view.
 ## Consequences
 
 Satin follows the current macOS appearance without emulating refraction or
-accessibility modes itself. Explicit glass is restricted to the two custom
-toolbar control groups and comes from AppKit. Navigation keeps native semantics
-for VoiceOver and evolves with AppKit behind one compatibility boundary.
-Terminal grid sizing is independent of the toolbar height, and the renderer
-retains a stable opaque content contract.
+accessibility modes itself. The toolbar and pane actions retain native AppKit
+semantics for VoiceOver. Terminal grid sizing is independent of both the
+toolbar and pane-header heights, and the renderer retains a stable opaque
+content contract. A pane action never depends on which pane happened to own
+keyboard focus before it was clicked.
 
 The toolbar can become space-constrained when many tabs are open. A future tab
 overflow design should use native toolbar or menu behavior; it must not restore a

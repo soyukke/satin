@@ -121,12 +121,13 @@ import Foundation
 
         func waitForTabBarActionsSmokeScenario(resultPath: String, retries: Int) {
             view.layoutSubtreeIfNeeded()
+            let initialChrome = activePaneId.flatMap(terminalTextView.paneChromeView)
             let controlsReady =
                 sessionControlButton.superview != nil
-                && toolbarActionControl.superview != nil
-                && (0..<SatinToolbarActionSegment.count).allSatisfy {
-                    toolbarActionControl.image(forSegment: $0) != nil
-                }
+                && tabStripView.superview != nil
+                && tabStripView.actionsReady()
+                && terminalTextView.paneChromeViewsReady(expectedCount: 1)
+                && initialChrome?.actionsReady() == true
             let shortcutsReady =
                 mainMenuShortcutMatches(
                     actionName: "splitVertical:",
@@ -136,7 +137,7 @@ import Foundation
                     actionName: "splitHorizontal:",
                     shortcut: settings.shortcut(for: .splitHorizontal)
                 )
-            if !shortcutsReady, retries > 0 {
+            if !controlsReady || !shortcutsReady, retries > 0 {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
                     self?.waitForTabBarActionsSmokeScenario(
                         resultPath: resultPath,
@@ -145,19 +146,19 @@ import Foundation
                 }
                 return
             }
-            let chromeReady = NativePlatformAppearance.toolbarControlsUseExpectedPresentation(
-                toolbarControlsView
-            )
             let compactChrome =
                 view.window?.toolbarStyle == .unifiedCompact
-                && (!NativePlatformAppearance.usesLiquidGlass
-                    || toolbarControlsView.intrinsicContentSize.height <= 30)
+                && terminalTextView.paneChromeViews.values.allSatisfy {
+                    $0.frame.height <= nativePaneChromeHeight
+                }
             let contentBelowChrome = metalView.frame.maxY <= view.safeAreaRect.maxY + 0.5
             let backdropSpansWindow = backdropView.frame.maxY >= view.bounds.maxY - 0.5
             if controlsReady {
-                newTab(nil)
-                splitVertical(nil)
-                splitHorizontal(nil)
+                newTabButton.performClick(nil)
+                activePaneId.flatMap(terminalTextView.paneChromeView)?
+                    .performForSmoke(.splitVertical)
+                activePaneId.flatMap(terminalTextView.paneChromeView)?
+                    .performForSmoke(.splitHorizontal)
             }
             guard let snapshot = core.snapshot(),
                 let activeTab = snapshot.tabs.first(where: { $0.index == snapshot.active_tab })
@@ -168,6 +169,14 @@ import Foundation
             }
             let metrics = paneLayoutMetrics(activeTab.layout)
             let axes = metrics.axes.sorted()
+            let paneChromeReady = terminalTextView.paneChromeViewsReady(expectedCount: 3)
+            let contentClearsPaneChrome = terminalTextView.paneBounds.allSatisfy { paneId, bounds in
+                guard let content = paneStore.visibleFrames[paneId] else {
+                    return false
+                }
+                return content.minY >= bounds.minY + nativePaneChromeHeight - 0.5
+                    && content.maxY <= bounds.maxY + 0.5
+            }
             let dividersReady =
                 terminalTextView.splitDividerCount(for: .vertical) == 1
                 && terminalTextView.splitDividerCount(for: .horizontal) == 1
@@ -210,6 +219,14 @@ import Foundation
                     $0.index == snapshot.active_tab
                 })?.title == renamedTitle
                 && tabControl.label(forSegment: snapshot.active_tab) == renamedTitle
+            let paneCloseTarget = activeTab.active_pane
+            terminalTextView.paneChromeView(for: paneCloseTarget)?.performForSmoke(.close)
+            let paneClosedSnapshot = core.snapshot()
+            let paneCloseReady =
+                paneClosedSnapshot?.tabs.first(where: { $0.index == snapshot.active_tab })
+                .map { paneLayoutMetrics($0.layout).leaves == 2 } == true
+                && terminalTextView.paneChromeView(for: paneCloseTarget) == nil
+                && terminalTextView.paneChromeViewsReady(expectedCount: 2)
             let closeTarget = tabControl.closeButtonHitTargetForSmoke(segment: 0)
             let closeTargetHasMinimumWidth = (closeTarget?.width ?? 0) >= 20
             let closeTargetFitsHorizontally =
@@ -249,9 +266,10 @@ import Foundation
             let ok =
                 controlsReady
                 && shortcutsReady
-                && chromeReady
+                && paneChromeReady
                 && compactChrome
                 && contentBelowChrome
+                && contentClearsPaneChrome
                 && backdropSpansWindow
                 && snapshot.tabs.count == 2
                 && snapshot.active_tab == 1
@@ -266,15 +284,16 @@ import Foundation
                 && contextMenuReady
                 && renamePromptReady
                 && renameReady
+                && paneCloseReady
                 && closeReady
             let status = ok ? "ok" : "failed"
             writeSessionSmokeResult(
                 resultPath,
                 result: "\(status) tab-bar-actions controls=\(controlsReady ? "ready" : "invalid") "
                     + "shortcuts=\(shortcutsReady ? "ready" : "invalid") "
-                    + "chrome=\(NativePlatformAppearance.usesLiquidGlass ? "glass" : "standard") "
+                    + "chrome=\(paneChromeReady ? "pane-local" : "missing") "
                     + "density=\(compactChrome ? "compact" : "regular") "
-                    + "content=\(contentBelowChrome ? "safe" : "under-titlebar") "
+                    + "content=\(contentBelowChrome && contentClearsPaneChrome ? "safe" : "overlap") "
                     + "background=\(backdropSpansWindow ? "edge-to-edge" : "inset") "
                     + "tabs=\(snapshot.tabs.count) active=\(snapshot.active_tab) "
                     + "leaves=\(metrics.leaves) splits=\(metrics.splits) "
@@ -286,7 +305,9 @@ import Foundation
                     + "context=\(contextMenuReady ? "right-click" : "missing") "
                     + "prompt=\(renamePromptReady ? "icon-free" : "invalid") "
                     + "rename=\(renameReady ? "double-click" : "missing") "
-                    + "close=\(closeReady ? "x-button" : "missing")\n"
+                    + "new-tab=\(tabStripView.actionsReady() ? "tab-strip" : "missing") "
+                    + "pane-close=\(paneCloseReady ? "x-button" : "missing") "
+                    + "tab-close=\(closeReady ? "x-button" : "missing")\n"
             )
         }
 
@@ -634,11 +655,9 @@ import Foundation
             smokeState.artifactPopoverOpenPath = "\(resultPath).open"
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
                 guard let self,
-                    self.toolbarActionControl.superview != nil,
-                    self.toolbarActionControl.segmentCount == SatinToolbarActionSegment.count,
-                    self.toolbarActionControl.image(
-                        forSegment: SatinToolbarActionSegment.artifacts
-                    ) != nil
+                    let paneId = self.activePaneId,
+                    let chrome = self.terminalTextView.paneChromeView(for: paneId),
+                    chrome.actionsReady()
                 else {
                     self?.writeArtifactPopoverSmokeResult(
                         resultPath,
@@ -646,7 +665,7 @@ import Foundation
                     )
                     return
                 }
-                self.showArtifactsPopover(relativeTo: self.toolbarActionControl)
+                chrome.performForSmoke(.artifacts)
             }
         }
 
