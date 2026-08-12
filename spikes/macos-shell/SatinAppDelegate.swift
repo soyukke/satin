@@ -59,19 +59,6 @@ final class SatinAppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidat
         {
             settings.fontSize = min(max(fontSize, nativeMinimumFontSize), nativeMaximumFontSize)
         }
-        #if SATIN_SMOKE_SCENARIOS
-            if environment["SATIN_NATIVE_SMOKE_SCENARIO"] == "finder-editor" {
-                let smokeEditor = environment["SATIN_NATIVE_SMOKE_FINDER_EDITOR"] ?? "nvim"
-                settings.finderEditorCommand =
-                    NativeSettingsStore.isValidFinderEditorCommand(
-                        smokeEditor
-                    ) ? smokeEditor : "nvim"
-                let smokeShell = environment["SATIN_NATIVE_SMOKE_FINDER_SHELL"] ?? "/bin/bash"
-                if NativeSettingsStore.isValidShellPath(smokeShell) {
-                    settings.shellPath = smokeShell
-                }
-            }
-        #endif
         let initialFinderLaunch = NativeFinderEditorLaunch(paths: pendingFinderPaths)
         launchedForFinderEditor = initialFinderLaunch != nil
         guard let core = RustCore(defaultTheme: settings.defaultTheme) else {

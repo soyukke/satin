@@ -19,10 +19,6 @@ import Foundation
                 if let path = environment["SATIN_NATIVE_SMOKE_RESULT"], !path.isEmpty {
                     controller.applyTerminalExitClosesTabSmokeScenario(resultPath: path)
                 }
-            case "finder-editor":
-                if let path = environment["SATIN_NATIVE_SMOKE_RESULT"], !path.isEmpty {
-                    controller.applyFinderEditorSmokeScenario(resultPath: path)
-                }
             case "session-schema":
                 if let path = environment["SATIN_NATIVE_SMOKE_RESULT"], !path.isEmpty {
                     controller.applySessionSchemaSmokeScenario(resultPath: path)

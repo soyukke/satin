@@ -109,12 +109,6 @@ extension TerminalShellViewController {
         {
             startupCommand[0] = nvimLauncherPath
         }
-        if ProcessInfo.processInfo.environment["SATIN_NATIVE_SMOKE_SCENARIO"]
-            == "finder-editor",
-            settings.finderEditorCommand == "nvim"
-        {
-            startupCommand.insert(contentsOf: ["-u", "NONE", "-n"], at: 1)
-        }
         pendingPaneStartupCommand = startupCommand
         pendingPaneMode = .terminal
     }

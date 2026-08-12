@@ -463,52 +463,6 @@ import Foundation
             }
         }
 
-        func applyFinderEditorSmokeScenario(resultPath: String) {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
-                self?.writeFinderEditorSmokeResult(resultPath, retries: 48)
-            }
-        }
-
-        func writeFinderEditorSmokeResult(_ resultPath: String, retries: Int) {
-            let marker = "SATIN_FINDER_EDITOR_MARKER"
-            let snapshot = core.snapshot()
-            let oneTab = snapshot?.tabs.count == 1
-            let onePane = snapshot?.tabs.first?.panes.count == 1
-            let actualMode = activePaneMode()
-            let expectedMode =
-                ProcessInfo.processInfo.environment[
-                    "SATIN_NATIVE_SMOKE_FINDER_MODE"
-                ] == "terminal" ? NativePaneMode.terminal : .neovim
-            let expectedPaneMode = actualMode == expectedMode
-            let markerCount: Int
-            if actualMode == .terminal,
-                let paneId = activePaneId,
-                let pane = paneStore.runtimes[paneId]
-            {
-                markerCount = pane.controlScreenText().components(separatedBy: marker).count - 1
-            } else {
-                markerCount = terminalTextView.rendererModelTextOccurrences(marker)
-            }
-            let ok = oneTab && onePane && expectedPaneMode && markerCount == 1
-            if !ok, retries > 0 {
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
-                    self?.writeFinderEditorSmokeResult(resultPath, retries: retries - 1)
-                }
-                return
-            }
-            let summary = [
-                "simple=\(oneTab && onePane ? "yes" : "no")",
-                "mode=\(actualMode.sessionValue)",
-                "marker=\(markerCount)",
-            ].joined(separator: " ")
-            let result =
-                ok
-                ? "ok finder-editor \(summary)\n"
-                : "failed finder-editor \(summary)\n"
-            try? result.write(toFile: resultPath, atomically: true, encoding: .utf8)
-            NSApp.terminate(nil)
-        }
-
         func applyShellNvimNativeSmokeScenario(resultPath: String) {
             let fixture = "/tmp/satin-shell-nvim-native-smoke.txt"
             let before = "/tmp/satin-shell-nvim-native-before.txt"
