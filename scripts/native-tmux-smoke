@@ -5,17 +5,34 @@ app="${SATIN_NATIVE_EXECUTABLE:-spikes/macos-shell/.build/SatinApplication}"
 result_file="spikes/macos-shell/.build/native-tmux.result"
 reattach_result_file="spikes/macos-shell/.build/native-tmux-reattach.result"
 missing_result_file="spikes/macos-shell/.build/native-tmux-reattach-missing.result"
+restart_checkpoint_result_file="spikes/macos-shell/.build/native-tmux-restart-checkpoint.result"
+restart_restore_result_file="spikes/macos-shell/.build/native-tmux-restart-restore.result"
 socket_name="satin-reattach-smoke-$$"
 session_name="satin-reattach-smoke"
+restart_socket_name="satin-restart-smoke-$$"
+restart_session_name="satin-restart-smoke"
 existing_marker="SATIN_TMUX_REATTACH_ALT_CONTENT"
 primary_marker="SATIN_TMUX_REATTACH_PRIMARY_CONTENT"
+restart_marker="SATIN_TMUX_RESTART_PROCESS_ALIVE"
+preferences_root="$(mktemp -d "${TMPDIR:-/tmp}/satin-tmux-restart.XXXXXX")"
+restart_bundle_id="dev.soyukke.satin.tmuxrestartsmoke.$$"
+restart_app="$preferences_root/Satin Tmux Restart Smoke.app"
+restart_contents="$restart_app/Contents"
+restart_binary="$restart_contents/MacOS/satin-tmux-restart-smoke"
 
 cleanup() {
   tmux -L "$socket_name" kill-server >/dev/null 2>&1 || true
+  tmux -L "$restart_socket_name" kill-server >/dev/null 2>&1 || true
+  defaults delete "$restart_bundle_id" >/dev/null 2>&1 || true
+  case "$preferences_root" in
+    "${TMPDIR:-/tmp}"/satin-tmux-restart.*) rm -rf -- "$preferences_root" ;;
+    *) echo "refusing unexpected preferences cleanup path: $preferences_root" >&2 ;;
+  esac
 }
 trap cleanup EXIT
 
-rm -f "$result_file" "$reattach_result_file" "$missing_result_file"
+rm -f "$result_file" "$reattach_result_file" "$missing_result_file" \
+  "$restart_checkpoint_result_file" "$restart_restore_result_file"
 
 SATIN_NATIVE_SMOKE_SCENARIO=tmux-native \
   SATIN_NATIVE_SMOKE_RESULT="$result_file" \
@@ -64,3 +81,77 @@ SATIN_NATIVE_SMOKE_SCENARIO=tmux-reattach-missing \
 missing_result=$(cat "$missing_result_file")
 echo "$missing_result"
 [[ "$missing_result" == ok* ]]
+
+mkdir -p "$restart_contents/MacOS"
+/usr/bin/ditto "$app" "$restart_binary"
+chmod 755 "$restart_binary"
+plutil -create xml1 "$restart_contents/Info.plist"
+plutil -insert CFBundleDisplayName -string "Satin Tmux Restart Smoke" \
+  "$restart_contents/Info.plist"
+plutil -insert CFBundleExecutable -string "satin-tmux-restart-smoke" \
+  "$restart_contents/Info.plist"
+plutil -insert CFBundleIdentifier -string "$restart_bundle_id" \
+  "$restart_contents/Info.plist"
+plutil -insert CFBundleInfoDictionaryVersion -string 6.0 "$restart_contents/Info.plist"
+plutil -insert CFBundleName -string "Satin Tmux Restart Smoke" \
+  "$restart_contents/Info.plist"
+plutil -insert CFBundlePackageType -string APPL "$restart_contents/Info.plist"
+plutil -insert CFBundleShortVersionString -string 1.0 "$restart_contents/Info.plist"
+plutil -insert CFBundleVersion -string 1 "$restart_contents/Info.plist"
+plutil -insert SatinDataDirectoryName -string "Satin Tmux Restart Smoke" \
+  "$restart_contents/Info.plist"
+plutil -insert SatinDevelopmentBuild -bool true "$restart_contents/Info.plist"
+tmux -L "$restart_socket_name" new-session -d -s "$restart_session_name" \
+  "printf '%s\\n' '$restart_marker'; exec sleep 86400"
+restart_socket_path="$(tmux -L "$restart_socket_name" display-message -p '#{socket_path}')"
+restart_pane_pid="$(tmux -S "$restart_socket_path" display-message -p \
+  -t "$restart_session_name" '#{pane_pid}')"
+
+CFFIXED_USER_HOME="$preferences_root" \
+  SATIN_NATIVE_SMOKE_SCENARIO=tmux-restart-checkpoint \
+  SATIN_NATIVE_SMOKE_RESULT="$restart_checkpoint_result_file" \
+  SATIN_NATIVE_SMOKE_TMUX_SESSION="$restart_session_name" \
+  SATIN_NATIVE_SMOKE_TMUX_SOCKET="$restart_socket_path" \
+  SATIN_NATIVE_SMOKE_TMUX_CONTENT="$restart_marker" \
+  "$restart_binary" >"/tmp/satin-native-tmux-restart-checkpoint.log" 2>&1
+
+restart_checkpoint_result=$(cat "$restart_checkpoint_result_file")
+echo "$restart_checkpoint_result"
+[[ "$restart_checkpoint_result" == ok* ]]
+tmux -S "$restart_socket_path" has-session -t "$restart_session_name"
+[[ "$(tmux -S "$restart_socket_path" display-message -p \
+  -t "$restart_session_name" '#{pane_pid}')" == "$restart_pane_pid" ]]
+restart_checkpoint_state="$(
+  defaults export "$restart_bundle_id" - |
+    plutil -extract sessionState raw -o - -- - |
+    base64 --decode
+)"
+jq -e --arg session "$restart_session_name" --arg socket "$restart_socket_path" \
+  '.schemaVersion == 3 and .tmuxAttachment.sessionName == $session
+    and .tmuxAttachment.socketPath == $socket' \
+  <<<"$restart_checkpoint_state" >/dev/null
+
+CFFIXED_USER_HOME="$preferences_root" \
+  SATIN_NATIVE_SMOKE_SCENARIO=tmux-restart-restore \
+  SATIN_NATIVE_SMOKE_RESULT="$restart_restore_result_file" \
+  SATIN_NATIVE_SMOKE_TMUX_SESSION="$restart_session_name" \
+  SATIN_NATIVE_SMOKE_TMUX_SOCKET="$restart_socket_path" \
+  SATIN_NATIVE_SMOKE_TMUX_CONTENT="$restart_marker" \
+  "$restart_binary" >"/tmp/satin-native-tmux-restart-restore.log" 2>&1
+
+restart_restore_result=$(cat "$restart_restore_result_file")
+echo "$restart_restore_result"
+[[ "$restart_restore_result" == ok* ]]
+tmux -S "$restart_socket_path" has-session -t "$restart_session_name"
+[[ "$(tmux -S "$restart_socket_path" display-message -p \
+  -t "$restart_session_name" '#{pane_pid}')" == "$restart_pane_pid" ]]
+restart_restore_state="$(
+  defaults export "$restart_bundle_id" - |
+    plutil -extract sessionState raw -o - -- - |
+    base64 --decode
+)"
+jq -e --arg session "$restart_session_name" --arg socket "$restart_socket_path" \
+  '.schemaVersion == 4 and .tmuxAttachment.sessionName == $session
+    and .tmuxAttachment.socketPath == $socket
+    and (.tmuxAttachment.executablePath | startswith("/"))' \
+  <<<"$restart_restore_state" >/dev/null
