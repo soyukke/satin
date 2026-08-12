@@ -92,9 +92,13 @@ targets Apple Silicon only.
 - Rust emits centrally filtered semantic logs through `SATIN_LOG`; Swift uses
   unified logging categories for lifecycle, runtime, and session events. Fatal
   core or Metal initialization errors are visible to the user before exit.
-- The macOS CI gate verifies Rust, builds the native host and release archive,
-  and exercises native rendering, resize, session, and lifecycle smoke paths.
-  `just native-soak` repeats high-risk native lifecycle scenarios locally.
+- The pull-request gate runs platform-independent formatting and repository
+  policy checks on Linux in parallel with the macOS lane. The macOS lane
+  verifies Rust, builds the native host and release archive, and exercises
+  native rendering, resize, session, and lifecycle smoke paths. Documentation,
+  demo, and workflow-only changes outside the macOS gate skip the native lane;
+  the aggregate gate still requires the Linux checks. `just native-soak`
+  repeats high-risk native lifecycle scenarios locally.
 
 ## Consequences
 

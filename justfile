@@ -98,7 +98,7 @@ native-signed-release:
 # Build CI artifacts exactly once, then reuse the signed package downstream.
 native-ci-build:
     @if [[ -z "${IN_NIX_SHELL:-}" ]]; then \
-        exec nix develop --command just native-ci-build; \
+        exec nix develop .#ci-native --command just native-ci-build; \
     else \
         just native-build; \
         SATIN_UPDATE_SELF_TEST=1 spikes/macos-shell/.build/SatinApplication; \
@@ -110,7 +110,7 @@ native-ci-build:
 # Run the production smoke suite without recompiling unchanged native artifacts.
 native-ci-smoke:
     @if [[ -z "${IN_NIX_SHELL:-}" ]]; then \
-        exec nix develop --command just native-ci-smoke; \
+        exec nix develop .#ci-native --command just native-ci-smoke; \
     else \
         test -x spikes/macos-shell/.build/SatinApplication; \
         test -d "spikes/macos-shell/.build/package/Satin.app"; \
@@ -447,7 +447,15 @@ test:
 
 # Run every formatting, source, repository, and operations lint gate.
 lint:
-    @if [[ -z "${IN_NIX_SHELL:-}" ]]; then exec nix develop --command just lint; else just fmt-check && cargo clippy --all-targets --all-features -- -D warnings && just repo-lint && just ops-lint; fi
+    @if [[ -z "${IN_NIX_SHELL:-}" ]]; then exec nix develop --command just lint; else just ci-static && cargo clippy --all-targets --all-features -- -D warnings; fi
+
+# Run platform-independent formatting and repository policy checks.
+ci-static:
+    @if [[ -z "${IN_NIX_SHELL:-}" ]]; then exec nix develop .#ci-static --command just ci-static; else just fmt-check && just repo-lint && just ops-lint; fi
+
+# Run Rust compile, lint, test, and license checks used by native CI.
+ci-rust:
+    @if [[ -z "${IN_NIX_SHELL:-}" ]]; then exec nix develop .#ci-native --command just ci-rust; else cargo check && cargo clippy --all-targets --all-features -- -D warnings && cargo test && just license-audit; fi
 
 # Lint Swift formatting, naming, safety, and language idioms.
 swift-lint:
@@ -498,7 +506,7 @@ fmt-check:
 
 # Verify formatting, type checking, linting, and tests.
 verify:
-    @if [[ -z "${IN_NIX_SHELL:-}" ]]; then exec nix develop --command just verify; else cargo check && just lint && cargo test && just license-audit; fi
+    @if [[ -z "${IN_NIX_SHELL:-}" ]]; then exec nix develop --command just verify; else just ci-static && just ci-rust; fi
 
 # Check Rust dependencies against the current RustSec advisory database.
 audit:
