@@ -201,11 +201,13 @@ final class NativeArtifactsPopoverViewController: NSViewController {
         onSelect?(artifacts[sender.tag].id)
     }
 
-    func performFirstSelectionForSmoke() {
-        guard let first = artifacts.first else {
-            return
+    @discardableResult
+    func performSelectionForSmoke(_ id: String) -> Bool {
+        guard let artifact = artifacts.first(where: { $0.id == id }) else {
+            return false
         }
-        onSelect?(first.id)
+        onSelect?(artifact.id)
+        return true
     }
 
     private func relativeTime(_ milliseconds: UInt64) -> String {

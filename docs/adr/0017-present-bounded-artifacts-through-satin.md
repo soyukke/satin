@@ -49,8 +49,11 @@ and a release-matched embedded agent skill.
   version number.
 - The default preview budget is 80 terminal cells by 32 rows. Users can change
   both limits, the BCP 47 presentation language, and an overflow policy of
-  `compact`, `defer`, or `reject`. A preview never bypasses its configured bound;
-  the original source may be larger.
+  `compact`, `defer`, or `reject`. Registration and stored preview summaries
+  never bypass this configured bound; the original source may be larger. An
+  interactive viewer reflows the stored snapshot to its current pane geometry,
+  within a separate hard rendering limit, so the policy budget does not create
+  an artificial 80-column card inside a wider pane.
 - Rust owns the store, version validation, readable indexes, policy validation,
   CJK-aware cell measurement, structured formatting, omission accounting, and
   Kitty PNG emission. Swift owns the native recent-artifact popover and split,
@@ -75,7 +78,11 @@ split operation for agent automation. This is the only native library surface in
 the initial version; searching, tags, thumbnails, diffing versions, sync, and
 export are intentionally absent.
 
-The viewer remains a bounded Rust TUI launched as a terminal startup command.
+The viewer remains a bounded Rust TUI launched directly as the terminal pane's
+child process. It does not start an interactive login shell first, so selecting
+an artifact cannot flash a prompt or an injected CLI command. The viewer uses
+the whole pane without an outer card border; its pane header's common close
+button owns dismissal, and keyboard input is not forwarded to a GUI viewer.
 It exercises the existing libghostty-vt and Kitty paths without extending the
 AppKit cell renderer. Its CLI and store contracts are independent of that
 implementation. A retained native artifact pane may replace the TUI when richer

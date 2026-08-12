@@ -671,6 +671,7 @@ import Foundation
 
         func waitForArtifactPopoverSmokeOpen(
             _ content: NativeArtifactsPopoverViewController,
+            artifact: String,
             attempts: Int
         ) {
             guard let path = smokeState.artifactPopoverOpenPath, attempts > 0 else {
@@ -678,14 +679,18 @@ import Foundation
             }
             if FileManager.default.fileExists(atPath: path) {
                 smokeState.artifactPopoverOpenPath = nil
-                content.performFirstSelectionForSmoke()
+                _ = content.performSelectionForSmoke(artifact)
                 return
             }
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self, weak content] in
                 guard let self, let content else {
                     return
                 }
-                self.waitForArtifactPopoverSmokeOpen(content, attempts: attempts - 1)
+                self.waitForArtifactPopoverSmokeOpen(
+                    content,
+                    artifact: artifact,
+                    attempts: attempts - 1
+                )
             }
         }
 

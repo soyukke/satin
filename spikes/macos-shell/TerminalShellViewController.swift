@@ -354,6 +354,7 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
     var notificationsEnabled: Bool
     var pendingPaneWorkingDirectory: String?
     var pendingPaneStartupCommand: [String]?
+    var pendingPaneDirectStartup = false
     var pendingPaneMode: NativePaneMode?
     let initialFinderLaunch: NativeFinderEditorLaunch?
     var activePaneId: Int?
@@ -606,13 +607,21 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
                 if let resultPath = self.smokeState.artifactPopoverResultPath {
                     self.smokeState.artifactPopoverResultPath = nil
                     DispatchQueue.main.async {
-                        let status = artifacts.isEmpty ? "failed" : "ok"
+                        let target =
+                            ProcessInfo.processInfo.environment["SATIN_NATIVE_SMOKE_ARTIFACT"]
+                            ?? ""
+                        let targetAvailable = artifacts.contains { $0.id == target }
+                        let status = targetAvailable ? "ok" : "failed"
                         self.writeArtifactPopoverSmokeResult(
                             resultPath,
                             result: "\(status) artifact-popover items=\(artifacts.count)\n"
                         )
-                        if !artifacts.isEmpty {
-                            self.waitForArtifactPopoverSmokeOpen(content, attempts: 300)
+                        if targetAvailable {
+                            self.waitForArtifactPopoverSmokeOpen(
+                                content,
+                                artifact: target,
+                                attempts: 300
+                            )
                         }
                     }
                 }
@@ -695,7 +704,8 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
                     "artifact",
                     "view",
                     artifact,
-                ]
+                ],
+                directStartup: true
             )
         else {
             return false

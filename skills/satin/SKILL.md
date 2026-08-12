@@ -180,9 +180,10 @@ satin artifact show "$artifact_id@2" --vertical --background --json
 Omitting `--pane` targets `SATIN_PANE_ID`. `artifact show` creates and starts the split atomically;
 do not emulate it with `split`, `send`, and `key`. Use `--background` unless the user wants focus moved
 to the viewer. Humans can also use the Artifacts action in the native toolbar to inspect recent previews
-and open one beside the active pane. The viewer obeys the configured cell and row budget, reports
-omissions, and closes with `q`, Escape, Enter, or Ctrl+C. `show ID` selects the latest version and
-`show ID@N` selects an immutable prior version.
+and replace that pane with one. Registration obeys the configured preview budget; the viewer reflows
+the retained snapshot to the pane, reports omissions, and closes through the pane header's common
+close action. A standalone viewer remains interruptible with Ctrl+C. `show ID` selects the latest
+version and `show ID@N` selects an immutable prior version.
 
 The overflow policy is `compact`, `defer`, or `reject`. If registration is rejected, revise the source
 or ask before changing policy. Do not create a new artifact when the user is clearly revising an

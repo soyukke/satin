@@ -117,6 +117,10 @@ extension TerminalShellViewController {
             reply(controlFailure("invalid_send", "A valid pane and text are required."))
             return
         }
+        guard paneStore.artifactSelectors[paneId] == nil else {
+            reply(.success(["pane": paneId, "bytes": 0, "ignored": true]))
+            return
+        }
         pane.write(Data(text.utf8))
         reply(.success(["pane": paneId, "bytes": text.utf8.count]))
     }
@@ -176,6 +180,10 @@ extension TerminalShellViewController {
             let data = controlKeyData(key)
         else {
             reply(controlFailure("invalid_key", "The pane or key name is invalid."))
+            return
+        }
+        guard paneStore.artifactSelectors[paneId] == nil else {
+            reply(.success(["pane": paneId, "key": key, "ignored": true]))
             return
         }
         pane.write(data)
@@ -405,14 +413,17 @@ extension TerminalShellViewController {
             "view",
             artifact,
         ]
+        pendingPaneDirectStartup = true
         pendingPaneMode = .terminal
         let splitAxis = axis == "horizontal" ? ffiSplitHorizontal : ffiSplitVertical
         guard let newPane = core.splitActive(axis: splitAxis) else {
             pendingPaneWorkingDirectory = nil
             pendingPaneStartupCommand = nil
+            pendingPaneDirectStartup = false
             pendingPaneMode = nil
             return nil
         }
+        paneStore.artifactSelectors[newPane] = artifact
         syncFromCore()
         return newPane
     }
