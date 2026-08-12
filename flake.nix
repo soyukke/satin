@@ -81,6 +81,22 @@
             shellHook = nativeShellHook;
           };
 
+          # Release packaging needs neither editor tooling nor repository lints.
+          ci-release = pkgs.mkShell {
+            packages = [
+              pkgs.cargo
+              pkgs.cargo-about
+              pkgs.git
+              pkgs.just
+              pkgs.jq
+              font
+              pkgs.rustc
+              pkgs.zig_0_15
+            ];
+
+            shellHook = nativeShellHook;
+          };
+
           # These checks are platform-independent and run in parallel on Linux.
           ci-static = pkgs.mkShellNoCC {
             packages = [

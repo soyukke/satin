@@ -84,7 +84,10 @@ artificial file splitting, or abstractions without a clear owner and purpose.
 
 - Pull requests run the same checks composed by local `just verify`. CI runs
   the platform-independent `just ci-static` subset on Linux in parallel with
-  `just ci-rust`, the native build, and the smoke suite on macOS.
+  `just ci-rust`, the native build, and the smoke suite on macOS. A release PR
+  skips the macOS lane only when CI proves that `Cargo.toml` and `Cargo.lock`
+  differ exclusively at the root Satin package version; the tag workflow still
+  rebuilds and verifies the release from the resulting `main` commit.
 - GitHub Actions are pinned to full commit SHAs and checked by zizmor.
 - Workflow permissions default to read-only; write permissions are scoped to
   the job that needs them.

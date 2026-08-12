@@ -24,10 +24,12 @@ runs Gatekeeper assessment, and only then writes the archive and manifest.
 
 The release workflow requires a tag that exactly matches the Cargo package
 version, for example `vX.Y.Z`, and points at the current `main` commit. Pull
-request CI owns the full source and packaged-app verification gates. The tag
-workflow builds the release bundle once, signs it, verifies the archive and its
-installability, publishes the archive and schema-2 manifest, generates release
-notes, and records GitHub build provenance. It also attaches
+request CI owns the full source and packaged-app verification gates. A strictly
+version-only release PR may skip the redundant macOS lane after the scope check
+normalizes and compares both Cargo files. The tag workflow uses a minimal Nix
+closure, builds the release bundle once from `main`, signs it, verifies the
+archive and its installability, publishes the archive and schema-2 manifest,
+generates release notes, and records GitHub build provenance. It also attaches
 `Satin-<version>-provenance.intoto.jsonl` so the provenance can be verified
 without fetching it from GitHub's attestation API.
 
