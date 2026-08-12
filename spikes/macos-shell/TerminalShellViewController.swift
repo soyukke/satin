@@ -49,7 +49,6 @@ enum NativeLog {
 let ffiSplitVertical: UInt32 = 0
 let ffiSplitHorizontal: UInt32 = 1
 let terminalHorizontalInset: CGFloat = 12
-let terminalTextTop: CGFloat = 12
 let terminalTextBottomInset: CGFloat = 10
 let defaultTerminalFontSize = CGFloat(nativeDefaultFontSize)
 let minTerminalFontSize = CGFloat(nativeMinimumFontSize)
@@ -327,8 +326,8 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
     let core: RustCore
     var settings: NativeSettings
     let tabControl = NativeTabControl(frame: .zero)
+    let newTabButton = NativeHoverIconButton(symbolName: "plus", title: "New Tab")
     let sessionControlButton = NSButton(frame: .zero)
-    let toolbarActionControl = NSSegmentedControl(frame: .zero)
     let backdropView = NativeTerminalBackdropView(frame: .zero)
     let metalView: TerminalMetalView
     let terminalTextView = TerminalTextView(frame: .zero)
@@ -366,10 +365,11 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
     var nvimLauncherPath = ""
     var zshIntegrationPath = ""
     var artifactsPopover: NSPopover?
+    var artifactsPopoverPaneId: Int?
     let paneStatuses = NativePaneStatusStore()
-    lazy var toolbarControlsView = NativePlatformAppearance.makeToolbarControls(
-        sessionControl: sessionControlButton,
-        actionControl: toolbarActionControl
+    lazy var tabStripView = NativeTabStripView(
+        tabControl: tabControl,
+        newTabButton: newTabButton
     )
     lazy var nativeToolbar: NSToolbar = {
         let toolbar = NSToolbar(identifier: "dev.soyukke.satin.toolbar.main")
@@ -402,6 +402,9 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
         self.metalView.contextMenuProvider = self
         self.terminalTextView.onPaneSelected = { [weak self] paneId in
             self?.selectPane(paneId)
+        }
+        self.terminalTextView.onPaneChromeAction = { [weak self] action, paneId, sourceView in
+            self?.performPaneChromeAction(action, paneId: paneId, sourceView: sourceView)
         }
         self.terminalTextView.onSplitResize = {
             [weak self] firstPaneId, secondPaneId, axis, ratio, cellDelta in
@@ -491,7 +494,13 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
         for source in paneStore.suspendedWakeupSources.values {
             source.cancel()
         }
+        for source in paneStore.artifactBackingWakeupSources.values {
+            source.cancel()
+        }
         for pane in paneStore.runtimes.values {
+            metalView.forgetRuntime(pane.renderHandle())
+        }
+        for pane in paneStore.artifactBackingRuntimes.values {
             metalView.forgetRuntime(pane.renderHandle())
         }
     }
@@ -562,10 +571,11 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
         self.zshIntegrationPath = zshIntegrationPath
     }
 
-    func showArtifactsPopover(relativeTo sourceView: NSView) {
+    func showArtifactsPopover(relativeTo sourceView: NSView, paneId: Int) {
         if let popover = artifactsPopover, popover.isShown {
             popover.performClose(sourceView)
             artifactsPopover = nil
+            artifactsPopoverPaneId = nil
             return
         }
         let popover = NSPopover()
@@ -580,6 +590,7 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
         popover.contentViewController = loading
         popover.contentSize = loading.view.frame.size
         artifactsPopover = popover
+        artifactsPopoverPaneId = paneId
         popover.show(relativeTo: sourceView.bounds, of: sourceView, preferredEdge: .maxY)
         loadRecentArtifacts { [weak self, weak popover] artifacts in
             guard let self, let popover, self.artifactsPopover === popover, popover.isShown else {
@@ -652,24 +663,69 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
     }
 
     func openArtifactFromPopover(_ artifact: String) {
+        let paneId = artifactsPopoverPaneId
         artifactsPopover?.performClose(nil)
         artifactsPopover = nil
-        guard let paneId = activePaneId,
-            let tab = lastSnapshot?.tabs.first(where: { $0.panes.contains(paneId) }),
+        artifactsPopoverPaneId = nil
+        guard let paneId,
+            lastSnapshot?.tabs.contains(where: { $0.panes.contains(paneId) }) == true,
             validControlArtifactSelector(artifact),
             controlArtifactExists(artifact),
             FileManager.default.isExecutableFile(atPath: controlCliPath),
-            createArtifactPane(
-                paneId: paneId,
-                tab: tab,
-                artifact: artifact,
-                axis: "vertical"
-            ) != nil
+            replacePaneWithArtifact(paneId: paneId, artifact: artifact)
         else {
             NSSound.beep()
             return
         }
         focusTerminal()
+    }
+
+    func replacePaneWithArtifact(paneId: Int, artifact: String) -> Bool {
+        guard let visiblePane = paneStore.runtimes[paneId] else {
+            return false
+        }
+        let cwd =
+            paneStore.workingDirectories[paneId]
+            ?? (visiblePane as? RustTerminalPane)?.currentWorkingDirectory()
+            ?? nativeWorkingDirectory()
+        guard
+            let viewer = RustTerminalPane(
+                grid: paneGridSize(paneId),
+                cwd: cwd,
+                shell: settings.shellPath,
+                environment: controlEnvironment(paneId: paneId),
+                startupCommand: [
+                    controlCliPath,
+                    "--socket",
+                    controlSocketPath,
+                    "artifact",
+                    "view",
+                    artifact,
+                ]
+            )
+        else {
+            return false
+        }
+
+        if paneStore.artifactBackingRuntimes[paneId] == nil {
+            paneStore.wakeupSources.removeValue(forKey: paneId)?.cancel()
+            metalView.forgetRuntime(visiblePane.renderHandle())
+            paneStore.runtimes.removeValue(forKey: paneId)
+            paneStore.artifactBackingRuntimes[paneId] = visiblePane
+            installArtifactBackingWakeup(paneId: paneId, pane: visiblePane)
+        } else {
+            removePaneRuntime(paneId)
+        }
+
+        paneStore.runtimes[paneId] = viewer
+        paneStore.artifactSelectors[paneId] = artifact
+        viewer.setOptionAsAlt(optionAsAltEnabled)
+        installPaneWakeup(paneId: paneId, pane: viewer)
+        paneStore.scrollRemainders[paneId] = 0
+        lastNvimModelScrollShift = nil
+        drainTerminalPanes()
+        updateActiveFrame()
+        return true
     }
 
     func applySettings(_ settings: NativeSettings) {

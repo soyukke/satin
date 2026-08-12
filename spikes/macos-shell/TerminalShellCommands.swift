@@ -21,21 +21,11 @@ extension TerminalShellViewController {
     }
 
     @objc func splitVertical(_ sender: Any?) {
-        if routeTmuxSplit(horizontal: true) {
-            return
-        }
-        pendingPaneWorkingDirectory = newPaneWorkingDirectory()
-        _ = core.splitActive(axis: ffiSplitVertical)
-        syncFromCore()
+        splitPane(activePaneId, axis: ffiSplitVertical)
     }
 
     @objc func splitHorizontal(_ sender: Any?) {
-        if routeTmuxSplit(horizontal: false) {
-            return
-        }
-        pendingPaneWorkingDirectory = newPaneWorkingDirectory()
-        _ = core.splitActive(axis: ffiSplitHorizontal)
-        syncFromCore()
+        splitPane(activePaneId, axis: ffiSplitHorizontal)
     }
 
     func resizeSplit(
@@ -88,14 +78,57 @@ extension TerminalShellViewController {
     }
 
     @objc func closeActivePane(_ sender: Any?) {
+        closePane(activePaneId)
+    }
+
+    func performPaneChromeAction(
+        _ action: NativePaneChromeAction,
+        paneId: Int,
+        sourceView: NSView
+    ) {
+        switch action {
+        case .close:
+            closePane(paneId)
+        case .splitVertical:
+            splitPane(paneId, axis: ffiSplitVertical)
+        case .splitHorizontal:
+            splitPane(paneId, axis: ffiSplitHorizontal)
+        case .artifacts:
+            guard selectPaneForChromeAction(paneId) else {
+                return
+            }
+            showArtifactsPopover(relativeTo: sourceView, paneId: paneId)
+            return
+        }
+        focusTerminal()
+    }
+
+    private func splitPane(_ paneId: Int?, axis: UInt32) {
+        guard let paneId else {
+            return
+        }
+        guard selectPaneForChromeAction(paneId) else {
+            return
+        }
+        if routeTmuxSplit(horizontal: axis == ffiSplitVertical) {
+            return
+        }
+        pendingPaneWorkingDirectory = newPaneWorkingDirectory()
+        _ = core.splitActive(axis: axis)
+        syncFromCore()
+    }
+
+    private func closePane(_ paneId: Int?) {
+        guard let paneId else {
+            return
+        }
         if let session = tmuxSession,
-            let paneId = activePaneId,
             let tmuxPaneId = session.tmuxPaneIds[paneId]
         {
             _ = session.gateway.tmuxCommand("kill-pane -t %\(tmuxPaneId)")
             return
         }
-        guard let paneId = activePaneId, core.closePane(paneId) else {
+        guard core.closePane(paneId) else {
             return
         }
         discardPaneState(paneId)
@@ -104,6 +137,24 @@ extension TerminalShellViewController {
             return
         }
         syncFromCore()
+    }
+
+    @discardableResult
+    private func selectPaneForChromeAction(_ paneId: Int) -> Bool {
+        if let session = tmuxSession, let tmuxPaneId = session.tmuxPaneIds[paneId] {
+            guard session.gateway.tmuxCommand("select-pane -t %\(tmuxPaneId)") else {
+                return false
+            }
+            activePaneId = paneId
+            terminalTextView.setActivePaneId(paneId)
+            updateActiveFrame()
+            return true
+        }
+        guard core.selectPane(paneId) else {
+            return false
+        }
+        syncFromCore()
+        return true
     }
 
     @objc func focusPaneLeft(_ sender: Any?) {

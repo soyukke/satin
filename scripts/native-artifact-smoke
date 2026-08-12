@@ -139,19 +139,26 @@ for _ in {1..40}; do
   sleep 0.05
 done
 test -s "$popover_shot"
+state_before="$($cli --socket "$socket" --json list)"
+rich_pane="$(jq -r '.result.tabs[] | select(.active) | .activePane' <<<"$state_before")"
+pane_count_before="$(jq -r '.result.panes | length' <<<"$state_before")"
 : >"$popover_result.open"
 
 for _ in {1..100}; do
+  rich_screen="$($cli --socket "$socket" read-screen --pane "$rich_pane")"
   state="$($cli --socket "$socket" --json list)"
-  rich_pane="$(jq -r '[.result.panes[] | select(.id != 1)] | first | .id // empty' <<<"$state")"
-  if [[ -n "$rich_pane" ]]; then
+  if grep -Fq "リッチレポート" <<<"$rich_screen"; then
     break
   fi
   sleep 0.05
 done
-if [[ -z "${rich_pane:-}" ]]; then
+if ! grep -Fq "リッチレポート" <<<"${rich_screen:-}" ||
+  ! jq -e --argjson pane "$rich_pane" --argjson count "$pane_count_before" '
+    (.result.panes | length) == $count
+      and any(.result.panes[]; .id == $pane)
+  ' <<<"$state" >/dev/null; then
   cat "$app_log" >&2
-  echo "artifact smoke failed: selecting the popover item did not create a split" >&2
+  echo "artifact smoke failed: popover selection did not replace its source pane" >&2
   exit 1
 fi
 
@@ -192,14 +199,20 @@ test -s "$rich_markdown_shot"
 "$cli" --socket "$socket" key --pane "$rich_pane" q >/dev/null
 for _ in {1..100}; do
   state="$($cli --socket "$socket" --json list)"
-  if jq -e --argjson pane "$rich_pane" \
-    '.result.panes | all(.id != $pane)' <<<"$state" >/dev/null; then
+  restored_screen="$($cli --socket "$socket" read-screen --pane "$rich_pane")"
+  if ! grep -Fq "リッチレポート" <<<"$restored_screen" &&
+    jq -e --argjson pane "$rich_pane" --argjson count "$pane_count_before" '
+      (.result.panes | length) == $count
+        and any(.result.panes[]; .id == $pane)
+    ' <<<"$state" >/dev/null; then
     break
   fi
   sleep 0.05
 done
-jq -e --argjson pane "$rich_pane" \
-  '.result.panes | all(.id != $pane)' <<<"$state" >/dev/null
+jq -e --argjson pane "$rich_pane" --argjson count "$pane_count_before" '
+  (.result.panes | length) == $count
+    and any(.result.panes[]; .id == $pane)
+' <<<"$state" >/dev/null
 
 table_show="$($cli --socket "$socket" --json artifact show \
   "$table_id" --pane 1 --vertical --background)"

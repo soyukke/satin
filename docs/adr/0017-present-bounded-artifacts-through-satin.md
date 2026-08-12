@@ -66,11 +66,14 @@ and a release-matched embedded agent skill.
 
 ## Consequences
 
-The native toolbar has one Artifacts action. Its popover shows at most five recent
-titles, versions, update times, and short previews. Selecting a row opens the
-latest version in a right split and focuses it. This is the only native library
-surface in the initial version; searching, tags, thumbnails, diffing versions,
-sync, and export are intentionally absent.
+Every native pane header has an Artifacts action. Its popover shows at most five
+recent titles, versions, update times, and short previews. GUI selection replaces
+the clicked pane's visible runtime with the latest artifact while retaining the
+underlying terminal, Neovim, or tmux runtime. Selecting another artifact in that
+pane replaces only the viewer. The CLI `artifact show` command remains an atomic
+split operation for agent automation. This is the only native library surface in
+the initial version; searching, tags, thumbnails, diffing versions, sync, and
+export are intentionally absent.
 
 The viewer remains a bounded Rust TUI launched as a terminal startup command.
 It exercises the existing libghostty-vt and Kitty paths without extending the

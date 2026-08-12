@@ -14,6 +14,7 @@ final class TerminalTextView: NSView, NSTextInputClient {
     var onFindRequested: (() -> Bool)?
     var onScroll: ((CGFloat) -> Void)?
     var onPaneSelected: ((Int) -> Void)?
+    var onPaneChromeAction: ((NativePaneChromeAction, Int, NSView) -> Void)?
     var onSplitResize: ((Int, Int, NativePaneDividerAxis, CGFloat, Int) -> Void)?
     var onFocusChanged: ((Bool) -> Void)?
     var onContextMenuRequested: ((Int?, NSEvent, NSView) -> Void)?
@@ -32,7 +33,9 @@ final class TerminalTextView: NSView, NSTextInputClient {
     var rendererModelFrameCount = 0
     var activePaneId: Int?
     var paneFrames: [Int: NSRect] = [:]
+    var paneBounds: [Int: NSRect] = [:]
     var paneDividers: [NativePaneDivider] = []
+    var paneChromeViews: [Int: NativePaneChromeView] = [:]
     var activeDividerDrag: NativePaneDivider?
     var activeDividerCommandRatio: CGFloat?
     var terminalFontSize = defaultTerminalFontSize
@@ -69,6 +72,7 @@ final class TerminalTextView: NSView, NSTextInputClient {
     }
 
     override func draw(_ dirtyRect: NSRect) {
+        drawPaneChromeBackgrounds()
         drawPaneBorders()
         drawSplitDividerFeedback()
         drawScrollbar()
@@ -114,9 +118,9 @@ final class TerminalTextView: NSView, NSTextInputClient {
     }
 
     override func accessibilityHelp() -> String? {
-        "Interactive terminal. Drag split borders to resize panes, Command-click links, "
-            + "use Control-Command-H/J/K/L to move between panes, and Command-F to search "
-            + "scrollback."
+        "Interactive terminal. Each pane header contains close, split, and artifact actions. "
+            + "Drag split borders to resize panes, Command-click links, use "
+            + "Control-Command-H/J/K/L to move between panes, and Command-F to search scrollback."
     }
 
     override func setFrameSize(_ newSize: NSSize) {
@@ -164,11 +168,15 @@ final class TerminalTextView: NSView, NSTextInputClient {
             needsDisplay = true
             return
         }
-        if let paneId = paneFrames.first(where: { $0.value.contains(point) })?.key,
-            paneId != activePaneId
-        {
-            activePaneId = paneId
-            onPaneSelected?(paneId)
+        if let paneId = paneBounds.first(where: { $0.value.contains(point) })?.key {
+            if paneId != activePaneId {
+                setActivePaneId(paneId)
+                onPaneSelected?(paneId)
+            }
+            if paneFrames[paneId]?.contains(point) != true {
+                window?.makeFirstResponder(self)
+                return
+            }
         }
         if event.modifierFlags.contains(.command),
             let position = mouseGridPosition(point),
@@ -387,14 +395,36 @@ final class TerminalTextView: NSView, NSTextInputClient {
 
     func updatePaneFrames(
         _ frames: [Int: NSRect],
+        paneBounds: [Int: NSRect],
         activePaneId: Int?,
         dividers: [NativePaneDivider] = []
     ) {
         paneFrames = frames
+        self.paneBounds = paneBounds
         paneDividers = dividers
-        self.activePaneId = activePaneId
+        updatePaneChromeViews()
+        setActivePaneId(activePaneId)
         invalidateInputCoordinates()
         window?.invalidateCursorRects(for: self)
+        needsDisplay = true
+    }
+
+    func paneChromeView(for paneId: Int) -> NativePaneChromeView? {
+        paneChromeViews[paneId]
+    }
+
+    func paneChromeViewsReady(expectedCount: Int) -> Bool {
+        paneChromeViews.count == expectedCount
+            && paneChromeViews.values.allSatisfy {
+                $0.superview === self && !$0.isHidden && $0.actionsReady()
+            }
+    }
+
+    func setActivePaneId(_ paneId: Int?) {
+        activePaneId = paneId
+        for (candidateId, chrome) in paneChromeViews {
+            chrome.update(isActive: candidateId == paneId)
+        }
         needsDisplay = true
     }
 
@@ -524,16 +554,67 @@ final class TerminalTextView: NSView, NSTextInputClient {
     }
 
     func drawPaneBorders() {
-        guard paneFrames.count > 1 else {
+        guard paneBounds.count > 1 else {
             return
         }
-        for (paneId, rect) in paneFrames {
+        for (paneId, rect) in paneBounds {
             let path = NSBezierPath(rect: rect.insetBy(dx: 0.5, dy: 0.5))
             path.lineWidth = paneId == activePaneId ? 2 : 1
             (paneId == activePaneId
                 ? NSColor.controlAccentColor
                 : NSColor.separatorColor).setStroke()
             path.stroke()
+        }
+    }
+
+    func drawPaneChromeBackgrounds() {
+        for (paneId, paneRect) in paneBounds {
+            let height = min(nativePaneChromeHeight, paneRect.height)
+            let headerRect = NSRect(
+                x: paneRect.minX,
+                y: paneRect.minY,
+                width: paneRect.width,
+                height: height
+            )
+            NSColor.black.withAlphaComponent(paneId == activePaneId ? 0.2 : 0.12).setFill()
+            headerRect.fill()
+            NSColor.separatorColor.withAlphaComponent(0.28).setFill()
+            NSRect(x: headerRect.minX, y: headerRect.maxY - 1, width: headerRect.width, height: 1)
+                .fill()
+        }
+    }
+
+    private func updatePaneChromeViews() {
+        let visiblePaneIds = Set(paneBounds.keys)
+        let stalePaneIds = paneChromeViews.keys.filter { !visiblePaneIds.contains($0) }
+        for paneId in stalePaneIds {
+            paneChromeViews[paneId]?.removeFromSuperview()
+            paneChromeViews.removeValue(forKey: paneId)
+        }
+        for (paneId, paneRect) in paneBounds {
+            let chrome: NativePaneChromeView
+            if let existing = paneChromeViews[paneId] {
+                chrome = existing
+            } else {
+                chrome = NativePaneChromeView(paneId: paneId)
+                chrome.onAction = { [weak self] action, paneId, sourceView in
+                    self?.onPaneChromeAction?(action, paneId, sourceView)
+                }
+                paneChromeViews[paneId] = chrome
+                addSubview(chrome)
+            }
+            let availableWidth = max(1, paneRect.width - 8)
+            let width = min(NativePaneChromeView.preferredWidth, availableWidth)
+            let headerHeight = min(nativePaneChromeHeight, paneRect.height)
+            let height = min(NativePaneChromeView.controlHeight, headerHeight)
+            chrome.frame = NSRect(
+                x: paneRect.maxX - width - 4,
+                y: paneRect.minY + floor((headerHeight - height) / 2),
+                width: width,
+                height: height
+            )
+            chrome.isHidden = paneRect.width < 40 || paneRect.height < 12
+            chrome.update(isActive: paneId == activePaneId)
         }
     }
 

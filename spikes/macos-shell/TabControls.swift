@@ -1,5 +1,64 @@
 import AppKit
 
+final class NativeTabStripView: NSView {
+    private enum Metrics {
+        static let spacing: CGFloat = 4
+        static let buttonSize = NSSize(width: 22, height: 22)
+    }
+
+    let tabControl: NativeTabControl
+    let newTabButton: NativeHoverIconButton
+
+    init(tabControl: NativeTabControl, newTabButton: NativeHoverIconButton) {
+        self.tabControl = tabControl
+        self.newTabButton = newTabButton
+        super.init(frame: .zero)
+        addSubview(tabControl)
+        addSubview(newTabButton)
+    }
+
+    required init?(coder: NSCoder) {
+        nil
+    }
+
+    override var intrinsicContentSize: NSSize {
+        let tabs = tabControl.intrinsicContentSize
+        return NSSize(
+            width: tabs.width + Metrics.spacing + Metrics.buttonSize.width,
+            height: max(tabs.height, Metrics.buttonSize.height)
+        )
+    }
+
+    override func layout() {
+        super.layout()
+        let tabs = tabControl.intrinsicContentSize
+        tabControl.frame = NSRect(
+            x: 0,
+            y: floor((bounds.height - tabs.height) / 2),
+            width: tabs.width,
+            height: tabs.height
+        )
+        newTabButton.frame = NSRect(
+            x: tabControl.frame.maxX + Metrics.spacing,
+            y: floor((bounds.height - Metrics.buttonSize.height) / 2),
+            width: Metrics.buttonSize.width,
+            height: Metrics.buttonSize.height
+        )
+    }
+
+    func contentSizeDidChange() {
+        invalidateIntrinsicContentSize()
+        needsLayout = true
+        superview?.needsLayout = true
+    }
+
+    func actionsReady() -> Bool {
+        newTabButton.superview === self
+            && newTabButton.image != nil
+            && !newTabButton.isBordered
+    }
+}
+
 final class RenameTextField: NSTextField, NSTextFieldDelegate {
     var onCommit: (() -> Void)?
 

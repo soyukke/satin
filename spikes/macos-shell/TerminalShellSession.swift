@@ -205,7 +205,8 @@ extension TerminalShellViewController {
         completion: NativeControlReply? = nil
     ) -> Bool {
         guard let terminal = paneStore.runtimes[paneId] as? RustTerminalPane,
-            paneStore.suspendedSessions[paneId] == nil
+            paneStore.suspendedSessions[paneId] == nil,
+            paneStore.artifactBackingRuntimes[paneId] == nil
         else {
             return false
         }

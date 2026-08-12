@@ -128,7 +128,8 @@ extension TerminalShellViewController {
         guard let paneId = request.pane,
             controlPaneExists(paneId),
             paneStore.runtimes[paneId] is RustTerminalPane,
-            paneStore.suspendedSessions[paneId] == nil
+            paneStore.suspendedSessions[paneId] == nil,
+            paneStore.artifactBackingRuntimes[paneId] == nil
         else {
             reply(controlFailure("pane_not_terminal", "The pane is not an active terminal."))
             return
@@ -222,6 +223,7 @@ extension TerminalShellViewController {
         removeControlState(paneId)
         discardSuspendedTerminalSession(paneId)
         removePaneRuntime(paneId)
+        discardArtifactBackingPane(paneId)
         paneStore.discardMetadata(for: paneId)
     }
 

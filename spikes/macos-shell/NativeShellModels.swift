@@ -62,14 +62,6 @@ enum SatinToolbarItemIdentifier {
     static let controls = NSToolbarItem.Identifier("dev.soyukke.satin.toolbar.controls")
 }
 
-enum SatinToolbarActionSegment {
-    static let newTab = 0
-    static let splitVertical = 1
-    static let splitHorizontal = 2
-    static let artifacts = 3
-    static let count = 4
-}
-
 struct NativeArtifactListItem: Decodable {
     let id: String
     let title: String
