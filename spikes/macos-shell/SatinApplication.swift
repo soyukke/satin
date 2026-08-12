@@ -1722,6 +1722,24 @@ final class TerminalTextView: NSView, NSTextInputClient {
         return "none"
     }
 
+    func rendererModelRawScreenTextStartSummary(label: String, text: String) -> String {
+        guard let rendererModelSnapshot else {
+            return "none"
+        }
+        for window in rendererModelSnapshot.windows where !window.hidden {
+            for (rowIndex, line) in window.lines.enumerated() {
+                guard let line,
+                    let range = line.text.range(of: text)
+                else {
+                    continue
+                }
+                let col = line.text.distance(from: line.text.startIndex, to: range.lowerBound)
+                return "\(label):\(window.top + rowIndex):\(window.left + col)"
+            }
+        }
+        return "none"
+    }
+
     func rendererModelWindowTextSummary(limit: Int = 4) -> String {
         guard let rendererModelSnapshot else {
             return "none"
@@ -8231,6 +8249,10 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
             text: "RIGHTSPLIT"
         )
         let floatCount = terminalTextView.rendererModelTextOccurrences("FLOATBOX")
+        let floatCellSummary = terminalTextView.rendererModelRawScreenTextStartSummary(
+            label: "float",
+            text: "FLOATBOX"
+        )
         let statusCount = terminalTextView.rendererModelTextOccurrences("STATUSLINE")
         let statusRaw = terminalTextView.rendererModelRawTextStartSummary(
             label: "status",
@@ -8240,7 +8262,7 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
         let blendCellCount = terminalTextView.rendererModelBlendCellCount(minBlend: 35)
         let blendCellSummary = terminalTextView.rendererModelBlendCellSummary(minBlend: 35)
         let hasSplit = (counts["normal"] ?? 0) >= 2 && rightSplitCount == 1
-        let hasFloat = (counts["float"] ?? 0) >= 1 && floatCount == 1
+        let hasFloat = (counts["float"] ?? 0) >= 2 && floatCellSummary != "none"
         let hasFixedSurfaces = messageCount == 1
         let hasBlend = blendCellCount > 0 && blendCellSummary != "none"
         let hasMessageSelection =
@@ -8265,6 +8287,7 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
             "right=\(rightSplitCount)",
             "right-raw=\(rightSplitRaw)",
             "float-text=\(floatCount)",
+            "float-cell=\(floatCellSummary)",
             "status=\(statusCount)",
             "status-raw=\(statusRaw)",
             "message=\(messageCount)",
@@ -8563,10 +8586,18 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
 
     private func nvimFloatCommand() -> String {
         "lua vim.api.nvim_set_hl(0,'NormalFloat',{bg='#506070',blend=35}); "
+            + "vim.api.nvim_set_hl(0,'SatinTransparentFloat',{bg='#506070',blend=100}); "
             + "local b=vim.api.nvim_create_buf(false,true); "
-            + "vim.api.nvim_buf_set_lines(b,0,-1,false,{'FLOATBOX'}); "
-            + "local w=vim.api.nvim_open_win(b,true,{relative='editor',row=3,col=20,width=16,height=3,style='minimal'}); "
-            + "vim.wo[w].winblend=35; vim.wo[w].winhl='Normal:NormalFloat'"
+            + "vim.api.nvim_buf_set_lines(b,0,-1,false,{' FLOATBOX'}); "
+            + "local config={relative='editor',row=3,col=20,width=16,height=3,style='minimal',zindex=50}; "
+            + "local w=vim.api.nvim_open_win(b,false,config); "
+            + "vim.wo[w].winblend=35; vim.wo[w].winhl='Normal:NormalFloat'; "
+            + "local overlay=vim.api.nvim_create_buf(false,true); "
+            + "vim.api.nvim_buf_set_lines(overlay,0,-1,false,{'','',''}); "
+            + "local overlay_config={relative='editor',row=3,col=21,width=15,height=3,"
+            + "style='minimal',zindex=50,focusable=false}; "
+            + "local ow=vim.api.nvim_open_win(overlay,false,overlay_config); "
+            + "vim.wo[ow].winblend=100; vim.wo[ow].winhl='Normal:SatinTransparentFloat'"
     }
 
     private func nvimSmokeStatuslineCommand() -> String {
