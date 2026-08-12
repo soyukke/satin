@@ -4744,34 +4744,11 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
             return
         }
 
-        let input = RenameTextField(frame: NSRect(x: 0, y: 0, width: 320, height: 24))
-        input.stringValue = tab.title
-        input.isEditable = true
-        input.isSelectable = true
-        let alert = NSAlert()
-        alert.messageText = "Rename Tab"
-        alert.accessoryView = input
-        let renameButton = alert.addButton(withTitle: "Rename")
-        alert.addButton(withTitle: "Cancel")
-        alert.layout()
-        alert.window.initialFirstResponder = input
-        alert.window.makeFirstResponder(input)
-        input.selectText(nil)
-        input.onCommit = { [weak renameButton] in
-            renameButton?.performClick(nil)
-        }
-        DispatchQueue.main.async { [weak alert, weak input] in
-            guard let alert, let input else {
-                return
-            }
-            alert.window.makeFirstResponder(input)
-            input.selectText(nil)
-        }
-
-        guard alert.runModal() == .alertFirstButtonReturn else {
+        let prompt = NativeRenamePanel(title: "Rename Tab", value: tab.title)
+        guard let value = prompt.runModal(relativeTo: view.window) else {
             return
         }
-        let title = input.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        let title = value.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !title.isEmpty else {
             return
         }
@@ -4787,8 +4764,7 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
         syncFromCore()
     }
 
-    private func showTabContextMenu(index: Int, event: NSEvent, view: NSView) {
-        selectTabForContextMenu(index)
+    private func tabContextMenu(index: Int) -> NSMenu {
         let menu = NSMenu()
         let renameItem = menuItem("Rename Tab…", #selector(renameTabFromContextMenu(_:)))
         renameItem.representedObject = index
@@ -4797,7 +4773,7 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
         let closeItem = menuItem("Close Tab", #selector(closeTabFromContextMenu(_:)))
         closeItem.representedObject = index
         menu.addItem(closeItem)
-        NSMenu.popUpContextMenu(menu, with: event, for: view)
+        return menu
     }
 
     @objc private func renameTabFromContextMenu(_ sender: NSMenuItem) {
@@ -5125,18 +5101,44 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
             }
             return
         }
-        let cursorProbe = "TMUX_CURSOR_ADVANCE"
-        guard tmuxPane.writeThroughTmux(Data(cursorProbe.utf8)) else {
-            tmuxSession?.gateway.tmuxCommand("kill-session")
-            writeSessionSmokeResult(resultPath, result: "failed tmux-native cursor-input=no\n")
-            return
-        }
-        waitForTmuxSmokeLiveCursor(
-            resultPath,
-            pane: tmuxPane,
-            start: tmuxCursor,
-            marker: cursorProbe,
-            retries: 20
+        tabControl.verifyAsyncCloseForSmoke(
+            open: { [weak self] in
+                self?.tmuxSession?.gateway.tmuxCommand(
+                    "new-window -n satin-tab-close-smoke"
+                ) == true
+            },
+            modelState: { [weak self] in
+                self?.lastSnapshot.map { ($0.tabs.count, $0.active_tab) }
+            },
+            completion: { [weak self, weak tmuxPane] failure in
+                guard let self, let tmuxPane else {
+                    return
+                }
+                guard failure == nil else {
+                    self.tmuxSession?.gateway.tmuxCommand("kill-session")
+                    self.writeSessionSmokeResult(
+                        resultPath,
+                        result: "failed tmux-native \(failure ?? "tab-close=unknown")\n"
+                    )
+                    return
+                }
+                let marker = "TMUX_CURSOR_ADVANCE"
+                guard tmuxPane.writeThroughTmux(Data(marker.utf8)) else {
+                    self.tmuxSession?.gateway.tmuxCommand("kill-session")
+                    self.writeSessionSmokeResult(
+                        resultPath,
+                        result: "failed tmux-native cursor-input=no\n"
+                    )
+                    return
+                }
+                self.waitForTmuxSmokeLiveCursor(
+                    resultPath,
+                    pane: tmuxPane,
+                    start: tmuxCursor,
+                    marker: marker,
+                    retries: 20
+                )
+            }
         )
     }
 
@@ -5741,7 +5743,7 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
             restored && attachmentCleared
             ? "ok tmux-native indicator=yes output=yes history=yes paste=yes zoom=yes "
                 + "rename=yes split=2 divider-resize=yes client-grid=full "
-                + "tabs=2 cli=yes live-cursor=yes "
+                + "tabs=2 tab-close=x-redrawn cli=yes live-cursor=yes "
                 + "ime=yes focus-input=yes return-repeat=yes kitty=yes "
                 + "shell-env=yes "
                 + "shell-restored=yes detach-clears=yes\n"
@@ -6290,6 +6292,8 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
         let resizedRatio = core.snapshot()?.tabs
             .first(where: { $0.index == snapshot.active_tab })?.layout.ratio
         let ratioUpdated = resizedRatio.map { abs($0 - 0.35) < 0.001 } ?? false
+        let contextMenuReady = tabControl.contextMenuReadyForSmoke(segment: snapshot.active_tab)
+        let renamePromptReady = NativeRenamePanel.smokeLayoutReady()
         let originalRenameHandler = tabControl.onRenameRequested
         var renameRequestedSegment: Int?
         tabControl.onRenameRequested = { segment in
@@ -6323,11 +6327,13 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
             && closeTargetFitsHorizontally
             && closeTargetFitsVertically
         let originalCloseHandler = tabControl.onCloseRequested
+        let tabWidthBeforeClose = tabControl.frame.width
         var closeRequestedSegment: Int?
         tabControl.onCloseRequested = { segment in
             closeRequestedSegment = segment
+            return true
         }
-        tabControl.simulateCloseForSmoke(segment: 0)
+        _ = tabControl.simulateCloseForSmoke(segment: 0)
         tabControl.onCloseRequested = originalCloseHandler
         if let closeRequestedSegment {
             _ = closeTab(at: closeRequestedSegment)
@@ -6339,7 +6345,9 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
             && closedSnapshot?.tabs.count == 1
             && closedSnapshot?.active_tab == 0
             && closedSnapshot?.tabs.first?.title == renamedTitle
+            && tabControl.segmentCount == 1
             && tabControl.label(forSegment: 0) == renamedTitle
+            && tabControl.frame.width < tabWidthBeforeClose
         let ok =
             controlsReady
             && shortcutsReady
@@ -6357,6 +6365,8 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
             && dividerDragged
             && ratioUpdated
             && paneFrameUpdated
+            && contextMenuReady
+            && renamePromptReady
             && renameReady
             && closeReady
         let status = ok ? "ok" : "failed"
@@ -6375,6 +6385,8 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
                 + "cursors=\(cursorsReady ? "resize" : "missing") "
                 + "ratio=\(ratioUpdated ? "updated" : "stale") "
                 + "frame=\(paneFrameUpdated ? "resized" : "stale") "
+                + "context=\(contextMenuReady ? "right-click" : "missing") "
+                + "prompt=\(renamePromptReady ? "icon-free" : "invalid") "
                 + "rename=\(renameReady ? "double-click" : "missing") "
                 + "close=\(closeReady ? "x-button" : "missing")\n"
         )
@@ -9027,6 +9039,7 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
     }
 
     private func syncTabs(_ snapshot: TerminalCoreSnapshot) {
+        let previousFrame = tabControl.frame
         syncingTabs = true
         tabControl.segmentCount = snapshot.tabs.count
         for (idx, tab) in snapshot.tabs.enumerated() {
@@ -9040,7 +9053,7 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
         if snapshot.active_tab < tabControl.segmentCount {
             tabControl.selectedSegment = snapshot.active_tab
         }
-        tabControl.sizeToFit()
+        tabControl.finishSnapshotSync(previousFrame: previousFrame)
         let activeTheme = snapshot.tabs.first {
             $0.index == snapshot.active_tab
         }?.theme
@@ -9253,10 +9266,10 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
             self?.renameTab(at: index)
         }
         tabControl.onCloseRequested = { [weak self] index in
-            self?.closeTab(at: index)
+            self?.closeTab(at: index) ?? false
         }
-        tabControl.onContextMenuRequested = { [weak self] index, event, view in
-            self?.showTabContextMenu(index: index, event: event, view: view)
+        tabControl.contextMenuProvider = { [weak self] index in
+            self?.tabContextMenu(index: index)
         }
         tabControl.setAccessibilityLabel("Terminal Tabs")
         tabControl.setAccessibilityHelp(
