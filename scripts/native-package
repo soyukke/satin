@@ -81,12 +81,17 @@ env -u SDKROOT -u DEVELOPER_DIR \
   spikes/macos-shell/AppUpdateChecker.swift \
   spikes/macos-shell/ApplicationDefaults.swift \
   spikes/macos-shell/ControlHost.swift \
+  spikes/macos-shell/NativeAppearance.swift \
+  spikes/macos-shell/NativePaneRuntime.swift \
   spikes/macos-shell/NativeSettingsSelfTests.swift \
   spikes/macos-shell/NativeSettingsValidation.swift \
+  spikes/macos-shell/NativeShellModels.swift \
   spikes/macos-shell/NativeTmux.swift \
   spikes/macos-shell/NativeWireModels.swift \
   spikes/macos-shell/PerformanceRecorder.swift \
+  spikes/macos-shell/SatinAppDelegate.swift \
   spikes/macos-shell/SatinFFI.swift \
+  spikes/macos-shell/SatinMain.swift \
   spikes/macos-shell/SettingsWindow.swift \
   spikes/macos-shell/TabControls.swift \
   spikes/macos-shell/TerminalMetalView.swift \

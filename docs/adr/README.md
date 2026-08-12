@@ -25,6 +25,7 @@ allowed to differ from the target design during a migration.
 - [0015: Use the native navigation layer and system Liquid Glass](0015-use-native-navigation-layer-and-liquid-glass.md)
 - [0016: Bridge Kitty graphics into native Neovim](0016-bridge-kitty-graphics-into-native-neovim.md)
 - [0017: Store versioned Markdown artifacts and present them through Satin](0017-present-bounded-artifacts-through-satin.md)
+- [0018: Split the native host by responsibility](0018-split-native-host-by-responsibility.md)
 
 ## Workflow
 
