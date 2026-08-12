@@ -755,6 +755,10 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
         }
         if previous.defaultTheme != settings.defaultTheme {
             core.setDefaultTheme(settings.defaultTheme)
+            if let activeTab = core.snapshot()?.active_tab {
+                core.setTheme(settings.defaultTheme, tab: activeTab)
+                syncFromCore()
+            }
         }
     }
 

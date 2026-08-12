@@ -1,4 +1,3 @@
-- [ ] Appearance の theme を現在の tab / pane に即時反映する。
 - [ ] 警告三角形と Claude Code TODO spinner の emoji/font fallback を修正する。
 - [ ] nvim scroll / jump / tmux reattach smoke に deterministic frame fallback を適用する。
 - [ ] 各修正を分割 PR で merge し、全体確認後に release を作成する。

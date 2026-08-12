@@ -166,8 +166,9 @@ item.
 Open Satin → Settings… or press `Command-,`.
 
 - General controls Option-as-Alt, bell attention, and session restore.
-- Appearance selects a fixed-pitch font, font size, and the default theme for
-  new tabs.
+- Appearance selects a fixed-pitch font, font size, and theme. Font changes
+  apply immediately to every pane; theme changes update the current tab and
+  become the default for new tabs.
 - Terminal selects an executable absolute shell path, an existing startup
   directory for new panes, the tmux executable, and the executable opened by
   Finder document events. Empty shell, directory, and tmux values use the login
