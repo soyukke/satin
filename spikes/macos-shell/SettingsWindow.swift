@@ -593,11 +593,12 @@ final class NativeSettingsWindowController: NSWindowController, NSTextFieldDeleg
         themePopup = themes
         return formView(
             title: "Appearance",
-            description: "Font changes apply immediately. The default theme is used for new tabs.",
+            description:
+                "Font changes apply immediately. Theme updates the current tab and new tabs.",
             rows: [
                 ("Font", fonts),
                 ("Font size", sizeRow),
-                ("Default theme", themes),
+                ("Theme", themes),
             ]
         )
     }
