@@ -36,6 +36,9 @@ func satinCoreMoveTab(_ handle: UnsafeMutableRawPointer?, _ tabId: Int, _ index:
 @_silgen_name("satin_core_select_pane")
 func satinCoreSelectPane(_ handle: UnsafeMutableRawPointer?, _ paneId: Int) -> UInt8
 
+@_silgen_name("satin_core_pane_in_direction")
+func satinCorePaneInDirection(_ handle: UnsafeMutableRawPointer?, _ direction: UInt32) -> Int
+
 @_silgen_name("satin_core_rename_tab")
 func satinCoreRenameTab(
     _ handle: UnsafeMutableRawPointer?,

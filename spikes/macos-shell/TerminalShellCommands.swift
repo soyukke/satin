@@ -106,6 +106,30 @@ extension TerminalShellViewController {
         syncFromCore()
     }
 
+    @objc func focusPaneLeft(_ sender: Any?) {
+        focusPane(.left)
+    }
+
+    @objc func focusPaneDown(_ sender: Any?) {
+        focusPane(.down)
+    }
+
+    @objc func focusPaneUp(_ sender: Any?) {
+        focusPane(.up)
+    }
+
+    @objc func focusPaneRight(_ sender: Any?) {
+        focusPane(.right)
+    }
+
+    private func focusPane(_ direction: NativePaneDirection) {
+        guard let paneId = core.paneInDirection(direction) else {
+            focusTerminal()
+            return
+        }
+        selectPane(paneId)
+    }
+
     func routeTmuxSplit(horizontal: Bool) -> Bool {
         guard let session = tmuxSession,
             let paneId = activePaneId,

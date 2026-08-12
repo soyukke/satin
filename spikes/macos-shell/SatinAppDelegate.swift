@@ -224,6 +224,22 @@ final class SatinAppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidat
         shellController?.closeActivePane(sender)
     }
 
+    @objc func focusPaneLeft(_ sender: Any?) {
+        shellController?.focusPaneLeft(sender)
+    }
+
+    @objc func focusPaneDown(_ sender: Any?) {
+        shellController?.focusPaneDown(sender)
+    }
+
+    @objc func focusPaneUp(_ sender: Any?) {
+        shellController?.focusPaneUp(sender)
+    }
+
+    @objc func focusPaneRight(_ sender: Any?) {
+        shellController?.focusPaneRight(sender)
+    }
+
     @objc private func keyWindowDidChange(_ notification: Notification) {
         buildMainMenu()
     }
@@ -466,6 +482,10 @@ final class SatinAppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidat
             || action == #selector(renameActiveTab(_:))
             || action == #selector(openNativeNeovim(_:))
             || action == #selector(closeActivePane(_:))
+            || action == #selector(focusPaneLeft(_:))
+            || action == #selector(focusPaneDown(_:))
+            || action == #selector(focusPaneUp(_:))
+            || action == #selector(focusPaneRight(_:))
             || action == #selector(selectTabFromShortcut(_:))
             || action == #selector(showSessionSwitcher(_:))
             || action == #selector(zoomIn(_:))
@@ -512,6 +532,12 @@ final class SatinAppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidat
         menu.addItem(
             commandItem("Split Horizontal", #selector(splitHorizontal(_:)), .splitHorizontal))
         menu.addItem(commandItem("Close Pane", #selector(closeActivePane(_:)), .closePane))
+        menu.addItem(NSMenuItem.separator())
+        menu.addItem(commandItem("Focus Pane Left", #selector(focusPaneLeft(_:)), .focusPaneLeft))
+        menu.addItem(commandItem("Focus Pane Down", #selector(focusPaneDown(_:)), .focusPaneDown))
+        menu.addItem(commandItem("Focus Pane Up", #selector(focusPaneUp(_:)), .focusPaneUp))
+        menu.addItem(
+            commandItem("Focus Pane Right", #selector(focusPaneRight(_:)), .focusPaneRight))
         menu.addItem(NSMenuItem.separator())
         for shortcutNumber in 1...9 {
             let title = shortcutNumber == 9 ? "Select Last Tab" : "Select Tab \(shortcutNumber)"

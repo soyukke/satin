@@ -8,6 +8,7 @@ native_swift_sources=(
   spikes/macos-shell/ApplicationDefaults.swift
   spikes/macos-shell/ControlHost.swift
   spikes/macos-shell/NativeAppearance.swift
+  spikes/macos-shell/NativeKeyBindings.swift
   spikes/macos-shell/NativePaneRuntime.swift
   spikes/macos-shell/NativePaneStatusStore.swift
   spikes/macos-shell/NativePaneStore.swift

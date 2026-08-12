@@ -1,5 +1,6 @@
 use anyhow::{Result, bail};
 use serde::{Deserialize, Serialize};
+use std::cmp::Ordering;
 
 pub(crate) const MIN_SPLIT_RATIO: f64 = 0.05;
 pub(crate) const MAX_SPLIT_RATIO: f64 = 0.95;
@@ -12,6 +13,14 @@ pub(crate) struct PaneId(pub usize);
 pub enum SplitAxis {
     Vertical,
     Horizontal,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PaneDirection {
+    Left,
+    Right,
+    Up,
+    Down,
 }
 
 #[derive(Clone, Debug, Serialize, PartialEq)]
@@ -181,6 +190,41 @@ impl PaneLayout {
         }
     }
 
+    pub(crate) fn pane_in_direction(
+        &self,
+        active_pane: PaneId,
+        direction: PaneDirection,
+    ) -> Option<PaneId> {
+        let mut pane_rects = Vec::new();
+        self.collect_pane_rects(PaneRect::unit(), &mut pane_rects);
+        let active_rect = pane_rects
+            .iter()
+            .find_map(|(pane_id, rect)| (*pane_id == active_pane).then_some(*rect))?;
+
+        pane_rects
+            .into_iter()
+            .filter(|(pane_id, _)| *pane_id != active_pane)
+            .filter_map(|(pane_id, rect)| PaneCandidate::new(pane_id, rect, active_rect, direction))
+            .min_by(PaneCandidate::compare)
+            .map(|candidate| candidate.pane_id)
+    }
+
+    fn collect_pane_rects(&self, rect: PaneRect, output: &mut Vec<(PaneId, PaneRect)>) {
+        match self {
+            Self::Leaf(pane_id) => output.push((*pane_id, rect)),
+            Self::Split {
+                axis,
+                ratio,
+                first,
+                second,
+            } => {
+                let (first_rect, second_rect) = rect.split(*axis, *ratio);
+                first.collect_pane_rects(first_rect, output);
+                second.collect_pane_rects(second_rect, output);
+            }
+        }
+    }
+
     fn contains_leaf(&self, target: PaneId) -> bool {
         match self {
             Self::Leaf(id) => *id == target,
@@ -188,6 +232,137 @@ impl PaneLayout {
                 first.contains_leaf(target) || second.contains_leaf(target)
             }
         }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct PaneRect {
+    min_x: f64,
+    max_x: f64,
+    min_y: f64,
+    max_y: f64,
+}
+
+impl PaneRect {
+    fn unit() -> Self {
+        Self {
+            min_x: 0.0,
+            max_x: 1.0,
+            min_y: 0.0,
+            max_y: 1.0,
+        }
+    }
+
+    fn split(self, axis: SplitAxis, ratio: f64) -> (Self, Self) {
+        match axis {
+            SplitAxis::Vertical => {
+                let boundary = self.min_x + (self.max_x - self.min_x) * ratio;
+                (
+                    Self {
+                        max_x: boundary,
+                        ..self
+                    },
+                    Self {
+                        min_x: boundary,
+                        ..self
+                    },
+                )
+            }
+            SplitAxis::Horizontal => {
+                let boundary = self.min_y + (self.max_y - self.min_y) * ratio;
+                (
+                    Self {
+                        max_y: boundary,
+                        ..self
+                    },
+                    Self {
+                        min_y: boundary,
+                        ..self
+                    },
+                )
+            }
+        }
+    }
+
+    fn mid_x(self) -> f64 {
+        (self.min_x + self.max_x) / 2.0
+    }
+
+    fn mid_y(self) -> f64 {
+        (self.min_y + self.max_y) / 2.0
+    }
+}
+
+struct PaneCandidate {
+    pane_id: PaneId,
+    primary_gap: f64,
+    orthogonal_gap: f64,
+    orthogonal_center_distance: f64,
+}
+
+impl PaneCandidate {
+    fn new(
+        pane_id: PaneId,
+        rect: PaneRect,
+        active_rect: PaneRect,
+        direction: PaneDirection,
+    ) -> Option<Self> {
+        let (forward, primary_gap, orthogonal_gap, orthogonal_center_distance) = match direction {
+            PaneDirection::Left => (
+                active_rect.mid_x() - rect.mid_x(),
+                active_rect.min_x - rect.max_x,
+                interval_gap(active_rect.min_y, active_rect.max_y, rect.min_y, rect.max_y),
+                (active_rect.mid_y() - rect.mid_y()).abs(),
+            ),
+            PaneDirection::Right => (
+                rect.mid_x() - active_rect.mid_x(),
+                rect.min_x - active_rect.max_x,
+                interval_gap(active_rect.min_y, active_rect.max_y, rect.min_y, rect.max_y),
+                (active_rect.mid_y() - rect.mid_y()).abs(),
+            ),
+            PaneDirection::Up => (
+                active_rect.mid_y() - rect.mid_y(),
+                active_rect.min_y - rect.max_y,
+                interval_gap(active_rect.min_x, active_rect.max_x, rect.min_x, rect.max_x),
+                (active_rect.mid_x() - rect.mid_x()).abs(),
+            ),
+            PaneDirection::Down => (
+                rect.mid_y() - active_rect.mid_y(),
+                rect.min_y - active_rect.max_y,
+                interval_gap(active_rect.min_x, active_rect.max_x, rect.min_x, rect.max_x),
+                (active_rect.mid_x() - rect.mid_x()).abs(),
+            ),
+        };
+        (forward > f64::EPSILON).then_some(Self {
+            pane_id,
+            primary_gap: primary_gap.max(0.0),
+            orthogonal_gap,
+            orthogonal_center_distance,
+        })
+    }
+
+    fn compare(&self, other: &Self) -> Ordering {
+        metric_order(self.primary_gap, other.primary_gap)
+            .then_with(|| metric_order(self.orthogonal_gap, other.orthogonal_gap))
+            .then_with(|| {
+                metric_order(
+                    self.orthogonal_center_distance,
+                    other.orthogonal_center_distance,
+                )
+            })
+            .then_with(|| self.pane_id.0.cmp(&other.pane_id.0))
+    }
+}
+
+fn interval_gap(first_min: f64, first_max: f64, second_min: f64, second_max: f64) -> f64 {
+    (first_min.max(second_min) - first_max.min(second_max)).max(0.0)
+}
+
+fn metric_order(first: f64, second: f64) -> Ordering {
+    if (first - second).abs() <= f64::EPSILON {
+        Ordering::Equal
+    } else {
+        first.total_cmp(&second)
     }
 }
 

@@ -5,6 +5,13 @@ protocol TerminalContextMenuProvider: AnyObject {
     func terminalContextMenu(tabIndex: Int?) -> NSMenu
 }
 
+enum NativePaneDirection: UInt32 {
+    case left = 0
+    case right = 1
+    case up = 2
+    case down = 3
+}
+
 final class NativeSuspendedTerminalSession {
     let pane: RustTerminalPane
     let completion: NativeControlReply?

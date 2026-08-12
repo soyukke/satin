@@ -73,6 +73,11 @@ final class RustCore {
         satinCoreSelectPane(handle, paneId) != 0
     }
 
+    func paneInDirection(_ direction: NativePaneDirection) -> Int? {
+        let paneId = satinCorePaneInDirection(handle, direction.rawValue)
+        return paneId >= 0 ? paneId : nil
+    }
+
     func renameTab(_ index: Int, title: String) {
         title.withCString { value in
             _ = satinCoreRenameTab(handle, index, value)
