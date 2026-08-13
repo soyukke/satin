@@ -362,6 +362,7 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
     var activePaneId: Int?
     var lastSnapshot: TerminalCoreSnapshot?
     var lastNvimModelScrollShift: OutputScrollShift?
+    private var hasStartedPaneRuntime = false
     var syncingTabs = false
     var controlSocketPath = ""
     var controlCliPath = ""
@@ -530,8 +531,21 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
         ])
     }
 
-    override func viewDidLoad() {
-        super.viewDidLoad()
+    override func viewDidLayout() {
+        super.viewDidLayout()
+        startPaneRuntimeIfReady()
+    }
+
+    private func startPaneRuntimeIfReady() {
+        let grid = terminalTextView.terminalGridSize()
+        guard !hasStartedPaneRuntime,
+            view.window != nil,
+            grid.rows > 1,
+            grid.cols > 1
+        else {
+            return
+        }
+        hasStartedPaneRuntime = true
         if let initialFinderLaunch {
             prepareFinderEditorLaunch(initialFinderLaunch)
         } else {
