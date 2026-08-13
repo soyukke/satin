@@ -16,14 +16,12 @@ enum NativePaneChromeAction: Int, CaseIterable {
     case close
     case splitVertical
     case splitHorizontal
-    case artifacts
 
     var title: String {
         switch self {
         case .close: "Close Pane"
         case .splitVertical: "Split Left and Right"
         case .splitHorizontal: "Split Top and Bottom"
-        case .artifacts: "Recent Artifacts"
         }
     }
 
@@ -32,7 +30,6 @@ enum NativePaneChromeAction: Int, CaseIterable {
         case .close: "xmark"
         case .splitVertical: "rectangle.split.2x1"
         case .splitHorizontal: "rectangle.split.1x2"
-        case .artifacts: "doc.on.doc"
         }
     }
 }
@@ -156,18 +153,16 @@ final class NativePaneChromeView: NSView {
     static let buttonWidth: CGFloat = 22
     static let buttonSpacing: CGFloat = 1
     static let controlHeight: CGFloat = 22
-    static let preferredWidth =
-        buttonWidth * CGFloat(NativePaneChromeAction.allCases.count)
-        + buttonSpacing * CGFloat(NativePaneChromeAction.allCases.count - 1)
-
     let paneId: Int
     var onAction: ((NativePaneChromeAction, Int, NSView) -> Void)?
 
+    private let actions: [NativePaneChromeAction]
     private var buttons: [NativePaneChromeAction: NativeHoverIconButton] = [:]
     private var active = true
 
-    init(paneId: Int) {
+    init(paneId: Int, actions: [NativePaneChromeAction] = NativePaneChromeAction.allCases) {
         self.paneId = paneId
+        self.actions = actions
         super.init(frame: .zero)
         configure()
     }
@@ -182,10 +177,10 @@ final class NativePaneChromeView: NSView {
 
     override func layout() {
         super.layout()
-        let count = CGFloat(NativePaneChromeAction.allCases.count)
+        let count = CGFloat(actions.count)
         let spacingWidth = Self.buttonSpacing * max(0, count - 1)
         let buttonWidth = max(1, (bounds.width - spacingWidth) / count)
-        for (index, action) in NativePaneChromeAction.allCases.enumerated() {
+        for (index, action) in actions.enumerated() {
             buttons[action]?.frame = NSRect(
                 x: CGFloat(index) * (buttonWidth + Self.buttonSpacing),
                 y: 0,
@@ -206,10 +201,15 @@ final class NativePaneChromeView: NSView {
     }
 
     func actionsReady() -> Bool {
-        buttons.count == NativePaneChromeAction.allCases.count
-            && NativePaneChromeAction.allCases.allSatisfy {
+        buttons.count == actions.count
+            && actions.allSatisfy {
                 buttons[$0]?.image != nil && buttons[$0]?.isBordered == false
             }
+    }
+
+    var preferredWidth: CGFloat {
+        Self.buttonWidth * CGFloat(actions.count)
+            + Self.buttonSpacing * CGFloat(max(0, actions.count - 1))
     }
 
     func performForSmoke(_ action: NativePaneChromeAction) {
@@ -217,7 +217,7 @@ final class NativePaneChromeView: NSView {
     }
 
     private func configure() {
-        for action in NativePaneChromeAction.allCases {
+        for action in actions {
             let button = NativeHoverIconButton(
                 symbolName: action.symbolName,
                 title: action.title

@@ -29,6 +29,15 @@ extension TerminalShellViewController {
     }
 
     func selectPane(_ paneId: Int) {
+        if paneId == nativeArtifactSidebarPaneId,
+            paneStore.runtimes[paneId] != nil
+        {
+            activePaneId = paneId
+            terminalTextView.setActivePaneId(paneId)
+            updateActiveFrame()
+            focusTerminal()
+            return
+        }
         if let session = tmuxSession, let tmuxPaneId = session.tmuxPaneIds[paneId] {
             guard session.gateway.tmuxCommand("select-pane -t %\(tmuxPaneId)") else {
                 return
@@ -92,18 +101,25 @@ extension TerminalShellViewController {
         }
         var paneBounds: [Int: NSRect] = [:]
         var dividers: [NativePaneDivider] = []
+        let contentRect = terminalTextView.terminalContentRect()
         collectPaneFrames(
             tab.layout,
-            rect: terminalTextView.terminalContentRect(),
+            rect: workspaceContentRect(),
             frames: &paneBounds,
             dividers: &dividers
         )
+        if paneStore.runtimes[nativeArtifactSidebarPaneId] != nil {
+            paneBounds[nativeArtifactSidebarPaneId] = artifactSidebarFrames(in: contentRect).sidebar
+        }
         let frames = paneBounds.mapValues(nativePaneContentFrame)
         paneStore.visibleFrames = frames
+        let presentedActivePaneId =
+            activePaneId == nativeArtifactSidebarPaneId
+            ? nativeArtifactSidebarPaneId : tab.active_pane
         terminalTextView.updatePaneFrames(
             frames,
             paneBounds: paneBounds,
-            activePaneId: tab.active_pane,
+            activePaneId: presentedActivePaneId,
             dividers: dividers
         )
         for (paneId, frame) in frames {
@@ -135,7 +151,7 @@ extension TerminalShellViewController {
 
     func tmuxClientGrid() -> (rows: Int, cols: Int, widthPixels: Int, heightPixels: Int) {
         terminalTextView.terminalGridSize(
-            for: nativePaneContentFrame(terminalTextView.terminalContentRect()),
+            for: nativePaneContentFrame(workspaceContentRect()),
             paneId: nil
         )
     }
@@ -310,6 +326,8 @@ extension TerminalShellViewController {
     }
 
     func configureToolbarControls() {
+        artifactButton.target = self
+        artifactButton.action = #selector(showArtifacts(_:))
         sessionControlButton.title = "Local"
         sessionControlButton.image = NSImage(
             systemSymbolName: "terminal",
@@ -329,6 +347,7 @@ extension TerminalShellViewController {
         [
             SatinToolbarItemIdentifier.tabs,
             .flexibleSpace,
+            SatinToolbarItemIdentifier.artifacts,
             SatinToolbarItemIdentifier.controls,
         ]
     }
@@ -349,6 +368,11 @@ extension TerminalShellViewController {
             item.paletteLabel = "Terminal Tabs"
             item.view = tabStripView
             item.visibilityPriority = .standard
+        case SatinToolbarItemIdentifier.artifacts:
+            item.label = "Artifacts"
+            item.paletteLabel = "Recent Artifacts"
+            item.view = artifactButton
+            item.visibilityPriority = .high
         case SatinToolbarItemIdentifier.controls:
             item.label = "Session"
             item.paletteLabel = "Terminal Session"

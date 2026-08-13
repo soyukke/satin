@@ -124,6 +124,7 @@ import Foundation
             let initialChrome = activePaneId.flatMap(terminalTextView.paneChromeView)
             let controlsReady =
                 sessionControlButton.superview != nil
+                && artifactButton.superview != nil
                 && tabStripView.superview != nil
                 && tabStripView.actionsReady()
                 && terminalTextView.paneChromeViewsReady(expectedCount: 1)
@@ -654,18 +655,14 @@ import Foundation
             smokeState.artifactPopoverResultPath = resultPath
             smokeState.artifactPopoverOpenPath = "\(resultPath).open"
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
-                guard let self,
-                    let paneId = self.activePaneId,
-                    let chrome = self.terminalTextView.paneChromeView(for: paneId),
-                    chrome.actionsReady()
-                else {
+                guard let self, self.artifactButton.superview != nil else {
                     self?.writeArtifactPopoverSmokeResult(
                         resultPath,
                         result: "failed artifact-popover button=unavailable\n"
                     )
                     return
                 }
-                chrome.performForSmoke(.artifacts)
+                self.artifactButton.performClick(nil)
             }
         }
 

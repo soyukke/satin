@@ -129,8 +129,9 @@ final class TerminalTextView: NSView, NSTextInputClient {
     }
 
     override func accessibilityHelp() -> String? {
-        "Interactive terminal. Each pane header contains close, split, and artifact actions. "
-            + "Drag split borders to resize panes, Command-click links, use "
+        "Interactive terminal. Each pane header contains close and split actions. "
+            + "Recent artifacts open from the window toolbar. Drag split borders to resize panes, "
+            + "Command-click links, use "
             + "Control-Command-H/J/K/L to move between panes, and Command-F to search scrollback."
     }
 
@@ -676,7 +677,10 @@ final class TerminalTextView: NSView, NSTextInputClient {
             if let existing = paneChromeViews[paneId] {
                 chrome = existing
             } else {
-                chrome = NativePaneChromeView(paneId: paneId)
+                let actions: [NativePaneChromeAction] =
+                    paneId == nativeArtifactSidebarPaneId
+                    ? [.close] : NativePaneChromeAction.allCases
+                chrome = NativePaneChromeView(paneId: paneId, actions: actions)
                 chrome.onAction = { [weak self] action, paneId, sourceView in
                     self?.onPaneChromeAction?(action, paneId, sourceView)
                 }
@@ -684,7 +688,7 @@ final class TerminalTextView: NSView, NSTextInputClient {
                 addSubview(chrome)
             }
             let availableWidth = max(1, paneRect.width - 8)
-            let width = min(NativePaneChromeView.preferredWidth, availableWidth)
+            let width = min(chrome.preferredWidth, availableWidth)
             let headerHeight = min(nativePaneChromeHeight, paneRect.height)
             let height = min(NativePaneChromeView.controlHeight, headerHeight)
             chrome.frame = NSRect(

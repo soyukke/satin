@@ -24,6 +24,7 @@ final class NativeSuspendedTerminalSession {
 
 private let tmuxNativePaneIdBase = 1_000_000_000
 private let tmuxNativeTabIdBase = 1_500_000_000
+let nativeArtifactSidebarPaneId = 9_000_000_000_000_000
 
 final class NativeTmuxSession {
     let gatewayPaneId: Int
@@ -59,6 +60,7 @@ final class NativeTmuxSession {
 
 enum SatinToolbarItemIdentifier {
     static let tabs = NSToolbarItem.Identifier("dev.soyukke.satin.toolbar.tabs")
+    static let artifacts = NSToolbarItem.Identifier("dev.soyukke.satin.toolbar.artifacts")
     static let controls = NSToolbarItem.Identifier("dev.soyukke.satin.toolbar.controls")
 }
 

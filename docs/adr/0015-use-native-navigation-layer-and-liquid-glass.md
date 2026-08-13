@@ -21,11 +21,12 @@ Tahoe-only custom glass view.
 
 ## Decision
 
-- Put terminal tabs, a borderless new-tab action immediately after them, and the
-  persistent Local/tmux session control in a standard unified compact
-  `NSToolbar`. Put close, split, and artifact actions in a reserved 24-point
-  header inside every pane so pane-scoped actions have an explicit target and
-  remain available away from the active pane.
+- Put terminal tabs, a borderless new-tab action immediately after them, the
+  window-scoped Artifacts action, and the persistent Local/tmux session control
+  in a standard unified compact `NSToolbar`. Put close and split actions in a
+  reserved 24-point header inside every workspace pane so pane-scoped actions
+  have an explicit target and remain available away from the active pane. The
+  Artifact sidebar retains only its common close action in that header.
 - Present session discovery, attach, detach, switch, and creation from a standard
   transient `NSPopover`. Keep the Session menu as a secondary keyboard/menu-bar
   entry point to the same control.

@@ -154,7 +154,7 @@ native-settings-smoke:
 native-control-smoke:
     @if [[ -z "${IN_NIX_SHELL:-}" ]]; then exec nix develop --command just native-control-smoke; else just native-build && ./scripts/native-control-smoke; fi
 
-# Verify versioning, rich Markdown, the recent popover, atomic splits, and Kitty images.
+# Verify versioning, rich Markdown, the recent popover, sidebar refresh, and Kitty images.
 native-artifact-smoke:
     @if [[ -z "${IN_NIX_SHELL:-}" ]]; then exec nix develop --command just native-artifact-smoke; else just native-build && ./scripts/native-artifact-smoke; fi
 

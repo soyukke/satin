@@ -96,7 +96,7 @@ extension TerminalShellViewController {
     func performPaneChromeAction(
         _ action: NativePaneChromeAction,
         paneId: Int,
-        sourceView: NSView
+        sourceView _: NSView
     ) {
         switch action {
         case .close:
@@ -105,12 +105,6 @@ extension TerminalShellViewController {
             splitPane(paneId, axis: ffiSplitVertical)
         case .splitHorizontal:
             splitPane(paneId, axis: ffiSplitHorizontal)
-        case .artifacts:
-            guard selectPaneForChromeAction(paneId) else {
-                return
-            }
-            showArtifactsPopover(relativeTo: sourceView, paneId: paneId)
-            return
         }
         focusTerminal()
     }
@@ -132,6 +126,11 @@ extension TerminalShellViewController {
 
     private func closePane(_ paneId: Int?) {
         guard let paneId else {
+            return
+        }
+        if paneId == nativeArtifactSidebarPaneId {
+            _ = closeArtifactSidebar()
+            focusTerminal()
             return
         }
         if let session = tmuxSession,
