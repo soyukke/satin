@@ -293,6 +293,7 @@ final class NativeMainMenuController: NSObject, NSMenuItemValidation {
             keyEquivalent: shortcut.keyEquivalent,
             modifiers: shortcut.modifiers
         )
+        item.identifier = NSUserInterfaceItemIdentifier(command.rawValue)
         commandItems[command] = item
         return item
     }
@@ -377,6 +378,7 @@ final class NativeMainMenuController: NSObject, NSMenuItemValidation {
         controller.refreshShortcuts(using: settings)
         guard ObjectIdentifier(controller.mainMenu) == mainMenuIdentity,
             ObjectIdentifier(newTabItem) == newTabIdentity,
+            newTabItem.identifier?.rawValue == NativeCommandID.newTab.rawValue,
             newTabItem.keyEquivalent == "t",
             newTabItem.keyEquivalentModifierMask == [.command, .shift]
         else {

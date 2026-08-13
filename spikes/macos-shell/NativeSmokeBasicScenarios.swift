@@ -131,11 +131,11 @@ import Foundation
                 && initialChrome?.actionsReady() == true
             let shortcutsReady =
                 mainMenuShortcutMatches(
-                    actionName: "splitVertical:",
+                    command: .splitVertical,
                     shortcut: settings.shortcut(for: .splitVertical)
                 )
                 && mainMenuShortcutMatches(
-                    actionName: "splitHorizontal:",
+                    command: .splitHorizontal,
                     shortcut: settings.shortcut(for: .splitHorizontal)
                 )
             if !controlsReady || !shortcutsReady, retries > 0 {
@@ -313,10 +313,10 @@ import Foundation
         }
 
         func mainMenuShortcutMatches(
-            actionName: String,
+            command: NativeCommandID,
             shortcut: NativeKeyShortcut
         ) -> Bool {
-            guard let item = mainMenuItem(in: NSApp.mainMenu, actionName: actionName) else {
+            guard let item = mainMenuItem(in: NSApp.mainMenu, command: command) else {
                 return false
             }
             let modifiers = item.keyEquivalentModifierMask.intersection(.deviceIndependentFlagsMask)
@@ -324,15 +324,15 @@ import Foundation
             return item.keyEquivalent == shortcut.keyEquivalent && modifiers == expected
         }
 
-        func mainMenuItem(in menu: NSMenu?, actionName: String) -> NSMenuItem? {
+        func mainMenuItem(in menu: NSMenu?, command: NativeCommandID) -> NSMenuItem? {
             guard let menu else {
                 return nil
             }
             for item in menu.items {
-                if item.action.map(NSStringFromSelector) == actionName {
+                if item.identifier?.rawValue == command.rawValue {
                     return item
                 }
-                if let match = mainMenuItem(in: item.submenu, actionName: actionName) {
+                if let match = mainMenuItem(in: item.submenu, command: command) {
                     return match
                 }
             }
