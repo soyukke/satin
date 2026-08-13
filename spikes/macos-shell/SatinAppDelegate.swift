@@ -1,7 +1,7 @@
 import AppKit
 import Foundation
 
-final class SatinAppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
+final class SatinAppDelegate: NSObject, NSApplicationDelegate {
     private var window: NSWindow?
     private var shellController: TerminalShellViewController?
     private let settingsStore = NativeSettingsStore()
@@ -12,9 +12,9 @@ final class SatinAppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidat
     private var updateCheckID: UUID?
     private var updateTask: URLSessionDataTask?
     private var updateProgressAlert: NSAlert?
+    private var mainMenuController: NativeMainMenuController?
     private var pendingFinderPaths: [String] = []
     private var launchedForFinderEditor = false
-    private var observesKeyWindow = false
 
     func applicationWillFinishLaunching(_ notification: Notification) {
         NSApp.servicesProvider = self
@@ -120,29 +120,31 @@ final class SatinAppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidat
         window.toolbar = controller.toolbar()
         self.window = window
         self.shellController = controller
-        if !observesKeyWindow {
-            NotificationCenter.default.addObserver(
-                self,
-                selector: #selector(keyWindowDidChange(_:)),
-                name: NSWindow.didBecomeKeyNotification,
-                object: nil
-            )
-            observesKeyWindow = true
-        }
-        NSApp.activate(ignoringOtherApps: true)
-        window.makeKeyAndOrderFront(nil)
         pendingFinderPaths.removeAll()
         let settingsController = NativeSettingsWindowController(store: settingsStore)
         settingsController.onChange = { [weak self] settings in
             self?.shellController?.applySettings(settings)
-            self?.buildMainMenu()
+            self?.mainMenuController?.refreshShortcuts(using: settings)
         }
         settingsController.onCheckForUpdates = { [weak self] in
-            self?.checkForUpdates(nil)
+            self?.requestInteractiveUpdateCheck()
         }
         self.settingsWindowController = settingsController
 
-        buildMainMenu()
+        let mainMenuController = NativeMainMenuController(
+            application: NSApp,
+            terminalWindow: window,
+            settings: settings,
+            includesUpdates: !nativeIsDevelopmentBuild,
+            actionHandler: { [weak self] action in
+                self?.performMainMenuAction(action)
+            }
+        )
+        self.mainMenuController = mainMenuController
+        mainMenuController.install(in: NSApp)
+
+        NSApp.activate(ignoringOtherApps: true)
+        window.makeKeyAndOrderFront(nil)
         #if SATIN_SMOKE_SCENARIOS
             applySmokeScenarioIfNeeded(controller)
         #endif
@@ -203,82 +205,55 @@ final class SatinAppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidat
         return true
     }
 
-    @objc func newTab(_ sender: Any?) {
-        shellController?.newTab(sender)
+    private func performMainMenuAction(_ action: NativeMainMenuAction) {
+        switch action {
+        case .showSettings:
+            settingsWindowController?.present()
+        case .newTab:
+            shellController?.newTab(nil)
+        case .splitVertical:
+            shellController?.splitVertical(nil)
+        case .splitHorizontal:
+            shellController?.splitHorizontal(nil)
+        case .closePane:
+            shellController?.closeActivePane(nil)
+        case .focusPaneLeft:
+            shellController?.focusPaneLeft(nil)
+        case .focusPaneDown:
+            shellController?.focusPaneDown(nil)
+        case .focusPaneUp:
+            shellController?.focusPaneUp(nil)
+        case .focusPaneRight:
+            shellController?.focusPaneRight(nil)
+        case .showSessionSwitcher:
+            shellController?.showSessionSwitcher(nil)
+        case .selectTab(let number):
+            shellController?.selectTabFromShortcut(number)
+        case .renameSession:
+            shellController?.renameActiveTab(nil)
+        case .openNativeNeovim:
+            shellController?.openNativeNeovim(nil)
+        case .zoomIn:
+            shellController?.zoomIn(nil)
+        case .zoomOut:
+            shellController?.zoomOut(nil)
+        case .actualSize:
+            shellController?.resetZoom(nil)
+        case .checkForUpdates:
+            requestInteractiveUpdateCheck()
+        case .showAcknowledgements:
+            showAcknowledgements()
+        }
     }
 
-    @objc func splitVertical(_ sender: Any?) {
-        shellController?.splitVertical(sender)
-    }
-
-    @objc func splitHorizontal(_ sender: Any?) {
-        shellController?.splitHorizontal(sender)
-    }
-
-    @objc func renameActiveTab(_ sender: Any?) {
-        shellController?.renameActiveTab(sender)
-    }
-
-    @objc func openNativeNeovim(_ sender: Any?) {
-        shellController?.openNativeNeovim(sender)
-    }
-
-    @objc func closeActivePane(_ sender: Any?) {
-        shellController?.closeActivePane(sender)
-    }
-
-    @objc func focusPaneLeft(_ sender: Any?) {
-        shellController?.focusPaneLeft(sender)
-    }
-
-    @objc func focusPaneDown(_ sender: Any?) {
-        shellController?.focusPaneDown(sender)
-    }
-
-    @objc func focusPaneUp(_ sender: Any?) {
-        shellController?.focusPaneUp(sender)
-    }
-
-    @objc func focusPaneRight(_ sender: Any?) {
-        shellController?.focusPaneRight(sender)
-    }
-
-    @objc private func keyWindowDidChange(_ notification: Notification) {
-        buildMainMenu()
-    }
-
-    @objc func showSessionSwitcher(_ sender: Any?) {
-        shellController?.showSessionSwitcher(sender)
-    }
-
-    @objc func showSettings(_ sender: Any?) {
-        settingsWindowController?.present()
-    }
-
-    @objc func zoomIn(_ sender: Any?) {
-        shellController?.zoomIn(sender)
-    }
-
-    @objc func zoomOut(_ sender: Any?) {
-        shellController?.zoomOut(sender)
-    }
-
-    @objc func resetZoom(_ sender: Any?) {
-        shellController?.resetZoom(sender)
-    }
-
-    @objc func selectTabFromShortcut(_ sender: NSMenuItem) {
-        shellController?.selectTabFromShortcut(sender.tag)
-    }
-
-    @objc func checkForUpdates(_ sender: Any?) {
+    private func requestInteractiveUpdateCheck() {
         guard !nativeIsDevelopmentBuild else {
             return
         }
         beginUpdateCheck(interactive: true)
     }
 
-    @objc func showAcknowledgements(_ sender: Any?) {
+    private func showAcknowledgements() {
         guard
             let notices = Bundle.main.url(
                 forResource: "THIRD_PARTY_NOTICES",
@@ -468,208 +443,5 @@ final class SatinAppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidat
         alert.informativeText = error.localizedDescription
         alert.addButton(withTitle: "OK")
         alert.runModal()
-    }
-
-    private func buildMainMenu() {
-        let mainMenu = NSMenu()
-        mainMenu.addItem(appMenuItem())
-        mainMenu.addItem(editMenuItem())
-        mainMenu.addItem(viewMenuItem())
-        mainMenu.addItem(sessionMenuItem())
-        mainMenu.addItem(windowMenuItem())
-        mainMenu.addItem(helpMenuItem())
-        NSApp.mainMenu = mainMenu
-    }
-
-    func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
-        let action = menuItem.action
-        let requiresTerminalWindow =
-            action == #selector(newTab(_:))
-            || action == #selector(splitVertical(_:))
-            || action == #selector(splitHorizontal(_:))
-            || action == #selector(renameActiveTab(_:))
-            || action == #selector(openNativeNeovim(_:))
-            || action == #selector(closeActivePane(_:))
-            || action == #selector(focusPaneLeft(_:))
-            || action == #selector(focusPaneDown(_:))
-            || action == #selector(focusPaneUp(_:))
-            || action == #selector(focusPaneRight(_:))
-            || action == #selector(selectTabFromShortcut(_:))
-            || action == #selector(showSessionSwitcher(_:))
-            || action == #selector(zoomIn(_:))
-            || action == #selector(zoomOut(_:))
-            || action == #selector(resetZoom(_:))
-        return !requiresTerminalWindow || NSApp.keyWindow === window
-    }
-
-    private func appMenuItem() -> NSMenuItem {
-        let item = NSMenuItem()
-        let menu = NSMenu()
-        menu.addItem(
-            withTitle: "About \(nativeApplicationName)",
-            action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)),
-            keyEquivalent: ""
-        )
-        menu.addItem(NSMenuItem.separator())
-        let settingsItem = NSMenuItem(
-            title: "Settings…",
-            action: #selector(showSettings(_:)),
-            keyEquivalent: ","
-        )
-        settingsItem.target = self
-        settingsItem.keyEquivalentModifierMask = [.command]
-        menu.addItem(settingsItem)
-        menu.addItem(NSMenuItem.separator())
-        menu.addItem(
-            withTitle: "Quit \(nativeApplicationName)",
-            action: #selector(NSApplication.terminate(_:)),
-            keyEquivalent: "q"
-        )
-        item.submenu = menu
-        return item
-    }
-
-    private func sessionMenuItem() -> NSMenuItem {
-        let item = NSMenuItem()
-        let menu = NSMenu(title: "Session")
-        menu.addItem(
-            targetedItem("Switch Terminal Session…", #selector(showSessionSwitcher(_:)), ""))
-        menu.addItem(NSMenuItem.separator())
-        menu.addItem(commandItem("New Tab", #selector(newTab(_:)), .newTab))
-        menu.addItem(commandItem("Split Vertical", #selector(splitVertical(_:)), .splitVertical))
-        menu.addItem(
-            commandItem("Split Horizontal", #selector(splitHorizontal(_:)), .splitHorizontal))
-        menu.addItem(commandItem("Close Pane", #selector(closeActivePane(_:)), .closePane))
-        menu.addItem(NSMenuItem.separator())
-        menu.addItem(commandItem("Focus Pane Left", #selector(focusPaneLeft(_:)), .focusPaneLeft))
-        menu.addItem(commandItem("Focus Pane Down", #selector(focusPaneDown(_:)), .focusPaneDown))
-        menu.addItem(commandItem("Focus Pane Up", #selector(focusPaneUp(_:)), .focusPaneUp))
-        menu.addItem(
-            commandItem("Focus Pane Right", #selector(focusPaneRight(_:)), .focusPaneRight))
-        menu.addItem(NSMenuItem.separator())
-        for shortcutNumber in 1...9 {
-            let title = shortcutNumber == 9 ? "Select Last Tab" : "Select Tab \(shortcutNumber)"
-            let menuItem = targetedItem(
-                title, #selector(selectTabFromShortcut(_:)), "\(shortcutNumber)")
-            menuItem.tag = shortcutNumber
-            menu.addItem(menuItem)
-        }
-        menu.addItem(NSMenuItem.separator())
-        menu.addItem(commandItem("Rename Session", #selector(renameActiveTab(_:)), .renameSession))
-        menu.addItem(
-            commandItem(
-                "Open Native Neovim",
-                #selector(openNativeNeovim(_:)),
-                .openNativeNeovim
-            )
-        )
-        item.submenu = menu
-        return item
-    }
-
-    private func editMenuItem() -> NSMenuItem {
-        let item = NSMenuItem()
-        let menu = NSMenu(title: "Edit")
-        menu.addItem(withTitle: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
-        menu.addItem(withTitle: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
-        menu.addItem(
-            withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
-        menu.addItem(NSMenuItem.separator())
-        menu.addItem(
-            withTitle: "Find",
-            action: #selector(NSTextView.performFindPanelAction(_:)),
-            keyEquivalent: "f"
-        )
-        item.submenu = menu
-        return item
-    }
-
-    private func viewMenuItem() -> NSMenuItem {
-        let item = NSMenuItem()
-        let menu = NSMenu(title: "View")
-        menu.addItem(commandItem("Zoom In", #selector(zoomIn(_:)), .zoomIn))
-        menu.addItem(commandItem("Zoom Out", #selector(zoomOut(_:)), .zoomOut))
-        menu.addItem(commandItem("Actual Size", #selector(resetZoom(_:)), .actualSize))
-        item.submenu = menu
-        return item
-    }
-
-    private func windowMenuItem() -> NSMenuItem {
-        let item = NSMenuItem()
-        let menu = NSMenu(title: "Window")
-        menu.addItem(
-            withTitle: "Close Window",
-            action: #selector(NSWindow.performClose(_:)),
-            keyEquivalent: "w"
-        )
-        menu.addItem(
-            withTitle: "Minimize",
-            action: #selector(NSWindow.performMiniaturize(_:)),
-            keyEquivalent: "m"
-        )
-        item.submenu = menu
-        NSApp.windowsMenu = menu
-        return item
-    }
-
-    private func helpMenuItem() -> NSMenuItem {
-        let item = NSMenuItem()
-        let menu = NSMenu(title: "Help")
-        if !nativeIsDevelopmentBuild {
-            menu.addItem(
-                commandItem(
-                    "Check for Updates…",
-                    #selector(checkForUpdates(_:)),
-                    .checkForUpdates
-                )
-            )
-            menu.addItem(NSMenuItem.separator())
-        }
-        let acknowledgements = NSMenuItem(
-            title: "Acknowledgements…",
-            action: #selector(showAcknowledgements(_:)),
-            keyEquivalent: ""
-        )
-        acknowledgements.target = self
-        menu.addItem(acknowledgements)
-        item.submenu = menu
-        return item
-    }
-
-    private func commandItem(
-        _ title: String,
-        _ action: Selector,
-        _ command: NativeCommandID
-    ) -> NSMenuItem {
-        let shortcut = settingsStore.load().shortcut(for: command)
-        let terminalOwnsShortcuts = terminalWindowOwnsCommandShortcuts()
-        let item = NSMenuItem(
-            title: title,
-            action: action,
-            keyEquivalent: terminalOwnsShortcuts ? shortcut.keyEquivalent : ""
-        )
-        item.target = self
-        item.keyEquivalentModifierMask = terminalOwnsShortcuts ? shortcut.modifiers : []
-        return item
-    }
-
-    private func targetedItem(_ title: String, _ action: Selector, _ key: String) -> NSMenuItem {
-        let item = NSMenuItem(
-            title: title,
-            action: action,
-            keyEquivalent: terminalWindowOwnsCommandShortcuts() ? key : ""
-        )
-        item.target = self
-        return item
-    }
-
-    private func terminalWindowOwnsCommandShortcuts() -> Bool {
-        guard let window else {
-            return false
-        }
-        guard let keyWindow = NSApp.keyWindow else {
-            return window.isVisible
-        }
-        return keyWindow === window
     }
 }
