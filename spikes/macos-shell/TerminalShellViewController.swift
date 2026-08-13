@@ -439,8 +439,11 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
         self.terminalTextView.onMouseInput = { [weak self] input in
             self?.sendMouseInputToActivePane(input) ?? .unhandled
         }
-        self.terminalTextView.onSelectionChanged = { [weak self] start, end, rectangular in
-            self?.selectTerminalText(start: start, end: end, rectangular: rectangular)
+        self.terminalTextView.onMouseTrackingRequested = { [weak self] in
+            self?.activePaneUsesMouseTracking() ?? false
+        }
+        self.terminalTextView.onSelectionEvent = { [weak self] event in
+            self?.handleTerminalSelection(event) ?? false
         }
         self.terminalTextView.onHyperlinkRequested = { [weak self] position in
             self?.openTerminalHyperlink(position) ?? false

@@ -40,8 +40,11 @@ use crate::neovide_render::{
 use crate::tmux_control::{TmuxControl, TmuxControlEvent};
 use crate::wakeup::{WakeupReceiver, WakeupSender};
 
+mod selection;
 mod spawn;
 
+use self::selection::TerminalSelectionGesture;
+pub(crate) use self::selection::TerminalSelectionInput;
 use self::spawn::{
     configure_shell_command, configure_terminal_environment, direct_startup_command,
     startup_command_input,
@@ -178,6 +181,7 @@ pub struct NativeTerminalRuntime {
     pty_replies: Rc<RefCell<Vec<u8>>>,
     bell_count: Rc<Cell<u64>>,
     terminal: Terminal<'static, 'static>,
+    selection_gesture: TerminalSelectionGesture,
     scroll_sequence_tracker: TerminalScrollSequenceTracker,
     key_encoder: key::Encoder<'static>,
     semantic_prompt_tracker: SemanticPromptTracker,
@@ -252,6 +256,7 @@ impl NativeTerminalRuntime {
             pty_replies,
             bell_count,
             terminal,
+            selection_gesture: TerminalSelectionGesture::new()?,
             scroll_sequence_tracker: TerminalScrollSequenceTracker::default(),
             key_encoder: key::Encoder::new()?,
             semantic_prompt_tracker: SemanticPromptTracker::default(),
@@ -362,7 +367,7 @@ impl NativeTerminalRuntime {
     }
 
     pub fn encode_mouse(&mut self, input: NativeMouseInput) -> Result<Option<Vec<u8>>> {
-        if !self.terminal.is_mouse_tracking().unwrap_or(false) {
+        if !self.is_mouse_tracking() {
             return Ok(None);
         }
         self.mouse_encoder
@@ -398,6 +403,10 @@ impl NativeTerminalRuntime {
         Ok(Some(encoded))
     }
 
+    pub fn is_mouse_tracking(&self) -> bool {
+        self.terminal.is_mouse_tracking().unwrap_or(false)
+    }
+
     pub fn write_focus(&mut self, focused: bool) -> Result<bool> {
         let Some(encoded) = self.encode_focus(focused)? else {
             return Ok(false);
@@ -415,19 +424,6 @@ impl NativeTerminalRuntime {
         } else {
             b"\x1b[O".to_vec()
         }))
-    }
-
-    pub fn select(
-        &self,
-        start: TerminalPoint,
-        end: TerminalPoint,
-        rectangular: bool,
-    ) -> Result<()> {
-        let start = self.viewport_grid_ref(start)?;
-        let end = self.viewport_grid_ref(end)?;
-        let selection = Selection::new(start, end, rectangular);
-        self.terminal.set_selection(Some(&selection))?;
-        Ok(())
     }
 
     pub fn select_all(&self) -> Result<()> {
@@ -734,11 +730,15 @@ impl NativeTerminalRuntime {
         point: TerminalPoint,
     ) -> Result<libghostty_vt::screen::GridRef<'_>> {
         self.terminal
-            .grid_ref(Point::Viewport(PointCoordinate {
-                x: point.col.min(self.size.cols.saturating_sub(1)),
-                y: point.row.min(u32::from(self.size.rows.saturating_sub(1))),
-            }))
+            .grid_ref(Point::Viewport(self.clamped_viewport_point(point)))
             .map_err(Into::into)
+    }
+
+    fn clamped_viewport_point(&self, point: TerminalPoint) -> PointCoordinate {
+        PointCoordinate {
+            x: point.col.min(self.size.cols.saturating_sub(1)),
+            y: point.row.min(u32::from(self.size.rows.saturating_sub(1))),
+        }
     }
 
     fn scroll_to_bottom_after_input(&mut self) {
@@ -879,6 +879,7 @@ impl NativeTerminalRuntime {
 
 impl Drop for NativeTerminalRuntime {
     fn drop(&mut self) {
+        self.selection_gesture.reset(&self.terminal);
         if let Some(pty) = self.pty.as_mut() {
             let _ = pty.kill();
         }
@@ -2373,6 +2374,49 @@ mod tests {
 
         runtime.feed_external(b"\x1b[?25l").unwrap();
         assert_eq!(runtime.cursor_position().unwrap(), Some((6, 2)));
+    }
+
+    #[test]
+    fn selection_autoscroll_keeps_the_press_anchor_in_scrollback() {
+        let mut runtime = NativeTerminalRuntime::external(grid_size(3, 8)).unwrap();
+        runtime
+            .feed_external(b"one\r\ntwo\r\nthree\r\nfour\r\nfive")
+            .unwrap();
+
+        runtime
+            .selection_press(TerminalSelectionInput {
+                point: TerminalPoint { row: 2, col: 3 },
+                x: 39.0,
+                y: 50.0,
+                cell_width: 10,
+            })
+            .unwrap();
+        runtime
+            .selection_drag(
+                TerminalSelectionInput {
+                    point: TerminalPoint { row: 0, col: 0 },
+                    x: 0.0,
+                    y: 0.0,
+                    cell_width: 10,
+                },
+                false,
+            )
+            .unwrap();
+
+        let tick = TerminalSelectionInput {
+            point: TerminalPoint { row: 0, col: 0 },
+            x: 0.0,
+            y: 0.0,
+            cell_width: 10,
+        };
+        assert_eq!(runtime.selection_autoscroll(tick, false).unwrap(), -1);
+        assert_eq!(runtime.selection_autoscroll(tick, false).unwrap(), -1);
+        runtime.selection_release(Some(tick.point)).unwrap();
+
+        assert_eq!(
+            runtime.selected_text().unwrap().as_deref(),
+            Some("one\ntwo\nthree\nfour\nfive")
+        );
     }
 
     #[test]

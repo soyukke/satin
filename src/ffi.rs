@@ -8,7 +8,7 @@ use crate::neovim_runtime::{NativeNeovimRuntime, NeovimLaunchOptions};
 use crate::skia_metal::{NativeSkiaMetalRenderer, SkiaRenderGeometry};
 use crate::terminal_runtime::{
     NativeKeyInput, NativeMouseInput, NativeTerminalRuntime, TerminalGridSize, TerminalPoint,
-    TerminalSpawnConfig,
+    TerminalSelectionInput, TerminalSpawnConfig,
 };
 
 mod core_ffi;
@@ -345,6 +345,11 @@ pub extern "C" fn satin_runtime_mouse(
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn satin_runtime_mouse_tracking(handle: *const NativeTerminalRuntime) -> u8 {
+    runtime_ref(handle).is_some_and(NativeTerminalRuntime::is_mouse_tracking) as u8
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn satin_runtime_focus(handle: *mut NativeTerminalRuntime, focused: u8) -> u8 {
     let Some(runtime) = runtime_mut(handle) else {
         return 0;
@@ -353,34 +358,52 @@ pub extern "C" fn satin_runtime_focus(handle: *mut NativeTerminalRuntime, focuse
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn satin_runtime_select(
+pub extern "C" fn satin_runtime_selection_event(
     handle: *mut NativeTerminalRuntime,
-    start_row: u32,
-    start_col: u16,
-    end_row: u32,
-    end_col: u16,
+    action: u32,
+    row: u32,
+    col: u16,
+    x: f32,
+    y: f32,
+    cell_width: u32,
     rectangular: u8,
-) -> u8 {
-    runtime_ref(handle).is_some_and(|runtime| {
-        runtime
-            .select(
-                TerminalPoint {
-                    row: start_row,
-                    col: start_col,
-                },
-                TerminalPoint {
-                    row: end_row,
-                    col: end_col,
-                },
-                rectangular != 0,
-            )
-            .is_ok()
-    }) as u8
+) -> isize {
+    let Some(runtime) = runtime_mut(handle) else {
+        return 0;
+    };
+    let input = terminal_selection_input(row, col, x, y, cell_width);
+    match action {
+        0 => runtime.selection_press(input).map(|()| 1),
+        1 => runtime.selection_drag(input, rectangular != 0).map(|()| 1),
+        2 => runtime.selection_release(Some(input.point)).map(|()| 1),
+        3 => runtime.selection_autoscroll(input, rectangular != 0),
+        4 => {
+            runtime.cancel_selection_gesture();
+            Ok(1)
+        }
+        _ => Ok(0),
+    }
+    .unwrap_or(0)
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn satin_runtime_select_all(handle: *const NativeTerminalRuntime) -> u8 {
     runtime_ref(handle).is_some_and(|runtime| runtime.select_all().is_ok()) as u8
+}
+
+fn terminal_selection_input(
+    row: u32,
+    col: u16,
+    x: f32,
+    y: f32,
+    cell_width: u32,
+) -> TerminalSelectionInput {
+    TerminalSelectionInput {
+        point: TerminalPoint { row, col },
+        x,
+        y,
+        cell_width,
+    }
 }
 
 #[unsafe(no_mangle)]

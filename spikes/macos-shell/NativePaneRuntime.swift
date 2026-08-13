@@ -217,6 +217,14 @@ struct NativeMouseInput {
     var cellHeight: UInt32 = 1
 }
 
+enum NativeTerminalSelectionEvent {
+    case press(NativeMouseInput)
+    case drag(NativeMouseInput, rectangular: Bool)
+    case release(NativeMouseInput)
+    case autoscroll(NativeMouseInput, rectangular: Bool)
+    case cancel
+}
+
 enum NativeMouseHandling: Equatable {
     case unhandled
     case handled
@@ -247,7 +255,7 @@ enum NativePaneMode: Equatable {
 
 class RustTerminalPane: NativePane {
     let kind = NativePaneMode.terminal
-    fileprivate let handle: UnsafeMutableRawPointer
+    let handle: UnsafeMutableRawPointer
 
     init?(
         grid: (rows: Int, cols: Int, widthPixels: Int, heightPixels: Int),
@@ -373,19 +381,12 @@ class RustTerminalPane: NativePane {
         ) != 0
     }
 
-    func focus(_ focused: Bool) {
-        _ = satinRuntimeFocus(handle, focused ? 1 : 0)
+    func isMouseTracking() -> Bool {
+        satinRuntimeMouseTracking(handle) != 0
     }
 
-    func select(start: (row: Int, col: Int), end: (row: Int, col: Int), rectangular: Bool) {
-        _ = satinRuntimeSelect(
-            handle,
-            UInt32(max(0, start.row)),
-            clampedUInt16(start.col + 1) - 1,
-            UInt32(max(0, end.row)),
-            clampedUInt16(end.col + 1) - 1,
-            rectangular ? 1 : 0
-        )
+    func focus(_ focused: Bool) {
+        _ = satinRuntimeFocus(handle, focused ? 1 : 0)
     }
 
     func selectAll() {

@@ -6,7 +6,8 @@ final class TerminalTextView: NSView, NSTextInputClient {
     var onKeyEvent: ((NSEvent, Bool) -> Bool)?
     var onTextInput: ((String) -> Void)?
     var onMouseInput: ((NativeMouseInput) -> NativeMouseHandling)?
-    var onSelectionChanged: (((row: Int, col: Int), (row: Int, col: Int), Bool) -> Void)?
+    var onMouseTrackingRequested: (() -> Bool)?
+    var onSelectionEvent: ((NativeTerminalSelectionEvent) -> Bool)?
     var onHyperlinkRequested: (((row: Int, col: Int)) -> Bool)?
     var onCopyRequested: (() -> Bool)?
     var onPasteRequested: (() -> Bool)?
@@ -28,6 +29,10 @@ final class TerminalTextView: NSView, NSTextInputClient {
         nil
     }
 
+    deinit {
+        selectionAutoscrollTimer?.invalidate()
+    }
+
     var rendererModelSnapshot: NeovideRendererModelSnapshot?
     var terminalCursor: (x: Int, y: Int)?
     var rendererModelFrameCount = 0
@@ -47,8 +52,12 @@ final class TerminalTextView: NSView, NSTextInputClient {
     var markedText = NSMutableAttributedString()
     var markedSelection = NSRange(location: 0, length: 0)
     var interpretingKeyEvent: NSEvent?
-    var selectionAnchor: (row: Int, col: Int)?
+    var selectionInProgress = false
+    var selectionAutoscrollInput: NativeMouseInput?
+    var selectionAutoscrollRectangular = false
+    var selectionAutoscrollTimer: Timer?
     var messageSelectionActive = false
+    var wheelMouseRemainder: CGFloat = 0
     var terminalKeysDown = Set<UInt16>()
 
     override init(frame frameRect: NSRect) {
@@ -161,11 +170,11 @@ final class TerminalTextView: NSView, NSTextInputClient {
     }
 
     override func mouseDown(with event: NSEvent) {
+        cancelTerminalSelectionGesture()
         let point = convert(event.locationInWindow, from: nil)
         if let divider = divider(at: point) {
             activeDividerDrag = divider
             activeDividerCommandRatio = divider.ratio
-            selectionAnchor = nil
             divider.axis.cursor.set()
             needsDisplay = true
             return
@@ -193,15 +202,13 @@ final class TerminalTextView: NSView, NSTextInputClient {
             return
         }
         if handleMouseInput(input) {
-            selectionAnchor = nil
             return
         }
-        let position = (row: Int(input.row), col: Int(input.col))
-        selectionAnchor = position
-        onSelectionChanged?(position, position, event.modifierFlags.contains(.option))
+        selectionInProgress = onSelectionEvent?(.press(input)) ?? false
     }
 
     override func mouseUp(with event: NSEvent) {
+        stopSelectionAutoscroll()
         if activeDividerDrag != nil {
             activeDividerDrag = nil
             activeDividerCommandRatio = nil
@@ -216,23 +223,20 @@ final class TerminalTextView: NSView, NSTextInputClient {
                 action: "release",
                 event: event,
                 point: point,
-                clampToGrid: messageSelectionActive
+                clampToGrid: messageSelectionActive || selectionInProgress
             )
         else {
+            cancelTerminalSelectionGesture()
             return
         }
         if handleMouseInput(input) {
-            selectionAnchor = nil
+            cancelTerminalSelectionGesture()
             return
         }
-        if let anchor = selectionAnchor {
-            onSelectionChanged?(
-                anchor,
-                (row: Int(input.row), col: Int(input.col)),
-                event.modifierFlags.contains(.option)
-            )
+        if selectionInProgress {
+            _ = onSelectionEvent?(.release(input))
         }
-        selectionAnchor = nil
+        finishTerminalSelectionGesture()
     }
 
     override func mouseDragged(with event: NSEvent) {
@@ -272,22 +276,24 @@ final class TerminalTextView: NSView, NSTextInputClient {
                 action: "drag",
                 event: event,
                 point: point,
-                clampToGrid: messageSelectionActive
+                clampToGrid: messageSelectionActive || selectionInProgress
             )
         else {
             return
         }
         if handleMouseInput(input) {
-            selectionAnchor = nil
+            cancelTerminalSelectionGesture()
             return
         }
-        if let anchor = selectionAnchor {
-            onSelectionChanged?(
-                anchor,
-                (row: Int(input.row), col: Int(input.col)),
-                event.modifierFlags.contains(.option)
-            )
+        guard selectionInProgress else {
+            return
         }
+        let rectangular = event.modifierFlags.contains(.option)
+        guard onSelectionEvent?(.drag(input, rectangular: rectangular)) == true else {
+            cancelTerminalSelectionGesture()
+            return
+        }
+        updateSelectionAutoscroll(at: point, input: input, rectangular: rectangular)
     }
 
     override func rightMouseDown(with event: NSEvent) {
@@ -423,6 +429,9 @@ final class TerminalTextView: NSView, NSTextInputClient {
     }
 
     func setActivePaneId(_ paneId: Int?) {
+        if activePaneId != paneId {
+            wheelMouseRemainder = 0
+        }
         activePaneId = paneId
         for (candidateId, chrome) in paneChromeViews {
             chrome.update(isActive: candidateId == paneId)
