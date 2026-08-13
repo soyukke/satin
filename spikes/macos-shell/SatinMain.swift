@@ -38,6 +38,7 @@ struct SatinApplication {
                 || !NativeFinderEditorLaunch.runSelfTests()
                 || !RustCore.runSelfTests()
                 || !runNativeFrameSchedulingSelfTests()
+                || !runNativeTmuxSplitCommandSelfTests()
             {
                 failDiagnostic("update self-test failed")
             }

@@ -127,13 +127,25 @@ fn configure_zsh_integration(
     else {
         return;
     };
-    let original = env::var("ZDOTDIR")
-        .ok()
-        .filter(|value| !value.is_empty())
-        .or_else(|| env::var("HOME").ok())
-        .unwrap_or_else(|| "/tmp".to_owned());
+    let original = resolve_user_zdotdir(
+        env::var("SATIN_USER_ZDOTDIR").ok(),
+        env::var("ZDOTDIR").ok(),
+        env::var("HOME").ok(),
+    );
     command.env("SATIN_USER_ZDOTDIR", original);
     command.env("ZDOTDIR", integration);
+}
+
+fn resolve_user_zdotdir(
+    satin_user_zdotdir: Option<String>,
+    zdotdir: Option<String>,
+    home: Option<String>,
+) -> String {
+    [satin_user_zdotdir, zdotdir, home]
+        .into_iter()
+        .flatten()
+        .find(|value| !value.is_empty())
+        .unwrap_or_else(|| "/tmp".to_owned())
 }
 
 fn allowed_terminal_environment_key(key: &str) -> bool {
@@ -190,5 +202,17 @@ mod tests {
         assert!(allowed_terminal_environment_key("PATH"));
         assert!(!allowed_terminal_environment_key("HOME"));
         assert!(!allowed_terminal_environment_key("DYLD_INSERT_LIBRARIES"));
+    }
+
+    #[test]
+    fn nested_satin_shell_preserves_the_original_user_zdotdir() {
+        assert_eq!(
+            resolve_user_zdotdir(
+                Some("/Users/tester".to_owned()),
+                Some("/Applications/Satin.app/Contents/Resources/ShellIntegration/zsh".to_owned()),
+                Some("/Users/tester".to_owned()),
+            ),
+            "/Users/tester"
+        );
     }
 }
