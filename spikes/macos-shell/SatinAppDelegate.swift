@@ -137,6 +137,9 @@ final class SatinAppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidat
             self?.shellController?.applySettings(settings)
             self?.buildMainMenu()
         }
+        settingsController.onCheckForUpdates = { [weak self] in
+            self?.checkForUpdates(nil)
+        }
         self.settingsWindowController = settingsController
 
         buildMainMenu()
@@ -310,6 +313,7 @@ final class SatinAppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidat
             ) as? String
         else {
             if interactive {
+                settingsWindowController?.setUpdateCheckInProgress(false)
                 presentUpdateError(AppUpdateError.invalidCurrentVersion)
             }
             return
@@ -317,6 +321,7 @@ final class SatinAppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidat
 
         if interactive {
             updateTask?.cancel()
+            settingsWindowController?.setUpdateCheckInProgress(true)
         } else if updateTask != nil {
             return
         }
@@ -330,6 +335,9 @@ final class SatinAppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidat
                 }
                 self.updateCheckID = nil
                 self.updateTask = nil
+                if interactive {
+                    self.settingsWindowController?.setUpdateCheckInProgress(false)
+                }
                 self.settingsStore.recordUpdateCheck()
                 switch result {
                 case .success(.current):
