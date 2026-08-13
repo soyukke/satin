@@ -321,6 +321,7 @@ final class NativeSettingsStore {
 
 final class NativeSettingsWindowController: NSWindowController, NSTextFieldDelegate {
     var onChange: ((NativeSettings) -> Void)?
+    var onCheckForUpdates: (() -> Void)?
 
     private let store: NativeSettingsStore
     private let tabController: NSTabViewController
@@ -341,6 +342,7 @@ final class NativeSettingsWindowController: NSWindowController, NSTextFieldDeleg
     private let terminalErrorLabel = NSTextField(labelWithString: "")
     private var automaticUpdatesButton: NSButton?
     private var updateIntervalPopup: NSPopUpButton?
+    private var checkForUpdatesButton: NSButton?
 
     init(store: NativeSettingsStore) {
         self.store = store
@@ -517,6 +519,15 @@ final class NativeSettingsWindowController: NSWindowController, NSTextFieldDeleg
             ? 0
             : Double(sender.selectedItem?.tag ?? 24)
         commit()
+    }
+
+    @objc private func checkForUpdates(_ sender: NSButton) {
+        onCheckForUpdates?()
+    }
+
+    func setUpdateCheckInProgress(_ isChecking: Bool) {
+        checkForUpdatesButton?.title = isChecking ? "Checking…" : "Check for Updates…"
+        checkForUpdatesButton?.isEnabled = !nativeIsDevelopmentBuild && !isChecking
     }
 
     @objc private func shortcutChanged(_ sender: NSTextField) {
@@ -722,6 +733,17 @@ final class NativeSettingsWindowController: NSWindowController, NSTextFieldDeleg
         updateIntervalPopup = interval
         let channel = NSTextField(labelWithString: "Stable — publisher-signed GitHub Releases")
         channel.textColor = .secondaryLabelColor
+        let checkNow = NSButton(
+            title: "Check for Updates…",
+            target: self,
+            action: #selector(checkForUpdates(_:))
+        )
+        checkNow.bezelStyle = .rounded
+        checkNow.isEnabled = !nativeIsDevelopmentBuild
+        if nativeIsDevelopmentBuild {
+            checkNow.toolTip = "Update checks are available in release builds."
+        }
+        checkForUpdatesButton = checkNow
         return formView(
             title: "Updates",
             description: "Update archives are verified with the embedded Ed25519 public key.",
@@ -729,6 +751,7 @@ final class NativeSettingsWindowController: NSWindowController, NSTextFieldDeleg
                 ("Automatic checks", automatic),
                 ("Frequency", interval),
                 ("Channel", channel),
+                ("Manual check", checkNow),
             ]
         )
     }
