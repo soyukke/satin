@@ -1,6 +1,6 @@
 ---
 name: satin
-description: Control and organize a running Satin macOS terminal through its bundled CLI. Use when the user asks to inspect or operate Satin tabs or panes, save or version a bounded rich Markdown artifact, present tables, code, diagrams, trees, timelines, diffs, or images, split an artifact beside the current pane, set session names, reorder or close workspaces, set up a development workspace, send terminal input, change themes, or coordinate pane status. Run only from a Satin-managed pane with a valid local control context.
+description: Control and organize a running Satin macOS terminal through its bundled CLI. Use when the user asks to inspect or operate Satin tabs or panes, save or version a bounded rich Markdown artifact, present tables, code, diagrams, trees, timelines, diffs, or images in Satin's sidebar, set session names, reorder or close workspaces, set up a development workspace, send terminal input, change themes, or coordinate pane status. Run only from a Satin-managed pane with a valid local control context.
 ---
 
 # Satin
@@ -164,32 +164,40 @@ does not execute Mermaid JavaScript or raw HTML.
 result="$(satin artifact add --kind markdown --title "Test results" \
   --language ja-JP --file "$project/test-results.md" --json)"
 artifact_id="$(printf '%s' "$result" | jq -r '.result.id')"
-satin artifact show "$artifact_id" --vertical --background --json
+satin artifact show "$artifact_id" --background --json
 ```
 
 When revising the same logical artifact, reuse its exact ID. Satin appends a version only when the
 document or retained source changed:
 
 ```sh
-satin artifact add --id "$artifact_id" --kind markdown --title "Test results" \
-  --language ja-JP --file "$project/test-results.md" --json
+update="$(satin artifact add --id "$artifact_id" --kind markdown --title "Test results" \
+  --language ja-JP --file "$project/test-results.md" --json)"
+artifact_version="$(printf '%s' "$update" | jq -r '.result.version')"
 satin artifact list "$artifact_id" --json
-satin artifact show "$artifact_id@2" --vertical --background --json
+satin artifact show "$artifact_id@$artifact_version" --background --json
 ```
 
-Omitting `--pane` targets `SATIN_PANE_ID`. `artifact show` creates and starts the split atomically;
-do not emulate it with `split`, `send`, and `key`. Use `--background` unless the user wants focus moved
-to the viewer. Humans can also use the Artifacts action in the native toolbar to inspect recent previews
-and replace that pane with one. Registration obeys the configured preview budget; the viewer reflows
-the retained snapshot to the pane, reports omissions, and closes through the pane header's common
-close action. A standalone viewer remains interruptible with Ctrl+C. `show ID` selects the latest
-version and `show ID@N` selects an immutable prior version.
+Omitting `--pane` targets `SATIN_PANE_ID`. `artifact show` atomically opens the window's right artifact
+sidebar, or refreshes that same sidebar when it is already open. Do not create a split first and do not
+emulate presentation with `split`, `send`, and `key`; the source terminal, Neovim, or tmux pane remains
+live and visible. Use `--background` unless the user wants focus moved to the viewer. Humans can use the
+Artifacts button at the right side of the native toolbar to inspect recent previews. Registration obeys
+the configured preview budget; the viewer reflows the retained snapshot to the sidebar, reports
+omissions, and closes through its common pane-header close action. A standalone viewer remains
+interruptible with Ctrl+C. `show ID` selects the latest version and `show ID@N` selects an immutable
+prior version. Legacy `--vertical` and `--horizontal` flags remain accepted but do not change sidebar
+placement.
+
+When the user asked to display an artifact, presentation is part of both creation and revision: do not
+report the artifact operation complete until the matching `artifact show` response succeeds. On a
+revision, show the version returned by `artifact add`; do not guess or hard-code its version number.
 
 The overflow policy is `compact`, `defer`, or `reject`. If registration is rejected, revise the source
 or ask before changing policy. Do not create a new artifact when the user is clearly revising an
 existing one; identify it from `artifact list --json` and pass `--id`. Do not register secrets,
-credentials, or unrelated files. Opening a split is a layout mutation and still requires user intent
-under the Safety rules below.
+credentials, or unrelated files. Opening the sidebar is a layout mutation and still requires user
+intent under the Safety rules below.
 
 ## Safety
 

@@ -539,7 +539,7 @@ mod tests {
     }
 
     #[test]
-    fn protocol_round_trips_artifact_split_context() {
+    fn protocol_round_trips_artifact_presentation_context() {
         let request = ControlRequest::new(ControlCommand::ArtifactShow {
             pane: 7,
             artifact: "a123abc@2".to_owned(),

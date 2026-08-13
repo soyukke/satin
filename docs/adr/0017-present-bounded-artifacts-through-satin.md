@@ -56,11 +56,15 @@ and a release-matched embedded agent skill.
   an artificial 80-column card inside a wider pane.
 - Rust owns the store, version validation, readable indexes, policy validation,
   CJK-aware cell measurement, structured formatting, omission accounting, and
-  Kitty PNG emission. Swift owns the native recent-artifact popover and split,
-  and supplies a validated startup argv to a terminal pane.
+  Kitty PNG emission. Swift owns the native recent-artifact popover and
+  window-scoped sidebar, and supplies a validated startup argv to its terminal
+  runtime.
 - `artifact show` is atomic. Agents do not create a pane and inject a shell
-  command in separate control operations. The current pane comes from
-  `SATIN_PANE_ID`, and background creation restores the user's prior focus.
+  command in separate control operations. The source pane comes from
+  `SATIN_PANE_ID`; its terminal, Neovim, or tmux runtime remains visible. A
+  second show replaces the viewer process inside the same sidebar, and
+  background presentation preserves the user's focus. The former split-axis
+  flags remain accepted as compatibility no-ops.
 - The existing embedded `satin` skill documents artifact discovery and use. A
   separately installed bootstrap skill is not required.
 - Text, Markdown, JSON/CSV/TSV tables, trees, timelines, diffs, and PNG images are
@@ -69,19 +73,20 @@ and a release-matched embedded agent skill.
 
 ## Consequences
 
-Every native pane header has an Artifacts action. Its popover shows at most five
-recent titles, versions, update times, and short previews. GUI selection replaces
-the clicked pane's visible runtime with the latest artifact while retaining the
-underlying terminal, Neovim, or tmux runtime. Selecting another artifact in that
-pane replaces only the viewer. The CLI `artifact show` command remains an atomic
-split operation for agent automation. This is the only native library surface in
-the initial version; searching, tags, thumbnails, diffing versions, sync, and
-export are intentionally absent.
+The window toolbar has one Artifacts action at its right edge. Its popover shows
+at most five recent titles, versions, update times, and short previews. GUI and
+CLI selection reserve a bounded region on the right without replacing or
+nesting the workspace pane tree. The sidebar is window-scoped so it survives
+local and tmux layout updates. Selecting another artifact or showing a newer
+version replaces only the sidebar viewer runtime and keeps the same synthetic
+pane ID; closing its common header action releases the region. This is the only
+native library surface in the initial version; searching, tags, thumbnails,
+diffing versions, sync, and export are intentionally absent.
 
 The viewer remains a bounded Rust TUI launched directly as the terminal pane's
 child process. It does not start an interactive login shell first, so selecting
 an artifact cannot flash a prompt or an injected CLI command. The viewer uses
-the whole pane without an outer card border; its pane header's common close
+the whole sidebar without an outer card border; its pane header's common close
 button owns dismissal, and keyboard input is not forwarded to a GUI viewer.
 It exercises the existing libghostty-vt and Kitty paths without extending the
 AppKit cell renderer. Its CLI and store contracts are independent of that

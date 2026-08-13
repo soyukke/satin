@@ -73,8 +73,8 @@ satin artifact add --id ARTIFACT_ID --kind markdown --title "Test results" \
   --language ja-JP --file /absolute/path/results.md --json
 satin artifact list --json
 satin artifact list ARTIFACT_ID --json
-satin artifact show ARTIFACT_ID --vertical --background
-satin artifact show ARTIFACT_ID@2 --vertical
+satin artifact show ARTIFACT_ID --background
+satin artifact show ARTIFACT_ID@2
 ```
 
 `--pane` defaults to `SATIN_PANE_ID`, and `--tab` defaults to
@@ -87,7 +87,8 @@ Tab and pane targets use stable IDs from `list`; only `move-tab --index` uses
 the current zero-based presentation index. A new tab can set its cwd and title
 atomically. `--background` creates and starts the requested tab or split, then
 restores the previously active tab and pane. The final tab and final pane cannot
-be closed through automation.
+be closed through automation. For artifacts, `--background` keeps focus in the
+workspace while the right sidebar opens or refreshes.
 
 The former `NVTERM_*` environment names remain accepted as one-way
 compatibility aliases for existing shell scripts. New integrations should use
@@ -174,14 +175,13 @@ artifacts/
 JSON is internal metadata; Markdown is the human-facing document. `INDEX.md`
 and each `README.md` link to the current and prior snapshots.
 
-The Artifacts action in each native pane header opens a popover with the five
-most recent titles, versions, update times, and short previews. Selecting a row
-replaces that pane's visible runtime with the bundled artifact viewer; selecting
-another artifact replaces the viewer in place. The underlying terminal, Neovim,
-or tmux runtime stays alive. CLI `artifact show` keeps its automation-oriented
-contract: it validates the selector and atomically creates a terminal split.
-Omitting `--pane` targets `SATIN_PANE_ID`; `--background` restores the previous
-focus after the viewer starts.
+The Artifacts action at the right edge of the native toolbar opens a popover with
+the five most recent titles, versions, update times, and short previews. Selecting
+a row opens a window-scoped right sidebar without replacing a terminal, Neovim,
+or tmux pane. Selecting another artifact or running `artifact show` again replaces
+only the viewer inside that same sidebar. Omitting `--pane` targets
+`SATIN_PANE_ID`; `--background` preserves workspace focus. Legacy `--vertical`
+and `--horizontal` flags are accepted as compatibility no-ops.
 
 `artifact view ID` is normally launched by `artifact show`. `--no-wait` emits
 one rendered frame for diagnostics without entering the alternate screen.

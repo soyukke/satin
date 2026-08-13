@@ -59,6 +59,8 @@ extension TerminalShellViewController {
         guard let snapshot = core.snapshot() else {
             return ["tabs": [], "panes": []]
         }
+        let activeTab = snapshot.tabs.first(where: { $0.index == snapshot.active_tab })
+        let artifactRuntime = paneStore.runtimes[nativeArtifactSidebarPaneId]
         let tabs: [[String: Any]] = snapshot.tabs.map { tab in
             [
                 "id": tab.id,
@@ -67,10 +69,12 @@ extension TerminalShellViewController {
                 "theme": tab.theme,
                 "active": tab.index == snapshot.active_tab,
                 "activePane": tab.active_pane,
-                "panes": tab.panes,
+                "panes":
+                    tab.id == activeTab?.id && artifactRuntime != nil
+                    ? tab.panes + [nativeArtifactSidebarPaneId] : tab.panes,
             ]
         }
-        let panes = snapshot.tabs.flatMap { tab in
+        var panes = snapshot.tabs.flatMap { tab in
             tab.panes.map { paneId -> [String: Any] in
                 let pane = paneStore.runtimes[paneId]
                 return [
@@ -80,9 +84,23 @@ extension TerminalShellViewController {
                     "cwd": paneStore.workingDirectories[paneId] ?? "",
                     "title": paneStore.titles[paneId] ?? "",
                     "kittyImages": pane?.controlImageCount() ?? 0,
+                    "artifact": NSNull(),
                     "status": (paneStatuses.status(for: paneId)?.json as Any?) ?? NSNull(),
                 ]
             }
+        }
+        if let artifactRuntime, let activeTab {
+            panes.append([
+                "id": nativeArtifactSidebarPaneId,
+                "tab": activeTab.id,
+                "kind": NativePaneMode.terminal.sessionValue,
+                "cwd": paneStore.workingDirectories[nativeArtifactSidebarPaneId] ?? "",
+                "title": "Artifact",
+                "kittyImages": artifactRuntime.controlImageCount(),
+                "artifact":
+                    paneStore.artifactSelectors[nativeArtifactSidebarPaneId] ?? NSNull(),
+                "status": NSNull(),
+            ])
         }
         return [
             "socket": controlSocketPath,
@@ -133,7 +151,7 @@ extension TerminalShellViewController {
             controlPaneExists(paneId),
             paneStore.runtimes[paneId] is RustTerminalPane,
             paneStore.suspendedSessions[paneId] == nil,
-            paneStore.artifactBackingRuntimes[paneId] == nil
+            paneStore.artifactSelectors[paneId] == nil
         else {
             reply(controlFailure("pane_not_terminal", "The pane is not an active terminal."))
             return
@@ -231,7 +249,7 @@ extension TerminalShellViewController {
         removeControlState(paneId)
         discardSuspendedTerminalSession(paneId)
         removePaneRuntime(paneId)
-        discardArtifactBackingPane(paneId)
+        paneStore.artifactSelectors.removeValue(forKey: paneId)
         terminalTextView.discardPaneZoom(paneId)
         paneStore.discardMetadata(for: paneId)
     }
@@ -358,10 +376,6 @@ extension TerminalShellViewController {
         _ request: NativeControlRequest,
         reply: @escaping NativeControlReply
     ) {
-        let previousTabId = lastSnapshot.flatMap { snapshot in
-            snapshot.tabs.first(where: { $0.index == snapshot.active_tab })?.id
-        }
-        let previousPaneId = activePaneId
         guard let paneId = request.pane,
             let tab = lastSnapshot?.tabs.first(where: { $0.panes.contains(paneId) }),
             let artifact = request.artifact,
@@ -374,59 +388,28 @@ extension TerminalShellViewController {
             reply(
                 controlFailure(
                     "invalid_artifact",
-                    "The pane, artifact, or split axis is invalid."
+                    "The pane or artifact is invalid."
                 )
             )
             return
         }
         guard
-            let newPane = createArtifactPane(
-                paneId: paneId,
-                tab: tab,
+            let reused = showArtifactSidebar(
                 artifact: artifact,
-                axis: axisName
+                sourcePaneId: paneId,
+                focus: request.background != true
             )
         else {
-            reply(controlFailure("core_error", "The artifact pane could not be created."))
+            reply(controlFailure("runtime_error", "The artifact sidebar could not be opened."))
             return
         }
-        let result: [String: Any] = ["artifact": artifact, "tab": tab.id, "pane": newPane]
-        if request.background == true {
-            restoreControlContext(tabId: previousTabId, paneId: previousPaneId)
-        }
-        reply(.success(result))
-    }
-
-    func createArtifactPane(
-        paneId: Int,
-        tab: TerminalCoreTabSnapshot,
-        artifact: String,
-        axis: String
-    ) -> Int? {
-        _ = core.selectTab(tab.index)
-        _ = core.selectPane(paneId)
-        pendingPaneWorkingDirectory = activeWorkingDirectory()
-        pendingPaneStartupCommand = [
-            controlCliPath,
-            "--socket",
-            controlSocketPath,
-            "artifact",
-            "view",
-            artifact,
+        let result: [String: Any] = [
+            "artifact": artifact,
+            "tab": tab.id,
+            "pane": nativeArtifactSidebarPaneId,
+            "reused": reused,
         ]
-        pendingPaneDirectStartup = true
-        pendingPaneMode = .terminal
-        let splitAxis = axis == "horizontal" ? ffiSplitHorizontal : ffiSplitVertical
-        guard let newPane = core.splitActive(axis: splitAxis) else {
-            pendingPaneWorkingDirectory = nil
-            pendingPaneStartupCommand = nil
-            pendingPaneDirectStartup = false
-            pendingPaneMode = nil
-            return nil
-        }
-        paneStore.artifactSelectors[newPane] = artifact
-        syncFromCore()
-        return newPane
+        reply(.success(result))
     }
 
     func validControlArtifactSelector(_ value: String) -> Bool {
@@ -657,6 +640,19 @@ extension TerminalShellViewController {
         _ request: NativeControlRequest,
         reply: @escaping NativeControlReply
     ) {
+        if request.pane == nativeArtifactSidebarPaneId,
+            paneStore.runtimes[nativeArtifactSidebarPaneId] != nil,
+            let tabId = lastSnapshot.flatMap({ snapshot in
+                snapshot.tabs.first(where: { $0.index == snapshot.active_tab })?.id
+            })
+        {
+            activePaneId = nativeArtifactSidebarPaneId
+            terminalTextView.setActivePaneId(nativeArtifactSidebarPaneId)
+            updateActiveFrame()
+            focusTerminal()
+            reply(.success(["tab": tabId, "pane": nativeArtifactSidebarPaneId]))
+            return
+        }
         if let session = tmuxSession {
             guard let paneId = request.pane,
                 let tmuxPaneId = session.tmuxPaneIds[paneId]
@@ -689,6 +685,21 @@ extension TerminalShellViewController {
         _ request: NativeControlRequest,
         reply: @escaping NativeControlReply
     ) {
+        if request.pane == nativeArtifactSidebarPaneId,
+            paneStore.runtimes[nativeArtifactSidebarPaneId] != nil,
+            let tabId = lastSnapshot.flatMap({ snapshot in
+                snapshot.tabs.first(where: { $0.index == snapshot.active_tab })?.id
+            })
+        {
+            _ = closeArtifactSidebar()
+            reply(
+                .success([
+                    "tab": tabId,
+                    "pane": nativeArtifactSidebarPaneId,
+                    "tabClosed": false,
+                ]))
+            return
+        }
         if let session = tmuxSession {
             guard let paneId = request.pane,
                 let snapshot = lastSnapshot,
@@ -789,7 +800,10 @@ extension TerminalShellViewController {
     }
 
     func controlPaneExists(_ paneId: Int) -> Bool {
-        lastSnapshot?.tabs.contains(where: { $0.panes.contains(paneId) }) == true
+        if paneId == nativeArtifactSidebarPaneId {
+            return paneStore.runtimes[paneId] != nil
+        }
+        return lastSnapshot?.tabs.contains(where: { $0.panes.contains(paneId) }) == true
     }
 
     func validatedControlDirectory(_ requested: String?) -> String? {

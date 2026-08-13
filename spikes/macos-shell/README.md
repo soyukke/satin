@@ -96,9 +96,10 @@ manifest marks the result as a development artifact.
   through an early Lua-to-RPC bridge instead of a synthetic TTY.
 - Runtime output wakes AppKit through dispatch sources; only active renderer
   animations schedule additional Metal frames.
-- The native tab strip ends with a borderless new-tab action. Every pane reserves
-  a native header for close, split, and artifact actions; terminal and Neovim
-  grids begin below that chrome.
+- The native tab strip ends with a borderless new-tab action, and the right side
+  of the toolbar owns the window-scoped Artifact picker. Every workspace pane
+  reserves a native header for close and split actions; terminal and Neovim grids
+  begin below that chrome. The Artifact sidebar uses the same header for close.
 - Session schema v3 restores recursive splits, terminal/Neovim pane kinds,
   working directories, the active leaf, and consume-once tmux reattach metadata
   with legacy migration.

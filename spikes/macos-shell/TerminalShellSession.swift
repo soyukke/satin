@@ -206,7 +206,7 @@ extension TerminalShellViewController {
     ) -> Bool {
         guard let terminal = paneStore.runtimes[paneId] as? RustTerminalPane,
             paneStore.suspendedSessions[paneId] == nil,
-            paneStore.artifactBackingRuntimes[paneId] == nil
+            paneStore.artifactSelectors[paneId] == nil
         else {
             return false
         }

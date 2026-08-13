@@ -45,68 +45,8 @@ extension TerminalShellViewController {
         updateTerminalMetadata(pane, paneId: paneId)
     }
 
-    func installArtifactBackingWakeup(paneId: Int, pane: NativePane) {
-        paneStore.artifactBackingWakeupSources.removeValue(forKey: paneId)?.cancel()
-        let descriptor = pane.wakeupFD()
-        guard descriptor >= 0 else {
-            return
-        }
-        let source = DispatchSource.makeReadSource(
-            fileDescriptor: descriptor,
-            queue: .main
-        )
-        source.setEventHandler { [weak self] in
-            self?.drainArtifactBackingPane(paneId)
-        }
-        paneStore.artifactBackingWakeupSources[paneId] = source
-        source.resume()
-    }
-
-    func drainArtifactBackingPane(_ paneId: Int) {
-        guard let pane = paneStore.artifactBackingRuntimes[paneId] else {
-            paneStore.artifactBackingWakeupSources.removeValue(forKey: paneId)?.cancel()
-            return
-        }
-        _ = pane.drain()
-        if let terminal = pane as? RustTerminalPane, !(terminal is RustTmuxPane) {
-            updateTerminalMetadata(terminal, paneId: paneId)
-        }
-    }
-
-    func discardArtifactBackingPane(_ paneId: Int) {
-        paneStore.artifactBackingWakeupSources.removeValue(forKey: paneId)?.cancel()
-        metalView.forgetRuntime(
-            paneStore.artifactBackingRuntimes.removeValue(forKey: paneId)?.renderHandle()
-        )
-        paneStore.artifactSelectors.removeValue(forKey: paneId)
-    }
-
-    @discardableResult
-    func restoreArtifactBackingPane(_ paneId: Int) -> Bool {
-        guard let backing = paneStore.artifactBackingRuntimes.removeValue(forKey: paneId) else {
-            return false
-        }
-        paneStore.artifactBackingWakeupSources.removeValue(forKey: paneId)?.cancel()
-        paneStore.artifactSelectors.removeValue(forKey: paneId)
-        removePaneRuntime(paneId)
-        paneStore.runtimes[paneId] = backing
-        backing.resize(grid: paneGridSize(paneId))
-        if let terminal = backing as? RustTerminalPane {
-            terminal.setOptionAsAlt(optionAsAltEnabled)
-            _ = terminal.drain()
-            if !(terminal is RustTmuxPane) {
-                updateTerminalMetadata(terminal, paneId: paneId)
-            }
-        }
-        installPaneWakeup(paneId: paneId, pane: backing)
-        paneStore.scrollRemainders[paneId] = 0
-        lastNvimModelScrollShift = nil
-        return true
-    }
-
     func projectedTmuxPane(_ paneId: Int) -> RustTmuxPane? {
-        (paneStore.runtimes[paneId] as? RustTmuxPane)
-            ?? (paneStore.artifactBackingRuntimes[paneId] as? RustTmuxPane)
+        paneStore.runtimes[paneId] as? RustTmuxPane
     }
 
     func removePaneRuntime(_ paneId: Int) {
@@ -137,7 +77,7 @@ extension TerminalShellViewController {
         var activePaneChanged = false
         var visiblePaneChanged = false
         var exitedNvimPanes: [Int] = []
-        var exitedArtifactPanes: [Int] = []
+        var artifactSidebarExited = false
         var exitedTerminalPanes: [Int] = []
         var tmuxEvents: [(paneId: Int, pane: RustTerminalPane, event: TmuxControlEvent)] = []
         for (paneId, pane) in paneStore.runtimes {
@@ -163,8 +103,8 @@ extension TerminalShellViewController {
                     updateTerminalMetadata(terminal, paneId: paneId)
                 }
             }
-            if paneStore.artifactBackingRuntimes[paneId] != nil, pane.isExited() {
-                exitedArtifactPanes.append(paneId)
+            if paneId == nativeArtifactSidebarPaneId, pane.isExited() {
+                artifactSidebarExited = true
             } else if pane.kind == .neovim && pane.isExited() {
                 exitedNvimPanes.append(paneId)
             } else if pane.kind == .terminal && pane.isExited() {
@@ -178,8 +118,8 @@ extension TerminalShellViewController {
             replaceExitedNeovimPane(paneId)
             activePaneChanged = activePaneChanged || paneId == activePaneId
         }
-        for paneId in exitedArtifactPanes {
-            activePaneChanged = restoreArtifactBackingPane(paneId) || activePaneChanged
+        if artifactSidebarExited {
+            activePaneChanged = closeArtifactSidebar() || activePaneChanged
         }
         if closeExitedTerminalPanes(exitedTerminalPanes) {
             return
@@ -272,9 +212,7 @@ extension TerminalShellViewController {
             let pane = projectedTmuxPane(nativePaneId)
         {
             pane.feed(data)
-            if nativePaneId == activePaneId,
-                paneStore.artifactBackingRuntimes[nativePaneId] == nil
-            {
+            if nativePaneId == activePaneId {
                 updateActiveFrame()
             }
             return
@@ -293,9 +231,7 @@ extension TerminalShellViewController {
             if let latest = session.latestPanes[paneId] {
                 pane.syncCursor(latest)
             }
-            if nativePaneId == activePaneId,
-                paneStore.artifactBackingRuntimes[nativePaneId] == nil
-            {
+            if nativePaneId == activePaneId {
                 updateActiveFrame()
             }
             return
@@ -345,7 +281,7 @@ extension TerminalShellViewController {
         let stalePaneIds = Set(session.nativePaneIds.values).subtracting(nextNativePaneIds.values)
         for paneId in stalePaneIds {
             removePaneRuntime(paneId)
-            discardArtifactBackingPane(paneId)
+            paneStore.artifactSelectors.removeValue(forKey: paneId)
             terminalTextView.discardPaneZoom(paneId)
             paneStore.modes.removeValue(forKey: paneId)
             paneStore.workingDirectories.removeValue(forKey: paneId)
@@ -469,7 +405,7 @@ extension TerminalShellViewController {
         }
         for paneId in session.nativePaneIds.values {
             removePaneRuntime(paneId)
-            discardArtifactBackingPane(paneId)
+            paneStore.artifactSelectors.removeValue(forKey: paneId)
             terminalTextView.discardPaneZoom(paneId)
             paneStore.modes.removeValue(forKey: paneId)
             paneStore.workingDirectories.removeValue(forKey: paneId)
@@ -490,7 +426,7 @@ extension TerminalShellViewController {
         for paneId in paneIds {
             removeControlState(paneId)
             removePaneRuntime(paneId)
-            discardArtifactBackingPane(paneId)
+            paneStore.artifactSelectors.removeValue(forKey: paneId)
             terminalTextView.discardPaneZoom(paneId)
             paneStore.scrollRemainders.removeValue(forKey: paneId)
             paneStore.workingDirectories.removeValue(forKey: paneId)

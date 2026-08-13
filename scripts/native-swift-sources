@@ -28,6 +28,7 @@ native_swift_sources=(
   spikes/macos-shell/SettingsWindow.swift
   spikes/macos-shell/TabControls.swift
   spikes/macos-shell/TerminalMetalView.swift
+  spikes/macos-shell/TerminalShellArtifacts.swift
   spikes/macos-shell/TerminalShellCommands.swift
   spikes/macos-shell/TerminalShellControl.swift
   spikes/macos-shell/TerminalShellNeovimRuntime.swift

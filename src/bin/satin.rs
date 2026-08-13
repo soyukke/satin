@@ -227,8 +227,8 @@ fn artifact_show(socket: &Path, args: &mut Vec<String>, json_output: bool) -> Re
     let background = remove_flag(args, "--background");
     let vertical = remove_flag(args, "--vertical");
     let horizontal = remove_flag(args, "--horizontal");
-    if vertical == horizontal {
-        bail!("artifact show requires exactly one of --vertical or --horizontal");
+    if vertical && horizontal {
+        bail!("artifact show accepts at most one of --vertical or --horizontal");
     }
     if args.len() != 1 {
         bail!("artifact show requires one artifact ID");
@@ -240,10 +240,10 @@ fn artifact_show(socket: &Path, args: &mut Vec<String>, json_output: bool) -> Re
         &ControlRequest::new(ControlCommand::ArtifactShow {
             pane,
             artifact,
-            axis: if vertical {
-                ControlSplitAxis::Vertical
-            } else {
+            axis: if horizontal {
                 ControlSplitAxis::Horizontal
+            } else {
+                ControlSplitAxis::Vertical
             },
             background,
         }),
@@ -620,7 +620,7 @@ commands:
                        [--overflow compact|defer|reject]]
   artifact add [--id ID] --kind KIND --title TITLE --file PATH [--language TAG]
   artifact list [ID] [--limit N]
-  artifact show [--pane ID] ID --vertical|--horizontal [--background]
+  artifact show [--pane ID] ID [--background]
   artifact view ID [--no-wait]
   list
   read-screen [--pane ID]
@@ -647,7 +647,7 @@ fn artifact_usage() -> &'static str {
        satin artifact add [--id ID] --kind KIND --title TITLE --file PATH
                           [--language TAG] [--pane ID] [--tab ID]
        satin artifact list [ID] [--limit N]
-       satin artifact show [--pane ID] ID --vertical|--horizontal [--background]
+       satin artifact show [--pane ID] ID [--background]
        satin artifact view ID [--no-wait]
 
 kinds: text, markdown, table, tree, timeline, diff, image"
@@ -754,6 +754,8 @@ mod tests {
         assert!(SATIN_SKILL.contains("\n---\n"));
         assert!(SATIN_SKILL.contains("satin artifact policy --json"));
         assert!(SATIN_SKILL.contains("satin artifact show"));
+        assert!(SATIN_SKILL.contains("$artifact_id@$artifact_version"));
+        assert!(!SATIN_SKILL.contains("$artifact_id@2"));
         assert!(!SATIN_SKILL.contains("TODO"));
     }
 }

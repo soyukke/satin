@@ -122,25 +122,32 @@ if [[ "$(cat "$popover_result" 2>/dev/null || true)" != ok\ artifact-popover* ]]
 fi
 
 state_before="$($cli --socket "$socket" --json list)"
-rich_pane="$(jq -r '.result.tabs[] | select(.active) | .activePane' <<<"$state_before")"
+rich_source_pane="$(jq -r '.result.tabs[] | select(.active) | .activePane' <<<"$state_before")"
 pane_count_before="$(jq -r '.result.panes | length' <<<"$state_before")"
 : >"$popover_result.open"
 
+rich_pane=""
 for _ in {1..100}; do
-  rich_screen="$($cli --socket "$socket" read-screen --pane "$rich_pane")"
   state="$($cli --socket "$socket" --json list)"
-  if grep -Fq "リッチレポート" <<<"$rich_screen"; then
+  rich_pane="$(jq -r --arg artifact "$rich_id" \
+    '.result.panes[] | select(.artifact == $artifact) | .id' <<<"$state")"
+  if [[ -n "$rich_pane" ]]; then
+    rich_screen="$($cli --socket "$socket" read-screen --pane "$rich_pane")"
+  fi
+  if [[ -n "$rich_pane" ]] && grep -Fq "リッチレポート" <<<"${rich_screen:-}"; then
     break
   fi
   sleep 0.05
 done
-if ! grep -Fq "リッチレポート" <<<"${rich_screen:-}" ||
-  ! jq -e --argjson pane "$rich_pane" --argjson count "$pane_count_before" '
-    (.result.panes | length) == $count
-      and any(.result.panes[]; .id == $pane)
+if [[ -z "$rich_pane" ]] || ! grep -Fq "リッチレポート" <<<"${rich_screen:-}" ||
+  ! jq -e --argjson source "$rich_source_pane" --argjson pane "$rich_pane" \
+    --argjson count "$pane_count_before" '
+    (.result.panes | length) == ($count + 1)
+      and any(.result.panes[]; .id == $source and .artifact == null)
+      and any(.result.panes[]; .id == $pane and .artifact != null)
   ' <<<"$state" >/dev/null; then
   cat "$app_log" >&2
-  echo "artifact smoke failed: popover selection did not replace its source pane" >&2
+  echo "artifact smoke failed: popover selection did not preserve its source pane" >&2
   exit 1
 fi
 
@@ -177,8 +184,13 @@ if ! grep -Fq "リッチレポート" <<<"$rich_screen"; then
 fi
 
 table_show="$($cli --socket "$socket" --json artifact show \
-  "$table_id" --pane 1 --vertical --background)"
+  "$table_id@1" --pane "$rich_source_pane" --background)"
 table_pane="$(jq -r '.result.pane' <<<"$table_show")"
+if [[ "$table_pane" != "$rich_pane" ]] ||
+  ! jq -e '.result.reused == true' <<<"$table_show" >/dev/null; then
+  echo "artifact smoke failed: artifact show did not reuse the sidebar" >&2
+  exit 1
+fi
 for _ in {1..100}; do
   table_screen="$($cli --socket "$socket" read-screen --pane "$table_pane")"
   if grep -Fq "テスト結果" <<<"$table_screen"; then
@@ -191,11 +203,33 @@ if ! grep -Fq "テスト結果" <<<"${table_screen:-}"; then
   echo "artifact smoke failed: table preview did not render" >&2
   exit 1
 fi
+if grep -Fq "artifact_list" <<<"$table_screen"; then
+  echo "artifact smoke failed: immutable artifact version was not selected" >&2
+  exit 1
+fi
+table_refresh="$($cli --socket "$socket" --json artifact show \
+  "$table_id" --pane "$rich_source_pane" --background)"
+if [[ "$(jq -r '.result.pane' <<<"$table_refresh")" != "$table_pane" ]] ||
+  ! jq -e '.result.reused == true' <<<"$table_refresh" >/dev/null; then
+  echo "artifact smoke failed: artifact refresh replaced the sidebar pane" >&2
+  exit 1
+fi
+for _ in {1..100}; do
+  table_screen="$($cli --socket "$socket" read-screen --pane "$table_pane")"
+  if grep -Fq "artifact_list" <<<"$table_screen"; then
+    break
+  fi
+  sleep 0.05
+done
+if ! grep -Fq "artifact_list" <<<"${table_screen:-}"; then
+  echo "artifact smoke failed: artifact refresh did not render the latest version" >&2
+  exit 1
+fi
 "$cli" --socket "$socket" key --pane "$table_pane" q >/dev/null
 sleep 0.1
 table_screen="$($cli --socket "$socket" read-screen --pane "$table_pane")"
 if ! grep -Fq "テスト結果" <<<"$table_screen"; then
-  echo "artifact smoke failed: split artifact changed after ignored q input" >&2
+  echo "artifact smoke failed: sidebar artifact changed after ignored q input" >&2
   exit 1
 fi
 "$cli" --socket "$socket" close-pane --pane "$table_pane" >/dev/null
@@ -215,7 +249,7 @@ image_registration="$($cli --socket "$socket" --json artifact add \
   --kind image --title "Satin image preview" --language en-US --file "$image_source")"
 image_id="$(jq -r '.result.id' <<<"$image_registration")"
 image_show="$($cli --socket "$socket" --json artifact show \
-  "$image_id" --pane 1 --vertical --background)"
+  "$image_id" --pane "$rich_source_pane" --background)"
 image_pane="$(jq -r '.result.pane' <<<"$image_show")"
 
 for _ in {1..100}; do

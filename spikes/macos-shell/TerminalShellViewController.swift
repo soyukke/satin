@@ -325,6 +325,10 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
     var settings: NativeSettings
     let tabControl = NativeTabControl(frame: .zero)
     let newTabButton = NativeHoverIconButton(symbolName: "plus", title: "New Tab")
+    let artifactButton = NativeHoverIconButton(
+        symbolName: "doc.on.doc",
+        title: "Recent Artifacts"
+    )
     let sessionControlButton = NSButton(frame: .zero)
     let backdropView = NativeTerminalBackdropView(frame: .zero)
     let metalView: TerminalMetalView
@@ -496,13 +500,7 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
         for source in paneStore.suspendedWakeupSources.values {
             source.cancel()
         }
-        for source in paneStore.artifactBackingWakeupSources.values {
-            source.cancel()
-        }
         for pane in paneStore.runtimes.values {
-            metalView.forgetRuntime(pane.renderHandle())
-        }
-        for pane in paneStore.artifactBackingRuntimes.values {
             metalView.forgetRuntime(pane.renderHandle())
         }
     }
@@ -571,166 +569,6 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
         controlCliPath = cliPath
         self.nvimLauncherPath = nvimLauncherPath
         self.zshIntegrationPath = zshIntegrationPath
-    }
-
-    func showArtifactsPopover(relativeTo sourceView: NSView, paneId: Int) {
-        if let popover = artifactsPopover, popover.isShown {
-            popover.performClose(sourceView)
-            artifactsPopover = nil
-            artifactsPopoverPaneId = nil
-            return
-        }
-        let popover = NSPopover()
-        #if SATIN_SMOKE_SCENARIOS
-            popover.behavior =
-                smokeState.artifactPopoverResultPath == nil ? .transient : .applicationDefined
-        #else
-            popover.behavior = .transient
-        #endif
-        popover.animates = true
-        let loading = NativeArtifactsPopoverViewController(artifacts: [])
-        popover.contentViewController = loading
-        popover.contentSize = loading.view.frame.size
-        artifactsPopover = popover
-        artifactsPopoverPaneId = paneId
-        popover.show(relativeTo: sourceView.bounds, of: sourceView, preferredEdge: .maxY)
-        loadRecentArtifacts { [weak self, weak popover] artifacts in
-            guard let self, let popover, self.artifactsPopover === popover, popover.isShown else {
-                return
-            }
-            let content = NativeArtifactsPopoverViewController(artifacts: artifacts)
-            content.onSelect = { [weak self] artifact in
-                self?.openArtifactFromPopover(artifact)
-            }
-            popover.contentViewController = content
-            popover.contentSize = content.view.frame.size
-            #if SATIN_SMOKE_SCENARIOS
-                if let resultPath = self.smokeState.artifactPopoverResultPath {
-                    self.smokeState.artifactPopoverResultPath = nil
-                    DispatchQueue.main.async {
-                        let target =
-                            ProcessInfo.processInfo.environment["SATIN_NATIVE_SMOKE_ARTIFACT"]
-                            ?? ""
-                        let targetAvailable = artifacts.contains { $0.id == target }
-                        let status = targetAvailable ? "ok" : "failed"
-                        self.writeArtifactPopoverSmokeResult(
-                            resultPath,
-                            result: "\(status) artifact-popover items=\(artifacts.count)\n"
-                        )
-                        if targetAvailable {
-                            self.waitForArtifactPopoverSmokeOpen(
-                                content,
-                                artifact: target,
-                                attempts: 300
-                            )
-                        }
-                    }
-                }
-            #endif
-        }
-    }
-
-    func loadRecentArtifacts(
-        completion: @escaping ([NativeArtifactListItem]) -> Void
-    ) {
-        let executable = controlCliPath
-        let socket = controlSocketPath
-        guard FileManager.default.isExecutableFile(atPath: executable), !socket.isEmpty else {
-            completion([])
-            return
-        }
-        DispatchQueue.global(qos: .userInitiated).async {
-            let process = Process()
-            let output = Pipe()
-            process.executableURL = URL(fileURLWithPath: executable)
-            process.arguments = [
-                "--socket", socket, "--json", "artifact", "list", "--limit", "5",
-            ]
-            process.standardOutput = output
-            process.standardError = Pipe()
-            do {
-                try process.run()
-                let data = output.fileHandleForReading.readDataToEndOfFile()
-                process.waitUntilExit()
-                let response = try JSONDecoder().decode(NativeArtifactCLIResponse.self, from: data)
-                let artifacts = response.ok ? response.result?.artifacts ?? [] : []
-                DispatchQueue.main.async {
-                    completion(artifacts)
-                }
-            } catch {
-                NativeLog.runtimeError("artifact_list_failed")
-                DispatchQueue.main.async {
-                    completion([])
-                }
-            }
-        }
-    }
-
-    func openArtifactFromPopover(_ artifact: String) {
-        let paneId = artifactsPopoverPaneId
-        artifactsPopover?.performClose(nil)
-        artifactsPopover = nil
-        artifactsPopoverPaneId = nil
-        guard let paneId,
-            lastSnapshot?.tabs.contains(where: { $0.panes.contains(paneId) }) == true,
-            validControlArtifactSelector(artifact),
-            controlArtifactExists(artifact),
-            FileManager.default.isExecutableFile(atPath: controlCliPath),
-            replacePaneWithArtifact(paneId: paneId, artifact: artifact)
-        else {
-            NSSound.beep()
-            return
-        }
-        focusTerminal()
-    }
-
-    func replacePaneWithArtifact(paneId: Int, artifact: String) -> Bool {
-        guard let visiblePane = paneStore.runtimes[paneId] else {
-            return false
-        }
-        let cwd =
-            paneStore.workingDirectories[paneId]
-            ?? (visiblePane as? RustTerminalPane)?.currentWorkingDirectory()
-            ?? nativeWorkingDirectory()
-        guard
-            let viewer = RustTerminalPane(
-                grid: paneGridSize(paneId),
-                cwd: cwd,
-                shell: settings.shellPath,
-                environment: controlEnvironment(paneId: paneId),
-                startupCommand: [
-                    controlCliPath,
-                    "--socket",
-                    controlSocketPath,
-                    "artifact",
-                    "view",
-                    artifact,
-                ],
-                directStartup: true
-            )
-        else {
-            return false
-        }
-
-        if paneStore.artifactBackingRuntimes[paneId] == nil {
-            paneStore.wakeupSources.removeValue(forKey: paneId)?.cancel()
-            metalView.forgetRuntime(visiblePane.renderHandle())
-            paneStore.runtimes.removeValue(forKey: paneId)
-            paneStore.artifactBackingRuntimes[paneId] = visiblePane
-            installArtifactBackingWakeup(paneId: paneId, pane: visiblePane)
-        } else {
-            removePaneRuntime(paneId)
-        }
-
-        paneStore.runtimes[paneId] = viewer
-        paneStore.artifactSelectors[paneId] = artifact
-        viewer.setOptionAsAlt(optionAsAltEnabled)
-        installPaneWakeup(paneId: paneId, pane: viewer)
-        paneStore.scrollRemainders[paneId] = 0
-        lastNvimModelScrollShift = nil
-        drainTerminalPanes()
-        updateActiveFrame()
-        return true
     }
 
     func applySettings(_ settings: NativeSettings) {
