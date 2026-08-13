@@ -1,6 +1,18 @@
 import AppKit
 import Foundation
 
+func nativeTmuxSplitCommand(horizontal: Bool, targetPaneId: UInt32) -> String {
+    let flag = horizontal ? "-h" : "-v"
+    return "split-window \(flag) -c '#{pane_current_path}' -t %\(targetPaneId)"
+}
+
+func runNativeTmuxSplitCommandSelfTests() -> Bool {
+    nativeTmuxSplitCommand(horizontal: true, targetPaneId: 7)
+        == "split-window -h -c '#{pane_current_path}' -t %7"
+        && nativeTmuxSplitCommand(horizontal: false, targetPaneId: 42)
+            == "split-window -v -c '#{pane_current_path}' -t %42"
+}
+
 extension TerminalShellViewController {
     @objc func tabControlChanged(_ sender: NSSegmentedControl) {
         guard !syncingTabs, sender.selectedSegment >= 0 else {
@@ -188,8 +200,9 @@ extension TerminalShellViewController {
         else {
             return false
         }
-        let flag = horizontal ? "-h" : "-v"
-        return session.gateway.tmuxCommand("split-window \(flag) -t %\(tmuxPaneId)")
+        return session.gateway.tmuxCommand(
+            nativeTmuxSplitCommand(horizontal: horizontal, targetPaneId: tmuxPaneId)
+        )
     }
 
     @objc func toggleOptionAsAlt(_ sender: Any?) {
