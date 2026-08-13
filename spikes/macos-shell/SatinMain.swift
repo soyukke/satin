@@ -39,6 +39,7 @@ struct SatinApplication {
                 || !RustCore.runSelfTests()
                 || !runNativeFrameSchedulingSelfTests()
                 || !runNativeTmuxSplitCommandSelfTests()
+                || !runTerminalTextInputSelfTests()
             {
                 failDiagnostic("update self-test failed")
             }

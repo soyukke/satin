@@ -1,6 +1,95 @@
 import AppKit
 import Foundation
 
+private let preciseTerminalScrollScale: CGFloat = 0.5
+private let terminalSelectionAutoscrollInterval: TimeInterval = 0.03
+
+private enum TerminalSelectionAutoscrollEdge: Equatable {
+    case top
+    case bottom
+}
+
+private func terminalScrollRows(
+    deltaY: CGFloat,
+    hasPreciseDeltas: Bool,
+    cellHeight: CGFloat
+) -> CGFloat {
+    if hasPreciseDeltas {
+        return -deltaY / max(1, cellHeight) * preciseTerminalScrollScale
+    }
+    return -deltaY * 3.0
+}
+
+private func terminalSelectionAutoscrollEdge(
+    pointY: CGFloat,
+    textRect: NSRect
+) -> TerminalSelectionAutoscrollEdge? {
+    if pointY <= textRect.minY + 1 {
+        return .top
+    }
+    if pointY >= textRect.maxY - 1 {
+        return .bottom
+    }
+    return nil
+}
+
+private func discreteWheelRows(_ accumulatedRows: CGFloat) -> Int {
+    min(6, max(-6, Int(accumulatedRows.rounded(.towardZero))))
+}
+
+func runTerminalTextInputSelfTests() -> Bool {
+    let preciseRows = terminalScrollRows(
+        deltaY: 20,
+        hasPreciseDeltas: true,
+        cellHeight: 20
+    )
+    guard abs(preciseRows + 0.5) < 0.001,
+        terminalScrollRows(deltaY: 2, hasPreciseDeltas: false, cellHeight: 20) == -6,
+        discreteWheelRows(-0.5) == 0,
+        discreteWheelRows(-1.2) == -1,
+        discreteWheelRows(8) == 6
+    else {
+        return false
+    }
+
+    let textRect = NSRect(x: 10, y: 20, width: 100, height: 60)
+    guard terminalSelectionAutoscrollEdge(pointY: 20, textRect: textRect) == .top,
+        terminalSelectionAutoscrollEdge(pointY: 50, textRect: textRect) == nil,
+        terminalSelectionAutoscrollEdge(pointY: 80, textRect: textRect) == .bottom
+    else {
+        return false
+    }
+
+    let pasteboard = NSPasteboard(
+        name: NSPasteboard.Name("dev.satin.terminal-input-self-test.\(UUID().uuidString)")
+    )
+    let view = TerminalTextView(frame: NSRect(x: 0, y: 0, width: 200, height: 100))
+    var copyRequests = 0
+    view.onCopyRequested = {
+        copyRequests += 1
+        return writeTerminalSelection("copied selection", to: pasteboard)
+    }
+    guard
+        let commandC = NSEvent.keyEvent(
+            with: .keyDown,
+            location: .zero,
+            modifierFlags: .command,
+            timestamp: 0,
+            windowNumber: 0,
+            context: nil,
+            characters: "c",
+            charactersIgnoringModifiers: "c",
+            isARepeat: false,
+            keyCode: 8
+        )
+    else {
+        return false
+    }
+    return view.handleCommandKey(commandC)
+        && copyRequests == 1
+        && pasteboard.string(forType: .string) == "copied selection"
+}
+
 extension TerminalTextView {
     func handleCommandKey(_ event: NSEvent) -> Bool {
         guard let key = event.charactersIgnoringModifiers ?? event.characters else {
@@ -231,10 +320,73 @@ extension TerminalTextView {
     }
 
     func scrollRows(for event: NSEvent) -> CGFloat {
-        if event.hasPreciseScrollingDeltas {
-            return -event.scrollingDeltaY / terminalCellSize().height
+        terminalScrollRows(
+            deltaY: event.scrollingDeltaY,
+            hasPreciseDeltas: event.hasPreciseScrollingDeltas,
+            cellHeight: terminalCellSize().height
+        )
+    }
+
+    func updateSelectionAutoscroll(
+        at point: NSPoint,
+        input: NativeMouseInput,
+        rectangular: Bool
+    ) {
+        guard
+            terminalSelectionAutoscrollEdge(
+                pointY: point.y,
+                textRect: terminalTextRect()
+            ) != nil
+        else {
+            stopSelectionAutoscroll()
+            return
         }
-        return -event.scrollingDeltaY * 3.0
+        selectionAutoscrollInput = input
+        selectionAutoscrollRectangular = rectangular
+        guard selectionAutoscrollTimer == nil else {
+            return
+        }
+
+        let timer = Timer(timeInterval: terminalSelectionAutoscrollInterval, repeats: true) {
+            [weak self] _ in
+            self?.selectionAutoscrollTick()
+        }
+        timer.tolerance = 0.005
+        selectionAutoscrollTimer = timer
+        RunLoop.main.add(timer, forMode: .common)
+    }
+
+    func selectionAutoscrollTick() {
+        guard selectionInProgress, let input = selectionAutoscrollInput,
+            onSelectionEvent?(
+                .autoscroll(input, rectangular: selectionAutoscrollRectangular)
+            ) == true
+        else {
+            stopSelectionAutoscroll()
+            return
+        }
+    }
+
+    func stopSelectionAutoscroll() {
+        selectionAutoscrollTimer?.invalidate()
+        selectionAutoscrollTimer = nil
+        selectionAutoscrollInput = nil
+    }
+
+    func finishTerminalSelectionGesture() {
+        stopSelectionAutoscroll()
+        selectionInProgress = false
+        selectionAutoscrollRectangular = false
+    }
+
+    func cancelTerminalSelectionGesture() {
+        stopSelectionAutoscroll()
+        selectionAutoscrollRectangular = false
+        guard selectionInProgress else {
+            return
+        }
+        selectionInProgress = false
+        _ = onSelectionEvent?(.cancel)
     }
 
     func mouseInput(
@@ -279,6 +431,34 @@ extension TerminalTextView {
         guard rows != 0 else {
             return false
         }
+
+        if event.hasPreciseScrollingDeltas, onMouseTrackingRequested?() == true {
+            if event.phase.contains(.began) || event.momentumPhase.contains(.began) {
+                wheelMouseRemainder = 0
+            }
+            let accumulated = wheelMouseRemainder + rows
+            let emittedRows = discreteWheelRows(accumulated)
+            wheelMouseRemainder = accumulated - CGFloat(emittedRows)
+            if event.phase.contains(.ended) || event.phase.contains(.cancelled)
+                || event.momentumPhase.contains(.ended)
+            {
+                wheelMouseRemainder = 0
+            }
+            guard emittedRows != 0 else {
+                return true
+            }
+            guard sendWheelMouseInput(rows: CGFloat(emittedRows), event: event, at: point) else {
+                wheelMouseRemainder = 0
+                return false
+            }
+            return true
+        }
+
+        wheelMouseRemainder = 0
+        return sendWheelMouseInput(rows: rows, event: event, at: point)
+    }
+
+    private func sendWheelMouseInput(rows: CGFloat, event: NSEvent, at point: NSPoint) -> Bool {
         let action = rows > 0 ? "down" : "up"
         guard let input = mouseInput(button: "wheel", action: action, event: event, point: point)
         else {

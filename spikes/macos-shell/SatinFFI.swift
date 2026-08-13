@@ -253,21 +253,26 @@ func satinRuntimeMouse(
     _ cellHeight: UInt32
 ) -> UInt8
 
+@_silgen_name("satin_runtime_mouse_tracking")
+func satinRuntimeMouseTracking(_ handle: UnsafeMutableRawPointer?) -> UInt8
+
 @_silgen_name("satin_runtime_focus")
 func satinRuntimeFocus(
     _ handle: UnsafeMutableRawPointer?,
     _ focused: UInt8
 ) -> UInt8
 
-@_silgen_name("satin_runtime_select")
-func satinRuntimeSelect(
+@_silgen_name("satin_runtime_selection_event")
+func satinRuntimeSelectionEvent(
     _ handle: UnsafeMutableRawPointer?,
-    _ startRow: UInt32,
-    _ startCol: UInt16,
-    _ endRow: UInt32,
-    _ endCol: UInt16,
+    _ action: UInt32,
+    _ row: UInt32,
+    _ col: UInt16,
+    _ x: Float,
+    _ y: Float,
+    _ cellWidth: UInt32,
     _ rectangular: UInt8
-) -> UInt8
+) -> Int
 
 @_silgen_name("satin_runtime_select_all")
 func satinRuntimeSelectAll(_ handle: UnsafeMutableRawPointer?) -> UInt8

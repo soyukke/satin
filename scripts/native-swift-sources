@@ -13,6 +13,7 @@ native_swift_sources=(
   spikes/macos-shell/NativeKeyBindings.swift
   spikes/macos-shell/PaneChromeView.swift
   spikes/macos-shell/NativePaneRuntime.swift
+  spikes/macos-shell/NativeTerminalSelection.swift
   spikes/macos-shell/NativePaneStatusStore.swift
   spikes/macos-shell/NativePaneStore.swift
   spikes/macos-shell/NativeSettingsSelfTests.swift

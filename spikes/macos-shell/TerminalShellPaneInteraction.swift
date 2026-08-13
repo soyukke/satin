@@ -1,6 +1,15 @@
 import AppKit
 import Foundation
 
+@discardableResult
+func writeTerminalSelection(_ text: String?, to pasteboard: NSPasteboard) -> Bool {
+    guard let text, !text.isEmpty else {
+        return false
+    }
+    pasteboard.clearContents()
+    return pasteboard.setString(text, forType: .string)
+}
+
 extension TerminalShellViewController {
     func configureTerminalTextView() {
         terminalTextView.translatesAutoresizingMaskIntoConstraints = false
@@ -259,6 +268,16 @@ extension TerminalShellViewController {
         return handling
     }
 
+    func activePaneUsesMouseTracking() -> Bool {
+        guard let paneId = activePaneId, let pane = paneStore.runtimes[paneId] else {
+            return false
+        }
+        if let terminal = pane as? RustTerminalPane {
+            return terminal.isMouseTracking()
+        }
+        return pane is RustNeovimPane
+    }
+
     func setTerminalFocus(_ focused: Bool) {
         guard let paneId = activePaneId,
             let terminal = paneStore.runtimes[paneId] as? RustTerminalPane
@@ -268,33 +287,33 @@ extension TerminalShellViewController {
         terminal.focus(focused)
     }
 
-    func selectTerminalText(
-        start: (row: Int, col: Int),
-        end: (row: Int, col: Int),
-        rectangular: Bool
-    ) {
+    func handleTerminalSelection(_ event: NativeTerminalSelectionEvent) -> Bool {
         guard let paneId = activePaneId,
             let pane = paneStore.runtimes[paneId] as? RustTerminalPane
         else {
-            return
+            return false
         }
-        pane.select(start: start, end: end, rectangular: rectangular)
-        updateActiveFrame()
+        let result = pane.selectionEvent(event)
+        guard result != 0 else {
+            return false
+        }
+        switch event {
+        case .press, .drag, .autoscroll:
+            updateActiveFrame()
+        case .release, .cancel:
+            break
+        }
+        return true
     }
 
     @discardableResult
     func copySelection() -> Bool {
         guard let paneId = activePaneId,
-            let pane = paneStore.runtimes[paneId] as? RustTerminalPane,
-            let text = pane.selectedText(),
-            !text.isEmpty
+            let pane = paneStore.runtimes[paneId] as? RustTerminalPane
         else {
             return false
         }
-        let pasteboard = NSPasteboard.general
-        pasteboard.clearContents()
-        pasteboard.setString(text, forType: .string)
-        return true
+        return writeTerminalSelection(pane.selectedText(), to: .general)
     }
 
     func openTerminalHyperlink(_ position: (row: Int, col: Int)) -> Bool {
