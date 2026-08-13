@@ -153,11 +153,12 @@ fi
 
 for _ in {1..100}; do
   rich_screen="$($cli --socket "$socket" read-screen --pane "$rich_pane")"
+  rich_screen_unwrapped="${rich_screen//$'\n'/}"
   state="$($cli --socket "$socket" --json list)"
   if grep -Fq "リッチレポート" <<<"$rich_screen" &&
     grep -Fq "Check" <<<"$rich_screen" &&
     grep -Fq "rust" <<<"$rich_screen" &&
-    grep -Fq "cargo test" <<<"$rich_screen" &&
+    grep -Fq "cargo test" <<<"$rich_screen_unwrapped" &&
     jq -e --argjson pane "$rich_pane" '
       any(.result.panes[]; .id == $pane and .kittyImages == 1)
     ' <<<"$state" >/dev/null; then
@@ -165,7 +166,7 @@ for _ in {1..100}; do
   fi
   sleep 0.05
 done
-if ! grep -Fq "cargo test" <<<"${rich_screen:-}"; then
+if ! grep -Fq "cargo test" <<<"${rich_screen_unwrapped:-}"; then
   printf '%s\n' "${rich_screen:-<empty screen>}" >&2
   cat "$app_log" >&2
   echo "artifact smoke failed: rich Markdown preview did not render" >&2
