@@ -22,6 +22,10 @@ reachable there.
     `NativePaneRuntime.swift`.
   - macOS appearance compatibility and ambient chrome live in
     `NativeAppearance.swift`.
+  - The application main menu has one stable owner in
+    `NativeMainMenuController.swift`. Key-window transitions validate existing
+    items instead of rebuilding `NSApp.mainMenu`; settings changes update only
+    the affected shortcut properties.
   - pane runtime collections live behind `NativePaneStore`; control status
     revision, waiter, and timeout invariants live behind
     `NativePaneStatusStore`.

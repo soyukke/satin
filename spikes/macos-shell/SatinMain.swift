@@ -40,6 +40,7 @@ struct SatinApplication {
                 || !runNativeFrameSchedulingSelfTests()
                 || !runNativeTmuxSplitCommandSelfTests()
                 || !runTerminalTextInputSelfTests()
+                || !NativeMainMenuController.runSelfTests()
             {
                 failDiagnostic("update self-test failed")
             }

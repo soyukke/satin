@@ -11,6 +11,7 @@ native_swift_sources=(
   spikes/macos-shell/NativeCoreTheme.swift
   spikes/macos-shell/NativeFrameScheduling.swift
   spikes/macos-shell/NativeKeyBindings.swift
+  spikes/macos-shell/NativeMainMenuController.swift
   spikes/macos-shell/PaneChromeView.swift
   spikes/macos-shell/NativePaneRuntime.swift
   spikes/macos-shell/NativeTerminalSelection.swift
