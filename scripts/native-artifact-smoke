@@ -27,7 +27,7 @@ table_registration="$($cli --socket "$socket" --json artifact add \
   --kind table --title "テスト結果" --language ja-JP --file "$table_source")"
 table_id="$(jq -r '.result.id' <<<"$table_registration")"
 table_next="$smoke_root/test-results-next.json"
-jq '. + [{"テスト":"artifact_list", "結果":"成功", "時間":"0.3s", "対象":"artifact.rs"}]' \
+jq '. + [{"テスト":"v2ok", "結果":"成功", "時間":"0.3s", "対象":"artifact.rs"}]' \
   "$table_source" >"$table_next"
 mv "$table_next" "$table_source"
 table_version="$($cli --socket "$socket" --json artifact add --id "$table_id" \
@@ -204,7 +204,7 @@ if ! grep -Fq "テスト結果" <<<"${table_screen:-}"; then
   echo "artifact smoke failed: table preview did not render" >&2
   exit 1
 fi
-if grep -Fq "artifact_list" <<<"$table_screen"; then
+if grep -Fq "v2ok" <<<"$table_screen"; then
   echo "artifact smoke failed: immutable artifact version was not selected" >&2
   exit 1
 fi
@@ -217,12 +217,12 @@ if [[ "$(jq -r '.result.pane' <<<"$table_refresh")" != "$table_pane" ]] ||
 fi
 for _ in {1..100}; do
   table_screen="$($cli --socket "$socket" read-screen --pane "$table_pane")"
-  if grep -Fq "artifact_list" <<<"$table_screen"; then
+  if grep -Fq "v2ok" <<<"$table_screen"; then
     break
   fi
   sleep 0.05
 done
-if ! grep -Fq "artifact_list" <<<"${table_screen:-}"; then
+if ! grep -Fq "v2ok" <<<"${table_screen:-}"; then
   echo "artifact smoke failed: artifact refresh did not render the latest version" >&2
   exit 1
 fi
