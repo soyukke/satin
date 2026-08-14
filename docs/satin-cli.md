@@ -98,6 +98,17 @@ Statuses are one of `idle`, `running`, `waiting`, `done`, `failed`, or
 `blocked`. A wait returns immediately for a terminal status and otherwise
 blocks until the next status update or the requested timeout.
 
+`satin status event claude` is the bounded stdin adapter used by Satin's bundled
+Claude Code hooks. It accepts one official hook-event JSON object, maps only
+lifecycle fields to a generic status summary, and does not retain prompt,
+response, cwd, or error text. Interactive automation should continue to use
+`status set`; `status event` is not a screen-content classifier.
+
+`satin status session-start codex|claude` is the bundled zsh integration's
+internal boundary marker. It resets title initialization for the current pane
+without editing either agent's configuration. Interactive automation should not
+need to call it.
+
 ## Artifacts
 
 Artifacts snapshot an absolute local source file into a versioned, bounded

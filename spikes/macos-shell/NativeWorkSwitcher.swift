@@ -621,15 +621,38 @@ func runNativeWorkSwitcherSelfTests() -> Bool {
         active: false
     )
     let sorted = nativeSortedWorkItems([ordinary, needsAttention])
-    return ordinary.matches("api project")
-        && !ordinary.matches("blocked")
-        && needsAttention.matches("codex tests")
-        && nativeWorkSection(for: ordinary) == .running
-        && nativeWorkSection(for: needsAttention) == .attention
-        && nativeWorkSection(status: "waiting", unread: false) == .attention
-        && nativeWorkSection(status: "done", unread: false) == .other
-        && nativeWorkDisplayRows(sorted).count == 4
-        && sorted.first?.paneId == needsAttention.paneId
+    guard
+        ordinary.matches("api project")
+            && !ordinary.matches("blocked")
+            && needsAttention.matches("codex tests")
+            && nativeWorkSection(for: ordinary) == .running
+            && nativeWorkSection(for: needsAttention) == .attention
+            && nativeWorkSection(status: "waiting", unread: false) == .attention
+            && nativeWorkSection(status: "done", unread: false) == .other
+            && nativeWorkDisplayRows(sorted).count == 4
+            && sorted.first?.paneId == needsAttention.paneId
+    else {
+        return false
+    }
+
+    let badge = NativeHoverIconButton(
+        symbolName: "rectangle.stack",
+        title: "Work",
+        supportsBadge: true
+    )
+    badge.setBadgeCount(12)
+    guard let label = badge.subviews.compactMap({ $0 as? NSTextField }).first,
+        badge.badgeCountForSmoke() == 12,
+        label.stringValue == "9+",
+        !label.isHidden,
+        badge.toolTip == "Work — 12 need attention"
+    else {
+        return false
+    }
+    badge.setBadgeCount(0)
+    return badge.badgeCountForSmoke() == 0
+        && label.isHidden
+        && badge.toolTip == "Work"
 }
 
 private func nativeNormalizedWorkSearch(_ value: String) -> String {

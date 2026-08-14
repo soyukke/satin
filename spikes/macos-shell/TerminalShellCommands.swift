@@ -454,37 +454,83 @@ extension TerminalShellViewController {
     }
 
     @objc func zoomIn(_ sender: Any?) {
-        guard activePaneSupportsLocalZoom() else {
-            focusTerminal()
-            return
+        if let session = activeProjectedTmuxSession() {
+            _ = adjustProjectedTmuxFontZoom(session, by: 1)
+        } else {
+            _ = terminalTextView.zoomIn()
         }
-        _ = terminalTextView.zoomIn()
         focusTerminal()
     }
 
     @objc func zoomOut(_ sender: Any?) {
-        guard activePaneSupportsLocalZoom() else {
-            focusTerminal()
-            return
+        if let session = activeProjectedTmuxSession() {
+            _ = adjustProjectedTmuxFontZoom(session, by: -1)
+        } else {
+            _ = terminalTextView.zoomOut()
         }
-        _ = terminalTextView.zoomOut()
         focusTerminal()
     }
 
     @objc func resetZoom(_ sender: Any?) {
-        guard activePaneSupportsLocalZoom() else {
-            focusTerminal()
-            return
+        if let session = activeProjectedTmuxSession() {
+            session.fontZoomOffset = 0
+            _ = applyProjectedTmuxFontZoom(session)
+        } else {
+            _ = terminalTextView.resetZoom()
         }
-        _ = terminalTextView.resetZoom()
         focusTerminal()
     }
 
-    private func activePaneSupportsLocalZoom() -> Bool {
+    private func activeProjectedTmuxSession() -> NativeTmuxSession? {
+        guard let session = tmuxSession,
+            let paneId = activePaneId,
+            session.tmuxPaneIds[paneId] != nil
+        else {
+            return nil
+        }
+        return session
+    }
+
+    private func adjustProjectedTmuxFontZoom(
+        _ session: NativeTmuxSession,
+        by delta: CGFloat
+    ) -> Bool {
         guard let paneId = activePaneId else {
             return false
         }
-        return projectedTmuxPane(paneId) == nil
+        let previousSize = terminalTextView.fontSize(paneId)
+        let nextSize = min(
+            max(previousSize + delta, minTerminalFontSize),
+            maxTerminalFontSize
+        )
+        guard abs(nextSize - previousSize) > 0.01 else {
+            return false
+        }
+        session.fontZoomOffset = nextSize - terminalTextView.fontSize(nil)
+        return applyProjectedTmuxFontZoom(session)
+    }
+
+    @discardableResult
+    private func applyProjectedTmuxFontZoom(_ session: NativeTmuxSession) -> Bool {
+        let paneIds = Array(session.nativePaneIds.values)
+        guard terminalTextView.setZoomOffset(session.fontZoomOffset, for: paneIds) else {
+            return false
+        }
+        if let paneId = paneIds.first {
+            session.fontZoomOffset =
+                terminalTextView.fontSize(paneId) - terminalTextView.fontSize(nil)
+        }
+        for (tmuxPaneId, pane) in session.latestPanes {
+            guard let nativePaneId = session.nativePaneIds[tmuxPaneId],
+                let runtime = projectedTmuxPane(nativePaneId)
+            else {
+                continue
+            }
+            runtime.resize(grid: tmuxPaneGrid(pane))
+        }
+        syncTmuxClientSize()
+        updateActiveFrame()
+        return true
     }
 
     func selectTabFromShortcut(_ shortcutNumber: Int) {

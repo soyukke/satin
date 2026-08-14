@@ -2,6 +2,7 @@ import AppKit
 import Foundation
 
 final class NativePaneStore {
+    let agentTitleTracker = NativeAgentTitleTracker()
     var runtimes: [Int: NativePane] = [:]
     var scrollRemainders: [Int: CGFloat] = [:]
     var workingDirectories: [Int: String] = [:]
@@ -14,6 +15,7 @@ final class NativePaneStore {
     var artifactSelectors: [Int: String] = [:]
 
     func discardMetadata(for paneId: Int) {
+        agentTitleTracker.remove(paneId: paneId)
         scrollRemainders.removeValue(forKey: paneId)
         workingDirectories.removeValue(forKey: paneId)
         modes.removeValue(forKey: paneId)

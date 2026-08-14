@@ -1,3 +1,4 @@
+pub mod agent_status;
 pub mod artifact;
 pub mod control;
 pub mod core;

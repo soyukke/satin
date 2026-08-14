@@ -1,5 +1,11 @@
 import AppKit
 
+private final class NativeBadgeLabel: NSTextField {
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        nil
+    }
+}
+
 let nativePaneChromeHeight: CGFloat = 24
 
 func nativePaneContentFrame(_ paneFrame: NSRect) -> NSRect {
@@ -42,6 +48,7 @@ final class NativeHoverIconButton: NSButton {
     private var badgeCount = 0
     private var baseTitle = ""
     private var supportsBadge = false
+    private var badgeLabel: NativeBadgeLabel?
 
     init(symbolName: String, title: String, supportsBadge: Bool = false) {
         self.supportsBadge = supportsBadge
@@ -86,7 +93,6 @@ final class NativeHoverIconButton: NSButton {
             ).fill()
         }
         super.draw(dirtyRect)
-        drawBadge()
     }
 
     override func mouseEntered(with event: NSEvent) {
@@ -126,6 +132,8 @@ final class NativeHoverIconButton: NSButton {
             return
         }
         badgeCount = count
+        badgeLabel?.stringValue = count > 9 ? "9+" : String(count)
+        badgeLabel?.isHidden = count == 0
         toolTip = count == 0 ? baseTitle : "\(baseTitle) — \(count) need attention"
         setAccessibilityValue(
             count == 0 ? "No items need attention" : "\(count) items need attention"
@@ -154,41 +162,27 @@ final class NativeHoverIconButton: NSButton {
         contentTintColor = .secondaryLabelColor
         toolTip = title
         setAccessibilityLabel(title)
-    }
-
-    private func drawBadge() {
-        guard badgeCount > 0 else {
+        guard supportsBadge else {
             return
         }
-        let value = badgeCount > 9 ? "9+" : String(badgeCount)
-        let font = NSFont.systemFont(ofSize: 7.5, weight: .bold)
-        let attributes: [NSAttributedString.Key: Any] = [
-            .font: font,
-            .foregroundColor: NSColor.white,
-        ]
-        let textSize = (value as NSString).size(withAttributes: attributes)
-        let height: CGFloat = 11
-        let width = max(height, ceil(textSize.width) + 5)
-        let inset: CGFloat = 1
-        let badgeRect = NSRect(
-            x: bounds.maxX - width - inset,
-            y: isFlipped ? bounds.minY + inset : bounds.maxY - height - inset,
-            width: width,
-            height: height
-        )
-        NSColor.systemRed.setFill()
-        NSBezierPath(
-            roundedRect: badgeRect,
-            xRadius: height / 2,
-            yRadius: height / 2
-        ).fill()
-        (value as NSString).draw(
-            at: NSPoint(
-                x: badgeRect.midX - textSize.width / 2,
-                y: badgeRect.midY - textSize.height / 2
-            ),
-            withAttributes: attributes
-        )
+        let label = NativeBadgeLabel(labelWithString: "")
+        label.translatesAutoresizingMaskIntoConstraints = false
+        label.font = .systemFont(ofSize: 8, weight: .bold)
+        label.textColor = .white
+        label.alignment = .center
+        label.wantsLayer = true
+        label.layer?.backgroundColor = NSColor.systemRed.cgColor
+        label.layer?.cornerRadius = 6
+        label.layer?.masksToBounds = true
+        label.isHidden = true
+        addSubview(label)
+        NSLayoutConstraint.activate([
+            label.topAnchor.constraint(equalTo: topAnchor, constant: 1),
+            label.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -1),
+            label.widthAnchor.constraint(greaterThanOrEqualToConstant: 12),
+            label.heightAnchor.constraint(equalToConstant: 12),
+        ])
+        badgeLabel = label
     }
 
     private var hoverColor: NSColor? {

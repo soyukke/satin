@@ -53,6 +53,20 @@ extension TerminalShellViewController {
         refreshWorkSwitcherPresentation()
     }
 
+    func dismissAgentWaitingOnEscape(paneId: Int) {
+        guard paneStatuses.status(for: paneId)?.status == "waiting",
+            let title = paneStore.titles[paneId],
+            title.hasPrefix("✳") || title.hasPrefix("[ ! ] Action Required |")
+        else {
+            return
+        }
+        paneStatuses.update(
+            paneId: paneId,
+            status: "idle",
+            summary: "Agent request dismissed"
+        )
+    }
+
     func markActiveWorkSeen() {
         guard let activePaneId else {
             return

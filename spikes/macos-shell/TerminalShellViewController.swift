@@ -373,6 +373,7 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
     var controlCliPath = ""
     var nvimLauncherPath = ""
     var zshIntegrationPath = ""
+    var claudeSettingsPath = ""
     var artifactsPopover: NSPopover?
     var artifactsPopoverPaneId: Int?
     let paneStatuses = NativePaneStatusStore()
@@ -589,12 +590,14 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
         socketPath: String,
         cliPath: String,
         nvimLauncherPath: String,
-        zshIntegrationPath: String
+        zshIntegrationPath: String,
+        claudeSettingsPath: String
     ) {
         controlSocketPath = socketPath
         controlCliPath = cliPath
         self.nvimLauncherPath = nvimLauncherPath
         self.zshIntegrationPath = zshIntegrationPath
+        self.claudeSettingsPath = claudeSettingsPath
     }
 
     func applySettings(_ settings: NativeSettings) {

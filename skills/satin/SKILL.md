@@ -126,6 +126,11 @@ satin status wait --pane 2 --timeout 300
 satin status set done "tests passed"
 ```
 
+Satin observes the basic interactive lifecycle of supported Codex and Claude
+Code sessions without reading screen text. Use an explicit status when you can
+report a more precise blocked, failed, waiting, or completion summary. A
+terminal explicit status is not replaced by a title-derived turn ending.
+
 ## Present bounded artifacts
 
 Inspect saved artifacts and the live presentation policy before preparing one:

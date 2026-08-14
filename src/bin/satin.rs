@@ -6,6 +6,7 @@ use std::{
 
 use anyhow::{Context, Result, anyhow, bail};
 use satin::{
+    agent_status::{MAX_AGENT_EVENT_BYTES, agent_pane_status},
     artifact::{
         ArtifactKind, ArtifactOverflow, RegisterArtifact, list_artifacts, load_manifest,
         load_policy, register_artifact, save_policy, view_artifact,
@@ -379,15 +380,49 @@ fn parse_key(args: &mut Vec<String>) -> Result<ControlCommand> {
 
 fn parse_status(args: &mut Vec<String>) -> Result<ControlCommand> {
     let Some(subcommand) = args.first().cloned() else {
-        bail!("status requires set or wait");
+        bail!("status requires set, wait, event, or session-start");
     };
     args.remove(0);
     let pane = pane_argument(args)?;
     match subcommand.as_str() {
         "set" => parse_status_set(args, pane),
         "wait" => parse_status_wait(args, pane),
-        _ => bail!("status requires set or wait"),
+        "event" => parse_status_event(args, pane),
+        "session-start" => parse_status_session_start(args, pane),
+        _ => bail!("status requires set, wait, event, or session-start"),
     }
+}
+
+fn parse_status_event(args: &mut Vec<String>, pane: usize) -> Result<ControlCommand> {
+    if args.len() != 1 {
+        bail!("status event requires one agent name");
+    }
+    let agent = args.remove(0);
+    let mut input = Vec::new();
+    io::stdin()
+        .take((MAX_AGENT_EVENT_BYTES + 1) as u64)
+        .read_to_end(&mut input)?;
+    let mapped = agent_pane_status(&agent, &input)?;
+    Ok(ControlCommand::StatusSet {
+        pane,
+        status: mapped.status.to_owned(),
+        summary: mapped.summary.to_owned(),
+        agent_session_start: None,
+    })
+}
+
+fn parse_status_session_start(args: &mut Vec<String>, pane: usize) -> Result<ControlCommand> {
+    let summary = match args.as_slice() {
+        [agent] if agent == "codex" => "Codex ready",
+        [agent] if agent == "claude" => "Claude Code ready",
+        _ => bail!("status session-start requires codex or claude"),
+    };
+    Ok(ControlCommand::StatusSet {
+        pane,
+        status: "idle".to_owned(),
+        summary: summary.to_owned(),
+        agent_session_start: Some(true),
+    })
 }
 
 fn parse_status_set(args: &mut Vec<String>, pane: usize) -> Result<ControlCommand> {
@@ -400,6 +435,7 @@ fn parse_status_set(args: &mut Vec<String>, pane: usize) -> Result<ControlComman
         pane,
         status,
         summary,
+        agent_session_start: None,
     })
 }
 
@@ -628,6 +664,8 @@ commands:
   key [--pane ID] KEY
   status set [--pane ID] STATUS [SUMMARY]
   status wait [--pane ID] [--timeout SECONDS]
+  status event [--pane ID] claude
+  status session-start [--pane ID] codex|claude
   new-tab [--cwd PATH] [--title TITLE] [--background]
   split [--pane ID] --vertical|--horizontal [--cwd PATH] [--background]
   select-tab [--tab ID]
@@ -672,6 +710,27 @@ mod tests {
             ControlCommand::Send {
                 pane: 9,
                 text: "hello".to_owned()
+            }
+        );
+    }
+
+    #[test]
+    fn parses_codex_session_start_marker() {
+        let mut args = vec![
+            "status".to_owned(),
+            "session-start".to_owned(),
+            "--pane".to_owned(),
+            "4".to_owned(),
+            "codex".to_owned(),
+        ];
+
+        assert_eq!(
+            parse_request(&mut args).unwrap().command,
+            ControlCommand::StatusSet {
+                pane: 4,
+                status: "idle".to_owned(),
+                summary: "Codex ready".to_owned(),
+                agent_session_start: Some(true),
             }
         );
     }

@@ -38,6 +38,25 @@ Tahoe-only custom glass view.
   from unread attention: focusing a pane acknowledges its badge without rewriting
   the producer-owned `waiting`, `blocked`, `done`, or `failed` state. Do not add an
   always-visible workspace sidebar for this initial navigation surface.
+- Treat agent lifecycle protocols as producer-owned metadata, not terminal
+  content. Consume Codex and Claude Code's OSC title spinner transitions for an
+  immediate `running` signal and Codex's Action Required title for `waiting`.
+  Reset title tracking from an explicit session-start marker emitted by the
+  bundled zsh integration for both supported agents. Classify the first
+  spinner cycle as initialization, so opening Codex does not create a false
+  unread completion while an already-running session restored with Satin still
+  reports activity.
+  Close only a current `running` or `waiting` status when that title state ends;
+  an already-terminal control or hook status is not overwritten. Add Satin's
+  bounded Claude Code lifecycle hooks through the zsh integration as a
+  command-line settings layer so `PermissionRequest`,
+  `Elicitation`, `Stop`, and `StopFailure` distinguish waiting, done, and failed.
+  Preserve the user's settings hierarchy, skip injection for an explicit
+  `--settings` or opt-out, and never edit `~/.claude` or Codex's machine-level
+  `notify`. Do not infer lifecycle from retained screen rows, pixels, inactivity,
+  or process-name polling.
+  When an agent-owned waiting prompt is dismissed with Escape, return that pane
+  to `idle`; do not leave a stale attention badge after the UI is back at input.
 - Present session discovery, attach, detach, switch, and creation from a standard
   transient `NSPopover`. Keep the Session menu as a secondary keyboard/menu-bar
   entry point to the same control.
@@ -64,9 +83,10 @@ Tahoe-only custom glass view.
   Skia rendering, mouse coordinates, and input-method placement. Keep the text
   shaper and prepared-line cache per runtime so mixed zoom levels do not evict
   one another's shaped lines on every frame.
-- Keep projected tmux panes on the configured baseline. One tmux control client
-  negotiates a shared cell grid, so applying a different cell size to one
-  projected pane would clip or stretch that pane instead of reflowing it.
+- Keep projected tmux panes on one session-wide zoom offset. One tmux control
+  client negotiates a shared cell grid, so Command +/-/0 must update every
+  projected pane and refresh that shared grid; applying a different cell size
+  to one projected pane would clip or stretch it instead of reflowing it.
 - Keep Settings on its standard toolbar-style `NSTabViewController` and use the
   same unified titlebar treatment.
 - Validate menu commands against the key window. Terminal mutations are disabled

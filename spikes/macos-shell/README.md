@@ -105,6 +105,10 @@ manifest marks the result as a development artifact.
   and `failed` badge without owning a second layout model. Every workspace pane
   reserves a native header for close and split actions; terminal and Neovim grids
   begin below that chrome. The Artifact sidebar uses the same header for close.
+- Agent lifecycle state comes from a bundled-shell session boundary, OSC title
+  events, and Satin's additional Claude Code hook settings layer. The bridge
+  updates the existing status store without scraping pane text or changing
+  user-level Codex/Claude configuration.
 - Session schema v3 restores recursive splits, terminal/Neovim pane kinds,
   working directories, the active leaf, and consume-once tmux reattach metadata
   with legacy migration.

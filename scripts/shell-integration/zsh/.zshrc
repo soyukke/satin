@@ -35,4 +35,44 @@ if [[ -x ${SATIN_NVIM_LAUNCHER:-} ]]; then
     command "$SATIN_NVIM_LAUNCHER" "$@"
   }
 fi
+
+_satin_codex_definition=$(builtin whence -w codex 2>/dev/null)
+_satin_codex_executable=${commands[codex]:-}
+if [[ $_satin_codex_definition == 'codex: command' \
+      && -n $_satin_codex_executable \
+      && -x ${SATIN_CLI:-} \
+      && ${SATIN_DISABLE_AGENT_INTEGRATION:-0} != 1 ]]; then
+  function codex() {
+    builtin emulate -L zsh
+    "$SATIN_CLI" status session-start codex >/dev/null 2>&1 || true
+    command "$_satin_codex_executable" "$@"
+  }
+else
+  unset _satin_codex_executable
+fi
+unset _satin_codex_definition
+
+_satin_claude_definition=$(builtin whence -w claude 2>/dev/null)
+_satin_claude_executable=${commands[claude]:-}
+if [[ $_satin_claude_definition == 'claude: command' \
+      && -n $_satin_claude_executable \
+      && -x ${SATIN_CLI:-} \
+      && -r ${SATIN_CLAUDE_SETTINGS:-} \
+      && ${SATIN_DISABLE_AGENT_INTEGRATION:-0} != 1 ]]; then
+  function claude() {
+    builtin emulate -L zsh
+    builtin local argument
+    "$SATIN_CLI" status session-start claude >/dev/null 2>&1 || true
+    for argument in "$@"; do
+      if [[ $argument == --settings || $argument == --settings=* ]]; then
+        command "$_satin_claude_executable" "$@"
+        return $?
+      fi
+    done
+    command "$_satin_claude_executable" --settings "$SATIN_CLAUDE_SETTINGS" "$@"
+  }
+else
+  unset _satin_claude_executable
+fi
+unset _satin_claude_definition
 unset _satin_integration_zdotdir _satin_user_zdotdir
