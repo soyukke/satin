@@ -12,6 +12,7 @@ extension TerminalShellViewController {
         syncPaneLayout(snapshot)
         syncActivePane(snapshot)
         view.window?.title = windowTitle(snapshot)
+        refreshWorkSwitcherPresentation()
     }
 
     func selectTab(_ index: Int) {
@@ -328,6 +329,8 @@ extension TerminalShellViewController {
     func configureToolbarControls() {
         artifactButton.target = self
         artifactButton.action = #selector(showArtifacts(_:))
+        workSwitcherButton.target = self
+        workSwitcherButton.action = #selector(showWorkSwitcher(_:))
         sessionControlButton.title = "Local"
         sessionControlButton.image = NSImage(
             systemSymbolName: "terminal",
@@ -348,6 +351,7 @@ extension TerminalShellViewController {
             SatinToolbarItemIdentifier.tabs,
             .flexibleSpace,
             SatinToolbarItemIdentifier.artifacts,
+            SatinToolbarItemIdentifier.workSwitcher,
             SatinToolbarItemIdentifier.controls,
         ]
     }
@@ -372,6 +376,11 @@ extension TerminalShellViewController {
             item.label = "Artifacts"
             item.paletteLabel = "Recent Artifacts"
             item.view = artifactButton
+            item.visibilityPriority = .high
+        case SatinToolbarItemIdentifier.workSwitcher:
+            item.label = "Work"
+            item.paletteLabel = "Work Switcher"
+            item.view = workSwitcherButton
             item.visibilityPriority = .high
         case SatinToolbarItemIdentifier.controls:
             item.label = "Session"

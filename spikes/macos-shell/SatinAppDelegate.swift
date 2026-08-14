@@ -171,6 +171,10 @@ final class SatinAppDelegate: NSObject, NSApplicationDelegate {
         true
     }
 
+    func applicationDidBecomeActive(_ notification: Notification) {
+        shellController?.markActiveWorkSeen()
+    }
+
     func applicationWillTerminate(_ notification: Notification) {
         #if SATIN_SMOKE_SCENARIOS
             let smokeScenario = ProcessInfo.processInfo.environment["SATIN_NATIVE_SMOKE_SCENARIO"]
@@ -209,6 +213,8 @@ final class SatinAppDelegate: NSObject, NSApplicationDelegate {
         switch action {
         case .showSettings:
             settingsWindowController?.present()
+        case .showWorkSwitcher:
+            shellController?.showWorkSwitcher(nil)
         case .newTab:
             shellController?.newTab(nil)
         case .splitVertical:

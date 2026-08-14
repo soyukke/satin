@@ -2,7 +2,7 @@
 
 Date: 2026-08-08
 
-Amended: 2026-08-13
+Amended: 2026-08-14
 
 Status: Accepted
 
@@ -22,11 +22,22 @@ Tahoe-only custom glass view.
 ## Decision
 
 - Put terminal tabs, a borderless new-tab action immediately after them, the
-  window-scoped Artifacts action, and the persistent Local/tmux session control
-  in a standard unified compact `NSToolbar`. Put close and split actions in a
-  reserved 24-point header inside every workspace pane so pane-scoped actions
-  have an explicit target and remain available away from the active pane. The
-  Artifact sidebar retains only its common close action in that header.
+  window-scoped Artifacts action, an on-demand Work Switcher, and the persistent
+  Local/tmux session control in a standard unified compact `NSToolbar`. Put
+  close and split actions in a reserved 24-point header inside every workspace
+  pane so pane-scoped actions have an explicit target and remain available away
+  from the active pane. The Artifact sidebar retains only its common close
+  action in that header.
+- Open the Work Switcher with Command-P or the Work overview action immediately
+  to the right of Artifacts. Build its searchable rows from the existing tab/pane
+  snapshot, runtime metadata, tmux projection, and control status store rather
+  than introducing another workspace model. Give visible rows a compact bounded
+  excerpt and preview only the selected pane's retained screen text; do not
+  allocate another renderer or select the pane merely to preview it. Group rows
+  into Needs Attention, Running, and Other while keeping lifecycle state separate
+  from unread attention: focusing a pane acknowledges its badge without rewriting
+  the producer-owned `waiting`, `blocked`, `done`, or `failed` state. Do not add an
+  always-visible workspace sidebar for this initial navigation surface.
 - Present session discovery, attach, detach, switch, and creation from a standard
   transient `NSPopover`. Keep the Session menu as a secondary keyboard/menu-bar
   entry point to the same control.

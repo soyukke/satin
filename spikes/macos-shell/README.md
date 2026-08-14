@@ -97,7 +97,12 @@ manifest marks the result as a development artifact.
 - Runtime output wakes AppKit through dispatch sources; only active renderer
   animations schedule additional Metal frames.
 - The native tab strip ends with a borderless new-tab action, and the right side
-  of the toolbar owns the window-scoped Artifact picker. Every workspace pane
+  of the toolbar owns the window-scoped Artifact picker and searchable Work
+  Switcher. Its rows include compact recent-screen excerpts, while the selected
+  row previews more of the pane's retained screen text without selecting the pane
+  or creating another renderer. Needs Attention, Running, and Other sections keep
+  navigation separate from the Work button's unread `waiting`, `blocked`, `done`,
+  and `failed` badge without owning a second layout model. Every workspace pane
   reserves a native header for close and split actions; terminal and Neovim grids
   begin below that chrome. The Artifact sidebar uses the same header for close.
 - Session schema v3 restores recursive splits, terminal/Neovim pane kinds,

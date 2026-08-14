@@ -23,6 +23,8 @@ private struct NativeStatusWaiter {
 }
 
 final class NativePaneStatusStore {
+    var onChange: ((Int, NativePaneControlStatus?) -> Void)?
+
     private var statuses: [Int: NativePaneControlStatus] = [:]
     private var waiters: [Int: [NativeStatusWaiter]] = [:]
     private var nextRevision: UInt64 = 1
@@ -43,6 +45,7 @@ final class NativePaneStatusStore {
             nextRevision += 1
         }
         statuses[paneId] = value
+        onChange?(paneId, value)
         resolveWaiters(for: paneId, with: .success(value.json))
         return value
     }
@@ -74,6 +77,7 @@ final class NativePaneStatusStore {
 
     func remove(paneId: Int) {
         statuses.removeValue(forKey: paneId)
+        onChange?(paneId, nil)
         resolveWaiters(
             for: paneId,
             with: .failure(

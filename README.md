@@ -65,6 +65,9 @@ and changes across the workspace.
   without an embedded browser.
 - Native tabs, recursive splits, working-directory inheritance, and session
   restore.
+- An on-demand Work Switcher for finding tabs and panes by title, directory,
+  tmux session, or agent status, with inline activity excerpts, a current-screen
+  text preview, and a compact toolbar attention badge.
 - Native copy/paste, IME, terminal rectangular selection, Neovim message-area
   drag selection, scrollback search, clickable links, and a scroll indicator.
 - A native Settings window for appearance, shell, startup directory,
@@ -215,12 +218,13 @@ security boundary.
 ## Native Shortcuts
 
 - `Command-T`: new tab
+- `Command-P`: search and focus open tabs and panes with the Work Switcher
 - `Command-D` / `Command-Shift-D`: vertical / horizontal split
 - `Command-W`: close the active pane
 - `Control-Command-H/J/K/L`: focus the pane to the left / down / up / right
 - a borderless new-tab action immediately after the native tab strip
 - per-pane `×`, vertical split, and horizontal split actions
-- a right-side toolbar action that opens or refreshes the Artifact sidebar
+- right-side toolbar actions for the Artifact sidebar and Work Switcher
 - `Command-N`: open the unified native Neovim UI while retaining the current shell
 - `Command-C`, `Command-V`, `Command-A`, `Command-F`: copy, paste, select all,
   and scrollback search

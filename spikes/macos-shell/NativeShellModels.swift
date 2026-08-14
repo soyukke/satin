@@ -61,6 +61,7 @@ final class NativeTmuxSession {
 enum SatinToolbarItemIdentifier {
     static let tabs = NSToolbarItem.Identifier("dev.soyukke.satin.toolbar.tabs")
     static let artifacts = NSToolbarItem.Identifier("dev.soyukke.satin.toolbar.artifacts")
+    static let workSwitcher = NSToolbarItem.Identifier("dev.soyukke.satin.toolbar.work-switcher")
     static let controls = NSToolbarItem.Identifier("dev.soyukke.satin.toolbar.controls")
 }
 
