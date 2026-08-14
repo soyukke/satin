@@ -119,15 +119,41 @@ if ! grep -Fq -- "NEW_CONTEXT:OK" <<<"${new_screen:-}"; then
   echo "control smoke failed: split pane identity mismatch" >&2
   exit 1
 fi
-"$cli" --socket "$socket" status set --pane 3 running "integration smoke" >/dev/null
+"$cli" --socket "$socket" status session-start --pane 3 codex >/dev/null
+session_status="$("$cli" --socket "$socket" --json list)"
+jq -e '
+  .result.panes[]
+    | select(.id == 3)
+    | .status.status == "idle" and .status.summary == "Codex ready"
+' <<<"$session_status" >/dev/null
+
+private_prompt="control smoke prompt must stay private"
+printf '{"hook_event_name":"UserPromptSubmit","prompt":"%s"}\n' "$private_prompt" |
+  "$cli" --socket "$socket" status event --pane 3 claude >/dev/null
+running_status="$("$cli" --socket "$socket" --json list)"
+jq -e '
+  .result.panes[]
+    | select(.id == 3)
+    | .status.status == "running" and .status.summary == "Claude Code working"
+' <<<"$running_status" >/dev/null
+if grep -Fq -- "$private_prompt" <<<"$running_status"; then
+  echo "control smoke failed: agent prompt leaked into pane status" >&2
+  exit 1
+fi
 
 "$cli" --socket "$socket" --json status wait --pane 3 --timeout 5 >"$smoke_root/wait.json" &
 wait_pid=$!
 sleep 0.1
-"$cli" --socket "$socket" status set --pane 3 "done" "control complete" >/dev/null
+private_response="control smoke response must stay private"
+printf '{"hook_event_name":"Stop","last_assistant_message":"%s"}\n' "$private_response" |
+  "$cli" --socket "$socket" status event --pane 3 claude >/dev/null
 wait "$wait_pid"
-jq -e '.ok and .result.status == "done" and .result.summary == "control complete"' \
+jq -e '.ok and .result.status == "done" and .result.summary == "Claude Code finished"' \
   "$smoke_root/wait.json" >/dev/null
+if grep -Fq -- "$private_response" "$smoke_root/wait.json"; then
+  echo "control smoke failed: agent response leaked into pane status" >&2
+  exit 1
+fi
 
 "$cli" --socket "$socket" close-pane --pane 3 >/dev/null
 closed_pane="$("$cli" --socket "$socket" --json list)"
