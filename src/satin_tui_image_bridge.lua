@@ -34,10 +34,12 @@ package.preload["image/backends/kitty/helpers"] = function()
     handle:close()
   end
 
-  local function chunks(value)
+  local function chunks(value, requested_size)
+    local chunk_size =
+      type(requested_size) == "number" and requested_size > 0 and requested_size or 4096
     local result = {}
-    for index = 1, #value, 4096 do
-      local chunk = value:sub(index, index + 4095):gsub("%s", "")
+    for index = 1, #value, chunk_size do
+      local chunk = value:sub(index, index + chunk_size - 1):gsub("%s", "")
       if #chunk > 0 then
         table.insert(result, chunk)
       end
@@ -60,11 +62,20 @@ package.preload["image/backends/kitty/helpers"] = function()
     return table.concat(fields, ",")
   end
 
-  local function write_graphics(config, path)
+  local function graphics_config(config)
     local effective = vim.deepcopy(config)
     if type(effective.display_zindex) == "number" and effective.display_zindex < 0 then
       effective.display_zindex = 0
     end
+    return effective
+  end
+
+  local function graphics_sequence(config)
+    return "\27_G" .. control_payload(config) .. "\27\\"
+  end
+
+  local function write_graphics(config, path, direct_chunk_size)
+    local effective = graphics_config(config)
     local data = nil
     if path then
       -- The producer reads its own file and sends direct bytes. Satin therefore
@@ -80,12 +91,12 @@ package.preload["image/backends/kitty/helpers"] = function()
 
     local payload = control_payload(effective)
     if not data then
-      write("\27_G" .. payload .. "\27\\", effective.tty, true)
+      write(graphics_sequence(effective), effective.tty, true)
       return
     end
 
     local encoded = vim.base64.encode(data):gsub("%-", "/")
-    local parts = chunks(encoded)
+    local parts = chunks(encoded, direct_chunk_size)
     for index, part in ipairs(parts) do
       local more = index < #parts and 1 or 0
       local prefix = index == 1 and (payload .. ",m=" .. more) or ("m=" .. more)
@@ -94,6 +105,22 @@ package.preload["image/backends/kitty/helpers"] = function()
         uv.sleep(1)
       end
     end
+  end
+
+  local function write_graphics_at(config, x, y)
+    if utils.tmux.is_tmux then
+      local pane_position = utils.tmux.get_pane_position()
+      x = x + pane_position.left
+      y = y + pane_position.top
+    end
+    local sequence = "\27[?2026h\27[s\27["
+      .. y
+      .. ";"
+      .. x
+      .. "H"
+      .. graphics_sequence(graphics_config(config))
+      .. "\27[u\27[?2026l"
+    write(sequence, nil, true)
   end
 
   local function move_cursor(x, y, save)
@@ -122,6 +149,7 @@ package.preload["image/backends/kitty/helpers"] = function()
     end,
     write = write,
     write_graphics = write_graphics,
+    write_graphics_at = write_graphics_at,
     write_placeholder = write_placeholder,
     update_sync_start = function()
       write("\27[?2026h")

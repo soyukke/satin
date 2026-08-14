@@ -57,10 +57,16 @@ package.preload["image/backends/kitty/helpers"] = function()
   local codes = require("image/backends/kitty/codes")
   local uv = vim.uv or vim.loop
 
-  local function chunks(value)
+  local function chunks(value, requested_size)
+    -- Leave room for the Kitty control sequence inside the host's 64 KiB RPC
+    -- notification bound.
+    local chunk_size = 4096
+    if type(requested_size) == "number" and requested_size > 0 then
+      chunk_size = math.min(requested_size, 60 * 1024)
+    end
     local result = {}
-    for index = 1, #value, 4096 do
-      local chunk = value:sub(index, index + 4095):gsub("%s", "")
+    for index = 1, #value, chunk_size do
+      local chunk = value:sub(index, index + chunk_size - 1):gsub("%s", "")
       if #chunk > 0 then
         table.insert(result, chunk)
       end
@@ -94,7 +100,7 @@ package.preload["image/backends/kitty/helpers"] = function()
     return table.concat(fields, ",")
   end
 
-  local function write_graphics(config, data)
+  local function graphics_config(config)
     local effective = vim.deepcopy(config)
     if type(effective.display_zindex) == "number" and effective.display_zindex < 0 then
       -- Native multigrid windows are composited before protocol overlays. An
@@ -103,6 +109,15 @@ package.preload["image/backends/kitty/helpers"] = function()
       -- by image.nvim.
       effective.display_zindex = 0
     end
+    return effective
+  end
+
+  local function graphics_sequence(config)
+    return "\27_G" .. control_payload(config) .. "\27\\"
+  end
+
+  local function write_graphics(config, data, direct_chunk_size)
+    local effective = graphics_config(config)
     if data then
       local file, open_error = io.open(data, "rb")
       if not file then
@@ -115,12 +130,12 @@ package.preload["image/backends/kitty/helpers"] = function()
 
     local payload = control_payload(effective)
     if not data then
-      write("\27_G" .. payload .. "\27\\")
+      write(graphics_sequence(effective))
       return
     end
 
     local encoded = vim.base64.encode(data):gsub("%-", "/")
-    local parts = chunks(encoded)
+    local parts = chunks(encoded, direct_chunk_size)
     for index, part in ipairs(parts) do
       local more = index < #parts and 1 or 0
       local prefix = index == 1 and (payload .. ",m=" .. more) or ("m=" .. more)
@@ -129,6 +144,17 @@ package.preload["image/backends/kitty/helpers"] = function()
         uv.sleep(1)
       end
     end
+  end
+
+  local function write_graphics_at(config, x, y)
+    local sequence = "\27[?2026h\27[s\27["
+      .. y
+      .. ";"
+      .. x
+      .. "H"
+      .. graphics_sequence(graphics_config(config))
+      .. "\27[u\27[?2026l"
+    write(sequence)
   end
 
   local function write_placeholder(image_id, x, y, width, height)
@@ -149,6 +175,7 @@ package.preload["image/backends/kitty/helpers"] = function()
     end,
     write = write,
     write_graphics = write_graphics,
+    write_graphics_at = write_graphics_at,
     write_placeholder = write_placeholder,
     update_sync_start = function()
       write("\27[?2026h")
