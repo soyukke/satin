@@ -162,6 +162,11 @@ extension TerminalShellViewController {
         {
             environment["SATIN_ZSH_INTEGRATION_DIR"] = zshIntegrationPath
         }
+        if !claudeSettingsPath.isEmpty,
+            FileManager.default.fileExists(atPath: claudeSettingsPath)
+        {
+            environment["SATIN_CLAUDE_SETTINGS"] = claudeSettingsPath
+        }
         return environment
     }
 
@@ -213,6 +218,9 @@ extension TerminalShellViewController {
         }
         guard let pane = terminalPane(for: paneId) as? RustTerminalPane else {
             return false
+        }
+        if !released, event.charactersIgnoringModifiers == "\u{1b}" {
+            dismissAgentWaitingOnEscape(paneId: paneId)
         }
         let handled = pane.key(event, released: released)
         if handled {

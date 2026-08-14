@@ -37,6 +37,7 @@ struct NativeControlRequest: Decodable {
     let key: String?
     let status: String?
     let summary: String?
+    let agent_session_start: Bool?
     let timeout_ms: UInt64?
     let cwd: String?
     let axis: String?
@@ -254,6 +255,21 @@ enum NativeControlEnvironment {
             isDirectory: true
         )
         .appendingPathComponent("scripts/shell-integration/zsh", isDirectory: true)
+        .path
+    }
+
+    static func claudeSettingsPath() -> String {
+        let bundled = Bundle.main.resourceURL?
+            .appendingPathComponent("AgentIntegration", isDirectory: true)
+            .appendingPathComponent("claude-settings.json")
+        if let bundled, FileManager.default.fileExists(atPath: bundled.path) {
+            return bundled.path
+        }
+        return URL(
+            fileURLWithPath: FileManager.default.currentDirectoryPath,
+            isDirectory: true
+        )
+        .appendingPathComponent("scripts/agent-integration/claude-settings.json")
         .path
     }
 }

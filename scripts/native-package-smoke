@@ -89,6 +89,7 @@ test -x "$control_executable"
 test -x "$nvim_launcher"
 test ! -e "$app_path/Contents/MacOS/satinctl"
 test -s "$app_path/Contents/Resources/ShellIntegration/zsh/.zshrc"
+test -s "$app_path/Contents/Resources/AgentIntegration/claude-settings.json"
 for packaged_executable in "$executable" "$control_executable" "$nvim_launcher"; do
   if /usr/bin/otool -L "$packaged_executable" |
     awk 'NR > 1 { print $1 }' |

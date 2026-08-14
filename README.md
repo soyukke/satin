@@ -67,7 +67,8 @@ and changes across the workspace.
   restore.
 - An on-demand Work Switcher for finding tabs and panes by title, directory,
   tmux session, or agent status, with inline activity excerpts, a current-screen
-  text preview, and a compact toolbar attention badge.
+  text preview, a compact toolbar attention badge, and lifecycle updates from
+  Codex and Claude Code without reading terminal screen text.
 - Native copy/paste, IME, terminal rectangular selection, Neovim message-area
   drag selection, scrollback search, clickable links, and a scroll indicator.
 - A native Settings window for appearance, shell, startup directory,
@@ -210,6 +211,14 @@ a shell startup file replaces `PATH`. Targets use stable IDs from `list`, while
 tab movement alone uses its zero-based presentation index. `--background`
 creates and starts a tab or split and then restores the previously selected
 tab and pane.
+In the bundled zsh integration, ordinary Codex and Claude Code launches mark a
+new lifecycle session, and Claude Code also receives Satin's release-matched
+hooks as an additional CLI settings layer. Existing Claude settings remain
+loaded.
+`command codex`, an explicit `claude --settings ...`, `claude --bare`,
+`command claude`, or `SATIN_DISABLE_AGENT_INTEGRATION=1` retains an opt-out path.
+Activity then uses emitted terminal-title events, so Satin does not replace the
+user's single machine-level Codex `notify` command.
 The Unix socket is owner-only, verifies the peer UID, and has bounded request,
 client, and timeout limits; it is not a remote-control interface. See
 [`docs/satin-cli.md`](docs/satin-cli.md) for commands, JSON behavior, and the

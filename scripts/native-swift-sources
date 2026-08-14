@@ -7,6 +7,7 @@ native_swift_sources=(
   spikes/macos-shell/AppUpdateChecker.swift
   spikes/macos-shell/ApplicationDefaults.swift
   spikes/macos-shell/ControlHost.swift
+  spikes/macos-shell/NativeAgentActivity.swift
   spikes/macos-shell/NativeAppearance.swift
   spikes/macos-shell/NativeCoreTheme.swift
   spikes/macos-shell/NativeFrameScheduling.swift
