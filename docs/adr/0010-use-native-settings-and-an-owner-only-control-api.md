@@ -47,6 +47,13 @@ state without polling the screen.
   `PATH`. The absolute `SATIN_CLI` value remains authoritative when a shell
   startup file replaces `PATH`. The former `NVTERM_*` names remain accepted as
   migration aliases but are no longer documented as the primary interface.
+- The CLI's bounded `status event claude` adapter converts official Claude Code
+  hook JSON from stdin into the existing version-1 `StatusSet` request. An
+  optional session-start flag resets only the title lifecycle tracker; the
+  bundled zsh integration sends the flag before ordinary Codex and Claude Code
+  launches.
+  Both paths emit generic summaries and discard prompt, response, path, and
+  error content; no new socket command or protocol version is introduced.
 - The CLI embeds `skills/satin/SKILL.md` and prints that exact release-matched
   agent guide with `satin skill`. `satin identify --json` verifies that the
   inherited tab and pane identifiers still belong to the connected session.

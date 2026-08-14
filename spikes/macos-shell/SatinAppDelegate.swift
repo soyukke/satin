@@ -95,7 +95,8 @@ final class SatinAppDelegate: NSObject, NSApplicationDelegate {
             socketPath: socketPath,
             cliPath: NativeControlEnvironment.cliPath(),
             nvimLauncherPath: NativeControlEnvironment.nvimLauncherPath(),
-            zshIntegrationPath: NativeControlEnvironment.zshIntegrationPath()
+            zshIntegrationPath: NativeControlEnvironment.zshIntegrationPath(),
+            claudeSettingsPath: NativeControlEnvironment.claudeSettingsPath()
         )
         controlServer.onRequest = { [weak controller] request, reply in
             controller?.handleControlRequest(request, reply: reply)

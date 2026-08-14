@@ -125,6 +125,9 @@ rm -rf -- "$iconset"
 /usr/bin/ditto "$font_license_source" "$legal_resources/FONT_LICENSE.txt"
 mkdir -p "$contents/Resources/ShellIntegration"
 /usr/bin/ditto scripts/shell-integration/zsh "$contents/Resources/ShellIntegration/zsh"
+mkdir -p "$contents/Resources/AgentIntegration"
+/usr/bin/ditto scripts/agent-integration/claude-settings.json \
+  "$contents/Resources/AgentIntegration/claude-settings.json"
 cargo about generate \
   --locked \
   --fail \
@@ -158,6 +161,8 @@ test -x "$contents/Resources/apply-update"
 test -x "$control_binary"
 test -x "$nvim_launcher"
 test -s "$contents/Resources/ShellIntegration/zsh/.zshrc"
+jq -e '.hooks.UserPromptSubmit and .hooks.PermissionRequest and .hooks.Stop' \
+  "$contents/Resources/AgentIntegration/claude-settings.json" >/dev/null
 for packaged_binary in "$binary" "$control_binary" "$nvim_launcher"; do
   if /usr/bin/otool -L "$packaged_binary" |
     awk 'NR > 1 { print $1 }' |

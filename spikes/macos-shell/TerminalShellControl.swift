@@ -204,6 +204,9 @@ extension TerminalShellViewController {
             reply(.success(["pane": paneId, "key": key, "ignored": true]))
             return
         }
+        if ["escape", "esc"].contains(key.lowercased()) {
+            dismissAgentWaitingOnEscape(paneId: paneId)
+        }
         pane.write(data)
         reply(.success(["pane": paneId, "key": key]))
     }
@@ -220,6 +223,9 @@ extension TerminalShellViewController {
         else {
             reply(controlFailure("invalid_status", "The pane or status value is invalid."))
             return
+        }
+        if request.agent_session_start == true {
+            paneStore.agentTitleTracker.beginSession(paneId: paneId)
         }
         let value = paneStatuses.update(
             paneId: paneId,

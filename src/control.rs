@@ -63,6 +63,8 @@ pub enum ControlCommand {
         pane: usize,
         status: String,
         summary: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        agent_session_start: Option<bool>,
     },
     StatusWait {
         pane: usize,
@@ -528,6 +530,7 @@ mod tests {
             pane: 7,
             status: "done".to_owned(),
             summary: "tests passed".to_owned(),
+            agent_session_start: None,
         });
         let json = serde_json::to_string(&request).unwrap();
 
