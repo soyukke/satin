@@ -519,12 +519,44 @@ final class TerminalTextView: NSView, NSTextInputClient {
 
     func resetZoom() -> Bool {
         guard let paneId = activePaneId,
-            paneFontSizeOffsets.removeValue(forKey: paneId) != nil
+            setZoomOffset(0, for: [paneId])
         else {
             return false
         }
-        paneFonts.removeValue(forKey: paneId)
-        paneZoomDidChange(paneId)
+        onPaneZoomChanged?(paneId)
+        return true
+    }
+
+    @discardableResult
+    func setZoomOffset(_ offset: CGFloat, for paneIds: [Int]) -> Bool {
+        let boundedSize = min(
+            max(terminalFontSize + offset, minTerminalFontSize),
+            maxTerminalFontSize
+        )
+        let boundedOffset = boundedSize - terminalFontSize
+        var changed = false
+        for paneId in paneIds {
+            let previousOffset = paneFontSizeOffsets[paneId] ?? 0
+            guard abs(previousOffset - boundedOffset) > 0.01 else {
+                continue
+            }
+            changed = true
+            if abs(boundedOffset) <= 0.01 {
+                paneFontSizeOffsets.removeValue(forKey: paneId)
+                paneFonts.removeValue(forKey: paneId)
+            } else {
+                paneFontSizeOffsets[paneId] = boundedOffset
+                paneFonts[paneId] = configuredTerminalFont(
+                    family: terminalFontFamily,
+                    size: boundedSize
+                )
+            }
+        }
+        guard changed else {
+            return false
+        }
+        invalidateInputCoordinates()
+        needsDisplay = true
         return true
     }
 
@@ -566,24 +598,11 @@ final class TerminalTextView: NSView, NSTextInputClient {
             return false
         }
         let offset = nextSize - terminalFontSize
-        if abs(offset) <= 0.01 {
-            paneFontSizeOffsets.removeValue(forKey: paneId)
-            paneFonts.removeValue(forKey: paneId)
-        } else {
-            paneFontSizeOffsets[paneId] = offset
-            paneFonts[paneId] = configuredTerminalFont(
-                family: terminalFontFamily,
-                size: nextSize
-            )
+        guard setZoomOffset(offset, for: [paneId]) else {
+            return false
         }
-        paneZoomDidChange(paneId)
-        return true
-    }
-
-    private func paneZoomDidChange(_ paneId: Int) {
-        invalidateInputCoordinates()
-        needsDisplay = true
         onPaneZoomChanged?(paneId)
+        return true
     }
 
     func terminalGridSize() -> (rows: Int, cols: Int, widthPixels: Int, heightPixels: Int) {

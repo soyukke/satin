@@ -229,6 +229,7 @@ security boundary.
 - `Command-C`, `Command-V`, `Command-A`, `Command-F`: copy, paste, select all,
   and scrollback search
 - `Command-+`, `Command--`, `Command-0`: terminal font size
+  (shared across panes while a native tmux session is projected)
 
 ## Build from source
 

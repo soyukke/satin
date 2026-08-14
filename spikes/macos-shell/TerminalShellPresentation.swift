@@ -151,9 +151,15 @@ extension TerminalShellViewController {
     }
 
     func tmuxClientGrid() -> (rows: Int, cols: Int, widthPixels: Int, heightPixels: Int) {
-        terminalTextView.terminalGridSize(
+        let fontPaneId = tmuxSession.flatMap { session in
+            if let activePaneId, session.tmuxPaneIds[activePaneId] != nil {
+                return activePaneId
+            }
+            return session.nativePaneIds.values.first
+        }
+        return terminalTextView.terminalGridSize(
             for: nativePaneContentFrame(workspaceContentRect()),
-            paneId: nil
+            paneId: fontPaneId
         )
     }
 
