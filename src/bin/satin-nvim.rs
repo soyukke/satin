@@ -250,6 +250,8 @@ mod tests {
         assert!(!command.contains("vim.g.satin_kitty_graphics"));
         assert!(command.contains("image/backends/kitty/helpers"));
         assert!(command.contains("transmit_medium.direct"));
+        assert!(command.contains("write_graphics_at = write_graphics_at"));
+        assert!(command.contains("write_graphics(config, path, direct_chunk_size)"));
         assert!(command.ends_with(")()"));
     }
 }
