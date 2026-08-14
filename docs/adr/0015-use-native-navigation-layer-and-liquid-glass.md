@@ -83,9 +83,10 @@ Tahoe-only custom glass view.
   Skia rendering, mouse coordinates, and input-method placement. Keep the text
   shaper and prepared-line cache per runtime so mixed zoom levels do not evict
   one another's shaped lines on every frame.
-- Keep projected tmux panes on the configured baseline. One tmux control client
-  negotiates a shared cell grid, so applying a different cell size to one
-  projected pane would clip or stretch that pane instead of reflowing it.
+- Keep projected tmux panes on one session-wide zoom offset. One tmux control
+  client negotiates a shared cell grid, so Command +/-/0 must update every
+  projected pane and refresh that shared grid; applying a different cell size
+  to one projected pane would clip or stretch it instead of reflowing it.
 - Keep Settings on its standard toolbar-style `NSTabViewController` and use the
   same unified titlebar treatment.
 - Validate menu commands against the key window. Terminal mutations are disabled

@@ -85,9 +85,24 @@ func runTerminalTextInputSelfTests() -> Bool {
     else {
         return false
     }
-    return view.handleCommandKey(commandC)
-        && copyRequests == 1
-        && pasteboard.string(forType: .string) == "copied selection"
+    guard view.handleCommandKey(commandC),
+        copyRequests == 1,
+        pasteboard.string(forType: .string) == "copied selection"
+    else {
+        return false
+    }
+
+    let baseline = view.fontSize(nil)
+    guard view.setZoomOffset(2, for: [11, 12]),
+        abs(view.fontSize(11) - baseline - 2) < 0.01,
+        abs(view.fontSize(12) - baseline - 2) < 0.01,
+        view.fontSize(13) == baseline,
+        !view.setZoomOffset(2, for: [11, 12]),
+        view.setZoomOffset(0, for: [11, 12])
+    else {
+        return false
+    }
+    return view.fontSize(11) == baseline && view.fontSize(12) == baseline
 }
 
 extension TerminalTextView {

@@ -286,6 +286,15 @@ extension TerminalShellViewController {
             paneStore.modes.removeValue(forKey: paneId)
             paneStore.workingDirectories.removeValue(forKey: paneId)
         }
+        let projectedPaneIds = Array(nextNativePaneIds.values)
+        _ = terminalTextView.setZoomOffset(
+            session.fontZoomOffset,
+            for: projectedPaneIds
+        )
+        if let paneId = projectedPaneIds.first {
+            session.fontZoomOffset =
+                terminalTextView.fontSize(paneId) - terminalTextView.fontSize(nil)
+        }
         for pane in paneSnapshots {
             let nativePaneId = nextNativePaneIds[pane.pane_id] ?? session.nativePaneId(pane.pane_id)
             paneStore.workingDirectories[nativePaneId] = pane.current_path
@@ -390,7 +399,7 @@ extension TerminalShellViewController {
     func tmuxPaneGrid(
         _ pane: TmuxPaneSnapshot
     ) -> (rows: Int, cols: Int, widthPixels: Int, heightPixels: Int) {
-        let base = terminalTextView.terminalGridSize()
+        let base = tmuxClientGrid()
         let width = max(1, base.widthPixels * Int(pane.cols) / max(1, base.cols))
         let height = max(1, base.heightPixels * Int(pane.rows) / max(1, base.rows))
         return (Int(pane.rows), Int(pane.cols), width, height)
