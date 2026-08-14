@@ -2,6 +2,7 @@ import AppKit
 
 enum NativeMainMenuAction: Equatable {
     case showSettings
+    case showWorkSwitcher
     case newTab
     case splitVertical
     case splitHorizontal
@@ -137,6 +138,12 @@ final class NativeMainMenuController: NSObject, NSMenuItemValidation {
     private func sessionMenuItem(settings: NativeSettings) -> NSMenuItem {
         let item = NSMenuItem()
         let menu = NSMenu(title: "Session")
+        addCommandItems(
+            [(.showWorkSwitcher, .showWorkSwitcher)],
+            to: menu,
+            settings: settings
+        )
+        menu.addItem(NSMenuItem.separator())
         menu.addItem(
             targetedItem(
                 "Switch Terminal Session…",
@@ -352,6 +359,7 @@ final class NativeMainMenuController: NSObject, NSMenuItemValidation {
         )
         guard controller.mainMenu.items.count == 6,
             controller.commandItems.count == NativeCommandID.allCases.count,
+            let workSwitcherItem = controller.commandItems[.showWorkSwitcher],
             let newTabItem = controller.commandItems[.newTab],
             let updateItem = controller.commandItems[.checkForUpdates]
         else {
@@ -386,9 +394,10 @@ final class NativeMainMenuController: NSObject, NSMenuItemValidation {
         }
 
         controller.performAction(newTabItem)
+        controller.performAction(workSwitcherItem)
         let tabItem = NSMenuItem()
         tabItem.representedObject = NativeMainMenuActionBox(.selectTab(7))
         controller.performAction(tabItem)
-        return actions == [.newTab, .selectTab(7)]
+        return actions == [.newTab, .showWorkSwitcher, .selectTab(7)]
     }
 }

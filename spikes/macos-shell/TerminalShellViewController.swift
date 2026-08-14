@@ -329,6 +329,11 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
         symbolName: "doc.on.doc",
         title: "Recent Artifacts"
     )
+    let workSwitcherButton = NativeHoverIconButton(
+        symbolName: "square.grid.2x2",
+        title: "Work Switcher (⌘P)",
+        supportsBadge: true
+    )
     let sessionControlButton = NSButton(frame: .zero)
     let backdropView = NativeTerminalBackdropView(frame: .zero)
     let metalView: TerminalMetalView
@@ -371,6 +376,9 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
     var artifactsPopover: NSPopover?
     var artifactsPopoverPaneId: Int?
     let paneStatuses = NativePaneStatusStore()
+    let workAttentionStore = NativeWorkAttentionStore()
+    var workSwitcherPopover: NSPopover?
+    var workSwitcherController: NativeWorkSwitcherViewController?
     lazy var tabStripView = NativeTabStripView(
         tabControl: tabControl,
         newTabButton: newTabButton
@@ -401,6 +409,9 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
         self.notificationsEnabled = settings.notifications
         self.metalView = TerminalMetalView(frame: .zero)
         super.init(nibName: nil, bundle: nil)
+        self.paneStatuses.onChange = { [weak self] paneId, status in
+            self?.paneStatusDidChange(paneId: paneId, status: status)
+        }
         configureTabControl()
         configureToolbarControls()
         self.metalView.contextMenuProvider = self
@@ -567,6 +578,7 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
 
     func focusTerminal() {
         view.window?.makeFirstResponder(terminalTextView)
+        markActiveWorkSeen()
     }
 
     func toolbar() -> NSToolbar {

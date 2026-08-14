@@ -39,14 +39,26 @@ final class NativeHoverIconButton: NSButton {
     private var hovering = false
     private var pressing = false
     private var emphasized = true
+    private var badgeCount = 0
+    private var baseTitle = ""
+    private var supportsBadge = false
 
-    init(symbolName: String, title: String) {
+    init(symbolName: String, title: String, supportsBadge: Bool = false) {
+        self.supportsBadge = supportsBadge
         super.init(frame: .zero)
         configure(symbolName: symbolName, title: title)
     }
 
     required init?(coder: NSCoder) {
         nil
+    }
+
+    override var intrinsicContentSize: NSSize {
+        let size = super.intrinsicContentSize
+        guard supportsBadge else {
+            return size
+        }
+        return NSSize(width: max(size.width, 26), height: max(size.height, 22))
     }
 
     override func updateTrackingAreas() {
@@ -74,6 +86,7 @@ final class NativeHoverIconButton: NSButton {
             ).fill()
         }
         super.draw(dirtyRect)
+        drawBadge()
     }
 
     override func mouseEntered(with event: NSEvent) {
@@ -107,7 +120,25 @@ final class NativeHoverIconButton: NSButton {
         updateHoverAppearance()
     }
 
+    func setBadgeCount(_ count: Int) {
+        let count = max(0, count)
+        guard badgeCount != count else {
+            return
+        }
+        badgeCount = count
+        toolTip = count == 0 ? baseTitle : "\(baseTitle) — \(count) need attention"
+        setAccessibilityValue(
+            count == 0 ? "No items need attention" : "\(count) items need attention"
+        )
+        needsDisplay = true
+    }
+
+    func badgeCountForSmoke() -> Int {
+        badgeCount
+    }
+
     private func configure(symbolName: String, title: String) {
+        baseTitle = title
         isBordered = false
         imagePosition = .imageOnly
         imageScaling = .scaleProportionallyDown
@@ -123,6 +154,41 @@ final class NativeHoverIconButton: NSButton {
         contentTintColor = .secondaryLabelColor
         toolTip = title
         setAccessibilityLabel(title)
+    }
+
+    private func drawBadge() {
+        guard badgeCount > 0 else {
+            return
+        }
+        let value = badgeCount > 9 ? "9+" : String(badgeCount)
+        let font = NSFont.systemFont(ofSize: 7.5, weight: .bold)
+        let attributes: [NSAttributedString.Key: Any] = [
+            .font: font,
+            .foregroundColor: NSColor.white,
+        ]
+        let textSize = (value as NSString).size(withAttributes: attributes)
+        let height: CGFloat = 11
+        let width = max(height, ceil(textSize.width) + 5)
+        let inset: CGFloat = 1
+        let badgeRect = NSRect(
+            x: bounds.maxX - width - inset,
+            y: isFlipped ? bounds.minY + inset : bounds.maxY - height - inset,
+            width: width,
+            height: height
+        )
+        NSColor.systemRed.setFill()
+        NSBezierPath(
+            roundedRect: badgeRect,
+            xRadius: height / 2,
+            yRadius: height / 2
+        ).fill()
+        (value as NSString).draw(
+            at: NSPoint(
+                x: badgeRect.midX - textSize.width / 2,
+                y: badgeRect.midY - textSize.height / 2
+            ),
+            withAttributes: attributes
+        )
     }
 
     private var hoverColor: NSColor? {

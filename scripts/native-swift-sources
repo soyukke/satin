@@ -22,6 +22,8 @@ native_swift_sources=(
   spikes/macos-shell/NativeShellModels.swift
   spikes/macos-shell/NativeTmux.swift
   spikes/macos-shell/NativeWireModels.swift
+  spikes/macos-shell/NativeWorkSwitcher.swift
+  spikes/macos-shell/NativeWorkSwitcherPreview.swift
   spikes/macos-shell/PerformanceRecorder.swift
   spikes/macos-shell/SatinAppDelegate.swift
   spikes/macos-shell/SatinFFI.swift
@@ -38,6 +40,7 @@ native_swift_sources=(
   spikes/macos-shell/TerminalShellRuntime.swift
   spikes/macos-shell/TerminalShellSession.swift
   spikes/macos-shell/TerminalShellViewController.swift
+  spikes/macos-shell/TerminalShellWorkSwitcher.swift
   spikes/macos-shell/TerminalTextView.swift
   spikes/macos-shell/TerminalTextViewInput.swift
   spikes/macos-shell/UpdateInstaller.swift

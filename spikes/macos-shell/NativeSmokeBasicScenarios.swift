@@ -125,12 +125,17 @@ import Foundation
             let controlsReady =
                 sessionControlButton.superview != nil
                 && artifactButton.superview != nil
+                && workSwitcherButton.superview != nil
                 && tabStripView.superview != nil
                 && tabStripView.actionsReady()
                 && terminalTextView.paneChromeViewsReady(expectedCount: 1)
                 && initialChrome?.actionsReady() == true
             let shortcutsReady =
                 mainMenuShortcutMatches(
+                    command: .showWorkSwitcher,
+                    shortcut: settings.shortcut(for: .showWorkSwitcher)
+                )
+                && mainMenuShortcutMatches(
                     command: .splitVertical,
                     shortcut: settings.shortcut(for: .splitVertical)
                 )
