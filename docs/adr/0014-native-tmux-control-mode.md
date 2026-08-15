@@ -2,6 +2,8 @@
 
 Date: 2026-08-07
 
+Amended: 2026-08-15
+
 Status: Accepted
 
 ## Context
@@ -108,6 +110,11 @@ connection while native surfaces render the individual panes.
   while tmux owns the pane; ordinary terminal Neovim remains tmux content.
 - Forward pane bells through Satin's existing attention policy without replacing
   tmux window names with application pane titles.
+- Subscribe the control client to quoted `pane_title` changes and include that
+  field in every topology snapshot. Feed projected title transitions through
+  the same bounded Codex and Claude Code lifecycle tracker as local panes, and
+  remove pane-local title and status metadata when tmux removes a pane. Do not
+  infer agent state from captured pane content.
 - Preserve ordinary key events byte-for-byte. For an auto-repeated Return while
   the pane's foreground command is a configured login shell on the primary
   screen, keep at most one pending repeat and release it when the projected VT

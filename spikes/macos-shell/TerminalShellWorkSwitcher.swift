@@ -21,7 +21,15 @@ extension TerminalShellViewController {
             self?.focusTerminal()
         }
         let popover = NSPopover()
-        popover.behavior = .transient
+        #if SATIN_SMOKE_SCENARIOS
+            popover.behavior =
+                ProcessInfo.processInfo.environment["SATIN_NATIVE_SMOKE_SCENARIO"]
+                    == "readme-demo"
+                ? .applicationDefined
+                : .transient
+        #else
+            popover.behavior = .transient
+        #endif
         popover.animates = true
         popover.contentViewController = controller
         workSwitcherPopover = popover

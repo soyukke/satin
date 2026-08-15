@@ -85,6 +85,10 @@ import Foundation
                 if let path = environment["SATIN_NATIVE_SMOKE_RESULT"], !path.isEmpty {
                     controller.applyArtifactPopoverSmokeScenario(resultPath: path)
                 }
+            case "readme-demo":
+                if let path = environment["SATIN_NATIVE_SMOKE_RESULT"], !path.isEmpty {
+                    controller.applyReadmeDemoScenario(resultPath: path)
+                }
             case "home-cwd":
                 if let path = environment["SATIN_NATIVE_SMOKE_RESULT"], !path.isEmpty {
                     controller.applyHomeWorkingDirectorySmokeScenario(resultPath: path)

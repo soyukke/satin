@@ -2,7 +2,7 @@
 
 Date: 2026-08-08
 
-Amended: 2026-08-14
+Amended: 2026-08-15
 
 Status: Accepted
 
@@ -55,6 +55,8 @@ Tahoe-only custom glass view.
   `--settings` or opt-out, and never edit `~/.claude` or Codex's machine-level
   `notify`. Do not infer lifecycle from retained screen rows, pixels, inactivity,
   or process-name polling.
+  For projected tmux panes, subscribe to quoted `pane_title` changes and route
+  those transitions through the same tracker instead of inspecting pane output.
   When an agent-owned waiting prompt is dismissed with Escape, return that pane
   to `idle`; do not leave a stale attention badge after the UI is back at input.
 - Present session discovery, attach, detach, switch, and creation from a standard

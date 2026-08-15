@@ -7,5 +7,6 @@
         var nvimMessageSelection = "overlay=no copied=no"
         var artifactPopoverResultPath: String?
         var artifactPopoverOpenPath: String?
+        var readmeWorkSwitcherOpened = false
     }
 #endif

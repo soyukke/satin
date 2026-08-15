@@ -170,6 +170,12 @@ native-smoke:
 native-visual-smoke:
     @if [[ -z "${IN_NIX_SHELL:-}" ]]; then exec nix develop --command just native-visual-smoke; else just native-build && SATIN_ALLOW_SCREEN_CAPTURE=1 ./scripts/native-smoke; fi
 
+# Record and optimize the two README demos from an isolated Satin Dev window.
+readme-demo:
+    @if [[ -n "${SATIN_SOCKET:-}" ]]; then echo "readme-demo must run from a terminal outside Satin" >&2; exit 64; fi
+    @if [[ "${SATIN_ALLOW_SCREEN_CAPTURE:-0}" != 1 ]]; then echo "set SATIN_ALLOW_SCREEN_CAPTURE=1 to record the isolated demo window" >&2; exit 64; fi
+    @if [[ -z "${IN_NIX_SHELL:-}" ]]; then exec nix develop --command just readme-demo; else ./scripts/readme-demo; fi
+
 # Verify the exact Release executable inside the application bundle through its control socket.
 native-package-smoke:
     @./scripts/native-package-smoke

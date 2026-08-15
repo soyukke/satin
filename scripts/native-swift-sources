@@ -55,6 +55,7 @@ native_smoke_swift_sources=(
   spikes/macos-shell/NativeSmokeNvimLayoutScenarios.swift
   spikes/macos-shell/NativeSmokeNvimScenarios.swift
   spikes/macos-shell/NativeSmokeNvimVisualScenarios.swift
+  spikes/macos-shell/NativeSmokeReadmeScenarios.swift
   spikes/macos-shell/NativeSmokeState.swift
   spikes/macos-shell/NativeSmokeTmuxReattachScenarios.swift
   spikes/macos-shell/NativeSmokeTmuxScenarios.swift
