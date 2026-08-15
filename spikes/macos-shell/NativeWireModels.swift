@@ -190,6 +190,7 @@ struct TmuxPaneSnapshot: Decodable {
     let origin_mode: Bool
     let scroll_region_upper: UInt16
     let current_command: String
+    let title: String
 }
 
 // Properties mirror Rust's serialized schema and intentionally use snake_case.
