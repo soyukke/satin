@@ -102,7 +102,20 @@ func runTerminalTextInputSelfTests() -> Bool {
     else {
         return false
     }
-    return view.fontSize(11) == baseline && view.fontSize(12) == baseline
+    guard view.fontSize(11) == baseline, view.fontSize(12) == baseline else {
+        return false
+    }
+
+    var clearedPanes: [Int] = []
+    var focusChanges: [Bool] = []
+    view.onSelectionClearRequested = { clearedPanes.append($0) }
+    view.onFocusChanged = { focusChanges.append($0) }
+    view.setActivePaneId(11)
+    view.setActivePaneId(12)
+    view.setActivePaneId(12)
+    view.terminalFocusDidChange(true)
+    view.terminalFocusDidChange(false)
+    return clearedPanes == [11, 12] && focusChanges == [true, false]
 }
 
 extension TerminalTextView {

@@ -2420,6 +2420,38 @@ mod tests {
     }
 
     #[test]
+    fn clearing_selection_removes_the_overlay_without_resizing() {
+        let mut runtime = NativeTerminalRuntime::external(grid_size(3, 8)).unwrap();
+        runtime.feed_external(b"selected").unwrap();
+        runtime.select_all().unwrap();
+
+        let selected = runtime.frame().unwrap();
+        let selected_color = selection_color(selected.background);
+        assert!(
+            selected
+                .rows
+                .iter()
+                .flatten()
+                .any(|cell| cell.bg == Some(selected_color))
+        );
+        assert_eq!(
+            runtime.selected_text().unwrap().as_deref(),
+            Some("selected")
+        );
+
+        runtime.clear_selection().unwrap();
+        let cleared = runtime.frame().unwrap();
+        assert!(
+            cleared
+                .rows
+                .iter()
+                .flatten()
+                .all(|cell| cell.bg != Some(selected_color))
+        );
+        assert_eq!(runtime.selected_text().unwrap(), None);
+    }
+
+    #[test]
     fn tmux_projection_discards_duplicate_terminal_reports() {
         let mut runtime = NativeTerminalRuntime::external(TerminalGridSize {
             rows: 24,
