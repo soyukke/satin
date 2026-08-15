@@ -121,6 +121,57 @@ import Foundation
             }
 
             let closeSummary = nvimLayoutRedrawSummary(expected: expected, actual: actual)
+            metalView.resetSkiaFrameCount()
+            guard adjustTerminalZoom(by: -1) else {
+                writeNvimLayoutRedrawFailure(resultPath, phase: "zoom-out")
+                return
+            }
+            waitForNvimPaneZoomRedraw(
+                resultPath,
+                nvimPaneId: nvimPaneId,
+                baseline: expected,
+                closeSummary: closeSummary,
+                retries: 16
+            )
+        }
+
+        func waitForNvimPaneZoomRedraw(
+            _ resultPath: String,
+            nvimPaneId: Int,
+            baseline: (rows: Int, cols: Int, widthPixels: Int, heightPixels: Int),
+            closeSummary: String,
+            retries: Int
+        ) {
+            drainTerminalPanes()
+            let expected = paneGridSize(nvimPaneId)
+            let actual = terminalTextView.rendererRootGridSize()
+            let gridExpanded = expected.cols > baseline.cols && expected.rows > baseline.rows
+            let ready =
+                gridExpanded
+                && terminalTextView.rendererModelContainsTexts([nvimSmokeReadyMarker])
+                && actual?.cols == expected.cols
+                && actual?.rows == expected.rows
+                && metalView.skiaFrames() > 0
+                && !metalView.hasPendingFrameRequest()
+                && metalView.drawableSizesMatchView()
+            if !ready, retries > 0 {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
+                    self?.waitForNvimPaneZoomRedraw(
+                        resultPath,
+                        nvimPaneId: nvimPaneId,
+                        baseline: baseline,
+                        closeSummary: closeSummary,
+                        retries: retries - 1
+                    )
+                }
+                return
+            }
+            guard ready else {
+                writeNvimLayoutRedrawFailure(resultPath, phase: "zoom-redraw")
+                return
+            }
+
+            let zoomSummary = nvimLayoutRedrawSummary(expected: expected, actual: actual)
             guard let window = view.window else {
                 writeNvimLayoutRedrawFailure(resultPath, phase: "resize-window")
                 return
@@ -134,6 +185,7 @@ import Foundation
                 resultPath,
                 nvimPaneId: nvimPaneId,
                 closeSummary: closeSummary,
+                zoomSummary: zoomSummary,
                 retries: 16
             )
         }
@@ -142,6 +194,7 @@ import Foundation
             _ resultPath: String,
             nvimPaneId: Int,
             closeSummary: String,
+            zoomSummary: String,
             retries: Int
         ) {
             drainTerminalPanes()
@@ -160,6 +213,7 @@ import Foundation
                         resultPath,
                         nvimPaneId: nvimPaneId,
                         closeSummary: closeSummary,
+                        zoomSummary: zoomSummary,
                         retries: retries - 1
                     )
                 }
@@ -176,7 +230,8 @@ import Foundation
             )
             let result =
                 "\(status) nvim-layout-redraw close={\(closeSummary)} "
-                + "resize={\(resizeSummary)} geometry=\(geometry) viewport=\(viewport) "
+                + "zoom={\(zoomSummary)} resize={\(resizeSummary)} "
+                + "geometry=\(geometry) viewport=\(viewport) "
                 + "marker=\(marker)\n"
             try? result.write(toFile: resultPath, atomically: true, encoding: .utf8)
             if ProcessInfo.processInfo.environment["SATIN_NATIVE_SMOKE_KEEP_OPEN"] != "1" {

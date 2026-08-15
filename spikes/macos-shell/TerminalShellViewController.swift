@@ -497,9 +497,6 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
         self.terminalTextView.onResetZoom = { [weak self] in
             self?.resetZoom(nil)
         }
-        self.terminalTextView.onPaneZoomChanged = { [weak self] paneId in
-            self?.resizePaneForZoom(paneId)
-        }
         self.metalView.renderProvider = { [weak self] texture, renderer in
             self?.renderActiveMetalFrame(texture: texture, renderer: renderer) ?? false
         }

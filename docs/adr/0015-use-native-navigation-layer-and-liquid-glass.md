@@ -79,17 +79,19 @@ Tahoe-only custom glass view.
 - Let the grid reach the left, right, and bottom pane edges without decorative
   padding. Draw outlines at one backing pixel, using adaptive neutral gray for
   inactive panes and subdued system blue for the active pane.
-- Treat Command +/-/0 as pane-local font zoom. Keep the configured Appearance
-  font size as the shared baseline, retain an in-memory offset per pane ID, and
-  use that pane's effective cell metrics consistently for PTY/Neovim resize,
-  Skia rendering, mouse coordinates, and input-method placement. Keep the text
-  shaper and prepared-line cache per runtime so mixed zoom levels do not evict
-  one another's shaped lines on every frame.
-- Keep the projected tmux control-client grid on the configured baseline and
-  apply Command +/-/0 as a pane-local render scale. tmux still owns each pane's
-  underlying rows and columns, so this is a clipped local viewport scale rather
-  than a tmux reflow. It must not resize sibling panes or renegotiate the shared
-  client grid when focus or zoom changes.
+- Treat Command +/-/0 as pane-local font zoom for native terminal and Neovim
+  panes. Keep the configured Appearance font size as the shared baseline, retain
+  an in-memory offset per pane ID, and use that pane's effective cell metrics
+  consistently for PTY/Neovim resize, Skia rendering, mouse coordinates, and
+  input-method placement. Keep the text shaper and prepared-line cache per
+  runtime so mixed zoom levels do not evict one another's shaped lines on every
+  frame.
+- Treat each projected tmux window as one zoom scope. tmux owns one shared cell
+  grid per window, so every projected sibling must use the same effective cell
+  metrics while that window is active. Command +/-/0 renegotiates the control
+  client grid and lets tmux reflow each underlying PTY; never substitute a
+  clipped renderer-only scale. Preserve independent zoom offsets across tmux
+  windows.
 - Coalesce host-window geometry changes before propagating PTY, Neovim, and tmux
   grid updates. Rendering may continue during live resize, but one burst of
   AppKit frame notifications must not enqueue a matching burst of runtime resize

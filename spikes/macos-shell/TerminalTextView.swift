@@ -24,7 +24,6 @@ final class TerminalTextView: NSView, NSTextInputClient {
     var onZoomIn: (() -> Void)?
     var onZoomOut: (() -> Void)?
     var onResetZoom: (() -> Void)?
-    var onPaneZoomChanged: ((Int) -> Void)?
 
     required init?(coder: NSCoder) {
         nil
@@ -526,22 +525,23 @@ final class TerminalTextView: NSView, NSTextInputClient {
         return true
     }
 
-    func zoomIn() -> Bool {
-        adjustActivePaneZoom(by: 1)
-    }
-
-    func zoomOut() -> Bool {
-        adjustActivePaneZoom(by: -1)
-    }
-
-    func resetZoom() -> Bool {
-        guard let paneId = activePaneId,
-            setZoomOffset(0, for: [paneId])
-        else {
+    func adjustZoom(by delta: CGFloat, for paneIds: [Int]) -> Bool {
+        guard let referencePaneId = paneIds.first else {
             return false
         }
-        onPaneZoomChanged?(paneId)
-        return true
+        let previousSize = fontSize(referencePaneId)
+        let nextSize = min(
+            max(previousSize + delta, minTerminalFontSize),
+            maxTerminalFontSize
+        )
+        guard abs(nextSize - previousSize) > 0.01 else {
+            return false
+        }
+        return setZoomOffset(nextSize - terminalFontSize, for: paneIds)
+    }
+
+    func resetZoom(for paneIds: [Int]) -> Bool {
+        setZoomOffset(0, for: paneIds)
     }
 
     @discardableResult
@@ -600,26 +600,6 @@ final class TerminalTextView: NSView, NSTextInputClient {
             return terminalFont
         }
         return paneFonts[paneId] ?? terminalFont
-    }
-
-    private func adjustActivePaneZoom(by delta: CGFloat) -> Bool {
-        guard let paneId = activePaneId else {
-            return false
-        }
-        let previousSize = fontSize(paneId)
-        let nextSize = min(
-            max(previousSize + delta, minTerminalFontSize),
-            maxTerminalFontSize
-        )
-        guard abs(nextSize - previousSize) > 0.01 else {
-            return false
-        }
-        let offset = nextSize - terminalFontSize
-        guard setZoomOffset(offset, for: [paneId]) else {
-            return false
-        }
-        onPaneZoomChanged?(paneId)
-        return true
     }
 
     func terminalGridSize() -> (rows: Int, cols: Int, widthPixels: Int, heightPixels: Int) {

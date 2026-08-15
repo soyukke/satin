@@ -653,14 +653,14 @@ import Foundation
                 )
                 return
             }
+            if tmuxZoomResizeSmokeOnly() {
+                beginTmuxZoomReflowSmoke(resultPath, baselineGrid: expected)
+                return
+            }
             guard verifyTmuxSmokeFontZoom(baselineGrid: expected) else {
                 tmuxSession?.gateway.tmuxCommand("kill-session")
                 writeSessionSmokeResult(
                     resultPath, result: "failed tmux-native font-zoom=no\n")
-                return
-            }
-            if tmuxZoomResizeSmokeOnly() {
-                beginTmuxZoomResizeSmoke(resultPath)
                 return
             }
             guard let initialRatio = lastSnapshot?.tabs.first?.layout.ratio,

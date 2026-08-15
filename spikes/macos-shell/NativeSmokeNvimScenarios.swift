@@ -197,6 +197,10 @@ import Foundation
                 guard let self else {
                     return
                 }
+                _ = terminalTextView.setTerminalFont(
+                    family: terminalTextView.terminalFontFamily,
+                    size: defaultTerminalFontSize
+                )
                 runNvimCommandOrWrite(
                     "enew! | call setline(1, ['\(nvimSmokeReadyMarker)', 'LAYOUT_REDRAW'])",
                     fallback: Data()

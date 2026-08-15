@@ -214,13 +214,56 @@ extension TerminalShellViewController {
         }
     #endif
 
-    func resizePaneForZoom(_ paneId: Int) {
-        guard let frame = paneStore.visibleFrames[paneId],
-            let pane = terminalPane(for: paneId)
+    @discardableResult
+    func adjustTerminalZoom(by delta: CGFloat) -> Bool {
+        let paneIds = terminalZoomPaneIds()
+        guard terminalTextView.adjustZoom(by: delta, for: paneIds) else {
+            return false
+        }
+        resizePanesAfterZoom(paneIds)
+        return true
+    }
+
+    @discardableResult
+    func resetTerminalZoom() -> Bool {
+        let paneIds = terminalZoomPaneIds()
+        guard terminalTextView.resetZoom(for: paneIds) else {
+            return false
+        }
+        resizePanesAfterZoom(paneIds)
+        return true
+    }
+
+    func terminalZoomPaneIds() -> [Int] {
+        guard let activePaneId else {
+            return []
+        }
+        guard let session = tmuxSession,
+            session.tmuxPaneIds[activePaneId] != nil,
+            let snapshot = lastSnapshot,
+            let tab = snapshot.tabs.first(where: { $0.index == snapshot.active_tab }),
+            let windowId = session.tmuxWindowIds[tab.id],
+            let paneIds = session.nativePaneIdsByWindow[windowId]
         else {
+            return [activePaneId]
+        }
+        return paneIds
+    }
+
+    func resizePanesAfterZoom(_ paneIds: [Int]) {
+        if let session = tmuxSession,
+            paneIds.contains(where: { session.tmuxPaneIds[$0] != nil })
+        {
+            syncTmuxClientSize()
+            updateActiveFrame()
             return
         }
-        if !(pane is RustTmuxPane) {
+        for paneId in paneIds {
+            guard let frame = paneStore.visibleFrames[paneId],
+                let pane = terminalPane(for: paneId)
+            else {
+                continue
+            }
             pane.resize(grid: terminalTextView.terminalGridSize(for: frame, paneId: paneId))
         }
         updateActiveFrame()

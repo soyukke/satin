@@ -454,17 +454,17 @@ extension TerminalShellViewController {
     }
 
     @objc func zoomIn(_ sender: Any?) {
-        _ = terminalTextView.zoomIn()
+        _ = adjustTerminalZoom(by: 1)
         focusTerminal()
     }
 
     @objc func zoomOut(_ sender: Any?) {
-        _ = terminalTextView.zoomOut()
+        _ = adjustTerminalZoom(by: -1)
         focusTerminal()
     }
 
     @objc func resetZoom(_ sender: Any?) {
-        _ = terminalTextView.resetZoom()
+        _ = resetTerminalZoom()
         focusTerminal()
     }
 

@@ -31,6 +31,7 @@ final class NativeTmuxSession {
     let gateway: RustTerminalPane
     let savedWorkspace: TerminalCoreSnapshot
     var nativePaneIds: [UInt32: Int] = [:]
+    var nativePaneIdsByWindow: [UInt32: [Int]] = [:]
     var tmuxPaneIds: [Int: UInt32] = [:]
     var nativeTabIds: [UInt32: Int] = [:]
     var tmuxWindowIds: [Int: UInt32] = [:]

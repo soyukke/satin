@@ -151,11 +151,14 @@ extension TerminalShellViewController {
     }
 
     func tmuxClientGrid() -> (rows: Int, cols: Int, widthPixels: Int, heightPixels: Int) {
-        // tmux owns one shared control-client grid. Keep it on the configured
-        // baseline while each projected pane applies its own local render scale.
+        // Every pane in the active tmux window shares this control-client grid
+        // and therefore the same effective cell size.
+        let fontPaneId = lastSnapshot.flatMap { snapshot in
+            snapshot.tabs.first(where: { $0.index == snapshot.active_tab })?.active_pane
+        }
         return terminalTextView.terminalGridSize(
             for: nativePaneContentFrame(workspaceContentRect()),
-            paneId: nil
+            paneId: fontPaneId
         )
     }
 

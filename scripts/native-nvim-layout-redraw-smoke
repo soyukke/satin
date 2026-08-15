@@ -21,4 +21,5 @@ fi
 result="$(cat "$result_file")"
 printf '%s\n' "$result"
 [[ "$result" == ok\ nvim-layout-redraw* ]]
-[[ "$(grep -o 'pending=no' <<<"$result" | wc -l | tr -d '[:space:]')" == "2" ]]
+[[ "$result" == *" zoom={"* ]]
+[[ "$(grep -o 'pending=no' <<<"$result" | wc -l | tr -d '[:space:]')" == "3" ]]
