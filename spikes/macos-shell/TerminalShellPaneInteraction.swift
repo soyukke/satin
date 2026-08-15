@@ -171,11 +171,48 @@ extension TerminalShellViewController {
     }
 
     func resizeTerminalPanesToGrid() {
+        pendingGeometryResizeWorkItem?.cancel()
+        pendingGeometryResizeWorkItem = nil
         if let snapshot = lastSnapshot {
             syncPaneLayout(snapshot)
         }
         updateActiveFrame()
     }
+
+    func scheduleTerminalPaneResize() {
+        #if SATIN_SMOKE_SCENARIOS
+            geometryResizeRequestCount += 1
+        #endif
+        guard pendingGeometryResizeWorkItem == nil else {
+            return
+        }
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self else {
+                return
+            }
+            pendingGeometryResizeWorkItem = nil
+            #if SATIN_SMOKE_SCENARIOS
+                geometryResizeApplicationCount += 1
+            #endif
+            resizeTerminalPanesToGrid()
+        }
+        pendingGeometryResizeWorkItem = workItem
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + .milliseconds(16),
+            execute: workItem
+        )
+    }
+
+    #if SATIN_SMOKE_SCENARIOS
+        func resetGeometryResizeDiagnostics() {
+            geometryResizeRequestCount = 0
+            geometryResizeApplicationCount = 0
+        }
+
+        func geometryResizeDiagnostics() -> (requests: Int, applications: Int) {
+            (geometryResizeRequestCount, geometryResizeApplicationCount)
+        }
+    #endif
 
     func resizePaneForZoom(_ paneId: Int) {
         guard let frame = paneStore.visibleFrames[paneId],

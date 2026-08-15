@@ -367,6 +367,11 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
     var activePaneId: Int?
     var lastSnapshot: TerminalCoreSnapshot?
     var lastNvimModelScrollShift: OutputScrollShift?
+    var pendingGeometryResizeWorkItem: DispatchWorkItem?
+    #if SATIN_SMOKE_SCENARIOS
+        var geometryResizeRequestCount = 0
+        var geometryResizeApplicationCount = 0
+    #endif
     private var hasStartedPaneRuntime = false
     var syncingTabs = false
     var controlSocketPath = ""
@@ -445,7 +450,7 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
             NSMenu.popUpContextMenu(menu, with: event, for: view)
         }
         self.terminalTextView.onGeometryChanged = { [weak self] in
-            self?.resizeTerminalPanesToGrid()
+            self?.scheduleTerminalPaneResize()
         }
         self.terminalTextView.onInput = { [weak self] data in
             self?.writeToActivePane(data)
@@ -510,6 +515,7 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
     }
 
     deinit {
+        pendingGeometryResizeWorkItem?.cancel()
         for source in paneStore.wakeupSources.values {
             source.cancel()
         }

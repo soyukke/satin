@@ -198,6 +198,10 @@ native-session-smoke:
 native-tmux-smoke:
     @if [[ -z "${IN_NIX_SHELL:-}" ]]; then exec nix develop --command just native-tmux-smoke; else just native-build && ./scripts/native-tmux-smoke; fi
 
+# Verify projected tmux font zoom stays pane-local and rapid host resize remains responsive.
+native-tmux-zoom-resize-smoke:
+    @if [[ -z "${IN_NIX_SHELL:-}" ]]; then exec nix develop --command just native-tmux-zoom-resize-smoke; else just native-build && ./scripts/native-tmux-zoom-resize-smoke; fi
+
 # Verify tab-bar buttons create a tab and both split axes through their click actions.
 native-tab-bar-actions-smoke:
     @if [[ -z "${IN_NIX_SHELL:-}" ]]; then exec nix develop --command just native-tab-bar-actions-smoke; else just native-build && ./scripts/native-tab-bar-actions-smoke; fi

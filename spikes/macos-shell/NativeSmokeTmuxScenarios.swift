@@ -95,6 +95,10 @@ import Foundation
                 }
                 return
             }
+            if tmuxZoomResizeSmokeOnly() {
+                continueTmuxSmokeSplit(resultPath)
+                return
+            }
             let runningTitle = "⠹ Satin agent smoke"
             guard
                 tmuxSession?.gateway.tmuxCommand(
@@ -655,6 +659,10 @@ import Foundation
                     resultPath, result: "failed tmux-native font-zoom=no\n")
                 return
             }
+            if tmuxZoomResizeSmokeOnly() {
+                beginTmuxZoomResizeSmoke(resultPath)
+                return
+            }
             guard let initialRatio = lastSnapshot?.tabs.first?.layout.ratio,
                 terminalTextView.splitDividerCount(for: .vertical) == 1,
                 terminalTextView.splitDividerUsesResizeCursor(for: .vertical),
@@ -675,70 +683,6 @@ import Foundation
                 initialRatio: initialRatio,
                 retries: 30
             )
-        }
-
-        func verifyTmuxSmokeFontZoom(
-            baselineGrid: (rows: Int, cols: Int, widthPixels: Int, heightPixels: Int)
-        ) -> Bool {
-            guard let session = tmuxSession,
-                session.nativePaneIds.count == 2,
-                let zoomInEvent = NSEvent.keyEvent(
-                    with: .keyDown,
-                    location: .zero,
-                    modifierFlags: [.command, .shift],
-                    timestamp: ProcessInfo.processInfo.systemUptime,
-                    windowNumber: view.window?.windowNumber ?? 0,
-                    context: nil,
-                    characters: "+",
-                    charactersIgnoringModifiers: "=",
-                    isARepeat: false,
-                    keyCode: 24
-                ),
-                let zoomOutEvent = NSEvent.keyEvent(
-                    with: .keyDown,
-                    location: .zero,
-                    modifierFlags: .command,
-                    timestamp: ProcessInfo.processInfo.systemUptime,
-                    windowNumber: view.window?.windowNumber ?? 0,
-                    context: nil,
-                    characters: "-",
-                    charactersIgnoringModifiers: "-",
-                    isARepeat: false,
-                    keyCode: 27
-                )
-            else {
-                return false
-            }
-            let paneIds = Array(session.nativePaneIds.values)
-            let baselineSize = terminalTextView.fontSize(nil)
-            guard paneIds.allSatisfy({ abs(terminalTextView.fontSize($0) - baselineSize) < 0.01 }),
-                terminalTextView.handleCommandKey(zoomInEvent)
-            else {
-                return false
-            }
-            let zoomedGrid = tmuxClientGrid()
-            guard abs(session.fontZoomOffset - 1) < 0.01,
-                paneIds.allSatisfy({
-                    abs(terminalTextView.fontSize($0) - baselineSize - 1) < 0.01
-                }),
-                session.lastClientGrid?.cols == zoomedGrid.cols,
-                session.lastClientGrid?.rows == zoomedGrid.rows,
-                zoomedGrid.cols <= baselineGrid.cols,
-                zoomedGrid.rows <= baselineGrid.rows,
-                zoomedGrid.cols != baselineGrid.cols || zoomedGrid.rows != baselineGrid.rows,
-                terminalTextView.handleCommandKey(zoomOutEvent)
-            else {
-                return false
-            }
-            let restoredGrid = tmuxClientGrid()
-            return abs(session.fontZoomOffset) < 0.01
-                && paneIds.allSatisfy({
-                    abs(terminalTextView.fontSize($0) - baselineSize) < 0.01
-                })
-                && restoredGrid.cols == baselineGrid.cols
-                && restoredGrid.rows == baselineGrid.rows
-                && session.lastClientGrid?.cols == restoredGrid.cols
-                && session.lastClientGrid?.rows == restoredGrid.rows
         }
 
         func waitForTmuxSmokeDividerResize(

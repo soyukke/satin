@@ -237,8 +237,8 @@ security boundary.
 - `Command-N`: open the unified native Neovim UI while retaining the current shell
 - `Command-C`, `Command-V`, `Command-A`, `Command-F`: copy, paste, select all,
   and scrollback search
-- `Command-+`, `Command--`, `Command-0`: terminal font size
-  (shared across panes while a native tmux session is projected)
+- `Command-+`, `Command--`, `Command-0`: pane-local terminal font size,
+  including panes projected from a native tmux session
 
 ## Build from source
 

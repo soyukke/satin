@@ -135,3 +135,6 @@ active sibling pane and after resizing the host window.
 `just native-tmux-smoke` covers native projection, history, paste, zoom, Satin
 control actions, alternate-screen reattach, explicit detach, and missing-session
 recovery.
+
+`just native-tmux-zoom-resize-smoke` is the focused regression check for
+pane-local projected-tmux font zoom and coalesced host-window resize updates.
