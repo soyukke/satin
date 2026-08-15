@@ -24,13 +24,13 @@
 <p align="center">
   <a href="assets/satin-demo.mp4">
     <img src="assets/satin-demo.gif" width="880"
-      alt="Satin showing a truecolor terminal beside native Neovim and tmux panes">
+      alt="Satin showing terminal input beside animated native Neovim">
   </a>
 </p>
 
 <p align="center">
-  <sub>Native tmux projection and live agent status in the Work Switcher.
-  Click for the 18-second MP4.</sub>
+  <sub>Terminal cursor input and pane splitting beside native Neovim cursor
+  movement and smooth scrolling. Click for the 19-second MP4.</sub>
 </p>
 
 ## Why Satin
@@ -79,7 +79,27 @@ and changes across the workspace.
 - Kitty graphics in terminal panes and image.nvim-backed native Neovim panes.
 - Publisher-signed in-app updates distributed through GitHub Releases.
 
-## Experimental: AI artifacts
+## Experimental features
+
+### Work Switcher
+
+The Work Switcher is experimental. Open it with `Command-P` to find tabs and
+panes by title, directory, tmux session, or agent status while previewing the
+selected pane's current screen.
+
+<p align="center">
+  <a href="assets/satin-work-switcher-demo.mp4">
+    <img src="assets/satin-work-switcher-demo.gif" width="880"
+      alt="Satin Work Switcher showing live status for projected tmux panes">
+  </a>
+</p>
+
+<p align="center">
+  <sub>Projected tmux panes report waiting, running, and done states without
+  scraping terminal text. Click for the 16-second MP4.</sub>
+</p>
+
+### AI artifacts
 
 Artifacts are experimental. Ask a terminal AI to use Satin's embedded skill and
 it can turn a response into a bounded Markdown artifact, then open or refresh

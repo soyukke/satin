@@ -101,6 +101,7 @@ native-ci-build:
         exec nix develop .#ci-native --command just native-ci-build; \
     else \
         just native-build; \
+        ./scripts/native-window-record --build-only; \
         SATIN_UPDATE_SELF_TEST=1 spikes/macos-shell/.build/SatinApplication; \
         just native-package; \
         ./scripts/native-update-install-smoke; \
@@ -170,7 +171,7 @@ native-smoke:
 native-visual-smoke:
     @if [[ -z "${IN_NIX_SHELL:-}" ]]; then exec nix develop --command just native-visual-smoke; else just native-build && SATIN_ALLOW_SCREEN_CAPTURE=1 ./scripts/native-smoke; fi
 
-# Record and optimize the two README demos from an isolated Satin Dev window.
+# Record and optimize the three README demos from an isolated Satin Dev window.
 readme-demo:
     @if [[ -n "${SATIN_SOCKET:-}" ]]; then echo "readme-demo must run from a terminal outside Satin" >&2; exit 64; fi
     @if [[ "${SATIN_ALLOW_SCREEN_CAPTURE:-0}" != 1 ]]; then echo "set SATIN_ALLOW_SCREEN_CAPTURE=1 to record the isolated demo window" >&2; exit 64; fi
@@ -478,7 +479,7 @@ ci-rust:
 
 # Lint Swift formatting, naming, safety, and language idioms.
 swift-lint:
-    @if [[ -z "${IN_NIX_SHELL:-}" ]]; then exec nix develop --command just swift-lint; else swift-format lint --strict --recursive --configuration .swift-format spikes/macos-shell; fi
+    @if [[ -z "${IN_NIX_SHELL:-}" ]]; then exec nix develop --command just swift-lint; else swift-format lint --strict --recursive --configuration .swift-format spikes/macos-shell scripts/native-window-record.swift; fi
 
 # Run the checks enforced by the Git pre-commit hook.
 precommit:
@@ -517,7 +518,7 @@ install-hooks:
 
 # Format Rust, Swift, shell, and Nix sources.
 fmt:
-    @if [[ -z "${IN_NIX_SHELL:-}" ]]; then exec nix develop --command just fmt; else cargo fmt; swift-format format --in-place --recursive --configuration .swift-format spikes/macos-shell; mapfile -t shell_scripts < <(rg -l '^#!.*(bash|/sh)' scripts --glob '*' | sort); shfmt -w -i 2 -ci "${shell_scripts[@]}"; nixfmt flake.nix; fi
+    @if [[ -z "${IN_NIX_SHELL:-}" ]]; then exec nix develop --command just fmt; else cargo fmt; swift-format format --in-place --recursive --configuration .swift-format spikes/macos-shell scripts/native-window-record.swift; mapfile -t shell_scripts < <(rg -l '^#!.*(bash|/sh)' scripts --glob '*' | sort); shfmt -w -i 2 -ci "${shell_scripts[@]}"; nixfmt flake.nix; fi
 
 # Verify formatting without changing files.
 fmt-check:

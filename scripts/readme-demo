@@ -13,7 +13,7 @@ if [[ -z "${IN_NIX_SHELL:-}" ]]; then
   exec nix develop --command ./scripts/readme-demo "$@"
 fi
 
-for executable in ffmpeg ffprobe jq tmux; do
+for executable in ffmpeg ffprobe git jq tmux; do
   if ! command -v "$executable" >/dev/null; then
     echo "readme-demo requires $executable from the Nix shell" >&2
     exit 69
@@ -97,6 +97,7 @@ wait_for_socket() {
 
 launch_demo_app() {
   local root=$1
+  local scene=$2
   local socket="$root/control.sock"
   local result="$root/ready.result"
   local window_id="$root/window-id"
@@ -106,6 +107,7 @@ launch_demo_app() {
     exec env \
       SATIN_CONTROL_SOCKET="$socket" \
       SATIN_NATIVE_SMOKE_SCENARIO=readme-demo \
+      SATIN_README_DEMO_SCENE="$scene" \
       SATIN_NATIVE_SMOKE_RESULT="$result" \
       SATIN_NATIVE_SMOKE_WINDOW_ID="$window_id" \
       "$app"
@@ -119,6 +121,40 @@ launch_demo_app() {
     echo "readme-demo scenario did not become ready" >&2
     return 1
   fi
+}
+
+wait_for_pane_kind() {
+  local socket=$1
+  local pane=$2
+  local kind=$3
+  local state
+  for _ in {1..200}; do
+    state="$("$cli" --socket "$socket" --json list 2>/dev/null || true)"
+    if jq -e --argjson pane "$pane" --arg kind "$kind" '
+      .ok == true
+        and any(.result.panes[]; .id == $pane and .kind == $kind)
+    ' <<<"$state" >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 0.05
+  done
+  echo "readme-demo timed out waiting for pane $pane to become $kind" >&2
+  return 1
+}
+
+type_into_pane() {
+  local socket=$1
+  local pane=$2
+  local value=$3
+  local delay=$4
+  local character
+  local index
+  for ((index = 0; index < ${#value}; index++)); do
+    character="${value:index:1}"
+    printf '%s' "$character" |
+      "$cli" --socket "$socket" send --pane "$pane" - >/dev/null
+    sleep "$delay"
+  done
 }
 
 wait_for_tmux_projection() {
@@ -145,26 +181,11 @@ record_window() {
   local window_id=$1
   local duration=$2
   local output=$3
-  local frames="${output%.mov}-frames"
-  local frame_count=$((duration * 5))
-  local frame
-  local index
+  local trailing_margin=${4:-0}
 
-  mkdir -p "$frames"
-  (
-    for ((index = 0; index < frame_count; index++)); do
-      printf -v frame '%s/%04d.jpg' "$frames" "$index"
-      /usr/sbin/screencapture -x -t jpg -l "$window_id" "$frame"
-      if [[ ! -s "$frame" ]]; then
-        echo "README demo capture produced no frame: $index" >&2
-        exit 1
-      fi
-      sleep 0.17
-    done
-    ffmpeg -y -v error -framerate 5 -start_number 0 -i "$frames/%04d.jpg" \
-      -an -vf setparams=range=limited -c:v libx264 -preset ultrafast -crf 12 \
-      -pix_fmt yuv420p -color_range tv "$output"
-  ) &
+  /usr/bin/caffeinate -u -t 1
+  ./scripts/native-window-record \
+    "$window_id" "$duration" "$trailing_margin" "$output" &
   capture_pid=$!
 }
 
@@ -185,10 +206,138 @@ finish_recording() {
 main_root="$demo_root/main"
 mkdir -p "$main_root"
 chmod 700 "$main_root"
-tmux_socket="$main_root/tmux.sock"
-tmux_session="satin-readme"
+main_workspace="$main_root/workspace"
+mkdir -p "$main_workspace"
 
-cat >"$main_root/review.zsh" <<'ZSH'
+cat >"$main_root/prompt.zsh" <<'ZSH'
+precmd_functions=()
+chpwd_functions=()
+PROMPT=$'  \033[38;2;126;231;214msatin\033[0m \033[2m~/demo\033[0m ❯ '
+RPROMPT=''
+printf '\033[2J\033[H'
+printf '\033[1;38;2;206;180;255m  SATIN\033[0m  '
+printf '\033[38;2;126;231;214mnative terminal + Neovim workspace\033[0m\n'
+printf '\033[38;2;112;199;255m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m\n\n'
+printf '  \033[1;32m✓\033[0m  libghostty-vt terminal\n'
+printf '  \033[1;32m✓\033[0m  retained Skia / Metal renderer\n'
+printf '  \033[1;32m✓\033[0m  animated native Neovim cursor + scroll\n\n'
+printf '  \033[48;2;255;95;135m  \033[0m '
+printf '\033[48;2;255;189;89m  \033[0m '
+printf '\033[48;2;110;220;170m  \033[0m '
+printf '\033[48;2;86;180;255m  \033[0m '
+printf '\033[48;2;190;140;255m  \033[0m\n\n'
+ZSH
+
+cat >"$main_workspace/demo.lua" <<'LUA'
+vim.opt.termguicolors = true
+vim.opt.number = true
+vim.opt.relativenumber = false
+vim.opt.signcolumn = "no"
+vim.opt.foldcolumn = "0"
+vim.opt.laststatus = 2
+vim.opt.showtabline = 0
+vim.opt.scrolloff = 4
+vim.opt.sidescrolloff = 4
+vim.opt.cursorline = true
+vim.opt.wrap = false
+vim.opt.smoothscroll = false
+vim.opt.statusline = "  Satin native Neovim  %=  retained cursor + scroll  %l:%c "
+vim.cmd("syntax enable")
+vim.cmd("colorscheme habamax")
+LUA
+
+cat >"$main_workspace/renderer.rs" <<'RUST'
+#[derive(Clone, Debug)]
+pub struct DrawCommand {
+    pub row: usize,
+    pub text: &'static str,
+}
+
+pub fn retained_frame() -> Vec<DrawCommand> {
+    vec![
+RUST
+for row in {1..140}; do
+  printf '        DrawCommand { row: %3d, text: "retained pane row %03d" },\n' \
+    "$row" "$row" >>"$main_workspace/renderer.rs"
+done
+cat >>"$main_workspace/renderer.rs" <<'RUST'
+    ]
+}
+RUST
+
+git -C "$main_workspace" init -q -b main
+git -C "$main_workspace" config user.name "Satin Demo"
+git -C "$main_workspace" config user.email "demo@satin.invalid"
+git -C "$main_workspace" config commit.gpgsign false
+git -C "$main_workspace" add renderer.rs demo.lua
+GIT_AUTHOR_DATE=2026-08-01T10:00:00Z GIT_COMMITTER_DATE=2026-08-01T10:00:00Z \
+  git -C "$main_workspace" commit -qm "Add retained draw commands"
+printf '%s\n' 'cursor_animation = true' >"$main_workspace/renderer.toml"
+git -C "$main_workspace" add renderer.toml
+GIT_AUTHOR_DATE=2026-08-02T10:00:00Z GIT_COMMITTER_DATE=2026-08-02T10:00:00Z \
+  git -C "$main_workspace" commit -qm "Animate pane-local cursor state"
+printf '%s\n' 'ctrl-d' 'ctrl-u' >"$main_workspace/scroll-cases.txt"
+git -C "$main_workspace" add scroll-cases.txt
+GIT_AUTHOR_DATE=2026-08-03T10:00:00Z GIT_COMMITTER_DATE=2026-08-03T10:00:00Z \
+  git -C "$main_workspace" commit -qm "Keep smooth scroll on UI events"
+printf '%s\n' 'terminal cursor' 'native Neovim cursor' >"$main_workspace/smoke-cases.txt"
+git -C "$main_workspace" add smoke-cases.txt
+GIT_AUTHOR_DATE=2026-08-04T10:00:00Z GIT_COMMITTER_DATE=2026-08-04T10:00:00Z \
+  git -C "$main_workspace" commit -qm "Verify terminal and Neovim motion"
+
+launch_demo_app "$main_root" main
+main_socket="$main_root/control.sock"
+main_pane="$("$cli" --socket "$main_socket" --json list | jq -r '.result.panes[0].id')"
+printf -v main_intro 'cd %q && source %q' "$main_workspace" "$main_root/prompt.zsh"
+"$cli" --socket "$main_socket" send --pane "$main_pane" "$main_intro" >/dev/null
+"$cli" --socket "$main_socket" key --pane "$main_pane" Enter >/dev/null
+sleep 0.8
+
+main_window_id="$(tr -d '[:space:]' <"$main_root/window-id")"
+raw_main="$demo_root/satin-demo.mov"
+record_window "$main_window_id" 19 "$raw_main"
+sleep 0.8
+type_into_pane \
+  "$main_socket" "$main_pane" \
+  "git log --graph --decorate --oneline --color=always -4" 0.025
+"$cli" --socket "$main_socket" key --pane "$main_pane" Enter >/dev/null
+sleep 1.2
+
+main_split="$("$cli" --socket "$main_socket" --json split \
+  --pane "$main_pane" --vertical --cwd "$main_workspace")"
+nvim_pane="$(jq -r '.result.pane' <<<"$main_split")"
+printf -v nvim_intro 'source %q' "$main_root/prompt.zsh"
+"$cli" --socket "$main_socket" send --pane "$nvim_pane" "$nvim_intro" >/dev/null
+"$cli" --socket "$main_socket" key --pane "$nvim_pane" Enter >/dev/null
+sleep 0.8
+type_into_pane "$main_socket" "$nvim_pane" "nvim -u demo.lua renderer.rs" 0.04
+"$cli" --socket "$main_socket" key --pane "$nvim_pane" Enter >/dev/null
+wait_for_pane_kind "$main_socket" "$nvim_pane" neovim
+sleep 0.7
+for key in l l l j j j l l; do
+  "$cli" --socket "$main_socket" send --pane "$nvim_pane" "$key" >/dev/null
+  sleep 0.24
+done
+"$cli" --socket "$main_socket" key --pane "$nvim_pane" Ctrl+D >/dev/null
+sleep 1.4
+for key in j j l l; do
+  "$cli" --socket "$main_socket" send --pane "$nvim_pane" "$key" >/dev/null
+  sleep 0.24
+done
+"$cli" --socket "$main_socket" key --pane "$nvim_pane" Ctrl+D >/dev/null
+sleep 1.4
+"$cli" --socket "$main_socket" key --pane "$nvim_pane" Ctrl+U >/dev/null
+sleep 1.5
+finish_recording "$raw_main"
+cleanup_processes
+
+work_root="$demo_root/work-switcher"
+mkdir -p "$work_root"
+chmod 700 "$work_root"
+tmux_socket="$work_root/tmux.sock"
+tmux_session="satin-work-switcher"
+
+cat >"$work_root/review.zsh" <<'ZSH'
 printf '\033[2J\033[H'
 printf '\033[1;38;2;206;180;255m  SATIN\033[0m  '
 printf '\033[38;2;126;231;214mnative AI workspace\033[0m\n'
@@ -204,7 +353,7 @@ printf '  \033[38;2;126;231;214msatin-demo\033[0m ❯ '
 IFS= read -r _
 ZSH
 
-cat >"$main_root/checks.zsh" <<'ZSH'
+cat >"$work_root/checks.zsh" <<'ZSH'
 printf '\033[2J\033[H'
 printf '\033[1;38;2;206;180;255m  Release checks\033[0m\n'
 printf '\033[38;2;112;199;255m━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m\n\n'
@@ -219,8 +368,8 @@ ZSH
 tmux -f /dev/null -S "$tmux_socket" new-session -d \
   -s "$tmux_session" -n "AI workspace" -c /tmp -x 120 -y 36
 tmux -S "$tmux_socket" split-window -h -t "$tmux_session:0" -c /tmp
-printf -v review_command 'source %q' "$main_root/review.zsh"
-printf -v checks_command 'source %q' "$main_root/checks.zsh"
+printf -v review_command 'source %q' "$work_root/review.zsh"
+printf -v checks_command 'source %q' "$work_root/checks.zsh"
 tmux -S "$tmux_socket" send-keys -l -t "$tmux_session:0.0" "$review_command"
 tmux -S "$tmux_socket" send-keys -t "$tmux_session:0.0" Enter
 tmux -S "$tmux_socket" send-keys -l -t "$tmux_session:0.1" "$checks_command"
@@ -229,35 +378,35 @@ tmux -S "$tmux_socket" select-pane -t "$tmux_session:0.0" -T "⠹ Codex renderer
 tmux -S "$tmux_socket" select-pane -t "$tmux_session:0.1" \
   -T "[ ! ] Action Required | Claude Code"
 
-launch_demo_app "$main_root"
-main_socket="$main_root/control.sock"
-initial_pane="$("$cli" --socket "$main_socket" --json list | jq -r '.result.panes[0].id')"
+launch_demo_app "$work_root" work-switcher
+work_socket="$work_root/control.sock"
+initial_pane="$("$cli" --socket "$work_socket" --json list | jq -r '.result.panes[0].id')"
 printf -v attach_command '%q -S %q -CC attach-session -t %q' \
   "$(command -v tmux)" "$tmux_socket" "$tmux_session"
-"$cli" --socket "$main_socket" send --pane "$initial_pane" "$attach_command" >/dev/null
-"$cli" --socket "$main_socket" key --pane "$initial_pane" Enter >/dev/null
-main_state="$(wait_for_tmux_projection "$main_socket")"
-main_panes="$(jq -r '.result.panes[].id' <<<"$main_state" | sort -n)"
-mapfile -t main_pane_ids <<<"$main_panes"
-if [[ "${#main_pane_ids[@]}" -ne 2 ]]; then
+"$cli" --socket "$work_socket" send --pane "$initial_pane" "$attach_command" >/dev/null
+"$cli" --socket "$work_socket" key --pane "$initial_pane" Enter >/dev/null
+work_state="$(wait_for_tmux_projection "$work_socket")"
+work_panes="$(jq -r '.result.panes[].id' <<<"$work_state" | sort -n)"
+mapfile -t work_pane_ids <<<"$work_panes"
+if [[ "${#work_pane_ids[@]}" -ne 2 ]]; then
   echo "readme-demo expected two projected tmux panes" >&2
   exit 1
 fi
 
 sleep 0.8
-main_window_id="$(tr -d '[:space:]' <"$main_root/window-id")"
-raw_main="$demo_root/satin-demo.mov"
-record_window "$main_window_id" 18 "$raw_main"
-sleep 4
-: >"$main_root/ready.result.work"
-wait_for_file "$main_root/ready.result.work-open" "the README Work Switcher"
-if [[ "$(<"$main_root/ready.result.work-open")" != ok\ readme-demo* ]]; then
+work_window_id="$(tr -d '[:space:]' <"$work_root/window-id")"
+raw_work="$demo_root/satin-work-switcher-demo.mov"
+record_window "$work_window_id" 16 "$raw_work" 240
+sleep 3
+: >"$work_root/ready.result.work"
+wait_for_file "$work_root/ready.result.work-open" "the README Work Switcher"
+if [[ "$(<"$work_root/ready.result.work-open")" != ok\ readme-demo* ]]; then
   echo "readme-demo Work Switcher did not open" >&2
   exit 1
 fi
 sleep 6
 tmux -S "$tmux_socket" select-pane -t "$tmux_session:0.0" -T "Codex review complete"
-finish_recording "$raw_main"
+finish_recording "$raw_work"
 cleanup_processes
 
 artifact_root="$demo_root/artifact"
@@ -295,9 +444,9 @@ artifact_registration="$("$cli" --socket "$artifact_socket" --json artifact add 
   --file "$artifact_source")"
 artifact_id="$(jq -r '.result.id' <<<"$artifact_registration")"
 
-launch_demo_app "$artifact_root"
+launch_demo_app "$artifact_root" artifact
 artifact_pane="$("$cli" --socket "$artifact_socket" --json list | jq -r '.result.panes[0].id')"
-printf -v artifact_intro 'source %q' "$main_root/review.zsh"
+printf -v artifact_intro 'source %q' "$work_root/review.zsh"
 "$cli" --socket "$artifact_socket" send --pane "$artifact_pane" "$artifact_intro" >/dev/null
 "$cli" --socket "$artifact_socket" key --pane "$artifact_pane" Enter >/dev/null
 sleep 0.8
@@ -330,7 +479,7 @@ render_demo() {
   video_filter="fps=30,scale=1100:720:force_original_aspect_ratio=decrease"
   video_filter+=",pad=1100:720:(ow-iw)/2:(oh-ih)/2:color=black"
   video_filter+=",setparams=range=limited"
-  gif_filter="[0:v]fps=5,scale=880:576:force_original_aspect_ratio=decrease,"
+  gif_filter="[0:v]fps=15,scale=880:576:force_original_aspect_ratio=decrease,"
   gif_filter+="pad=880:576:(ow-iw)/2:(oh-ih)/2:color=black,split[a][b];"
   gif_filter+="[a]palettegen=max_colors=64:stats_mode=diff[p];"
   gif_filter+="[b][p]paletteuse=dither=bayer:bayer_scale=5:diff_mode=rectangle"
@@ -350,19 +499,27 @@ render_demo() {
   fi
 }
 
-render_demo "$raw_main" satin-demo 8
+render_demo "$raw_main" satin-demo 12
+render_demo "$raw_work" satin-work-switcher-demo 8
 render_demo "$raw_artifact" satin-artifact-demo 8
 
 chmod 644 \
   "$demo_root/satin-demo.mp4" \
   "$demo_root/satin-demo.gif" \
   "$demo_root/satin-demo-poster.png" \
+  "$demo_root/satin-work-switcher-demo.mp4" \
+  "$demo_root/satin-work-switcher-demo.gif" \
+  "$demo_root/satin-work-switcher-demo-poster.png" \
   "$demo_root/satin-artifact-demo.mp4" \
   "$demo_root/satin-artifact-demo.gif" \
   "$demo_root/satin-artifact-demo-poster.png"
 mv -f "$demo_root/satin-demo.mp4" assets/satin-demo.mp4
 mv -f "$demo_root/satin-demo.gif" assets/satin-demo.gif
 mv -f "$demo_root/satin-demo-poster.png" assets/satin-demo-poster.png
+mv -f "$demo_root/satin-work-switcher-demo.mp4" assets/satin-work-switcher-demo.mp4
+mv -f "$demo_root/satin-work-switcher-demo.gif" assets/satin-work-switcher-demo.gif
+mv -f "$demo_root/satin-work-switcher-demo-poster.png" \
+  assets/satin-work-switcher-demo-poster.png
 mv -f "$demo_root/satin-artifact-demo.mp4" assets/satin-artifact-demo.mp4
 mv -f "$demo_root/satin-artifact-demo.gif" assets/satin-artifact-demo.gif
 mv -f "$demo_root/satin-artifact-demo-poster.png" assets/satin-artifact-demo-poster.png
@@ -371,6 +528,9 @@ ls -lh \
   assets/satin-demo.mp4 \
   assets/satin-demo.gif \
   assets/satin-demo-poster.png \
+  assets/satin-work-switcher-demo.mp4 \
+  assets/satin-work-switcher-demo.gif \
+  assets/satin-work-switcher-demo-poster.png \
   assets/satin-artifact-demo.mp4 \
   assets/satin-artifact-demo.gif \
   assets/satin-artifact-demo-poster.png

@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+source_file="scripts/native-window-record.swift"
+build_dir="spikes/macos-shell/.build"
+binary="$build_dir/native-window-record"
+swift_bin="/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc"
+
+if [[ ! -f "$source_file" ]]; then
+  echo "native window recorder source is missing: $source_file" >&2
+  exit 66
+fi
+if [[ ! -x "$swift_bin" ]]; then
+  echo "native window recorder requires the Xcode Swift toolchain" >&2
+  exit 69
+fi
+
+build_recorder() {
+  local sdk
+  local target
+  local temporary_binary="$binary.$$"
+
+  sdk="$(env -u SDKROOT -u DEVELOPER_DIR /usr/bin/xcrun --sdk macosx --show-sdk-path)"
+  target="$(uname -m)-apple-macos14.0"
+  mkdir -p "$build_dir"
+  trap 'rm -f "$temporary_binary"' RETURN
+  env -u SDKROOT -u DEVELOPER_DIR "$swift_bin" \
+    -O \
+    -parse-as-library \
+    -warnings-as-errors \
+    -sdk "$sdk" \
+    -target "$target" \
+    "$source_file" \
+    -framework AVFoundation \
+    -framework CoreGraphics \
+    -framework CoreMedia \
+    -framework CoreVideo \
+    -framework ScreenCaptureKit \
+    -o "$temporary_binary"
+  mv -f "$temporary_binary" "$binary"
+  trap - RETURN
+}
+
+if [[ ! -x "$binary" || "$source_file" -nt "$binary" ]]; then
+  build_recorder
+fi
+
+if [[ "${1:-}" == "--build-only" ]]; then
+  exit 0
+fi
+if [[ $# -ne 4 ]]; then
+  echo \
+    "usage: native-window-record WINDOW_ID DURATION TRAILING_MARGIN OUTPUT_MOV" \
+    >&2
+  exit 64
+fi
+if [[ -n "${SATIN_SOCKET:-}" ]]; then
+  echo "native window recording must run outside Satin" >&2
+  exit 64
+fi
+if [[ "${SATIN_ALLOW_SCREEN_CAPTURE:-0}" != 1 ]]; then
+  echo "native window recording requires SATIN_ALLOW_SCREEN_CAPTURE=1" >&2
+  exit 77
+fi
+
+exec "$binary" "$@"
