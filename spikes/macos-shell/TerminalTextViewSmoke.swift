@@ -24,6 +24,15 @@ import Foundation
                 .max() ?? 0
         }
 
+        func rendererVisibleWindowScrollPositions() -> [(
+            gridID: Int, left: Int, position: Double
+        )] {
+            rendererModelSnapshot?.windows
+                .filter { !$0.hidden && $0.width > 0 && $0.height > 0 }
+                .map { ($0.grid_id, $0.left, abs($0.scroll_position)) }
+                .sorted { $0.gridID < $1.gridID } ?? []
+        }
+
         func rendererCursorParentGridID() -> Int? {
             rendererModelSnapshot?.cursor_parent_grid_id
         }

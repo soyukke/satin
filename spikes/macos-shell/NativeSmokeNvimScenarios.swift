@@ -70,8 +70,19 @@ import Foundation
                 writeToActivePane(Data([0x04]))
             }
 
+            DispatchQueue.main.asyncAfter(deadline: .now() + 4.75) { [weak self] in
+                self?.runNvimCommandOrWrite(
+                    "vsplit",
+                    fallback: Data("\u{1b}:vsplit\r".utf8)
+                )
+            }
+
             DispatchQueue.main.asyncAfter(deadline: .now() + 5.75) { [weak self] in
-                self?.writeNvimAnimationSmokeResult(resultPath, retries: 12)
+                self?.writeNvimAnimationSmokeResult(
+                    resultPath,
+                    retries: 12,
+                    requiresRetainedScroll: true
+                )
             }
         }
 
@@ -121,8 +132,8 @@ import Foundation
                 writeToActivePane(Data([0x04]))
             }
 
-            DispatchQueue.main.asyncAfter(deadline: .now() + 5.8) { [weak self] in
-                self?.writeNvimSidePaneSmokeResult(resultPath, retries: 8)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 4.7) { [weak self] in
+                self?.writeNvimSidePaneSmokeResult(resultPath, retries: 20)
             }
         }
 

@@ -1837,7 +1837,13 @@ impl TerminalRendererModel {
         if self.width == width && self.height == height {
             return;
         }
+        let width_changed = self.width != width;
         self.apply_position(width, height);
+        if width_changed {
+            // VT width changes reflow rows, unlike Neovim multigrid position
+            // updates, so the previous terminal scroll spring is incompatible.
+            self.window.reset_scroll_animation();
+        }
         self.width = width;
         self.height = height;
     }

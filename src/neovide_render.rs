@@ -143,6 +143,7 @@ pub struct NeovideRenderedWindowCache {
     scrollback_lines: NeovideRingBuffer<Option<NeovideLine>>,
     scroll_delta: isize,
     viewport_margins: NeovideViewportMargins,
+    hidden: bool,
     pub scroll_animation: CriticallyDampedSpringAnimation,
 }
 
@@ -155,6 +156,7 @@ impl NeovideRenderedWindowCache {
             scrollback_lines: NeovideRingBuffer::new(0, None),
             scroll_delta: 0,
             viewport_margins: NeovideViewportMargins::default(),
+            hidden: false,
             scroll_animation: CriticallyDampedSpringAnimation::new(),
         };
         cache.resize(width, height);
@@ -176,6 +178,13 @@ impl NeovideRenderedWindowCache {
                 cols,
             } => self.scroll(*top, *bottom, *left, *right, *rows, *cols),
             NeovideWindowDrawCommand::Clear => self.clear(),
+            NeovideWindowDrawCommand::Show if self.hidden => {
+                self.hidden = false;
+                self.reset_scroll_animation();
+            }
+            NeovideWindowDrawCommand::Hide => {
+                self.hidden = true;
+            }
             NeovideWindowDrawCommand::Viewport { scroll_delta } => {
                 self.scroll_delta = *scroll_delta;
             }
@@ -244,6 +253,11 @@ impl NeovideRenderedWindowCache {
         self.scroll_animation.position
     }
 
+    pub(crate) fn reset_scroll_animation(&mut self) {
+        self.scroll_delta = 0;
+        self.scroll_animation.reset();
+    }
+
     pub fn line(&self, row: usize) -> Option<&NeovideLine> {
         self.lines.get(row)?.as_ref()
     }
@@ -277,11 +291,16 @@ impl NeovideRenderedWindowCache {
         if self.width == width && self.height == height {
             return;
         }
+        // Retained rows stay vertically compatible across width-only multigrid
+        // updates, so keep the active scroll spring as Neovide does.
+        let height_changed = self.height != height;
         self.width = width;
+        if !height_changed {
+            return;
+        }
         self.height = height;
         self.lines.resize(self.height, None);
-        self.scroll_delta = 0;
-        self.scroll_animation.reset();
+        self.reset_scroll_animation();
         self.scrollback_lines
             .resize(scrollback_len(self.height), None);
         self.scrollback_lines
@@ -314,8 +333,7 @@ impl NeovideRenderedWindowCache {
 
     fn clear(&mut self) {
         self.lines.fill(None);
-        self.scroll_delta = 0;
-        self.scroll_animation.reset();
+        self.reset_scroll_animation();
         self.reset_scrollback();
     }
 
@@ -638,6 +656,8 @@ mod tests {
     use super::*;
     use crate::terminal_runtime::{TerminalCellStyle, TerminalColor};
 
+    include!("neovide_render_regression_tests.rs");
+
     #[test]
     fn retained_line_prepares_background_runs_and_blink_metadata() {
         let red = TerminalColor {
@@ -847,7 +867,7 @@ mod tests {
     }
 
     #[test]
-    fn resized_window_drops_incompatible_scroll_animation() {
+    fn width_only_resize_keeps_retained_scroll_animation() {
         let mut window = NeovideRenderedWindowCache::new(3, 3);
         set_window_rows(&mut window, ["aaa", "bbb", "ccc"]);
         window.flush(1);
@@ -866,8 +886,8 @@ mod tests {
         });
 
         let snapshot = window.snapshot(1, NeovideRenderedWindowPlacement::main(4, 3));
-        assert_eq!(snapshot.scroll_position, 0.0);
-        assert!(!window.has_active_animation());
+        assert_eq!(snapshot.scroll_position, -1.0);
+        assert!(window.has_active_animation());
     }
 
     #[test]

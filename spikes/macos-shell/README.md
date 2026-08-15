@@ -53,6 +53,10 @@ recording permission with:
 just native-smoke
 ```
 
+Smoke scenarios launch as a non-key accessory app so they do not steal focus
+from the user's current application. Set `SATIN_NATIVE_SMOKE_ALLOW_ACTIVATION=1`
+only for an explicitly interactive smoke that requires key-window behavior.
+
 The standard smoke launches the app briefly and checks its deterministic Skia
 frame counter. Pixel capture is intentionally opt-in because macOS groups it
 under the Screen & System Audio Recording permission. Run `just

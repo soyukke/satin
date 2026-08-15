@@ -239,16 +239,26 @@ import Foundation
             }
         }
 
-        func writeNvimAnimationSmokeResult(_ resultPath: String, retries: Int) {
+        func writeNvimAnimationSmokeResult(
+            _ resultPath: String,
+            retries: Int,
+            requiresRetainedScroll: Bool = false
+        ) {
             let shift = peekSmokeScrollShift()
             let hasModelFrames = terminalTextView.hasRendererModelFrames()
             let skiaFrames = metalView.skiaFrames()
+            let retainedScroll = terminalTextView.rendererMaxScrollPosition()
+            let retainedScrollOk = !requiresRetainedScroll || retainedScroll > 0
             let ok =
-                hasModelFrames && skiaFrames >= 2
+                hasModelFrames && skiaFrames >= 2 && retainedScrollOk
                 && (shift.map { abs($0.rows) > maxOutputScrollAnimationRows } ?? false)
             if !ok, retries > 0 {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
-                    self?.writeNvimAnimationSmokeResult(resultPath, retries: retries - 1)
+                    self?.writeNvimAnimationSmokeResult(
+                        resultPath,
+                        retries: retries - 1,
+                        requiresRetainedScroll: requiresRetainedScroll
+                    )
                 }
                 return
             }
@@ -258,8 +268,13 @@ import Foundation
                 hasModelFrames: hasModelFrames,
                 skiaFrames: skiaFrames
             )
+            let retainedSummary =
+                requiresRetainedScroll ? " retained-scroll=\(retainedScroll)" : ""
             clearSmokeScrollShift()
-            let result = ok ? "ok \(summary)\n" : "failed \(summary)\n"
+            let result =
+                ok
+                ? "ok \(summary)\(retainedSummary)\n"
+                : "failed \(summary)\(retainedSummary)\n"
             try? result.write(toFile: resultPath, atomically: true, encoding: .utf8)
             NSApp.terminate(nil)
         }
@@ -447,13 +462,20 @@ import Foundation
             let shift = peekSmokeScrollShift()
             let hasModelFrames = terminalTextView.hasRendererModelFrames()
             let skiaFrames = metalView.skiaFrames()
+            let cursorGrid = terminalTextView.rendererCursorParentGridID()
+            let positions = terminalTextView.rendererVisibleWindowScrollPositions()
+            let activePosition = positions.first { $0.gridID == cursorGrid }?.position ?? 0
+            let unexpected = positions.filter {
+                $0.gridID != cursorGrid && $0.position > maxNvimCursorMoveSmokeGrowth
+            }
+            let animationObserved = activePosition > maxNvimCursorMoveSmokeGrowth
             let ok =
-                hasModelFrames && skiaFrames >= 2
+                hasModelFrames && skiaFrames >= 2 && animationObserved && unexpected.isEmpty
                 && (shift.map { shift in
                     abs(shift.rows) > maxOutputScrollAnimationRows && (shift.startCol ?? 0) > 0
                 } ?? false)
-            if !ok, retries > 0 {
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
+            if !ok, unexpected.isEmpty, retries > 0 {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.025) { [weak self] in
                     self?.writeNvimSidePaneSmokeResult(resultPath, retries: retries - 1)
                 }
                 return
@@ -464,8 +486,16 @@ import Foundation
                 hasModelFrames: hasModelFrames,
                 skiaFrames: skiaFrames
             )
+            let positionSummary = positions.map {
+                "\($0.gridID)@\($0.left):\(String(format: "%.3f", $0.position))"
+            }.joined(separator: ",")
             clearSmokeScrollShift()
-            let result = ok ? "ok \(summary)\n" : "failed \(summary)\n"
+            let result =
+                ok
+                ? "ok \(summary) cursor-grid=\(cursorGrid.map(String.init) ?? "none") "
+                    + "scrolls=\(positionSummary)\n"
+                : "failed \(summary) cursor-grid=\(cursorGrid.map(String.init) ?? "none") "
+                    + "scrolls=\(positionSummary)\n"
             try? result.write(toFile: resultPath, atomically: true, encoding: .utf8)
             NSApp.terminate(nil)
         }
