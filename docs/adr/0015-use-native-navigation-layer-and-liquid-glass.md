@@ -83,10 +83,15 @@ Tahoe-only custom glass view.
   Skia rendering, mouse coordinates, and input-method placement. Keep the text
   shaper and prepared-line cache per runtime so mixed zoom levels do not evict
   one another's shaped lines on every frame.
-- Keep projected tmux panes on one session-wide zoom offset. One tmux control
-  client negotiates a shared cell grid, so Command +/-/0 must update every
-  projected pane and refresh that shared grid; applying a different cell size
-  to one projected pane would clip or stretch it instead of reflowing it.
+- Keep the projected tmux control-client grid on the configured baseline and
+  apply Command +/-/0 as a pane-local render scale. tmux still owns each pane's
+  underlying rows and columns, so this is a clipped local viewport scale rather
+  than a tmux reflow. It must not resize sibling panes or renegotiate the shared
+  client grid when focus or zoom changes.
+- Coalesce host-window geometry changes before propagating PTY, Neovim, and tmux
+  grid updates. Rendering may continue during live resize, but one burst of
+  AppKit frame notifications must not enqueue a matching burst of runtime resize
+  or tmux refresh commands.
 - Keep Settings on its standard toolbar-style `NSTabViewController` and use the
   same unified titlebar treatment.
 - Validate menu commands against the key window. Terminal mutations are disabled

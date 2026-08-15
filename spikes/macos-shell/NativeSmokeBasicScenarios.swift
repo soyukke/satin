@@ -373,26 +373,66 @@ import Foundation
                 }
                 let initial = terminalTextView.terminalGridSize()
                 metalView.resetResizeDiagnostics()
-                window.setContentSize(NSSize(width: 1120, height: 760))
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+                resetGeometryResizeDiagnostics()
+                let sizes = (0...60).map { step in
+                    let progress = CGFloat(step) / 60
+                    return NSSize(
+                        width: 780 + 340 * progress,
+                        height: 480 + 280 * progress
+                    )
+                }
+                applyTerminalResizeSmokeSizes(sizes, to: window) { [weak self] in
                     guard let self else {
                         return
                     }
-                    resizeTerminalPanesToGrid()
-                    let resized = terminalTextView.terminalGridSize()
-                    let ok =
-                        resized.rows > initial.rows
-                        && resized.cols > initial.cols
-                        && paneStore.runtimes[activePaneId ?? -1] != nil
-                        && metalView.drawableSizesMatchView()
-                    let status = ok ? "ok" : "failed"
-                    writeSessionSmokeResult(
-                        resultPath,
-                        result: "\(status) terminal-resize "
-                            + "from=\(initial.cols)x\(initial.rows) to=\(resized.cols)x\(resized.rows) "
-                            + "\(metalView.resizeDiagnosticsSummary())\n"
-                    )
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
+                        guard let self else {
+                            return
+                        }
+                        let resized = terminalTextView.terminalGridSize()
+                        let geometry = geometryResizeDiagnostics()
+                        let ok =
+                            resized.rows > initial.rows
+                            && resized.cols > initial.cols
+                            && paneStore.runtimes[activePaneId ?? -1] != nil
+                            && metalView.drawableSizesMatchView()
+                            && geometry.requests > 1
+                            && geometry.applications < geometry.requests
+                        let status = ok ? "ok" : "failed"
+                        writeSessionSmokeResult(
+                            resultPath,
+                            result: "\(status) terminal-resize "
+                                + "from=\(initial.cols)x\(initial.rows) "
+                                + "to=\(resized.cols)x\(resized.rows) "
+                                + "geometry=\(geometry.applications)/\(geometry.requests) "
+                                + "\(metalView.resizeDiagnosticsSummary())\n"
+                        )
+                    }
                 }
+            }
+        }
+
+        func applyTerminalResizeSmokeSizes(
+            _ sizes: [NSSize],
+            to window: NSWindow,
+            index: Int = 0,
+            completion: @escaping () -> Void
+        ) {
+            guard sizes.indices.contains(index) else {
+                completion()
+                return
+            }
+            window.setContentSize(sizes[index])
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.004) { [weak self, weak window] in
+                guard let self, let window else {
+                    return
+                }
+                applyTerminalResizeSmokeSizes(
+                    sizes,
+                    to: window,
+                    index: index + 1,
+                    completion: completion
+                )
             }
         }
 

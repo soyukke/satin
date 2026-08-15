@@ -286,15 +286,6 @@ extension TerminalShellViewController {
             terminalTextView.discardPaneZoom(paneId)
             paneStore.discardMetadata(for: paneId)
         }
-        let projectedPaneIds = Array(nextNativePaneIds.values)
-        _ = terminalTextView.setZoomOffset(
-            session.fontZoomOffset,
-            for: projectedPaneIds
-        )
-        if let paneId = projectedPaneIds.first {
-            session.fontZoomOffset =
-                terminalTextView.fontSize(paneId) - terminalTextView.fontSize(nil)
-        }
         for pane in paneSnapshots {
             let nativePaneId = nextNativePaneIds[pane.pane_id] ?? session.nativePaneId(pane.pane_id)
             updateTmuxPaneMetadata(pane, nativePaneId: nativePaneId)

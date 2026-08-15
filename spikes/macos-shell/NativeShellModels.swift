@@ -42,7 +42,6 @@ final class NativeTmuxSession {
     var executablePath = ""
     var serverPid: UInt32 = 0
     var activeWindowZoomed = false
-    var fontZoomOffset: CGFloat = 0
 
     init(gatewayPaneId: Int, gateway: RustTerminalPane, savedWorkspace: TerminalCoreSnapshot) {
         self.gatewayPaneId = gatewayPaneId
