@@ -46,6 +46,11 @@ falls back through Skia `FontMgr`, and keeps the bundled fonts as final fallback
 faces. Bold and italic participate in fallback; faint, blink, underline
 variants and colors, strikethrough, and overline remain grid-aligned.
 
+AppKit owns the `NSTextInputClient` contract and IME candidate coordinates, but
+the active preedit string is composited by the same Skia shaper as committed
+grid text. This keeps CJK fallback metrics and the cell baseline stable when a
+composition is committed.
+
 Kitty graphics are decoded through `libghostty-vt` and composited with pane
 clipping and z-order. Embedded Neovim and projected tmux panes bridge image.nvim
 commands into the same bounded decoder while arbitrary regular-file reads stay

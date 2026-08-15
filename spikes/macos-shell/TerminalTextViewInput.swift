@@ -115,7 +115,24 @@ func runTerminalTextInputSelfTests() -> Bool {
     view.setActivePaneId(12)
     view.terminalFocusDidChange(true)
     view.terminalFocusDidChange(false)
-    return clearedPanes == [11, 12] && focusChanges == [true, false]
+    var markedTextChanges = 0
+    view.onMarkedTextChanged = { markedTextChanges += 1 }
+    view.setMarkedText(
+        "日本語",
+        selectedRange: NSRange(location: 3, length: 0),
+        replacementRange: NSRange(location: NSNotFound, length: 0)
+    )
+    guard view.rendererMarkedText(for: 12) == "日本語",
+        view.rendererMarkedText(for: 11) == nil,
+        markedTextChanges == 1
+    else {
+        return false
+    }
+    view.unmarkText()
+    return clearedPanes == [11, 12]
+        && focusChanges == [true, false]
+        && view.rendererMarkedText(for: 12) == nil
+        && markedTextChanges == 2
 }
 
 extension TerminalTextView {
@@ -145,30 +162,6 @@ extension TerminalTextView {
         default:
             return false
         }
-    }
-
-    func drawMarkedText() {
-        guard markedText.length > 0 else {
-            return
-        }
-        let textRect = terminalTextRect()
-        let cell = terminalCellSize()
-        let attributes: [NSAttributedString.Key: Any] = [
-            .font: fontForPane(activePaneId),
-            .foregroundColor: NSColor.textColor,
-            .backgroundColor: NSColor.selectedTextBackgroundColor,
-            .underlineStyle: NSUnderlineStyle.single.rawValue,
-        ]
-        let value = NSAttributedString(string: markedText.string, attributes: attributes)
-        let origin = compositionOrigin()
-        value.draw(
-            in: NSRect(
-                x: origin.x,
-                y: origin.y,
-                width: max(cell.width, textRect.maxX - origin.x),
-                height: cell.height
-            )
-        )
     }
 
     func insertText(_ string: Any, replacementRange: NSRange) {
@@ -206,13 +199,16 @@ extension TerminalTextView {
             markedText = NSMutableAttributedString(string: string as? String ?? "")
         }
         markedSelection = clampedRange(selectedRange, length: markedText.length)
-        needsDisplay = true
+        onMarkedTextChanged?()
     }
 
     func unmarkText() {
+        let wasMarked = hasMarkedText()
         markedText = NSMutableAttributedString()
         markedSelection = NSRange(location: 0, length: 0)
-        needsDisplay = true
+        if wasMarked {
+            onMarkedTextChanged?()
+        }
     }
 
     func hasMarkedText() -> Bool {
@@ -223,6 +219,13 @@ extension TerminalTextView {
         hasMarkedText()
             ? NSRange(location: 0, length: markedText.length)
             : NSRange(location: NSNotFound, length: 0)
+    }
+
+    func rendererMarkedText(for paneId: Int) -> String? {
+        guard paneId == activePaneId, hasMarkedText() else {
+            return nil
+        }
+        return markedText.string
     }
 
     func selectedRange() -> NSRange {

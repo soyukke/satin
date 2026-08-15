@@ -17,18 +17,16 @@ pub struct SkiaRenderGeometry {
 #[cfg(target_os = "macos")]
 mod platform {
     use super::SkiaRenderGeometry;
-    #[cfg(test)]
-    use crate::terminal_runtime::TerminalCellSnapshot;
     use crate::{
         neovide_render::{
-            CriticallyDampedSpringAnimation, NeovideRenderedWindowSnapshot,
+            CriticallyDampedSpringAnimation, NeovideLine, NeovideRenderedWindowSnapshot,
             NeovideRendererModelSnapshot, NeovideWindowKind,
         },
         neovide_text::{NeovideTextRenderer, TextGridGeometry},
         neovim_runtime::NativeNeovimRuntime,
         terminal_runtime::{
-            KittyImagePlacementSnapshot, NativeTerminalRuntime, TerminalColor,
-            TerminalCursorSnapshot,
+            KittyImagePlacementSnapshot, NativeTerminalRuntime, TerminalCellSnapshot,
+            TerminalCellStyle, TerminalColor, TerminalCursorSnapshot, TerminalUnderlineStyle,
         },
     };
     use skia_safe::{
@@ -48,6 +46,8 @@ mod platform {
         ffi::c_void,
         time::{Duration, Instant},
     };
+    use unicode_segmentation::UnicodeSegmentation;
+    use unicode_width::UnicodeWidthStr;
 
     const CURSOR_ANIMATION_LENGTH_SECONDS: f32 = 0.15;
     const CURSOR_SHORT_ANIMATION_LENGTH_SECONDS: f32 = 0.04;
@@ -96,6 +96,7 @@ mod platform {
             texture: *mut c_void,
             geometry: SkiaRenderGeometry,
             clear: bool,
+            preedit: Option<&str>,
         ) -> bool {
             // SAFETY: `texture` is the current drawable texture pointer for this frame.
             let Some(mut surface) = (unsafe { self.surface(texture, geometry) }) else {
@@ -130,6 +131,12 @@ mod platform {
             state.cursor_animation.update(&model, geometry, dt);
             state.cursor_blink.update(model.cursor.as_ref());
             state.text_blink_active = model_has_blink(&model);
+            let preedit = state.preedit.prepare(
+                preedit,
+                model.background,
+                model.cursor_color,
+                preedit_available_columns(&model, geometry),
+            );
             draw_model(
                 surface.canvas(),
                 &mut state.text_renderer,
@@ -142,6 +149,7 @@ mod platform {
                     kitty_placements: &placements,
                     kitty_images: &mut self.kitty_images,
                     runtime_id,
+                    preedit,
                 },
             );
             self.context.flush_and_submit();
@@ -158,6 +166,7 @@ mod platform {
             texture: *mut c_void,
             geometry: SkiaRenderGeometry,
             clear: bool,
+            preedit: Option<&str>,
         ) -> bool {
             // SAFETY: `texture` is the current drawable texture pointer for this frame.
             let Some(mut surface) = (unsafe { self.surface(texture, geometry) }) else {
@@ -192,6 +201,12 @@ mod platform {
             state.cursor_animation.update(&model, geometry, dt);
             state.cursor_blink.update(model.cursor.as_ref());
             state.text_blink_active = model_has_blink(&model);
+            let preedit = state.preedit.prepare(
+                preedit,
+                model.background,
+                model.cursor_color,
+                preedit_available_columns(&model, geometry),
+            );
             draw_model(
                 surface.canvas(),
                 &mut state.text_renderer,
@@ -204,6 +219,7 @@ mod platform {
                     kitty_placements: &placements,
                     kitty_images: &mut self.kitty_images,
                     runtime_id,
+                    preedit,
                 },
             );
             self.context.flush_and_submit();
@@ -263,6 +279,7 @@ mod platform {
     #[derive(Default)]
     struct RuntimeRenderState {
         text_renderer: NeovideTextRenderer,
+        preedit: PreeditLineCache,
         cursor_animation: CursorAnimationState,
         cursor_blink: CursorBlinkState,
         last_frame_at: Option<Instant>,
@@ -327,6 +344,7 @@ mod platform {
         kitty_placements: &'a [KittyImagePlacementSnapshot],
         kitty_images: &'a mut HashMap<(usize, u32), CachedKittyImage>,
         runtime_id: usize,
+        preedit: Option<&'a NeovideLine>,
     }
 
     fn draw_model(
@@ -395,9 +413,121 @@ mod platform {
             |z| z >= 0,
         );
         draw_message_selection(canvas, model, geometry);
-        text_renderer.cleanup_font_cache();
         draw_cursor(canvas, cursor_animation, cursor_visible, model);
+        if let Some(preedit) = options.preedit {
+            draw_preedit(canvas, text_renderer, model, geometry, preedit);
+        }
+        text_renderer.cleanup_font_cache();
         canvas.restore();
+    }
+
+    fn draw_preedit(
+        canvas: &Canvas,
+        text_renderer: &mut NeovideTextRenderer,
+        model: &NeovideRendererModelSnapshot,
+        geometry: SkiaRenderGeometry,
+        line: &NeovideLine,
+    ) {
+        let Some(cursor) = model.cursor.as_ref() else {
+            return;
+        };
+        let point = cursor_render_point(model, cursor);
+        let column = point.x.max(0.0).floor() as usize;
+        if line.cells.is_empty() {
+            return;
+        }
+        draw_line_backgrounds(canvas, line, point.y, column, line.cells.len(), geometry);
+        text_renderer.draw_line(canvas, line, point.y, column, line.cells.len());
+    }
+
+    fn preedit_available_columns(
+        model: &NeovideRendererModelSnapshot,
+        geometry: SkiaRenderGeometry,
+    ) -> usize {
+        let Some(cursor) = model.cursor.as_ref() else {
+            return 0;
+        };
+        let column = cursor_render_point(model, cursor).x.max(0.0).floor() as usize;
+        let grid_width = (geometry.content_width / geometry.cell_width.max(1.0)).floor() as usize;
+        grid_width.saturating_sub(column)
+    }
+
+    #[derive(Default)]
+    struct PreeditLineCache {
+        text: String,
+        foreground: Option<TerminalColor>,
+        background: Option<TerminalColor>,
+        max_columns: usize,
+        line: Option<NeovideLine>,
+    }
+
+    impl PreeditLineCache {
+        fn prepare(
+            &mut self,
+            text: Option<&str>,
+            foreground: TerminalColor,
+            background: TerminalColor,
+            max_columns: usize,
+        ) -> Option<&NeovideLine> {
+            let text = text.filter(|value| !value.is_empty())?;
+            let changed = self.text != text
+                || self.foreground != Some(foreground)
+                || self.background != Some(background)
+                || self.max_columns != max_columns;
+            if changed {
+                self.text.clear();
+                self.text.push_str(text);
+                self.foreground = Some(foreground);
+                self.background = Some(background);
+                self.max_columns = max_columns;
+                self.line = Some(preedit_line(text, foreground, background, max_columns));
+            }
+            self.line.as_ref()
+        }
+    }
+
+    fn preedit_line(
+        text: &str,
+        foreground: TerminalColor,
+        background: TerminalColor,
+        max_columns: usize,
+    ) -> NeovideLine {
+        let style = preedit_cell_style(foreground);
+        let mut cells = Vec::new();
+        for grapheme in text.graphemes(true) {
+            let width = UnicodeWidthStr::width(grapheme).max(1);
+            if cells.len().saturating_add(width) > max_columns {
+                break;
+            }
+            cells.push(preedit_cell(grapheme, foreground, Some(background), style));
+            cells
+                .extend((1..width).map(|_| preedit_cell(" ", foreground, Some(background), style)));
+        }
+        NeovideLine::from_cells(cells)
+    }
+
+    fn preedit_cell_style(underline_color: TerminalColor) -> TerminalCellStyle {
+        TerminalCellStyle {
+            underline: true,
+            underline_style: TerminalUnderlineStyle::Single,
+            underline_color: Some(underline_color),
+            ..TerminalCellStyle::default()
+        }
+    }
+
+    fn preedit_cell(
+        text: &str,
+        foreground: TerminalColor,
+        background: Option<TerminalColor>,
+        style: TerminalCellStyle,
+    ) -> TerminalCellSnapshot {
+        TerminalCellSnapshot {
+            text: text.to_owned(),
+            fg: foreground,
+            bg: background,
+            blend: 0,
+            style,
+        }
     }
 
     fn draw_kitty_images(
@@ -1368,6 +1498,7 @@ mod platform {
             _texture: *mut c_void,
             _geometry: SkiaRenderGeometry,
             _clear: bool,
+            _preedit: Option<&str>,
         ) -> bool {
             false
         }
@@ -1378,6 +1509,7 @@ mod platform {
             _texture: *mut c_void,
             _geometry: SkiaRenderGeometry,
             _clear: bool,
+            _preedit: Option<&str>,
         ) -> bool {
             false
         }

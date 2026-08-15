@@ -1064,6 +1064,7 @@ pub unsafe extern "C" fn satin_skia_metal_destroy(handle: *mut NativeSkiaMetalRe
 /// # Safety
 ///
 /// `renderer`, `nvim`, and `texture` must be live pointers for the duration of the call.
+/// `preedit` must be null or point to a valid NUL-terminated UTF-8 string.
 pub unsafe extern "C" fn satin_skia_metal_render_nvim(
     renderer: *mut NativeSkiaMetalRenderer,
     nvim: *mut NativeNeovimRuntime,
@@ -1077,6 +1078,7 @@ pub unsafe extern "C" fn satin_skia_metal_render_nvim(
     cell_width: f32,
     cell_height: f32,
     clear: u8,
+    preedit: *const c_char,
 ) -> u8 {
     let Some(renderer) = skia_renderer_mut(renderer) else {
         return 0;
@@ -1094,14 +1096,17 @@ pub unsafe extern "C" fn satin_skia_metal_render_nvim(
         cell_width,
         cell_height,
     };
+    // SAFETY: The caller guarantees `preedit` is null or a live NUL-terminated string.
+    let preedit = unsafe { optional_c_str(preedit) };
     // SAFETY: The caller guarantees the renderer, nvim runtime, and drawable texture are live.
-    (unsafe { renderer.render_nvim(nvim, texture, geometry, clear != 0) }) as u8
+    (unsafe { renderer.render_nvim(nvim, texture, geometry, clear != 0, preedit) }) as u8
 }
 
 #[unsafe(no_mangle)]
 /// # Safety
 ///
 /// `renderer`, `runtime`, and `texture` must be live pointers for the duration of the call.
+/// `preedit` must be null or point to a valid NUL-terminated UTF-8 string.
 pub unsafe extern "C" fn satin_skia_metal_render_terminal(
     renderer: *mut NativeSkiaMetalRenderer,
     runtime: *mut NativeTerminalRuntime,
@@ -1115,6 +1120,7 @@ pub unsafe extern "C" fn satin_skia_metal_render_terminal(
     cell_width: f32,
     cell_height: f32,
     clear: u8,
+    preedit: *const c_char,
 ) -> u8 {
     let Some(renderer) = skia_renderer_mut(renderer) else {
         return 0;
@@ -1132,8 +1138,10 @@ pub unsafe extern "C" fn satin_skia_metal_render_terminal(
         cell_width,
         cell_height,
     };
+    // SAFETY: The caller guarantees `preedit` is null or a live NUL-terminated string.
+    let preedit = unsafe { optional_c_str(preedit) };
     // SAFETY: The caller guarantees the renderer, terminal runtime, and drawable texture are live.
-    (unsafe { renderer.render_terminal(runtime, texture, geometry, clear != 0) }) as u8
+    (unsafe { renderer.render_terminal(runtime, texture, geometry, clear != 0, preedit) }) as u8
 }
 
 #[unsafe(no_mangle)]
@@ -1291,6 +1299,15 @@ fn c_string(value: *const c_char) -> Option<String> {
         .to_str()
         .ok()
         .map(str::to_owned)
+}
+
+unsafe fn optional_c_str<'a>(value: *const c_char) -> Option<&'a str> {
+    if value.is_null() {
+        return None;
+    }
+
+    // SAFETY: The caller guarantees `value` points to a valid NUL-terminated string.
+    unsafe { CStr::from_ptr(value) }.to_str().ok()
 }
 
 unsafe fn optional_utf8<'a>(value: *const u8, len: usize) -> Option<&'a str> {

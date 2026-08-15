@@ -24,6 +24,7 @@ final class TerminalTextView: NSView, NSTextInputClient {
     var onZoomIn: (() -> Void)?
     var onZoomOut: (() -> Void)?
     var onResetZoom: (() -> Void)?
+    var onMarkedTextChanged: (() -> Void)?
 
     required init?(coder: NSCoder) {
         nil
@@ -87,7 +88,6 @@ final class TerminalTextView: NSView, NSTextInputClient {
         drawPaneBorders()
         drawSplitDividerFeedback()
         drawScrollbar()
-        drawMarkedText()
     }
 
     override func resetCursorRects() {
