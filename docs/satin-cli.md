@@ -98,6 +98,14 @@ Statuses are one of `idle`, `running`, `waiting`, `done`, `failed`, or
 `blocked`. A wait returns immediately for a terminal status and otherwise
 blocks until the next status update or the requested timeout.
 
+The Work Switcher groups `waiting`, `blocked`, `done`, and `failed` panes under
+Needs Attention until the pane is focused, while keeping the producer-owned
+status unchanged. `running` panes remain in their own section. Local panes read
+Codex and Claude Code lifecycle titles directly; projected tmux panes receive
+the same events through tmux's subscribed `pane_title` field. Retained screen
+text is used only for bounded preview excerpts, never to classify lifecycle
+state.
+
 `satin status event claude` is the bounded stdin adapter used by Satin's bundled
 Claude Code hooks. It accepts one official hook-event JSON object, maps only
 lifecycle fields to a generic status summary, and does not retain prompt,

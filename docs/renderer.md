@@ -53,8 +53,19 @@ disabled.
 
 ## Visual smoke matrix
 
-Renderer changes normally run `just native-smoke` plus the relevant focused
-recipes:
+Renderer changes normally run the non-capturing `just native-smoke` plus the
+relevant focused recipes. For retained Neovim scrolling and layout, start with:
+
+- `just nvim-smoke-scroll` checks Ctrl-D-style retained scroll animation.
+- `just nvim-smoke-jump` checks large jump animation.
+- `just nvim-smoke-side-pane` keeps file-tree and other side-pane scroll hints
+  column-bounded.
+- `just nvim-layout-redraw-smoke` checks pane close and rapid host resize without
+  a lost Metal frame request.
+- `just nvim-smoke-commandline` and `just nvim-smoke-cursor-move` reject false
+  scroll animation from command-line or cursor-only redraws.
+
+Pixel-backed checks add:
 
 - `just nvim-smoke-shaped-text-visual` checks Japanese, Nerd Font,
   combining-mark, and ambiguous-width glyph pixels.
@@ -67,6 +78,12 @@ recipes:
 The cursor-shape coverage also drives normal block, insert `ver25`, and replace
 `hor20` modes through Neovim `mode_info_set` and `mode_change`. The smoke recipes
 require Skia frames; `native-smoke` asserts `skia-frames=yes`.
+
+Pixel-backed recipes use macOS Screen & System Audio Recording permission. Do
+not run them while self-hosting in Satin. When pixels are explicitly required,
+run the relevant visual recipe from an external terminal after confirming the
+permission prompt is intended. State/model smokes remain the default regression
+path during self-hosting.
 
 ## Remaining direction
 

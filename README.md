@@ -29,8 +29,8 @@
 </p>
 
 <p align="center">
-  <sub>Native tmux projection, terminal scrollback, and smooth native Neovim
-  scrolling. Click for the 19-second MP4.</sub>
+  <sub>Native tmux projection and live agent status in the Work Switcher.
+  Click for the 18-second MP4.</sub>
 </p>
 
 ## Why Satin
@@ -59,16 +59,17 @@ and changes across the workspace.
 - A release-matched skill, available through `satin skill`, that lets terminal
   AIs identify their pane and operate tabs, splits, input, status, and artifacts
   through an owner-only local control socket.
-- Experimental bounded, versioned Markdown artifacts with a native
-  recent-artifact popover. The terminal viewer renders GFM tables, inline
-  emphasis, syntax-highlighted fenced code, and snapshotted relative PNG images
-  without an embedded browser.
+- Experimental bounded, versioned Markdown artifacts with a native recent-item
+  picker and reusable, window-scoped sidebar. The terminal viewer renders GFM
+  tables, inline emphasis, syntax-highlighted fenced code, and snapshotted
+  relative PNG images without an embedded browser.
 - Native tabs, recursive splits, working-directory inheritance, and session
   restore.
 - An on-demand Work Switcher for finding tabs and panes by title, directory,
   tmux session, or agent status, with inline activity excerpts, a current-screen
-  text preview, a compact toolbar attention badge, and lifecycle updates from
-  Codex and Claude Code without reading terminal screen text.
+  text preview, and a compact toolbar attention badge. Codex and Claude Code
+  lifecycle classification works in local and projected tmux panes without
+  scraping terminal screen text.
 - Native copy/paste, IME, terminal rectangular selection, Neovim message-area
   drag selection, scrollback search, clickable links, and a scroll indicator.
 - A native Settings window for appearance, shell, startup directory,
@@ -81,20 +82,21 @@ and changes across the workspace.
 ## Experimental: AI artifacts
 
 Artifacts are experimental. Ask a terminal AI to use Satin's embedded skill and
-it can turn a response into a bounded Markdown artifact, then open the snapshot
-beside its working pane as a native split. The release-matched skill is exposed
-by Satin itself, so there is no separate plugin to install.
+it can turn a response into a bounded Markdown artifact, then open or refresh
+the snapshot in a reusable right sidebar without replacing its working pane.
+The release-matched skill is exposed by Satin itself, so there is no separate
+plugin to install.
 
 <p align="center">
   <a href="assets/satin-artifact-demo.mp4">
     <img src="assets/satin-artifact-demo.gif" width="880"
-      alt="A truecolor Satin terminal opening an artifact with the current app icon">
+      alt="A Satin terminal opening and refreshing a Markdown artifact sidebar">
   </a>
 </p>
 
 <p align="center">
-  <sub>One prompt becomes a Markdown report with a table, highlighted code, and
-  the current Satin icon. Click for the 16-second MP4.</sub>
+  <sub>The CLI opens and refreshes a versioned Markdown report with a table,
+  highlighted code, and the current Satin icon. Click for the 16-second MP4.</sub>
 </p>
 
 ## Requirements
@@ -126,6 +128,12 @@ sessions. Satin detects the user-owned tmux from the configured login shell and
 uses its absolute path consistently; override it under Satin → Settings… →
 Terminal when needed. A clean Satin restart reattaches the last projected
 session; ordinary `tmux attach` stays inside the terminal as a TUI.
+
+Projected panes feed tmux `pane_title` updates through the same Codex and Claude
+Code lifecycle tracker as local panes, so Work Switcher status and attention
+remain available after `-CC` projection. `Command-+`, `Command--`, and
+`Command-0` scale only the focused projected pane; they do not resize siblings
+or renegotiate tmux's shared client grid.
 
 Running interactive `nvim` directly from Satin's supported shell integration,
 or choosing File → Open Native Neovim, uses the native `nvim --embed`
@@ -224,13 +232,15 @@ client, and timeout limits; it is not a remote-control interface. See
 [`docs/satin-cli.md`](docs/satin-cli.md) for commands, JSON behavior, and the
 security boundary.
 
-## Native Shortcuts
+## Native controls and shortcuts
 
 - `Command-T`: new tab
 - `Command-P`: search and focus open tabs and panes with the Work Switcher
 - `Command-D` / `Command-Shift-D`: vertical / horizontal split
 - `Command-W`: close the active pane
 - `Control-Command-H/J/K/L`: focus the pane to the left / down / up / right
+- `Command-1` through `Command-8`: select that tab; `Command-9`: select the last tab
+- `Command-R`: rename the active tab
 - a borderless new-tab action immediately after the native tab strip
 - per-pane `×`, vertical split, and horizontal split actions
 - right-side toolbar actions for the Artifact sidebar and Work Switcher
@@ -239,6 +249,7 @@ security boundary.
   and scrollback search
 - `Command-+`, `Command--`, `Command-0`: pane-local terminal font size,
   including panes projected from a native tmux session
+- `Command-U`: check for signed updates in release builds
 
 ## Build from source
 
@@ -268,9 +279,11 @@ the bundled pre-commit hook once per clone with `just install-hooks`.
 Architecture Decision Records live in [`docs/adr`](docs/adr). Current renderer
 behavior and its visual smoke matrix are in
 [`docs/renderer.md`](docs/renderer.md); release packaging, signing, and update
-operations are in [`docs/release.md`](docs/release.md). Native AppKit host code
-lives in [`spikes/macos-shell`](spikes/macos-shell). The enforced OSS quality
-and security baseline is documented in [`docs/quality.md`](docs/quality.md).
+operations are in [`docs/release.md`](docs/release.md), and the reproducible
+README recording workflow is in [`docs/readme-media.md`](docs/readme-media.md).
+Native AppKit host code lives in [`spikes/macos-shell`](spikes/macos-shell). The
+enforced OSS quality and security baseline is documented in
+[`docs/quality.md`](docs/quality.md).
 
 Report vulnerabilities through GitHub's private vulnerability reporting flow,
 as described in [`SECURITY.md`](SECURITY.md), rather than a public issue.

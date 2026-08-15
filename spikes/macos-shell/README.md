@@ -112,7 +112,8 @@ manifest marks the result as a development artifact.
 - Agent lifecycle state comes from a bundled-shell session boundary, OSC title
   events, and Satin's additional Claude Code hook settings layer. The bridge
   updates the existing status store without scraping pane text or changing
-  user-level Codex/Claude configuration.
+  user-level Codex/Claude configuration. Projected tmux panes subscribe to
+  `pane_title` and feed those transitions through the same tracker.
 - Session schema v3 restores recursive splits, terminal/Neovim pane kinds,
   working directories, the active leaf, and consume-once tmux reattach metadata
   with legacy migration.
@@ -138,3 +139,7 @@ recovery.
 
 `just native-tmux-zoom-resize-smoke` is the focused regression check for
 pane-local projected-tmux font zoom and coalesced host-window resize updates.
+
+README demo media is recorded from an isolated Satin Dev window by running
+`SATIN_ALLOW_SCREEN_CAPTURE=1 just readme-demo` in an external terminal. See
+`docs/readme-media.md`; the recipe refuses to capture from a self-hosted pane.

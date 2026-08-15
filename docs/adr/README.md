@@ -22,7 +22,7 @@ allowed to differ from the target design during a migration.
 - [0012: Unify shell and Command-N Neovim runtime](0012-unify-shell-and-command-neovim-runtime.md)
 - [0013: Use LaunchServices for simple editor launches](0013-use-launchservices-for-simple-editor-launches.md)
 - [0014: Project explicit tmux control mode into native tabs and panes](0014-native-tmux-control-mode.md)
-- [0015: Use the native navigation layer and system Liquid Glass](0015-use-native-navigation-layer-and-liquid-glass.md)
+- [0015: Use native navigation and pane-local action chrome](0015-use-native-navigation-layer-and-liquid-glass.md)
 - [0016: Bridge Kitty graphics into native Neovim](0016-bridge-kitty-graphics-into-native-neovim.md)
 - [0017: Store versioned Markdown artifacts and present them through Satin](0017-present-bounded-artifacts-through-satin.md)
 - [0018: Split the native host by responsibility](0018-split-native-host-by-responsibility.md)
