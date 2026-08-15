@@ -2,6 +2,28 @@ import AppKit
 import Darwin
 import Foundation
 
+func nativeApplicationAvoidsActivation(_ environment: [String: String]) -> Bool {
+    #if SATIN_SMOKE_SCENARIOS
+        environment["SATIN_NATIVE_SMOKE_SCENARIO"] != nil
+            && environment["SATIN_NATIVE_SMOKE_ALLOW_ACTIVATION"] != "1"
+    #else
+        false
+    #endif
+}
+
+func runNativeApplicationActivationSelfTests() -> Bool {
+    #if SATIN_SMOKE_SCENARIOS
+        nativeApplicationAvoidsActivation(["SATIN_NATIVE_SMOKE_SCENARIO": "nvim-scroll"])
+            && !nativeApplicationAvoidsActivation([:])
+            && !nativeApplicationAvoidsActivation([
+                "SATIN_NATIVE_SMOKE_SCENARIO": "nvim-scroll",
+                "SATIN_NATIVE_SMOKE_ALLOW_ACTIVATION": "1",
+            ])
+    #else
+        !nativeApplicationAvoidsActivation(["SATIN_NATIVE_SMOKE_SCENARIO": "nvim-scroll"])
+    #endif
+}
+
 @main
 struct SatinApplication {
     private static func failDiagnostic(_ message: String) -> Never {
@@ -37,6 +59,7 @@ struct SatinApplication {
                 || !NativeTmuxExecutableResolver.runSelfTests()
                 || !NativeFinderEditorLaunch.runSelfTests()
                 || !RustCore.runSelfTests()
+                || !runNativeApplicationActivationSelfTests()
                 || !runNativeFrameSchedulingSelfTests()
                 || !runNativeTmuxSplitCommandSelfTests()
                 || !runTerminalTextInputSelfTests()
@@ -69,7 +92,10 @@ struct SatinApplication {
         let app = NSApplication.shared
         let delegate = SatinAppDelegate()
         app.delegate = delegate
-        app.setActivationPolicy(.regular)
+        let avoidsActivation = nativeApplicationAvoidsActivation(
+            ProcessInfo.processInfo.environment
+        )
+        app.setActivationPolicy(avoidsActivation ? .accessory : .regular)
         app.run()
     }
 }

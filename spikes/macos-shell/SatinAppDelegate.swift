@@ -144,12 +144,19 @@ final class SatinAppDelegate: NSObject, NSApplicationDelegate {
         self.mainMenuController = mainMenuController
         mainMenuController.install(in: NSApp)
 
-        NSApp.activate(ignoringOtherApps: true)
-        window.makeKeyAndOrderFront(nil)
+        let avoidsActivation = nativeApplicationAvoidsActivation(environment)
+        if avoidsActivation {
+            window.orderFront(nil)
+        } else {
+            NSApp.activate(ignoringOtherApps: true)
+            window.makeKeyAndOrderFront(nil)
+        }
         #if SATIN_SMOKE_SCENARIOS
             applySmokeScenarioIfNeeded(controller)
         #endif
-        controller.focusTerminal()
+        if !avoidsActivation {
+            controller.focusTerminal()
+        }
         #if SATIN_SMOKE_SCENARIOS
             writeSmokeWindowIdIfNeeded(window)
             scheduleSmokeShotIfNeeded(window)

@@ -383,10 +383,14 @@ final class NativeSettingsWindowController: NSWindowController, NSTextFieldDeleg
         {
             tabController.selectedTabViewItemIndex = index
         }
-        showWindow(nil)
         window?.center()
-        window?.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
+        if nativeApplicationAvoidsActivation(ProcessInfo.processInfo.environment) {
+            window?.orderFront(nil)
+        } else {
+            showWindow(nil)
+            window?.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+        }
     }
 
     @objc private func booleanChanged(_ sender: NSButton) {
