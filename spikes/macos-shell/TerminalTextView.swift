@@ -17,6 +17,7 @@ final class TerminalTextView: NSView, NSTextInputClient {
     var onPaneSelected: ((Int) -> Void)?
     var onPaneChromeAction: ((NativePaneChromeAction, Int, NSView) -> Void)?
     var onSplitResize: ((Int, Int, NativePaneDividerAxis, CGFloat, Int) -> Void)?
+    var onSelectionClearRequested: ((Int) -> Void)?
     var onFocusChanged: ((Bool) -> Void)?
     var onContextMenuRequested: ((Int?, NSEvent, NSView) -> Void)?
     var onGeometryChanged: (() -> Void)?
@@ -103,7 +104,7 @@ final class TerminalTextView: NSView, NSTextInputClient {
     override func becomeFirstResponder() -> Bool {
         let accepted = super.becomeFirstResponder()
         if accepted {
-            onFocusChanged?(true)
+            terminalFocusDidChange(true)
         }
         return accepted
     }
@@ -111,9 +112,16 @@ final class TerminalTextView: NSView, NSTextInputClient {
     override func resignFirstResponder() -> Bool {
         let accepted = super.resignFirstResponder()
         if accepted {
-            onFocusChanged?(false)
+            terminalFocusDidChange(false)
         }
         return accepted
+    }
+
+    func terminalFocusDidChange(_ focused: Bool) {
+        if !focused {
+            releaseTerminalSelection(for: activePaneId)
+        }
+        onFocusChanged?(focused)
     }
 
     override func isAccessibilityElement() -> Bool {
@@ -432,12 +440,21 @@ final class TerminalTextView: NSView, NSTextInputClient {
     func setActivePaneId(_ paneId: Int?) {
         if activePaneId != paneId {
             wheelMouseRemainder = 0
+            releaseTerminalSelection(for: activePaneId)
         }
         activePaneId = paneId
         for (candidateId, chrome) in paneChromeViews {
             chrome.update(isActive: candidateId == paneId)
         }
         needsDisplay = true
+    }
+
+    private func releaseTerminalSelection(for paneId: Int?) {
+        cancelTerminalSelectionGesture()
+        guard let paneId else {
+            return
+        }
+        onSelectionClearRequested?(paneId)
     }
 
     func splitDividerCount(for axis: NativePaneDividerAxis) -> Int {

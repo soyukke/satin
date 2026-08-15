@@ -432,6 +432,9 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
                 cellDelta: cellDelta
             )
         }
+        self.terminalTextView.onSelectionClearRequested = { [weak self] paneId in
+            self?.clearTerminalSelection(paneId: paneId)
+        }
         self.terminalTextView.onFocusChanged = { [weak self] focused in
             self?.setTerminalFocus(focused)
         }

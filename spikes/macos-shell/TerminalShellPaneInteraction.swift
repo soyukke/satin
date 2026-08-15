@@ -295,6 +295,14 @@ extension TerminalShellViewController {
         terminal.focus(focused)
     }
 
+    func clearTerminalSelection(paneId: Int) {
+        guard let terminal = paneStore.runtimes[paneId] as? RustTerminalPane else {
+            return
+        }
+        terminal.clearSelection()
+        metalView.requestFrame()
+    }
+
     func handleTerminalSelection(_ event: NativeTerminalSelectionEvent) -> Bool {
         guard let paneId = activePaneId,
             let pane = paneStore.runtimes[paneId] as? RustTerminalPane
