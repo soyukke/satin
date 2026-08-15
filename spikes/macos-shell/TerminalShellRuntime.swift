@@ -280,11 +280,11 @@ extension TerminalShellViewController {
         )
         let stalePaneIds = Set(session.nativePaneIds.values).subtracting(nextNativePaneIds.values)
         for paneId in stalePaneIds {
+            removeControlState(paneId)
             removePaneRuntime(paneId)
             paneStore.artifactSelectors.removeValue(forKey: paneId)
             terminalTextView.discardPaneZoom(paneId)
-            paneStore.modes.removeValue(forKey: paneId)
-            paneStore.workingDirectories.removeValue(forKey: paneId)
+            paneStore.discardMetadata(for: paneId)
         }
         let projectedPaneIds = Array(nextNativePaneIds.values)
         _ = terminalTextView.setZoomOffset(
@@ -297,7 +297,7 @@ extension TerminalShellViewController {
         }
         for pane in paneSnapshots {
             let nativePaneId = nextNativePaneIds[pane.pane_id] ?? session.nativePaneId(pane.pane_id)
-            paneStore.workingDirectories[nativePaneId] = pane.current_path
+            updateTmuxPaneMetadata(pane, nativePaneId: nativePaneId)
             let grid = tmuxPaneGrid(pane)
             if let runtime = projectedTmuxPane(nativePaneId) {
                 runtime.setCurrentCommand(pane.current_command)
@@ -342,6 +342,16 @@ extension TerminalShellViewController {
         }
         syncFromCore()
         saveSessionState()
+    }
+
+    private func updateTmuxPaneMetadata(_ pane: TmuxPaneSnapshot, nativePaneId: Int) {
+        paneStore.workingDirectories[nativePaneId] = pane.current_path
+        let previousTitle = paneStore.titles[nativePaneId] ?? ""
+        guard previousTitle != pane.title else {
+            return
+        }
+        paneStore.titles[nativePaneId] = pane.title
+        updateAgentStatusFromTitle(pane.title, paneId: nativePaneId)
     }
 
     func tmuxWorkspace(
@@ -413,12 +423,11 @@ extension TerminalShellViewController {
             lastTmuxSocketPath = session.socketPath
         }
         for paneId in session.nativePaneIds.values {
+            removeControlState(paneId)
             removePaneRuntime(paneId)
             paneStore.artifactSelectors.removeValue(forKey: paneId)
             terminalTextView.discardPaneZoom(paneId)
-            paneStore.modes.removeValue(forKey: paneId)
-            paneStore.workingDirectories.removeValue(forKey: paneId)
-            paneStore.titles.removeValue(forKey: paneId)
+            paneStore.discardMetadata(for: paneId)
         }
         tmuxSession = nil
         guard core.applyWorkspace(session.savedWorkspace) else {

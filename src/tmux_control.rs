@@ -18,9 +18,10 @@ const MAX_HYDRATION_HISTORY_LINES: u32 = 100_000;
 const MAX_HYDRATION_CAPTURE_BYTES: usize = 8 * 1024 * 1024;
 const MAX_REHYDRATION_PASSTHROUGH_BYTES: usize = 16 * 1024 * 1024;
 const FLOW_CONTROL_PAUSE_AFTER_SECONDS: u8 = 5;
+const PANE_TITLE_SUBSCRIPTION: &str = "satin-pane-title:%*:#{q:pane_title}";
 const SESSION_LIST_COMMAND: &str =
     "list-sessions -F '#{q:session_name}|#{session_windows}|#{q:socket_path}'";
-const SNAPSHOT_FIELD_COUNT: usize = 40;
+const SNAPSHOT_FIELD_COUNT: usize = 41;
 const SYNC_FORMAT: &str = concat!(
     "#{q:session_id}\t#{q:session_name}\t#{q:socket_path}\t#{q:window_id}\t",
     "#{q:window_index}\t#{q:window_name}\t#{q:window_active}\t",
@@ -34,6 +35,7 @@ const SYNC_FORMAT: &str = concat!(
     "#{q:mouse_utf8_flag}\t#{q:mouse_sgr_flag}\t#{q:pane_input_off}\t",
     "#{q:scroll_region_upper}\t#{q:scroll_region_lower}\t#{q:pid}\t",
     "#{q:pane_private_modes}\t#{q:pane_key_mode}\t#{q:pane_current_command}\t",
+    "#{q:pane_title}\t",
     "#{q:allow-passthrough}"
 );
 
@@ -119,6 +121,7 @@ pub struct TmuxPaneSnapshot {
     pub private_modes: Vec<u16>,
     pub key_mode: String,
     pub current_command: String,
+    pub title: String,
     pub allow_passthrough: String,
 }
 
@@ -512,7 +515,10 @@ impl TmuxControl {
         }
         self.flow_control_configured = true;
         self.queue_command(
-            format!("refresh-client -f pause-after={FLOW_CONTROL_PAUSE_AFTER_SECONDS}"),
+            format!(
+                "refresh-client -f pause-after={FLOW_CONTROL_PAUSE_AFTER_SECONDS} \
+                 -B '{PANE_TITLE_SUBSCRIPTION}'"
+            ),
             PendingCommand::Ignore,
         );
     }
@@ -745,6 +751,9 @@ fn response_lines_lossy(lines: &[Vec<u8>], fallback: &str) -> String {
 }
 
 fn topology_notification(line: &[u8]) -> bool {
+    if line.starts_with(b"%subscription-changed satin-pane-title ") {
+        return true;
+    }
     [
         b"%session-changed ".as_slice(),
         b"%session-renamed ",
@@ -891,7 +900,8 @@ fn parse_pane_snapshot(fields: &[&str]) -> Result<TmuxPaneSnapshot> {
         private_modes: parse_private_modes(fields[36])?,
         key_mode: fields[37].to_owned(),
         current_command: fields[38].to_owned(),
-        allow_passthrough: fields[39].to_owned(),
+        title: fields[39].to_owned(),
+        allow_passthrough: fields[40].to_owned(),
     })
 }
 
@@ -1385,6 +1395,7 @@ mod tests {
             },
             if alternate_on { "Ext 2" } else { "VT10x" },
             "zsh",
+            "⠹ satin",
             "off",
         ]
         .join("\t")
@@ -1500,45 +1511,6 @@ mod tests {
         assert_eq!(left.first.unwrap().pane_id, Some(0));
         assert_eq!(left.second.unwrap().pane_id, Some(2));
         assert_eq!(layout.second.unwrap().pane_id, Some(1));
-    }
-
-    #[test]
-    fn session_notification_requests_and_parses_topology() {
-        let mut control = TmuxControl::default();
-        control
-            .feed(b"\x1bP1000p%session-changed $0 satin\n")
-            .unwrap();
-        let command = control.take_outgoing().unwrap();
-        assert!(
-            String::from_utf8(command)
-                .unwrap()
-                .starts_with("list-panes -s")
-        );
-        let row = snapshot_row("/tmp", 20, false, false);
-        control
-            .feed(format!("%begin 1 2 0\n{row}\n%end 1 2 0\n").as_bytes())
-            .unwrap();
-        let event = control.events.back().unwrap();
-        let TmuxControlEvent::Snapshot { snapshot } = event else {
-            panic!("expected snapshot");
-        };
-        assert_eq!(snapshot.session_name, "satin");
-        assert_eq!(snapshot.socket_path, "/tmp/tmux.sock");
-        assert_eq!(snapshot.windows[0].active_pane_id, 7);
-        assert_eq!(snapshot.windows[0].panes[0].cursor_x, 18);
-        assert_eq!(snapshot.windows[0].panes[0].cursor_y, 4);
-        assert!(snapshot.windows[0].panes[0].cursor_visible);
-        assert_eq!(snapshot.windows[0].panes[0].history_size, 20);
-        assert_eq!(snapshot.windows[0].panes[0].private_modes, [7, 1004]);
-        assert_eq!(snapshot.windows[0].panes[0].key_mode, "VT10x");
-        assert_eq!(snapshot.windows[0].panes[0].current_command, "zsh");
-        assert_eq!(snapshot.windows[0].panes[0].allow_passthrough, "off");
-        assert!(!snapshot.windows[0].zoomed);
-        acknowledge_passthrough_setup(&mut control, "1 3 0");
-        assert_eq!(
-            control.take_outgoing().unwrap(),
-            b"capture-pane -p -e -C -S -20 -t %7\n"
-        );
     }
 
     #[test]
@@ -1869,4 +1841,6 @@ mod tests {
         runtime.feed_external(&hydration).unwrap();
         assert!(runtime.screen_text().unwrap().contains("ALT_MARKER"));
     }
+
+    include!("tmux_control_regression_tests.rs");
 }
