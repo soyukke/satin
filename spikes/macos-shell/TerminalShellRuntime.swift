@@ -626,42 +626,66 @@ extension TerminalShellViewController {
                 paneId: entry.key
             )
             let clear: UInt8 = index == 0 ? 1 : 0
-            let ok: Bool
-            if pane.kind == .terminal {
-                ok =
-                    satinSkiaMetalRenderTerminal(
-                        renderer,
-                        renderHandle,
-                        metalObjectPointer(texture),
-                        Int32(texture.width),
-                        Int32(texture.height),
-                        geometry.originX,
-                        geometry.originY,
-                        geometry.contentWidth,
-                        geometry.contentHeight,
-                        geometry.cellWidth,
-                        geometry.cellHeight,
-                        clear
-                    ) != 0
-            } else {
-                ok =
-                    satinSkiaMetalRenderNvim(
-                        renderer,
-                        renderHandle,
-                        metalObjectPointer(texture),
-                        Int32(texture.width),
-                        Int32(texture.height),
-                        geometry.originX,
-                        geometry.originY,
-                        geometry.contentWidth,
-                        geometry.contentHeight,
-                        geometry.cellWidth,
-                        geometry.cellHeight,
-                        clear
-                    ) != 0
-            }
+            let ok = renderPaneFrame(
+                pane,
+                renderHandle: renderHandle,
+                texture: texture,
+                renderer: renderer,
+                geometry: geometry,
+                clear: clear,
+                preedit: terminalTextView.rendererMarkedText(for: entry.key)
+            )
             rendered = rendered || ok
         }
         return rendered
+    }
+
+    private func renderPaneFrame(
+        _ pane: NativePane,
+        renderHandle: UnsafeMutableRawPointer,
+        texture: MTLTexture,
+        renderer: UnsafeMutableRawPointer,
+        geometry: SkiaRenderGeometry,
+        clear: UInt8,
+        preedit: String?
+    ) -> Bool {
+        let render: (UnsafePointer<CChar>?) -> Bool = { preeditPointer in
+            if pane.kind == .terminal {
+                return satinSkiaMetalRenderTerminal(
+                    renderer,
+                    renderHandle,
+                    metalObjectPointer(texture),
+                    Int32(texture.width),
+                    Int32(texture.height),
+                    geometry.originX,
+                    geometry.originY,
+                    geometry.contentWidth,
+                    geometry.contentHeight,
+                    geometry.cellWidth,
+                    geometry.cellHeight,
+                    clear,
+                    preeditPointer
+                ) != 0
+            }
+            return satinSkiaMetalRenderNvim(
+                renderer,
+                renderHandle,
+                metalObjectPointer(texture),
+                Int32(texture.width),
+                Int32(texture.height),
+                geometry.originX,
+                geometry.originY,
+                geometry.contentWidth,
+                geometry.contentHeight,
+                geometry.cellWidth,
+                geometry.cellHeight,
+                clear,
+                preeditPointer
+            ) != 0
+        }
+        guard let preedit else {
+            return render(nil)
+        }
+        return preedit.withCString { render($0) }
     }
 }

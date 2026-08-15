@@ -461,6 +461,9 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
         self.terminalTextView.onTextInput = { [weak self] text in
             self?.writeTextToActivePane(text)
         }
+        self.terminalTextView.onMarkedTextChanged = { [weak self] in
+            self?.metalView.requestFrame()
+        }
         self.terminalTextView.onMouseInput = { [weak self] input in
             self?.sendMouseInputToActivePane(input) ?? .unhandled
         }

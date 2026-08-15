@@ -455,7 +455,8 @@ func satinSkiaMetalRenderNvim(
     _ contentHeight: Float,
     _ cellWidth: Float,
     _ cellHeight: Float,
-    _ clear: UInt8
+    _ clear: UInt8,
+    _ preedit: UnsafePointer<CChar>?
 ) -> UInt8
 
 @_silgen_name("satin_skia_metal_render_terminal")
@@ -471,7 +472,8 @@ func satinSkiaMetalRenderTerminal(
     _ contentHeight: Float,
     _ cellWidth: Float,
     _ cellHeight: Float,
-    _ clear: UInt8
+    _ clear: UInt8,
+    _ preedit: UnsafePointer<CChar>?
 ) -> UInt8
 
 @_silgen_name("satin_skia_metal_needs_animation_frame")

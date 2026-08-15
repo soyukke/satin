@@ -5,10 +5,26 @@ fn render_model_pixel(
     geometry: SkiaRenderGeometry,
     point: (i32, i32),
 ) -> Color {
+    let pixels = render_model_pixels(model, geometry, None);
+    pixels[(point.1 * geometry.width + point.0) as usize]
+}
+
+fn render_model_pixels(
+    model: &NeovideRendererModelSnapshot,
+    geometry: SkiaRenderGeometry,
+    preedit: Option<&str>,
+) -> Vec<Color> {
     let mut surface =
         skia_safe::surfaces::raster_n32_premul((geometry.width, geometry.height)).unwrap();
     let mut text_renderer = NeovideTextRenderer::new();
     let mut images = HashMap::new();
+    let mut preedit_cache = PreeditLineCache::default();
+    let preedit = preedit_cache.prepare(
+        preedit,
+        model.background,
+        model.cursor_color,
+        preedit_available_columns(model, geometry),
+    );
     draw_model(
         surface.canvas(),
         &mut text_renderer,
@@ -21,9 +37,128 @@ fn render_model_pixel(
             kitty_placements: &[],
             kitty_images: &mut images,
             runtime_id: 1,
+            preedit,
         },
     );
-    surface.peek_pixels().unwrap().get_color(point)
+    let pixels = surface.peek_pixels().unwrap();
+    let mut colors = Vec::with_capacity((geometry.width * geometry.height) as usize);
+    for y in 0..geometry.height {
+        for x in 0..geometry.width {
+            colors.push(pixels.get_color((x, y)));
+        }
+    }
+    colors
+}
+
+#[test]
+fn ime_preedit_matches_committed_japanese_text_pixels() {
+    let geometry = SkiaRenderGeometry {
+        width: 80,
+        height: 60,
+        origin_x: 0.0,
+        origin_y: 0.0,
+        content_width: 80.0,
+        content_height: 60.0,
+        cell_width: 10.0,
+        cell_height: 20.0,
+    };
+    let mut preedit_model = renderer_model(8, 3);
+    preedit_model.background = TerminalColor { r: 3, g: 5, b: 7 };
+    preedit_model.cursor_color = TerminalColor {
+        r: 210,
+        g: 220,
+        b: 230,
+    };
+    preedit_model.cursor = Some(cursor(2, 1, "block", 100, 0, 0, 0));
+
+    let mut committed_model = preedit_model.clone();
+    committed_model.cursor = None;
+    let style = preedit_cell_style(committed_model.background);
+    let mut cells = vec![preedit_cell(
+        " ",
+        committed_model.cursor_color,
+        None,
+        TerminalCellStyle::default(),
+    ); 8];
+    cells[2] = preedit_cell(
+        "日",
+        committed_model.background,
+        Some(committed_model.cursor_color),
+        style,
+    );
+    cells[3] = preedit_cell(
+        " ",
+        committed_model.background,
+        Some(committed_model.cursor_color),
+        style,
+    );
+    cells[4] = preedit_cell(
+        "本",
+        committed_model.background,
+        Some(committed_model.cursor_color),
+        style,
+    );
+    cells[5] = preedit_cell(
+        " ",
+        committed_model.background,
+        Some(committed_model.cursor_color),
+        style,
+    );
+    let committed_line = crate::neovide_render::NeovideLine::from_cells(cells);
+    committed_model.windows[0].lines[1] = Some(committed_line.clone());
+    committed_model.windows[0].scrollback_lines[1] = Some(committed_line);
+
+    let committed = render_model_pixels(&committed_model, geometry, None);
+    let preedit = render_model_pixels(&preedit_model, geometry, Some("日本"));
+    assert_eq!(preedit, committed);
+}
+
+#[test]
+fn ime_preedit_cells_keep_graphemes_and_terminal_width() {
+    let foreground = TerminalColor { r: 3, g: 5, b: 7 };
+    let background = TerminalColor {
+        r: 210,
+        g: 220,
+        b: 230,
+    };
+    let line = preedit_line("日本e\u{301}", foreground, background, 5);
+    let text = line
+        .cells
+        .iter()
+        .map(|cell| cell.text.as_str())
+        .collect::<Vec<_>>();
+
+    assert_eq!(text, ["日", " ", "本", " ", "e\u{301}"]);
+    assert!(line.cells.iter().all(|cell| cell.style.underline));
+}
+
+#[test]
+fn ime_preedit_reuses_its_retained_line_until_content_changes() {
+    let foreground = TerminalColor { r: 3, g: 5, b: 7 };
+    let background = TerminalColor {
+        r: 210,
+        g: 220,
+        b: 230,
+    };
+    let mut cache = PreeditLineCache::default();
+    let first = cache
+        .prepare(Some("日本"), foreground, background, 8)
+        .unwrap()
+        .cells
+        .clone();
+    let retained = cache
+        .prepare(Some("日本"), foreground, background, 8)
+        .unwrap()
+        .cells
+        .clone();
+    let changed = cache
+        .prepare(Some("日本語"), foreground, background, 8)
+        .unwrap()
+        .cells
+        .clone();
+
+    assert!(std::sync::Arc::ptr_eq(&first, &retained));
+    assert!(!std::sync::Arc::ptr_eq(&retained, &changed));
 }
 
 fn floating_window(
@@ -137,6 +272,7 @@ fn foreground_window_background_masks_stale_root_grid_cells() {
             kitty_placements: &[],
             kitty_images: &mut images,
             runtime_id: 1,
+            preedit: None,
         },
     );
 
@@ -257,6 +393,7 @@ fn message_selection_overlay_only_covers_selected_cells() {
             kitty_placements: &[],
             kitty_images: &mut images,
             runtime_id: 1,
+            preedit: None,
         },
     );
 
