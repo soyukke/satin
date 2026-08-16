@@ -170,11 +170,14 @@ extension TerminalShellViewController {
         return environment
     }
 
-    func resizeTerminalPanesToGrid() {
+    func resizeTerminalPanesToGrid(tmuxClientResizeImmediately: Bool = false) {
         pendingGeometryResizeWorkItem?.cancel()
         pendingGeometryResizeWorkItem = nil
         if let snapshot = lastSnapshot {
-            syncPaneLayout(snapshot)
+            syncPaneLayout(
+                snapshot,
+                tmuxClientResizeImmediately: tmuxClientResizeImmediately
+            )
         }
         updateActiveFrame()
     }
@@ -216,57 +219,20 @@ extension TerminalShellViewController {
 
     @discardableResult
     func adjustTerminalZoom(by delta: CGFloat) -> Bool {
-        let paneIds = terminalZoomPaneIds()
-        guard terminalTextView.adjustZoom(by: delta, for: paneIds) else {
+        guard terminalTextView.adjustZoom(by: delta) else {
             return false
         }
-        resizePanesAfterZoom(paneIds)
+        resizeTerminalPanesToGrid(tmuxClientResizeImmediately: true)
         return true
     }
 
     @discardableResult
     func resetTerminalZoom() -> Bool {
-        let paneIds = terminalZoomPaneIds()
-        guard terminalTextView.resetZoom(for: paneIds) else {
+        guard terminalTextView.resetZoom() else {
             return false
         }
-        resizePanesAfterZoom(paneIds)
+        resizeTerminalPanesToGrid(tmuxClientResizeImmediately: true)
         return true
-    }
-
-    func terminalZoomPaneIds() -> [Int] {
-        guard let activePaneId else {
-            return []
-        }
-        guard let session = tmuxSession,
-            session.tmuxPaneIds[activePaneId] != nil,
-            let snapshot = lastSnapshot,
-            let tab = snapshot.tabs.first(where: { $0.index == snapshot.active_tab }),
-            let windowId = session.tmuxWindowIds[tab.id],
-            let paneIds = session.nativePaneIdsByWindow[windowId]
-        else {
-            return [activePaneId]
-        }
-        return paneIds
-    }
-
-    func resizePanesAfterZoom(_ paneIds: [Int]) {
-        if let session = tmuxSession,
-            paneIds.contains(where: { session.tmuxPaneIds[$0] != nil })
-        {
-            syncTmuxClientSize()
-            updateActiveFrame()
-            return
-        }
-        for paneId in paneIds {
-            guard let frame = paneStore.visibleFrames[paneId],
-                let pane = terminalPane(for: paneId)
-            else {
-                continue
-            }
-            pane.resize(grid: terminalTextView.terminalGridSize(for: frame, paneId: paneId))
-        }
-        updateActiveFrame()
     }
 
     func paneGridSize(
@@ -275,7 +241,7 @@ extension TerminalShellViewController {
         guard let frame = paneStore.visibleFrames[paneId] else {
             return terminalTextView.terminalGridSize()
         }
-        return terminalTextView.terminalGridSize(for: frame, paneId: paneId)
+        return terminalTextView.terminalGridSize(for: frame)
     }
 
     func writeToActivePane(_ data: Data) {

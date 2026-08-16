@@ -80,8 +80,8 @@ import Foundation
                     Int($0.cols) == currentGrid.cols && Int($0.rows) == currentGrid.rows
                 } ?? false
             let gridIsSettled =
-                tmuxSession?.lastClientGrid?.cols == currentGrid.cols
-                && tmuxSession?.lastClientGrid?.rows == currentGrid.rows
+                tmuxSession?.requestedClientGrid?.cols == currentGrid.cols
+                && tmuxSession?.requestedClientGrid?.rows == currentGrid.rows
                 && projectedGridIsSettled
             guard let tmuxCursor = tmuxPane.cursorPosition(),
                 tmuxCursor.x > 0,
@@ -640,10 +640,10 @@ import Foundation
                 return
             }
             let expected = tmuxClientGrid()
-            guard tmuxSession?.lastClientGrid?.cols == expected.cols,
-                tmuxSession?.lastClientGrid?.rows == expected.rows
+            guard tmuxSession?.requestedClientGrid?.cols == expected.cols,
+                tmuxSession?.requestedClientGrid?.rows == expected.rows
             else {
-                let observed = tmuxSession?.lastClientGrid
+                let observed = tmuxSession?.requestedClientGrid
                 tmuxSession?.gateway.tmuxCommand("kill-session")
                 writeSessionSmokeResult(
                     resultPath,
@@ -654,7 +654,7 @@ import Foundation
                 return
             }
             if tmuxZoomResizeSmokeOnly() {
-                beginTmuxZoomReflowSmoke(resultPath, baselineGrid: expected)
+                beginTmuxGridMatrixSplit(resultPath)
                 return
             }
             guard verifyTmuxSmokeFontZoom(baselineGrid: expected) else {

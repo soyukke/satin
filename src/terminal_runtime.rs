@@ -373,8 +373,8 @@ impl NativeTerminalRuntime {
         self.mouse_encoder
             .set_options_from_terminal(&self.terminal)
             .set_size(mouse::EncoderSize {
-                screen_width: self.size.pixel_width.into(),
-                screen_height: self.size.pixel_height.into(),
+                screen_width: u32::from(self.size.cols).saturating_mul(input.cell_width.max(1)),
+                screen_height: u32::from(self.size.rows).saturating_mul(input.cell_height.max(1)),
                 cell_width: input.cell_width.max(1),
                 cell_height: input.cell_height.max(1),
                 padding_top: 0,
@@ -2380,6 +2380,33 @@ mod tests {
 
         runtime.feed_external(b"\x1b[?25l").unwrap();
         assert_eq!(runtime.cursor_position().unwrap(), Some((6, 2)));
+    }
+
+    #[test]
+    fn scaled_mouse_surface_reaches_last_projected_grid_row() {
+        let mut runtime = NativeTerminalRuntime::external(TerminalGridSize {
+            rows: 62,
+            cols: 98,
+            pixel_width: 980,
+            pixel_height: 620,
+        })
+        .unwrap();
+        runtime.feed_external(b"\x1b[?1000h\x1b[?1006h").unwrap();
+
+        let encoded = runtime
+            .encode_mouse(NativeMouseInput {
+                action: mouse::Action::Press,
+                button: Some(mouse::Button::Left),
+                modifiers: 0,
+                x: 5.0,
+                y: 1_230.0,
+                cell_width: 10,
+                cell_height: 20,
+            })
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(encoded, b"\x1b[<0;1;62M");
     }
 
     #[test]

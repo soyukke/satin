@@ -143,8 +143,7 @@ extension TerminalShellViewController {
             ?? nativeWorkingDirectory()
         let sidebarFrame = artifactSidebarFrames(in: terminalTextView.terminalContentRect()).sidebar
         let grid = terminalTextView.terminalGridSize(
-            for: nativePaneContentFrame(sidebarFrame),
-            paneId: nativeArtifactSidebarPaneId
+            for: nativePaneContentFrame(sidebarFrame)
         )
         guard
             let viewer = RustTerminalPane(
@@ -198,7 +197,6 @@ extension TerminalShellViewController {
         removePaneRuntime(paneId)
         paneStore.artifactSelectors.removeValue(forKey: paneId)
         paneStore.discardMetadata(for: paneId)
-        terminalTextView.discardPaneZoom(paneId)
         if activePaneId == paneId {
             activePaneId = lastSnapshot.flatMap(activePaneId(in:))
         }

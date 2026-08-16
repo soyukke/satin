@@ -10,4 +10,5 @@ spikes/macos-shell/.build
 *.p12
 *.pem
 *.swp
+.zcompdump*
 secrets/

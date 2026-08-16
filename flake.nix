@@ -53,6 +53,7 @@
               pkgs.shellcheck
               pkgs.shfmt
               pkgs.swift-format
+              pkgs.tmux
               pkgs.typos
               pkgs.zizmor
               pkgs.zig_0_15
@@ -75,6 +76,7 @@
               pkgs.python3
               pkgs.ripgrep
               pkgs.rustc
+              pkgs.tmux
               pkgs.zig_0_15
             ];
 
