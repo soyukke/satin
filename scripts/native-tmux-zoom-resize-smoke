@@ -8,6 +8,7 @@ log_file="/tmp/satin-native-tmux-zoom-resize.log"
 rm -f -- "$result_file" "$log_file"
 SATIN_NATIVE_SMOKE_SCENARIO=tmux-native \
   SATIN_NATIVE_SMOKE_TMUX_SCOPE=zoom-resize \
+  SATIN_NATIVE_PERF_FONT_SIZE=15 \
   SATIN_NATIVE_SMOKE_RESULT="$result_file" \
   "$app" >"$log_file" 2>&1
 

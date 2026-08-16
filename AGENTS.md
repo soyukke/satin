@@ -38,6 +38,16 @@ Neovim pane の描画品質は Neovide parity を目標にする。
 - terminal pane は `libghostty-vt` を尊重する。Neovim 専用設計で terminal path を壊さない。
 - Macroquad は最終構成に戻さない。
 
+### Pane / grid geometry の不変条件
+
+- `Command-+/-/0` は Satin window 全体で共有する。pane、tab、runtime、tmux window ごとの
+  font size / zoom offset を追加しない。
+- font、cell、PTY/Neovim grid、Skia geometry、cursor、mouse、IME は
+  `TerminalTextView.terminalCellSize()` の同じ値から導出する。glyph と配置用 cell を分けない。
+- tmux control client は window ごとに一つの grid を持つ。renderer-only scale や crop で
+  pane ごとの差を吸収せず、全 leaf の content frame と pane header を layout 時に合成する。
+- font、pane frame、grid の変更では `just pane-grid-smoke` を必ず通す。
+
 暫定実装が必要な場合は、同じ変更内で削除条件、置換先、検証ケースを明記する。
 
 ## 主要コマンド
@@ -45,6 +55,7 @@ Neovim pane の描画品質は Neovide parity を目標にする。
 - `just terminal`: native AppKit terminal host を起動する。
 - `just native-build`: Swift/AppKit host をビルドする。
 - `just native-smoke`: native host の基本表示スモークを実行する。
+- `just pane-grid-smoke`: local/tmux terminal と native/tmux Neovim の grid 契約を検証する。
 - `just verify`: Rust fmt / lint / test gate を実行する。
 - `just precommit`: pre-commit 相当の検証を実行する。
 
@@ -53,6 +64,7 @@ Neovim pane の描画変更では、通常 smoke に加えて nvim scroll / jump
 ## 完了条件
 
 - 関連する `just` コマンドが通っている。
+- font、pane frame、grid の変更では `just pane-grid-smoke` が通っている。
 - renderer 変更では、二重表示、statusline/cmdline/side pane の残像、nvim scroll/jump の regressions を確認している。
 - stopgap を増やした場合は、削除条件と移行先が `TODO.md` または ADR にある。
 - 作業 TODO が完了したら `TODO.md` を空に戻す。

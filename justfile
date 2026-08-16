@@ -48,7 +48,7 @@ _terminal-detached:
         SATIN_NATIVE_SMOKE_SCENARIO SATIN_NATIVE_SMOKE_RESULT SATIN_NATIVE_SMOKE_SHOT \
         SATIN_NATIVE_SMOKE_WINDOW_ID SATIN_NATIVE_SMOKE_KEEP_OPEN); \
     open_args=(); \
-    for name in "${environment[@]}"; do if [[ -v "$name" ]]; then open_args+=(--env "$name=${!name}"); fi; done; \
+    for name in "${environment[@]}"; do if [[ ${!name+x} == x ]]; then open_args+=(--env "$name=${!name}"); fi; done; \
     open -i /dev/null --stdout "$log" --stderr "$log" "${open_args[@]}" "$app"
 
 # Launch the native Neovim UI pane.
@@ -125,6 +125,8 @@ native-ci-smoke:
         SATIN_USE_PREBUILT_PACKAGE=1 ./scripts/native-finder-editor-smoke; \
         ./scripts/native-nvim-ui-surfaces-smoke; \
         ./scripts/native-resize-smoke; \
+        ./scripts/native-nvim-layout-redraw-smoke; \
+        ./scripts/native-tmux-zoom-resize-smoke; \
         ./scripts/native-session-smoke; \
         ./scripts/native-tab-bar-actions-smoke; \
         ./scripts/native-home-cwd-smoke; \
@@ -205,9 +207,13 @@ native-session-smoke:
 native-tmux-smoke:
     @if [[ -z "${IN_NIX_SHELL:-}" ]]; then exec nix develop --command just native-tmux-smoke; else just native-build && ./scripts/native-tmux-smoke; fi
 
-# Verify projected tmux font zoom reflows its active window and rapid host resize stays responsive.
+# Verify shared font zoom, nested tmux grid alignment, TUI Neovim resize, and rapid host resize.
 native-tmux-zoom-resize-smoke:
     @if [[ -z "${IN_NIX_SHELL:-}" ]]; then exec nix develop --command just native-tmux-zoom-resize-smoke; else just native-build && ./scripts/native-tmux-zoom-resize-smoke; fi
+
+# Lock pane/grid sizing across local/tmux terminal and native/tmux Neovim paths.
+pane-grid-smoke:
+    @if [[ -z "${IN_NIX_SHELL:-}" ]]; then exec nix develop --command just pane-grid-smoke; else just native-build; ./scripts/native-resize-smoke; ./scripts/native-nvim-layout-redraw-smoke; ./scripts/native-tmux-zoom-resize-smoke; fi
 
 # Verify tab-bar buttons create a tab and both split axes through their click actions.
 native-tab-bar-actions-smoke:
@@ -540,6 +546,7 @@ quality:
     @just native-build
     @just native-update-test
     @just native-smoke
+    @just pane-grid-smoke
 
 # Verify third-party attribution, exact bundled font provenance, and Cargo licenses.
 license-audit:

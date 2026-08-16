@@ -73,3 +73,33 @@ fn initial_handshake_subscribes_to_pane_titles() {
             .starts_with("list-panes -s")
     );
 }
+
+#[test]
+fn topology_change_while_snapshot_pending_queues_trailing_sync() {
+    let mut control = TmuxControl {
+        active: true,
+        hydrated_panes: [7].into(),
+        ..Default::default()
+    };
+    control.request_sync();
+    assert!(
+        String::from_utf8(control.take_outgoing().unwrap())
+            .unwrap()
+            .starts_with("list-panes -s")
+    );
+
+    control.feed(b"%layout-change @1 changed\n").unwrap();
+    assert!(control.outgoing.is_empty());
+
+    let row = snapshot_row("/tmp", 0, false, false);
+    control
+        .feed(format!("%begin 1 2 0\n{row}\n%end 1 2 0\n").as_bytes())
+        .unwrap();
+    assert!(
+        String::from_utf8(control.take_outgoing().unwrap())
+            .unwrap()
+            .starts_with("list-panes -s")
+    );
+    assert!(control.sync_pending);
+    assert!(!control.sync_requested_while_pending);
+}

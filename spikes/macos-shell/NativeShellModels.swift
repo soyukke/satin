@@ -31,13 +31,16 @@ final class NativeTmuxSession {
     let gateway: RustTerminalPane
     let savedWorkspace: TerminalCoreSnapshot
     var nativePaneIds: [UInt32: Int] = [:]
-    var nativePaneIdsByWindow: [UInt32: [Int]] = [:]
     var tmuxPaneIds: [Int: UInt32] = [:]
     var nativeTabIds: [UInt32: Int] = [:]
     var tmuxWindowIds: [Int: UInt32] = [:]
     var bufferedOutput: [UInt32: Data] = [:]
     var latestPanes: [UInt32: TmuxPaneSnapshot] = [:]
-    var lastClientGrid: (cols: Int, rows: Int)?
+    var requestedClientGrid: NativePaneGridCapacity?
+    var clientResizeThrottleWorkItem: DispatchWorkItem?
+    #if SATIN_SMOKE_SCENARIOS
+        var clientResizeRequestCount = 0
+    #endif
     var sessionName = "tmux"
     var socketPath = ""
     var executablePath = ""
@@ -48,6 +51,10 @@ final class NativeTmuxSession {
         self.gatewayPaneId = gatewayPaneId
         self.gateway = gateway
         self.savedWorkspace = savedWorkspace
+    }
+
+    deinit {
+        clientResizeThrottleWorkItem?.cancel()
     }
 
     func nativePaneId(_ paneId: UInt32) -> Int {

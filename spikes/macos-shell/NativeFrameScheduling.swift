@@ -3,6 +3,7 @@ private let deterministicFrameSmokeScenarios: Set<String> = [
     "nvim-layout-redraw",
     "nvim-scroll",
     "nvim-side-pane",
+    "terminal-resize",
     "tmux-reattach",
 ]
 
@@ -21,6 +22,7 @@ func runNativeFrameSchedulingSelfTests() -> Bool {
         "nvim-layout-redraw",
         "nvim-scroll",
         "nvim-side-pane",
+        "terminal-resize",
         "tmux-reattach",
     ].allSatisfy(nativeSmokeUsesDeterministicFrames)
         && !nativeSmokeUsesDeterministicFrames(nil)

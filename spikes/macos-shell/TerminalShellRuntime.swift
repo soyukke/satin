@@ -278,34 +278,11 @@ extension TerminalShellViewController {
                 ($0.pane_id, session.nativePaneId($0.pane_id))
             }
         )
-        let nextNativePaneIdsByWindow = Dictionary(
-            uniqueKeysWithValues: snapshot.windows.map { window in
-                (
-                    window.window_id,
-                    window.panes.compactMap { nextNativePaneIds[$0.pane_id] }
-                )
-            }
-        )
-        let baselineFontSize = terminalTextView.fontSize(nil)
-        for window in snapshot.windows {
-            let zoomOffset =
-                window.panes.compactMap { pane -> CGFloat? in
-                    guard let nativePaneId = session.nativePaneIds[pane.pane_id] else {
-                        return nil
-                    }
-                    return terminalTextView.fontSize(nativePaneId) - baselineFontSize
-                }.first ?? 0
-            let nativePaneIds = window.panes.compactMap {
-                nextNativePaneIds[$0.pane_id]
-            }
-            _ = terminalTextView.setZoomOffset(zoomOffset, for: nativePaneIds)
-        }
         let stalePaneIds = Set(session.nativePaneIds.values).subtracting(nextNativePaneIds.values)
         for paneId in stalePaneIds {
             removeControlState(paneId)
             removePaneRuntime(paneId)
             paneStore.artifactSelectors.removeValue(forKey: paneId)
-            terminalTextView.discardPaneZoom(paneId)
             paneStore.discardMetadata(for: paneId)
         }
         for pane in paneSnapshots {
@@ -338,7 +315,6 @@ extension TerminalShellViewController {
             runtime.syncCursor(pane)
         }
         session.nativePaneIds = nextNativePaneIds
-        session.nativePaneIdsByWindow = nextNativePaneIdsByWindow
         session.tmuxPaneIds = Dictionary(
             uniqueKeysWithValues: nextNativePaneIds.map { ($0.value, $0.key) }
         )
@@ -440,7 +416,6 @@ extension TerminalShellViewController {
             removeControlState(paneId)
             removePaneRuntime(paneId)
             paneStore.artifactSelectors.removeValue(forKey: paneId)
-            terminalTextView.discardPaneZoom(paneId)
             paneStore.discardMetadata(for: paneId)
         }
         tmuxSession = nil
@@ -459,7 +434,6 @@ extension TerminalShellViewController {
             removeControlState(paneId)
             removePaneRuntime(paneId)
             paneStore.artifactSelectors.removeValue(forKey: paneId)
-            terminalTextView.discardPaneZoom(paneId)
             paneStore.scrollRemainders.removeValue(forKey: paneId)
             paneStore.workingDirectories.removeValue(forKey: paneId)
             paneStore.modes.removeValue(forKey: paneId)
@@ -621,10 +595,7 @@ extension TerminalShellViewController {
             else {
                 continue
             }
-            let geometry = terminalTextView.skiaRenderGeometry(
-                for: entry.value,
-                paneId: entry.key
-            )
+            let geometry = terminalTextView.skiaRenderGeometry(for: entry.value)
             let clear: UInt8 = index == 0 ? 1 : 0
             let ok = renderPaneFrame(
                 pane,

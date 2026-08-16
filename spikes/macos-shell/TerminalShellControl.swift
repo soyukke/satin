@@ -256,7 +256,6 @@ extension TerminalShellViewController {
         discardSuspendedTerminalSession(paneId)
         removePaneRuntime(paneId)
         paneStore.artifactSelectors.removeValue(forKey: paneId)
-        terminalTextView.discardPaneZoom(paneId)
         paneStore.discardMetadata(for: paneId)
     }
 

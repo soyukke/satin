@@ -371,45 +371,177 @@ import Foundation
                 guard let self, let window else {
                     return
                 }
-                let initial = terminalTextView.terminalGridSize()
-                metalView.resetResizeDiagnostics()
-                resetGeometryResizeDiagnostics()
-                let sizes = (0...60).map { step in
-                    let progress = CGFloat(step) / 60
-                    return NSSize(
-                        width: 780 + 340 * progress,
-                        height: 480 + 280 * progress
-                    )
+                self.beginTerminalResizeSmoke(resultPath, window: window)
+            }
+        }
+
+        func beginTerminalResizeSmoke(_ resultPath: String, window: NSWindow) {
+            guard let siblingPaneId = activePaneId,
+                let zoomedPaneId = core.splitActive(axis: ffiSplitVertical)
+            else {
+                writeSessionSmokeResult(resultPath, result: "failed terminal-resize split\n")
+                return
+            }
+            syncFromCore()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self, weak window] in
+                guard let self, let window else {
+                    return
                 }
-                applyTerminalResizeSmokeSizes(sizes, to: window) { [weak self] in
-                    guard let self else {
-                        return
-                    }
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
-                        guard let self else {
-                            return
-                        }
-                        let resized = terminalTextView.terminalGridSize()
-                        let geometry = geometryResizeDiagnostics()
-                        let ok =
-                            resized.rows > initial.rows
-                            && resized.cols > initial.cols
-                            && paneStore.runtimes[activePaneId ?? -1] != nil
-                            && metalView.drawableSizesMatchView()
-                            && geometry.requests > 1
-                            && geometry.applications < geometry.requests
-                        let status = ok ? "ok" : "failed"
-                        writeSessionSmokeResult(
+                self.runTerminalResizeSmoke(
+                    resultPath,
+                    window: window,
+                    zoomedPaneId: zoomedPaneId,
+                    siblingPaneId: siblingPaneId
+                )
+            }
+        }
+
+        func runTerminalResizeSmoke(
+            _ resultPath: String,
+            window: NSWindow,
+            zoomedPaneId: Int,
+            siblingPaneId: Int
+        ) {
+            let baselineFontSize = terminalTextView.terminalFontSize
+            let baselineGrid = paneGridSize(zoomedPaneId)
+            let siblingBaselineGrid = paneGridSize(siblingPaneId)
+            guard activePaneId == zoomedPaneId,
+                adjustTerminalZoom(by: 1)
+            else {
+                writeSessionSmokeResult(
+                    resultPath, result: "failed terminal-resize local-zoom-setup\n")
+                return
+            }
+            let initial = paneGridSize(zoomedPaneId)
+            let siblingInitial = paneGridSize(siblingPaneId)
+            let zoomIsShared =
+                abs(terminalTextView.terminalFontSize - baselineFontSize - 1) < 0.01
+            let zoomContractedGrid =
+                initial.cols <= baselineGrid.cols
+                && initial.rows <= baselineGrid.rows
+                && (initial.cols != baselineGrid.cols || initial.rows != baselineGrid.rows)
+                && siblingInitial.cols <= siblingBaselineGrid.cols
+                && siblingInitial.rows <= siblingBaselineGrid.rows
+                && (siblingInitial.cols != siblingBaselineGrid.cols
+                    || siblingInitial.rows != siblingBaselineGrid.rows)
+            metalView.resetResizeDiagnostics()
+            resetGeometryResizeDiagnostics()
+            let sizes = (0...60).map { step in
+                let progress = CGFloat(step) / 60
+                return NSSize(
+                    width: 780 + 340 * progress,
+                    height: 480 + 280 * progress
+                )
+            }
+            applyTerminalResizeSmokeSizes(sizes, to: window) { [weak self] in
+                self?.waitForTerminalResizeSmoke(
+                    resultPath,
+                    zoomedPaneId: zoomedPaneId,
+                    siblingPaneId: siblingPaneId,
+                    baselineFontSize: baselineFontSize,
+                    baselineGrid: baselineGrid,
+                    initialGrid: initial,
+                    zoomIsShared: zoomIsShared,
+                    zoomContractedGrid: zoomContractedGrid,
+                    retries: 40
+                )
+            }
+        }
+
+        func waitForTerminalResizeSmoke(
+            _ resultPath: String,
+            zoomedPaneId: Int,
+            siblingPaneId: Int,
+            baselineFontSize: CGFloat,
+            baselineGrid: (rows: Int, cols: Int, widthPixels: Int, heightPixels: Int),
+            initialGrid: (rows: Int, cols: Int, widthPixels: Int, heightPixels: Int),
+            zoomIsShared: Bool,
+            zoomContractedGrid: Bool,
+            retries: Int
+        ) {
+            drainTerminalPanes()
+            let resized = paneGridSize(zoomedPaneId)
+            let geometry = geometryResizeDiagnostics()
+            let panesFit = [zoomedPaneId, siblingPaneId].allSatisfy { paneId in
+                guard let frame = paneStore.visibleFrames[paneId] else {
+                    return false
+                }
+                let grid = paneGridSize(paneId)
+                let cell = terminalTextView.terminalCellSize()
+                return CGFloat(grid.cols) * cell.width <= frame.width + 1.5
+                    && CGFloat(grid.rows) * cell.height <= frame.height + 1.5
+            }
+            let settled =
+                panesFit
+                && resized.rows > initialGrid.rows
+                && resized.cols > initialGrid.cols
+                && paneStore.runtimes[zoomedPaneId] != nil
+                && paneStore.runtimes[siblingPaneId] != nil
+                && metalView.drawableSizesMatchView()
+                && geometry.requests > 1
+                && geometry.applications < geometry.requests
+            guard settled else {
+                if retries > 0 {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
+                        self?.waitForTerminalResizeSmoke(
                             resultPath,
-                            result: "\(status) terminal-resize "
-                                + "from=\(initial.cols)x\(initial.rows) "
-                                + "to=\(resized.cols)x\(resized.rows) "
-                                + "geometry=\(geometry.applications)/\(geometry.requests) "
-                                + "\(metalView.resizeDiagnosticsSummary())\n"
+                            zoomedPaneId: zoomedPaneId,
+                            siblingPaneId: siblingPaneId,
+                            baselineFontSize: baselineFontSize,
+                            baselineGrid: baselineGrid,
+                            initialGrid: initialGrid,
+                            zoomIsShared: zoomIsShared,
+                            zoomContractedGrid: zoomContractedGrid,
+                            retries: retries - 1
                         )
                     }
+                    return
                 }
+                writeTerminalResizeSmokeResult(
+                    resultPath,
+                    passed: false,
+                    panesFit: panesFit,
+                    baselineGrid: baselineGrid,
+                    initialGrid: initialGrid,
+                    resizedGrid: resized,
+                    geometry: geometry
+                )
+                return
             }
+            let reset =
+                resetTerminalZoom()
+                && abs(terminalTextView.terminalFontSize - baselineFontSize) < 0.01
+            writeTerminalResizeSmokeResult(
+                resultPath,
+                passed: zoomIsShared && zoomContractedGrid && reset,
+                panesFit: panesFit,
+                baselineGrid: baselineGrid,
+                initialGrid: initialGrid,
+                resizedGrid: resized,
+                geometry: geometry
+            )
+        }
+
+        func writeTerminalResizeSmokeResult(
+            _ resultPath: String,
+            passed: Bool,
+            panesFit: Bool,
+            baselineGrid: (rows: Int, cols: Int, widthPixels: Int, heightPixels: Int),
+            initialGrid: (rows: Int, cols: Int, widthPixels: Int, heightPixels: Int),
+            resizedGrid: (rows: Int, cols: Int, widthPixels: Int, heightPixels: Int),
+            geometry: (requests: Int, applications: Int)
+        ) {
+            let status = passed ? "ok" : "failed"
+            writeSessionSmokeResult(
+                resultPath,
+                result: "\(status) terminal-resize matrix=local-terminal "
+                    + "font-zoom=shared grid-fit=\(panesFit ? "yes" : "no") "
+                    + "baseline=\(baselineGrid.cols)x\(baselineGrid.rows) "
+                    + "zoomed=\(initialGrid.cols)x\(initialGrid.rows) "
+                    + "to=\(resizedGrid.cols)x\(resizedGrid.rows) "
+                    + "geometry=\(geometry.applications)/\(geometry.requests) "
+                    + "\(metalView.resizeDiagnosticsSummary())\n"
+            )
         }
 
         func applyTerminalResizeSmokeSizes(

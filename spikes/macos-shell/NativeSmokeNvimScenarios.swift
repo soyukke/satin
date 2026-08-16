@@ -201,6 +201,7 @@ import Foundation
                     family: terminalTextView.terminalFontFamily,
                     size: defaultTerminalFontSize
                 )
+                resizeTerminalPanesToGrid()
                 runNvimCommandOrWrite(
                     "enew! | call setline(1, ['\(nvimSmokeReadyMarker)', 'LAYOUT_REDRAW'])",
                     fallback: Data()

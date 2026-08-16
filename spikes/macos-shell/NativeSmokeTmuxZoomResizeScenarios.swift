@@ -7,7 +7,33 @@ import Foundation
         let rows: Int
     }
 
+    struct TmuxSmokeGridFitState {
+        let valid: Bool
+        let summary: String
+    }
+
     extension TerminalShellViewController {
+        func tmuxReportedClientGrid() -> NativePaneGridCapacity? {
+            guard let session = tmuxSession,
+                let snapshot = lastSnapshot,
+                let tab = snapshot.tabs.first(where: { $0.index == snapshot.active_tab })
+            else {
+                return nil
+            }
+            let leafCapacities = session.tmuxPaneIds.reduce(
+                into: [Int: NativePaneGridCapacity]()
+            ) { capacities, entry in
+                guard let pane = session.latestPanes[entry.value] else {
+                    return
+                }
+                capacities[entry.key] = NativePaneGridCapacity(
+                    rows: Int(pane.rows),
+                    cols: Int(pane.cols)
+                )
+            }
+            return tmuxClientGridCapacity(layout: tab.layout, leafCapacities: leafCapacities)
+        }
+
         func verifyTmuxSmokeFontZoom(
             baselineGrid: (rows: Int, cols: Int, widthPixels: Int, heightPixels: Int)
         ) -> Bool {
@@ -23,34 +49,51 @@ import Foundation
             guard paneIds.contains(zoomedPaneId) else {
                 return false
             }
-            let baselineSize = terminalTextView.fontSize(nil)
-            guard paneIds.allSatisfy({ abs(terminalTextView.fontSize($0) - baselineSize) < 0.01 }),
-                terminalTextView.handleCommandKey(zoomInEvent)
+            let baselineSize = terminalTextView.terminalFontSize
+            guard terminalTextView.handleCommandKey(zoomInEvent)
             else {
                 return false
             }
             let zoomedGrid = tmuxClientGrid()
             guard
-                paneIds.allSatisfy({
-                    abs(terminalTextView.fontSize($0) - baselineSize - 1) < 0.01
-                }),
-                session.lastClientGrid?.cols == zoomedGrid.cols,
-                session.lastClientGrid?.rows == zoomedGrid.rows,
+                abs(terminalTextView.terminalFontSize - baselineSize - 1) < 0.01,
                 zoomedGrid.cols <= baselineGrid.cols,
                 zoomedGrid.rows <= baselineGrid.rows,
                 zoomedGrid.cols != baselineGrid.cols || zoomedGrid.rows != baselineGrid.rows,
+                session.requestedClientGrid?.cols == zoomedGrid.cols,
+                session.requestedClientGrid?.rows == zoomedGrid.rows,
                 terminalTextView.handleCommandKey(zoomOutEvent)
             else {
                 return false
             }
             let restoredGrid = tmuxClientGrid()
-            return paneIds.allSatisfy({
-                abs(terminalTextView.fontSize($0) - baselineSize) < 0.01
-            })
-                && restoredGrid.cols == baselineGrid.cols
-                && restoredGrid.rows == baselineGrid.rows
-                && session.lastClientGrid?.cols == restoredGrid.cols
-                && session.lastClientGrid?.rows == restoredGrid.rows
+            guard abs(terminalTextView.terminalFontSize - baselineSize) < 0.01,
+                restoredGrid.cols == baselineGrid.cols,
+                restoredGrid.rows == baselineGrid.rows,
+                session.requestedClientGrid?.cols == restoredGrid.cols,
+                session.requestedClientGrid?.rows == restoredGrid.rows,
+                terminalTextView.handleCommandKey(zoomOutEvent)
+            else {
+                return false
+            }
+            let zoomedOutGrid = tmuxClientGrid()
+            guard abs(terminalTextView.terminalFontSize - baselineSize + 1) < 0.01,
+                zoomedOutGrid.cols >= baselineGrid.cols,
+                zoomedOutGrid.rows >= baselineGrid.rows,
+                zoomedOutGrid.cols != baselineGrid.cols
+                    || zoomedOutGrid.rows != baselineGrid.rows,
+                session.requestedClientGrid?.cols == zoomedOutGrid.cols,
+                session.requestedClientGrid?.rows == zoomedOutGrid.rows,
+                terminalTextView.handleCommandKey(zoomInEvent)
+            else {
+                return false
+            }
+            let finalGrid = tmuxClientGrid()
+            return abs(terminalTextView.terminalFontSize - baselineSize) < 0.01
+                && finalGrid.cols == baselineGrid.cols
+                && finalGrid.rows == baselineGrid.rows
+                && session.requestedClientGrid?.cols == finalGrid.cols
+                && session.requestedClientGrid?.rows == finalGrid.rows
         }
 
         func tmuxSmokeZoomEvent(increment: Bool) -> NSEvent? {
@@ -73,108 +116,371 @@ import Foundation
                 == "zoom-resize"
         }
 
-        func beginTmuxZoomReflowSmoke(
+        func beginTmuxGridMatrixSplit(_ resultPath: String) {
+            guard let previousPaneId = activePaneId,
+                runTmuxSmokeControl([
+                    "command": "split",
+                    "pane": previousPaneId,
+                    "axis": "horizontal",
+                ])
+            else {
+                failTmuxZoomResizeSmoke(resultPath, reason: "horizontal-split")
+                return
+            }
+            waitForTmuxGridMatrixSplit(
+                resultPath, previousPaneId: previousPaneId, retries: 40)
+        }
+
+        func waitForTmuxGridMatrixSplit(
+            _ resultPath: String,
+            previousPaneId: Int,
+            retries: Int
+        ) {
+            drainTerminalPanes()
+            let expected = tmuxClientGrid()
+            let ready =
+                lastSnapshot?.tabs.first?.panes.count == 3
+                && activePaneId != previousPaneId
+                && tmuxSession?.requestedClientGrid?.cols == expected.cols
+                && tmuxSession?.requestedClientGrid?.rows == expected.rows
+            guard ready else {
+                if retries > 0 {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
+                        self?.waitForTmuxGridMatrixSplit(
+                            resultPath,
+                            previousPaneId: previousPaneId,
+                            retries: retries - 1
+                        )
+                    }
+                } else {
+                    failTmuxZoomResizeSmoke(resultPath, reason: "horizontal-split-settle")
+                }
+                return
+            }
+            beginTmuxSharedZoomSmoke(resultPath, baselineGrid: expected)
+        }
+
+        func beginTmuxSharedZoomSmoke(
             _ resultPath: String,
             baselineGrid: (rows: Int, cols: Int, widthPixels: Int, heightPixels: Int)
         ) {
             guard let session = tmuxSession,
                 let snapshot = lastSnapshot,
                 let tab = snapshot.tabs.first(where: { $0.index == snapshot.active_tab }),
-                let zoomInEvent = tmuxSmokeZoomEvent(increment: true)
+                let zoomedPaneId = activePaneId
             else {
                 failTmuxZoomResizeSmoke(resultPath, reason: "zoom-setup")
                 return
             }
             let nativePaneIds = tab.panes.filter { session.tmuxPaneIds[$0] != nil }
+            let siblingPaneIds = nativePaneIds.filter { $0 != zoomedPaneId }
             let tmuxPaneIds = nativePaneIds.compactMap { session.tmuxPaneIds[$0] }
             let baselinePaneSizes = tmuxSmokePaneSizes(tmuxPaneIds)
-            let baselineFontSize = nativePaneIds.first.map(terminalTextView.fontSize) ?? 0
-            guard nativePaneIds.count == 2,
+            let baselineFontSize = terminalTextView.terminalFontSize
+            let baselineFit = tmuxSmokeGridFitState(nativePaneIds)
+            guard nativePaneIds.count == 3,
+                nativePaneIds.contains(zoomedPaneId),
                 baselinePaneSizes.count == tmuxPaneIds.count,
-                nativePaneIds.allSatisfy({
-                    abs(terminalTextView.fontSize($0) - baselineFontSize) < 0.01
-                }),
-                terminalTextView.handleCommandKey(zoomInEvent)
+                baselineFit.valid
             else {
-                failTmuxZoomResizeSmoke(resultPath, reason: "zoom-start")
+                failTmuxZoomResizeSmoke(
+                    resultPath,
+                    reason: "terminal-grid-fit",
+                    details: baselineFit.summary
+                )
                 return
             }
-            waitForTmuxZoomReflow(
+            writeToActivePane(Data("nvim -u NONE -n\r".utf8))
+            waitForTmuxNvimBeforeZoom(
                 resultPath,
-                nativePaneIds: nativePaneIds,
+                zoomedPaneId: zoomedPaneId,
+                siblingPaneIds: siblingPaneIds,
                 tmuxPaneIds: tmuxPaneIds,
                 baselineFontSize: baselineFontSize,
                 baselineGrid: baselineGrid,
                 baselinePaneSizes: baselinePaneSizes,
+                baselineFit: baselineFit.summary,
                 retries: 40
             )
         }
 
-        func waitForTmuxZoomReflow(
+        func waitForTmuxNvimBeforeZoom(
             _ resultPath: String,
-            nativePaneIds: [Int],
+            zoomedPaneId: Int,
+            siblingPaneIds: [Int],
             tmuxPaneIds: [UInt32],
             baselineFontSize: CGFloat,
             baselineGrid: (rows: Int, cols: Int, widthPixels: Int, heightPixels: Int),
             baselinePaneSizes: [UInt32: TmuxSmokePaneSize],
+            baselineFit: String,
+            retries: Int
+        ) {
+            drainTerminalPanes()
+            guard tmuxSmokePaneRunsNvim(zoomedPaneId) else {
+                if retries > 0 {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
+                        self?.waitForTmuxNvimBeforeZoom(
+                            resultPath,
+                            zoomedPaneId: zoomedPaneId,
+                            siblingPaneIds: siblingPaneIds,
+                            tmuxPaneIds: tmuxPaneIds,
+                            baselineFontSize: baselineFontSize,
+                            baselineGrid: baselineGrid,
+                            baselinePaneSizes: baselinePaneSizes,
+                            baselineFit: baselineFit,
+                            retries: retries - 1
+                        )
+                    }
+                } else {
+                    failTmuxZoomResizeSmoke(resultPath, reason: "nvim-start")
+                }
+                return
+            }
+            guard let zoomOutEvent = tmuxSmokeZoomEvent(increment: false) else {
+                failTmuxZoomResizeSmoke(resultPath, reason: "zoom-start")
+                return
+            }
+            for _ in 0..<4 {
+                guard terminalTextView.handleCommandKey(zoomOutEvent) else {
+                    failTmuxZoomResizeSmoke(resultPath, reason: "zoom-step")
+                    return
+                }
+            }
+            waitForTmuxSharedZoom(
+                resultPath,
+                zoomedPaneId: zoomedPaneId,
+                siblingPaneIds: siblingPaneIds,
+                tmuxPaneIds: tmuxPaneIds,
+                baselineFontSize: baselineFontSize,
+                baselineGrid: baselineGrid,
+                baselinePaneSizes: baselinePaneSizes,
+                baselineFit: baselineFit,
+                retries: 40
+            )
+        }
+
+        func waitForTmuxSharedZoom(
+            _ resultPath: String,
+            zoomedPaneId: Int,
+            siblingPaneIds: [Int],
+            tmuxPaneIds: [UInt32],
+            baselineFontSize: CGFloat,
+            baselineGrid: (rows: Int, cols: Int, widthPixels: Int, heightPixels: Int),
+            baselinePaneSizes: [UInt32: TmuxSmokePaneSize],
+            baselineFit: String,
             retries: Int
         ) {
             drainTerminalPanes()
             let zoomedGrid = tmuxClientGrid()
             let zoomedPaneSizes = tmuxSmokePaneSizes(tmuxPaneIds)
-            let fontsChanged = nativePaneIds.allSatisfy {
-                abs(terminalTextView.fontSize($0) - baselineFontSize - 1) < 0.01
-            }
-            let clientGridChanged =
-                zoomedGrid.cols <= baselineGrid.cols
-                && zoomedGrid.rows <= baselineGrid.rows
+            let zoomIsShared =
+                abs(terminalTextView.terminalFontSize - baselineFontSize + 4) < 0.01
+            let clientGridExpanded =
+                zoomedGrid.cols >= baselineGrid.cols
+                && zoomedGrid.rows >= baselineGrid.rows
                 && (zoomedGrid.cols != baselineGrid.cols || zoomedGrid.rows != baselineGrid.rows)
-            let panesReflowed =
-                zoomedPaneSizes.count == baselinePaneSizes.count
-                && zoomedPaneSizes != baselinePaneSizes
-                && tmuxPaneIds.allSatisfy { paneId in
-                    guard let baseline = baselinePaneSizes[paneId],
-                        let zoomed = zoomedPaneSizes[paneId]
-                    else {
-                        return false
-                    }
-                    return zoomed.cols <= baseline.cols && zoomed.rows <= baseline.rows
-                }
+            let paneGridsExpanded = tmuxPaneSizesExpanded(
+                from: baselinePaneSizes,
+                to: zoomedPaneSizes,
+                paneIds: tmuxPaneIds
+            )
+            let gridFit = tmuxSmokeGridFitState([zoomedPaneId] + siblingPaneIds)
             let settled =
-                fontsChanged
-                && clientGridChanged
-                && panesReflowed
-                && tmuxSession?.lastClientGrid?.cols == zoomedGrid.cols
-                && tmuxSession?.lastClientGrid?.rows == zoomedGrid.rows
+                zoomIsShared
+                && clientGridExpanded
+                && paneGridsExpanded
+                && gridFit.valid
+                && tmuxSmokePaneRunsNvim(zoomedPaneId)
+                && tmuxSession?.requestedClientGrid?.cols == zoomedGrid.cols
+                && tmuxSession?.requestedClientGrid?.rows == zoomedGrid.rows
             guard settled else {
                 if retries > 0 {
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
-                        self?.waitForTmuxZoomReflow(
+                        self?.waitForTmuxSharedZoom(
                             resultPath,
-                            nativePaneIds: nativePaneIds,
+                            zoomedPaneId: zoomedPaneId,
+                            siblingPaneIds: siblingPaneIds,
                             tmuxPaneIds: tmuxPaneIds,
                             baselineFontSize: baselineFontSize,
                             baselineGrid: baselineGrid,
                             baselinePaneSizes: baselinePaneSizes,
+                            baselineFit: baselineFit,
                             retries: retries - 1
                         )
                     }
                 } else {
                     failTmuxZoomResizeSmoke(
                         resultPath,
-                        reason: "zoom-reflow",
-                        details: "client=\(zoomedGrid.cols)x\(zoomedGrid.rows) "
-                            + "panes=\(tmuxSmokePaneSizesSummary(zoomedPaneSizes))"
+                        reason: "shared-nvim-reflow",
+                        details: "font=\(terminalTextView.terminalFontSize)"
+                            + "/\(baselineFontSize - 4) shared=\(zoomIsShared) "
+                            + "client-expanded=\(clientGridExpanded) "
+                            + "panes-expanded=\(paneGridsExpanded) "
+                            + "nvim=\(tmuxSmokePaneRunsNvim(zoomedPaneId)) "
+                            + "client=\(zoomedGrid.cols)x\(zoomedGrid.rows) "
+                            + "panes=\(tmuxSmokePaneSizesSummary(zoomedPaneSizes)) "
+                            + "fit=\(gridFit.summary)"
                     )
                 }
                 return
             }
             let diagnostics =
-                "zoom-client=\(baselineGrid.cols)x\(baselineGrid.rows)"
+                "terminal-fit={\(baselineFit)} "
+                + "zoom-client=\(baselineGrid.cols)x\(baselineGrid.rows)"
                 + "->\(zoomedGrid.cols)x\(zoomedGrid.rows) "
                 + "zoom-panes=\(tmuxSmokePaneSizesSummary(baselinePaneSizes))"
-                + "->\(tmuxSmokePaneSizesSummary(zoomedPaneSizes))"
-            beginTmuxZoomResizeSmoke(resultPath, zoomDiagnostics: diagnostics)
+                + "->\(tmuxSmokePaneSizesSummary(zoomedPaneSizes)) "
+                + "nvim-fit={\(gridFit.summary)}"
+            startTmuxNvimZoomProbe(
+                resultPath,
+                zoomedPaneId: zoomedPaneId,
+                siblingPaneIds: siblingPaneIds,
+                baselineFontSize: baselineFontSize,
+                diagnostics: diagnostics,
+                retries: 40
+            )
+        }
+
+        func startTmuxNvimZoomProbe(
+            _ resultPath: String,
+            zoomedPaneId: Int,
+            siblingPaneIds: [Int],
+            baselineFontSize: CGFloat,
+            diagnostics: String,
+            retries: Int
+        ) {
+            guard let expected = tmuxSmokePaneSize(zoomedPaneId) else {
+                failTmuxZoomResizeSmoke(resultPath, reason: "nvim-probe-size")
+                return
+            }
+            writeTmuxNvimGridProbe()
+            waitForTmuxNvimZoomProbe(
+                resultPath,
+                zoomedPaneId: zoomedPaneId,
+                siblingPaneIds: siblingPaneIds,
+                baselineFontSize: baselineFontSize,
+                expected: expected,
+                diagnostics: diagnostics,
+                retries: retries
+            )
+        }
+
+        func waitForTmuxNvimZoomProbe(
+            _ resultPath: String,
+            zoomedPaneId: Int,
+            siblingPaneIds: [Int],
+            baselineFontSize: CGFloat,
+            expected: TmuxSmokePaneSize,
+            diagnostics: String,
+            retries: Int
+        ) {
+            drainTerminalPanes()
+            guard tmuxSmokePaneSize(zoomedPaneId) == expected else {
+                if retries > 0 {
+                    startTmuxNvimZoomProbe(
+                        resultPath,
+                        zoomedPaneId: zoomedPaneId,
+                        siblingPaneIds: siblingPaneIds,
+                        baselineFontSize: baselineFontSize,
+                        diagnostics: diagnostics,
+                        retries: retries - 1
+                    )
+                } else {
+                    failTmuxZoomResizeSmoke(resultPath, reason: "nvim-probe-unstable")
+                }
+                return
+            }
+            let marker = tmuxNvimGridMarker(expected)
+            let markerVisible =
+                projectedTmuxPane(zoomedPaneId)?
+                .controlScreenText().contains(marker) == true
+            let fit = tmuxSmokeGridFitState([zoomedPaneId] + siblingPaneIds)
+            guard markerVisible, fit.valid else {
+                if retries > 0 {
+                    if retries.isMultiple(of: 4) {
+                        writeTmuxNvimGridProbe()
+                    }
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
+                        self?.waitForTmuxNvimZoomProbe(
+                            resultPath,
+                            zoomedPaneId: zoomedPaneId,
+                            siblingPaneIds: siblingPaneIds,
+                            baselineFontSize: baselineFontSize,
+                            expected: expected,
+                            diagnostics: diagnostics,
+                            retries: retries - 1
+                        )
+                    }
+                } else {
+                    let screen =
+                        projectedTmuxPane(zoomedPaneId)?.controlScreenText()
+                        .suffix(600).replacingOccurrences(of: "\n", with: "|") ?? "missing"
+                    failTmuxZoomResizeSmoke(
+                        resultPath,
+                        reason: "nvim-grid-report",
+                        details: "expected=\(marker) fit=\(fit.summary) screen=\(screen)"
+                    )
+                }
+                return
+            }
+            beginTmuxZoomResizeSmoke(
+                resultPath,
+                zoomedPaneId: zoomedPaneId,
+                siblingPaneIds: siblingPaneIds,
+                baselineFontSize: baselineFontSize,
+                diagnostics: diagnostics + " nvim-reported=\(marker)"
+            )
+        }
+
+        func tmuxSmokePaneRunsNvim(_ nativePaneId: Int) -> Bool {
+            guard let tmuxPaneId = tmuxSession?.tmuxPaneIds[nativePaneId],
+                let command = tmuxSession?.latestPanes[tmuxPaneId]?.current_command
+            else {
+                return false
+            }
+            return command.lowercased().contains("nvim")
+        }
+
+        func tmuxSmokePaneSize(_ nativePaneId: Int) -> TmuxSmokePaneSize? {
+            guard let tmuxPaneId = tmuxSession?.tmuxPaneIds[nativePaneId],
+                let pane = tmuxSession?.latestPanes[tmuxPaneId]
+            else {
+                return nil
+            }
+            return TmuxSmokePaneSize(cols: Int(pane.cols), rows: Int(pane.rows))
+        }
+
+        func writeTmuxNvimGridProbe() {
+            guard let session = tmuxSession,
+                let nativePaneId = activePaneId,
+                let tmuxPaneId = session.tmuxPaneIds[nativePaneId]
+            else {
+                return
+            }
+            let command = ":put='SATIN_GRID_'.&columns.'x'.&lines|redraw!"
+            _ = session.gateway.tmuxCommand("send-keys -t %\(tmuxPaneId) Escape")
+            _ = session.gateway.tmuxCommand(
+                "send-keys -t %\(tmuxPaneId) -l \(shellQuote(command))")
+            _ = session.gateway.tmuxCommand("send-keys -t %\(tmuxPaneId) Enter")
+        }
+
+        func tmuxNvimGridMarker(_ size: TmuxSmokePaneSize) -> String {
+            "SATIN_GRID_\(size.cols)x\(size.rows)"
+        }
+
+        func tmuxPaneSizesExpanded(
+            from baseline: [UInt32: TmuxSmokePaneSize],
+            to zoomed: [UInt32: TmuxSmokePaneSize],
+            paneIds: [UInt32]
+        ) -> Bool {
+            zoomed.count == baseline.count
+                && zoomed != baseline
+                && paneIds.allSatisfy { paneId in
+                    guard let before = baseline[paneId], let after = zoomed[paneId] else {
+                        return false
+                    }
+                    return after.cols >= before.cols && after.rows >= before.rows
+                }
         }
 
         func tmuxSmokePaneSizes(_ paneIds: [UInt32]) -> [UInt32: TmuxSmokePaneSize] {
@@ -196,6 +502,82 @@ import Foundation
             }.joined(separator: ",")
         }
 
+        func tmuxSmokeGridFitState(_ paneIds: [Int]) -> TmuxSmokeGridFitState {
+            guard let session = tmuxSession else {
+                return TmuxSmokeGridFitState(valid: false, summary: "no-session")
+            }
+            var valid = true
+            let summaries = paneIds.map { paneId -> String in
+                guard let tmuxPaneId = session.tmuxPaneIds[paneId],
+                    let snapshot = session.latestPanes[tmuxPaneId],
+                    let frame = paneStore.visibleFrames[paneId]
+                else {
+                    valid = false
+                    return "native:\(paneId):missing"
+                }
+                let cursor =
+                    projectedTmuxPane(paneId)?.cursorPosition()
+                    ?? (x: Int(snapshot.cursor_x), y: Int(snapshot.cursor_y))
+                let cell = terminalTextView.terminalCellSize()
+                let usedWidth = CGFloat(snapshot.cols) * cell.width
+                let usedHeight = CGFloat(snapshot.rows) * cell.height
+                let tolerance: CGFloat = 1.5
+                let fits =
+                    usedWidth <= frame.width + tolerance
+                    && usedHeight <= frame.height + tolerance
+                let unusedWidth = max(0, frame.width - usedWidth)
+                let unusedHeight = max(0, frame.height - usedHeight)
+                let verticalHeaderBudget =
+                    nativePaneChromeHeight * CGFloat(max(0, paneIds.count - 1))
+                let slackBounded =
+                    unusedWidth < cell.width + tolerance
+                    && unusedHeight < verticalHeaderBudget + cell.height + tolerance
+                let cursorInside =
+                    cursor.x >= 0 && cursor.x < Int(snapshot.cols)
+                    && cursor.y >= 0 && cursor.y < Int(snapshot.rows)
+                    && CGFloat(cursor.x + 1) * cell.width <= frame.width + tolerance
+                    && CGFloat(cursor.y + 1) * cell.height <= frame.height + tolerance
+                let inputAligned: Bool
+                if paneId == activePaneId {
+                    let cursorCenter = NSPoint(
+                        x: frame.minX + (CGFloat(cursor.x) + 0.5) * cell.width,
+                        y: frame.minY + (CGFloat(cursor.y) + 0.5) * cell.height
+                    )
+                    let mapped = terminalTextView.mouseGridPosition(cursorCenter)
+                    let expectedIme = NSPoint(
+                        x: min(
+                            frame.minX + CGFloat(cursor.x) * cell.width,
+                            frame.maxX - cell.width
+                        ),
+                        y: min(
+                            frame.minY + CGFloat(cursor.y) * cell.height,
+                            frame.maxY - cell.height
+                        )
+                    )
+                    let ime = terminalTextView.markedTextOriginForSmoke()
+                    inputAligned =
+                        mapped?.row == cursor.y && mapped?.col == cursor.x
+                        && abs(ime.x - expectedIme.x) < 0.5
+                        && abs(ime.y - expectedIme.y) < 0.5
+                } else {
+                    inputAligned = true
+                }
+                valid = valid && fits && slackBounded && cursorInside && inputAligned
+                return "%\(tmuxPaneId):\(snapshot.cols)x\(snapshot.rows)"
+                    + ":used=\(Int(usedWidth.rounded()))x\(Int(usedHeight.rounded()))"
+                    + ":frame=\(Int(frame.width.rounded()))x\(Int(frame.height.rounded()))"
+                    + ":fit=\(fits ? "yes" : "no")"
+                    + ":slack=\(Int(unusedWidth.rounded()))x\(Int(unusedHeight.rounded()))"
+                    + ":bounded=\(slackBounded ? "yes" : "no")"
+                    + ":cursor=\(cursorInside ? "yes" : "no")"
+                    + ":input=\(inputAligned ? "yes" : "no")"
+            }
+            return TmuxSmokeGridFitState(
+                valid: valid && summaries.count == paneIds.count,
+                summary: summaries.joined(separator: ",")
+            )
+        }
+
         func failTmuxZoomResizeSmoke(
             _ resultPath: String,
             reason: String,
@@ -209,7 +591,10 @@ import Foundation
 
         func beginTmuxZoomResizeSmoke(
             _ resultPath: String,
-            zoomDiagnostics: String
+            zoomedPaneId: Int,
+            siblingPaneIds: [Int],
+            baselineFontSize: CGFloat,
+            diagnostics: String
         ) {
             guard let window = view.window else {
                 failTmuxZoomResizeSmoke(resultPath, reason: "no-window")
@@ -217,34 +602,51 @@ import Foundation
             }
             metalView.resetResizeDiagnostics()
             resetGeometryResizeDiagnostics()
-            let sizes = (0...60).map { step in
+            tmuxSession?.clientResizeRequestCount = 0
+            let growth = (0...60).map { step in
                 let progress = CGFloat(step) / 60
                 return NSSize(
                     width: 780 + 340 * progress,
                     height: 480 + 280 * progress
                 )
             }
+            let sizes = growth + growth.dropLast().reversed()
             applyTerminalResizeSmokeSizes(sizes, to: window) { [weak self] in
                 self?.waitForTmuxZoomResizeSmoke(
                     resultPath,
-                    zoomDiagnostics: zoomDiagnostics,
-                    retries: 40
+                    zoomedPaneId: zoomedPaneId,
+                    siblingPaneIds: siblingPaneIds,
+                    baselineFontSize: baselineFontSize,
+                    diagnostics: diagnostics,
+                    retries: 160
                 )
             }
         }
 
         func waitForTmuxZoomResizeSmoke(
             _ resultPath: String,
-            zoomDiagnostics: String,
+            zoomedPaneId: Int,
+            siblingPaneIds: [Int],
+            baselineFontSize: CGFloat,
+            diagnostics: String,
             retries: Int
         ) {
+            drainTerminalPanes()
             let expected = tmuxClientGrid()
             let geometry = geometryResizeDiagnostics()
+            let clientResizeRequests = tmuxSession?.clientResizeRequestCount ?? 0
+            let zoomRemainsShared =
+                abs(terminalTextView.terminalFontSize - baselineFontSize + 4) < 0.01
+            let gridFit = tmuxSmokeGridFitState([zoomedPaneId] + siblingPaneIds)
             let settled =
-                lastSnapshot?.tabs.first?.panes.count == 2
-                && tmuxSession?.lastClientGrid?.cols == expected.cols
-                && tmuxSession?.lastClientGrid?.rows == expected.rows
-                && metalView.drawableSizesMatchView()
+                lastSnapshot?.tabs.first?.panes.count == siblingPaneIds.count + 1
+                && zoomRemainsShared
+                && gridFit.valid
+                && tmuxSmokePaneRunsNvim(zoomedPaneId)
+                && tmuxSession?.requestedClientGrid?.cols == expected.cols
+                && tmuxSession?.requestedClientGrid?.rows == expected.rows
+                && clientResizeRequests > 0
+                && clientResizeRequests < geometry.applications
                 && geometry.requests > 1
                 && geometry.applications < geometry.requests
             guard settled else {
@@ -252,17 +654,115 @@ import Foundation
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
                         self?.waitForTmuxZoomResizeSmoke(
                             resultPath,
-                            zoomDiagnostics: zoomDiagnostics,
+                            zoomedPaneId: zoomedPaneId,
+                            siblingPaneIds: siblingPaneIds,
+                            baselineFontSize: baselineFontSize,
+                            diagnostics: diagnostics,
                             retries: retries - 1
                         )
                     }
                 } else {
-                    tmuxSession?.gateway.tmuxCommand("kill-session")
-                    writeSessionSmokeResult(
+                    let requested = tmuxSession?.requestedClientGrid
+                    let reported = tmuxReportedClientGrid()
+                    failTmuxZoomResizeSmoke(
                         resultPath,
-                        result: "failed tmux-zoom-resize settle-timeout "
+                        reason: "resize-settle",
+                        details: "client=\(expected.cols)x\(expected.rows) "
+                            + "requested=\(requested?.cols ?? -1)x\(requested?.rows ?? -1) "
+                            + "reported=\(reported?.cols ?? -1)x\(reported?.rows ?? -1) "
+                            + "tmux-resizes=\(clientResizeRequests) "
                             + "geometry=\(geometry.applications)/\(geometry.requests) "
-                            + "\(metalView.resizeDiagnosticsSummary())\n"
+                            + "fit=\(gridFit.summary) "
+                            + metalView.resizeDiagnosticsSummary()
+                    )
+                }
+                return
+            }
+            startTmuxNvimResizeProbe(
+                resultPath,
+                zoomedPaneId: zoomedPaneId,
+                siblingPaneIds: siblingPaneIds,
+                diagnostics: diagnostics + " resized-fit={\(gridFit.summary)} "
+                    + "tmux-resizes=\(clientResizeRequests) "
+                    + "geometry=\(geometry.applications)/\(geometry.requests) "
+                    + metalView.resizeDiagnosticsSummary(),
+                retries: 40
+            )
+        }
+
+        func startTmuxNvimResizeProbe(
+            _ resultPath: String,
+            zoomedPaneId: Int,
+            siblingPaneIds: [Int],
+            diagnostics: String,
+            retries: Int
+        ) {
+            guard let expected = tmuxSmokePaneSize(zoomedPaneId) else {
+                failTmuxZoomResizeSmoke(resultPath, reason: "resize-probe-size")
+                return
+            }
+            writeTmuxNvimGridProbe()
+            waitForTmuxNvimResizeProbe(
+                resultPath,
+                zoomedPaneId: zoomedPaneId,
+                siblingPaneIds: siblingPaneIds,
+                expected: expected,
+                diagnostics: diagnostics,
+                retries: retries
+            )
+        }
+
+        func waitForTmuxNvimResizeProbe(
+            _ resultPath: String,
+            zoomedPaneId: Int,
+            siblingPaneIds: [Int],
+            expected: TmuxSmokePaneSize,
+            diagnostics: String,
+            retries: Int
+        ) {
+            drainTerminalPanes()
+            guard tmuxSmokePaneSize(zoomedPaneId) == expected else {
+                if retries > 0 {
+                    startTmuxNvimResizeProbe(
+                        resultPath,
+                        zoomedPaneId: zoomedPaneId,
+                        siblingPaneIds: siblingPaneIds,
+                        diagnostics: diagnostics,
+                        retries: retries - 1
+                    )
+                } else {
+                    failTmuxZoomResizeSmoke(resultPath, reason: "resize-probe-unstable")
+                }
+                return
+            }
+            let marker = tmuxNvimGridMarker(expected)
+            let markerVisible =
+                projectedTmuxPane(zoomedPaneId)?
+                .controlScreenText().contains(marker) == true
+            let gridFit = tmuxSmokeGridFitState([zoomedPaneId] + siblingPaneIds)
+            guard markerVisible, gridFit.valid else {
+                if retries > 0 {
+                    if retries.isMultiple(of: 4) {
+                        writeTmuxNvimGridProbe()
+                    }
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
+                        self?.waitForTmuxNvimResizeProbe(
+                            resultPath,
+                            zoomedPaneId: zoomedPaneId,
+                            siblingPaneIds: siblingPaneIds,
+                            expected: expected,
+                            diagnostics: diagnostics,
+                            retries: retries - 1
+                        )
+                    }
+                } else {
+                    let screen =
+                        projectedTmuxPane(zoomedPaneId)?.controlScreenText()
+                        .suffix(600).replacingOccurrences(of: "\n", with: "|") ?? "missing"
+                    failTmuxZoomResizeSmoke(
+                        resultPath,
+                        reason: "resize-nvim-grid-report",
+                        details: "expected=\(marker) fit=\(gridFit.summary) screen=\(screen)"
                     )
                 }
                 return
@@ -270,9 +770,7 @@ import Foundation
             tmuxSession?.gateway.tmuxCommand("kill-session")
             waitForTmuxZoomResizeSmokeExit(
                 resultPath,
-                diagnostics: "\(zoomDiagnostics) "
-                    + "geometry=\(geometry.applications)/\(geometry.requests) "
-                    + metalView.resizeDiagnosticsSummary(),
+                diagnostics: diagnostics + " resized-nvim-reported=\(marker)",
                 retries: 30
             )
         }
@@ -299,7 +797,8 @@ import Foundation
             }
             writeSessionSmokeResult(
                 resultPath,
-                result: "ok tmux-zoom-resize font-zoom=window-reflow resize=responsive "
+                result: "ok tmux-zoom-resize matrix=tmux-terminal+nvim "
+                    + "font-zoom=shared grid=aligned resize=responsive "
                     + "\(diagnostics)\n"
             )
         }

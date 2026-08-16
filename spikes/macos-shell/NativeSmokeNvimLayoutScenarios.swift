@@ -102,6 +102,7 @@ import Foundation
                 && terminalTextView.rendererModelContainsTexts([nvimSmokeReadyMarker])
                 && actual?.cols == expected.cols
                 && actual?.rows == expected.rows
+                && nvimSmokeGridFitsPane(nvimPaneId, grid: expected)
                 && metalView.skiaFrames() > 0
                 && !metalView.hasPendingFrameRequest()
                 && metalView.drawableSizesMatchView()
@@ -126,7 +127,7 @@ import Foundation
                 writeNvimLayoutRedrawFailure(resultPath, phase: "zoom-out")
                 return
             }
-            waitForNvimPaneZoomRedraw(
+            waitForNvimZoomRedraw(
                 resultPath,
                 nvimPaneId: nvimPaneId,
                 baseline: expected,
@@ -135,7 +136,7 @@ import Foundation
             )
         }
 
-        func waitForNvimPaneZoomRedraw(
+        func waitForNvimZoomRedraw(
             _ resultPath: String,
             nvimPaneId: Int,
             baseline: (rows: Int, cols: Int, widthPixels: Int, heightPixels: Int),
@@ -151,12 +152,13 @@ import Foundation
                 && terminalTextView.rendererModelContainsTexts([nvimSmokeReadyMarker])
                 && actual?.cols == expected.cols
                 && actual?.rows == expected.rows
+                && nvimSmokeGridFitsPane(nvimPaneId, grid: expected)
                 && metalView.skiaFrames() > 0
                 && !metalView.hasPendingFrameRequest()
                 && metalView.drawableSizesMatchView()
             if !ready, retries > 0 {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
-                    self?.waitForNvimPaneZoomRedraw(
+                    self?.waitForNvimZoomRedraw(
                         resultPath,
                         nvimPaneId: nvimPaneId,
                         baseline: baseline,
@@ -204,6 +206,7 @@ import Foundation
                 terminalTextView.rendererModelContainsTexts([nvimSmokeReadyMarker])
                 && actual?.cols == expected.cols
                 && actual?.rows == expected.rows
+                && nvimSmokeGridFitsPane(nvimPaneId, grid: expected)
                 && metalView.skiaFrames() > 0
                 && !metalView.hasPendingFrameRequest()
                 && metalView.drawableSizesMatchView()
@@ -229,7 +232,8 @@ import Foundation
                 text: nvimSmokeReadyMarker
             )
             let result =
-                "\(status) nvim-layout-redraw close={\(closeSummary)} "
+                "\(status) nvim-layout-redraw matrix=local-nvim grid-fit=yes "
+                + "close={\(closeSummary)} "
                 + "zoom={\(zoomSummary)} resize={\(resizeSummary)} "
                 + "geometry=\(geometry) viewport=\(viewport) "
                 + "marker=\(marker)\n"
@@ -247,6 +251,18 @@ import Foundation
             return "expected=\(expected.cols)x\(expected.rows) actual=\(actualSize) "
                 + "skia=\(metalView.skiaFrames()) \(metalView.frameRequestDiagnosticsSummary()) "
                 + metalView.resizeDiagnosticsSummary()
+        }
+
+        func nvimSmokeGridFitsPane(
+            _ paneId: Int,
+            grid: (rows: Int, cols: Int, widthPixels: Int, heightPixels: Int)
+        ) -> Bool {
+            guard let frame = paneStore.visibleFrames[paneId] else {
+                return false
+            }
+            let cell = terminalTextView.terminalCellSize()
+            return CGFloat(grid.cols) * cell.width <= frame.width + 1.5
+                && CGFloat(grid.rows) * cell.height <= frame.height + 1.5
         }
 
         func writeNvimLayoutRedrawFailure(_ resultPath: String, phase: String) {

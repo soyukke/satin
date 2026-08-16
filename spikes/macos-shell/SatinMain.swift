@@ -53,21 +53,24 @@ struct SatinApplication {
             return
         }
         if ProcessInfo.processInfo.environment["SATIN_UPDATE_SELF_TEST"] == "1" {
-            if !AppUpdateChecker.runSelfTests()
-                || !AppUpdateInstaller.runSelfTests()
-                || !runNativeApplicationDefaultsSelfTests()
-                || !NativeTmuxExecutableResolver.runSelfTests()
-                || !NativeFinderEditorLaunch.runSelfTests()
-                || !RustCore.runSelfTests()
-                || !runNativeApplicationActivationSelfTests()
-                || !runNativeFrameSchedulingSelfTests()
-                || !runNativeTmuxSplitCommandSelfTests()
-                || !runTerminalTextInputSelfTests()
-                || !NativeMainMenuController.runSelfTests()
-                || !runNativeAgentActivitySelfTests()
-                || !runNativeWorkSwitcherSelfTests()
-            {
-                failDiagnostic("update self-test failed")
+            let tests: [(name: String, run: () -> Bool)] = [
+                ("update checker", AppUpdateChecker.runSelfTests),
+                ("update installer", AppUpdateInstaller.runSelfTests),
+                ("application defaults", runNativeApplicationDefaultsSelfTests),
+                ("tmux executable", NativeTmuxExecutableResolver.runSelfTests),
+                ("Finder editor launch", NativeFinderEditorLaunch.runSelfTests),
+                ("Rust core", RustCore.runSelfTests),
+                ("application activation", runNativeApplicationActivationSelfTests),
+                ("frame scheduling", runNativeFrameSchedulingSelfTests),
+                ("tmux split command", runNativeTmuxSplitCommandSelfTests),
+                ("pane geometry", runNativePaneGeometrySelfTests),
+                ("terminal input", runTerminalTextInputSelfTests),
+                ("main menu", NativeMainMenuController.runSelfTests),
+                ("agent activity", runNativeAgentActivitySelfTests),
+                ("work switcher", runNativeWorkSwitcherSelfTests),
+            ]
+            for test in tests where !test.run() {
+                failDiagnostic("\(test.name) self-test failed")
             }
             print("update self-test passed")
             return

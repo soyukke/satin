@@ -138,7 +138,10 @@ control actions, alternate-screen reattach, explicit detach, and missing-session
 recovery.
 
 `just native-tmux-zoom-resize-smoke` is the focused regression check for
-projected-tmux window zoom reflow and coalesced host-window resize updates.
+shared font zoom, nested projected-tmux grid alignment, terminal and TUI Neovim
+sizing, and coalesced host-window resize updates.
+`just pane-grid-smoke` also runs the local terminal and native Neovim grid checks
+as one four-path release regression gate.
 
 README demo media is recorded from an isolated Satin Dev window by running
 `SATIN_ALLOW_SCREEN_CAPTURE=1 just readme-demo` in an external terminal. See

@@ -151,11 +151,12 @@ session; ordinary `tmux attach` stays inside the terminal as a TUI.
 
 Projected panes feed tmux `pane_title` updates through the same Codex and Claude
 Code lifecycle tracker as local panes, so Work Switcher status and attention
-remain available after `-CC` projection. Because a tmux window owns one shared
-cell grid, `Command-+`, `Command--`, and `Command-0` resize and reflow all panes
-in the active projected window together. Other tmux windows retain their own
-zoom, while non-tmux terminal and native Neovim panes remain independently
-zoomable.
+remain available after `-CC` projection. `Command-+`, `Command--`, and
+`Command-0` change one shared font size for the current Satin window. Local
+terminal, native Neovim, and projected tmux panes therefore reflow together.
+For projected tmux, Satin composes the shared client grid from every leaf's
+actual content frame so full-screen TUIs, including Neovim, reach every pane
+edge without renderer cropping.
 
 Running interactive `nvim` directly from Satin's supported shell integration,
 or choosing File → Open Native Neovim, uses the native `nvim --embed`
@@ -269,8 +270,8 @@ security boundary.
 - `Command-N`: open the unified native Neovim UI while retaining the current shell
 - `Command-C`, `Command-V`, `Command-A`, `Command-F`: copy, paste, select all,
   and scrollback search
-- `Command-+`, `Command--`, `Command-0`: pane-local terminal/Neovim font size;
-  projected tmux panes zoom together within their active tmux window
+- `Command-+`, `Command--`, `Command-0`: shared terminal/Neovim font size for
+  every pane in the current Satin window; reset uses the configured Appearance size
 - `Command-U`: check for signed updates in release builds
 
 ## Build from source

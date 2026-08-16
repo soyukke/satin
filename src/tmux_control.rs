@@ -151,6 +151,7 @@ pub struct TmuxControl {
     pending_commands: VecDeque<PendingCommand>,
     response: Option<CommandResponse>,
     sync_pending: bool,
+    sync_requested_while_pending: bool,
     flow_control_configured: bool,
     hydrated_panes: HashSet<u32>,
     capture_pending: HashSet<u32>,
@@ -316,6 +317,7 @@ impl TmuxControl {
         self.pending_commands.clear();
         self.response = None;
         self.sync_pending = false;
+        self.sync_requested_while_pending = false;
         self.flow_control_configured = false;
         self.hydrated_panes.clear();
         self.capture_pending.clear();
@@ -495,11 +497,18 @@ impl TmuxControl {
         self.line.clear();
         self.probe.clear();
         self.sync_pending = false;
+        self.sync_requested_while_pending = false;
         self.closing = true;
     }
 
     fn request_sync(&mut self) {
-        if self.sync_pending || self.closing {
+        if self.closing {
+            return;
+        }
+        if self.sync_pending {
+            // A topology notification can arrive while list-panes is queued or
+            // running. Remember it so the last reported layout is never stale.
+            self.sync_requested_while_pending = true;
             return;
         }
         self.sync_pending = true;
@@ -609,7 +618,11 @@ impl TmuxControl {
 
     fn finish_snapshot_response(&mut self, succeeded: bool, lines: &[Vec<u8>]) -> Result<()> {
         self.sync_pending = false;
+        let resync_requested = std::mem::take(&mut self.sync_requested_while_pending);
         if !succeeded {
+            if resync_requested {
+                self.request_sync();
+            }
             return Ok(());
         }
         let snapshot = parse_snapshot(lines)?;
@@ -633,6 +646,9 @@ impl TmuxControl {
         self.queue_pane_hydrations(&snapshot);
         self.events
             .push_back(TmuxControlEvent::Snapshot { snapshot });
+        if resync_requested {
+            self.request_sync();
+        }
         Ok(())
     }
 

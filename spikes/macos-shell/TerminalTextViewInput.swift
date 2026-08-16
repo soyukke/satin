@@ -92,20 +92,35 @@ func runTerminalTextInputSelfTests() -> Bool {
         return false
     }
 
-    let baseline = view.fontSize(nil)
-    guard view.setZoomOffset(2, for: [11, 12]),
-        abs(view.fontSize(11) - baseline - 2) < 0.01,
-        abs(view.fontSize(12) - baseline - 2) < 0.01,
-        view.fontSize(13) == baseline,
-        !view.setZoomOffset(2, for: [11, 12]),
-        view.setZoomOffset(0, for: [11, 12])
+    let baselineFontSize = view.terminalFontSize
+    let baselineCell = view.terminalCellSize()
+    let baselineGrid = view.terminalGridSize(for: textRect)
+    guard view.adjustZoom(by: 2),
+        abs(view.terminalFontSize - baselineFontSize - 2) < 0.01,
+        !view.adjustZoom(by: 0)
     else {
         return false
     }
-    guard view.fontSize(11) == baseline, view.fontSize(12) == baseline else {
+    view.setActivePaneId(11)
+    let firstPaneCell = view.terminalCellSize()
+    view.setActivePaneId(12)
+    let secondPaneCell = view.terminalCellSize()
+    let zoomedGrid = view.terminalGridSize(for: textRect)
+    guard firstPaneCell == secondPaneCell,
+        firstPaneCell.width > baselineCell.width,
+        firstPaneCell.height > baselineCell.height,
+        zoomedGrid.cols <= baselineGrid.cols,
+        zoomedGrid.rows <= baselineGrid.rows,
+        zoomedGrid.cols != baselineGrid.cols || zoomedGrid.rows != baselineGrid.rows,
+        view.resetZoom(),
+        abs(view.terminalFontSize - baselineFontSize) < 0.01,
+        view.terminalGridSize(for: textRect).cols == baselineGrid.cols,
+        view.terminalGridSize(for: textRect).rows == baselineGrid.rows
+    else {
         return false
     }
 
+    view.setActivePaneId(nil)
     var clearedPanes: [Int] = []
     var focusChanges: [Bool] = []
     view.onSelectionClearRequested = { clearedPanes.append($0) }
@@ -260,7 +275,8 @@ extension TerminalTextView {
         }
         let local = convert(point, from: nil)
         let origin = compositionOrigin()
-        let index = Int(((local.x - origin.x) / terminalCellSize().width).rounded(.down))
+        let index = Int(
+            ((local.x - origin.x) / terminalCellSize().width).rounded(.down))
         return min(max(index, 0), markedText.length)
     }
 
@@ -340,13 +356,8 @@ extension TerminalTextView {
     }
 
     func terminalCellSize() -> NSSize {
-        terminalCellSize(for: activePaneId)
-    }
-
-    func terminalCellSize(for paneId: Int?) -> NSSize {
-        let font = fontForPane(paneId)
-        let measured = ("M" as NSString).size(withAttributes: [.font: font])
-        let lineHeight = font.ascender - font.descender + font.leading
+        let measured = ("M" as NSString).size(withAttributes: [.font: terminalFont])
+        let lineHeight = terminalFont.ascender - terminalFont.descender + terminalFont.leading
         return NSSize(width: max(1, measured.width), height: max(1, lineHeight))
     }
 

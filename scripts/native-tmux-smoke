@@ -34,7 +34,8 @@ trap cleanup EXIT
 rm -f "$result_file" "$reattach_result_file" "$missing_result_file" \
   "$restart_checkpoint_result_file" "$restart_restore_result_file"
 
-SATIN_NATIVE_SMOKE_SCENARIO=tmux-native \
+SATIN_NATIVE_PERF_FONT_SIZE=15 \
+  SATIN_NATIVE_SMOKE_SCENARIO=tmux-native \
   SATIN_NATIVE_SMOKE_RESULT="$result_file" \
   "$app" >"/tmp/satin-native-tmux.log" 2>&1
 

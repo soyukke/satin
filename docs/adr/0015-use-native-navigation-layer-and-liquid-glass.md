@@ -2,7 +2,7 @@
 
 Date: 2026-08-08
 
-Amended: 2026-08-15
+Amended: 2026-08-17
 
 Status: Accepted
 
@@ -79,19 +79,17 @@ Tahoe-only custom glass view.
 - Let the grid reach the left, right, and bottom pane edges without decorative
   padding. Draw outlines at one backing pixel, using adaptive neutral gray for
   inactive panes and subdued system blue for the active pane.
-- Treat Command +/-/0 as pane-local font zoom for native terminal and Neovim
-  panes. Keep the configured Appearance font size as the shared baseline, retain
-  an in-memory offset per pane ID, and use that pane's effective cell metrics
-  consistently for PTY/Neovim resize, Skia rendering, mouse coordinates, and
-  input-method placement. Keep the text shaper and prepared-line cache per
-  runtime so mixed zoom levels do not evict one another's shaped lines on every
-  frame.
-- Treat each projected tmux window as one zoom scope. tmux owns one shared cell
-  grid per window, so every projected sibling must use the same effective cell
-  metrics while that window is active. Command +/-/0 renegotiates the control
-  client grid and lets tmux reflow each underlying PTY; never substitute a
-  clipped renderer-only scale. Preserve independent zoom offsets across tmux
-  windows.
+- Treat Command +/-/0 as window-wide font zoom. Keep exactly one effective font
+  and cell size in each Satin window; Command-0 returns it to the configured
+  Appearance size. Do not retain pane, tab, runtime, or tmux-window zoom offsets.
+  Resize local terminal and native Neovim runtimes from that shared cell before
+  presenting the next frame so rendering, mouse, cursor, and input-method
+  coordinates use the same geometry.
+- Size the projected tmux control client with the same shared cell. Recursively
+  compose every leaf's real content-frame capacity through horizontal and
+  vertical splits, accounting for pane headers and tmux separators. Let tmux
+  reflow every underlying PTY; never substitute a pane-specific render scale,
+  cursor-following crop, shifted origin, or separate glyph and placement cells.
 - Coalesce host-window geometry changes before propagating PTY, Neovim, and tmux
   grid updates. Rendering may continue during live resize, but one burst of
   AppKit frame notifications must not enqueue a matching burst of runtime resize

@@ -1,6 +1,8 @@
 import AppKit
 import Foundation
 
+private let tmuxClientResizeThrottle: DispatchTimeInterval = .milliseconds(50)
+
 extension TerminalShellViewController {
     func syncFromCore() {
         guard let snapshot = core.snapshot() else {
@@ -94,7 +96,10 @@ extension TerminalShellViewController {
         syncingTabs = false
     }
 
-    func syncPaneLayout(_ snapshot: TerminalCoreSnapshot) {
+    func syncPaneLayout(
+        _ snapshot: TerminalCoreSnapshot,
+        tmuxClientResizeImmediately: Bool = false
+    ) {
         guard let tab = snapshot.tabs.first(where: { $0.index == snapshot.active_tab }) else {
             paneStore.visibleFrames = [:]
             terminalTextView.updatePaneFrames([:], paneBounds: [:], activePaneId: nil)
@@ -103,11 +108,13 @@ extension TerminalShellViewController {
         var paneBounds: [Int: NSRect] = [:]
         var dividers: [NativePaneDivider] = []
         let contentRect = terminalTextView.terminalContentRect()
+        let minimumFrameRequirements = tmuxPaneFrameRequirements(for: tab.layout)
         collectPaneFrames(
             tab.layout,
             rect: workspaceContentRect(),
             frames: &paneBounds,
-            dividers: &dividers
+            dividers: &dividers,
+            minimumFrameRequirements: minimumFrameRequirements
         )
         if paneStore.runtimes[nativeArtifactSidebarPaneId] != nil {
             paneBounds[nativeArtifactSidebarPaneId] = artifactSidebarFrames(in: contentRect).sidebar
@@ -127,38 +134,98 @@ extension TerminalShellViewController {
             let pane = terminalPane(for: paneId)
             if !(pane is RustTmuxPane) {
                 pane?.resize(
-                    grid: terminalTextView.terminalGridSize(for: frame, paneId: paneId)
+                    grid: terminalTextView.terminalGridSize(for: frame)
                 )
             }
         }
-        syncTmuxClientSize()
+        syncTmuxClientSize(immediately: tmuxClientResizeImmediately)
     }
 
-    func syncTmuxClientSize() {
+    func syncTmuxClientSize(immediately: Bool = false) {
         guard let session = tmuxSession else {
             return
         }
-        let grid = tmuxClientGrid()
-        if session.lastClientGrid?.cols == grid.cols,
-            session.lastClientGrid?.rows == grid.rows
-        {
+        if immediately {
+            session.clientResizeThrottleWorkItem?.cancel()
+            session.clientResizeThrottleWorkItem = nil
+        } else if session.clientResizeThrottleWorkItem != nil {
             return
+        }
+        guard requestTmuxClientSizeIfNeeded(session) else {
+            return
+        }
+        let workItem = DispatchWorkItem { [weak self, weak session] in
+            guard let self, let session, tmuxSession === session else {
+                return
+            }
+            session.clientResizeThrottleWorkItem = nil
+            syncTmuxClientSize()
+        }
+        session.clientResizeThrottleWorkItem = workItem
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + tmuxClientResizeThrottle,
+            execute: workItem
+        )
+    }
+
+    func requestTmuxClientSizeIfNeeded(_ session: NativeTmuxSession) -> Bool {
+        let grid = tmuxClientGrid()
+        let desired = NativePaneGridCapacity(rows: grid.rows, cols: grid.cols)
+        // The trailing throttle pass recomputes the current grid. Comparing
+        // requests (not delayed tmux reports) sends each distinct size once.
+        if session.requestedClientGrid == desired {
+            return false
         }
         guard session.gateway.tmuxCommand("refresh-client -C \(grid.cols),\(grid.rows)") else {
-            return
+            return false
         }
-        session.lastClientGrid = (grid.cols, grid.rows)
+        session.requestedClientGrid = desired
+        #if SATIN_SMOKE_SCENARIOS
+            session.clientResizeRequestCount += 1
+        #endif
+        return true
     }
 
     func tmuxClientGrid() -> (rows: Int, cols: Int, widthPixels: Int, heightPixels: Int) {
-        // Every pane in the active tmux window shares this control-client grid
-        // and therefore the same effective cell size.
-        let fontPaneId = lastSnapshot.flatMap { snapshot in
-            snapshot.tabs.first(where: { $0.index == snapshot.active_tab })?.active_pane
+        // A tmux control client owns one grid for the whole window. Every pane
+        // uses the same cell size, so compose the real leaf capacities without
+        // introducing pane-specific zoom state.
+        let projectedPaneIds = paneStore.visibleFrames.keys.filter { paneId in
+            tmuxSession?.tmuxPaneIds[paneId] != nil
         }
-        return terminalTextView.terminalGridSize(
-            for: nativePaneContentFrame(workspaceContentRect()),
-            paneId: fontPaneId
+        let cellSize = terminalTextView.terminalCellSize()
+        let fallback = terminalTextView.terminalGridSize(
+            for: nativePaneContentFrame(workspaceContentRect()))
+        guard let snapshot = lastSnapshot,
+            let tab = snapshot.tabs.first(where: { $0.index == snapshot.active_tab })
+        else {
+            return fallback
+        }
+        let leafCapacities = Dictionary(
+            uniqueKeysWithValues: projectedPaneIds.compactMap { paneId in
+                paneStore.visibleFrames[paneId].map { frame in
+                    let grid = terminalTextView.terminalGridSize(for: frame)
+                    return (
+                        paneId,
+                        NativePaneGridCapacity(rows: grid.rows, cols: grid.cols)
+                    )
+                }
+            }
+        )
+        guard
+            let capacity = tmuxClientGridCapacity(
+                layout: tab.layout, leafCapacities: leafCapacities)
+        else {
+            return fallback
+        }
+        let scale =
+            terminalTextView.window?.backingScaleFactor
+            ?? NSScreen.main?.backingScaleFactor ?? 1
+        return (
+            max(1, capacity.rows),
+            max(1, capacity.cols),
+            max(1, Int(CGFloat(capacity.cols) * cellSize.width * scale)),
+            max(1, Int(CGFloat(capacity.rows) * cellSize.height * scale))
         )
     }
 
@@ -166,7 +233,8 @@ extension TerminalShellViewController {
         _ layout: PaneLayoutSnapshot,
         rect: NSRect,
         frames: inout [Int: NSRect],
-        dividers: inout [NativePaneDivider]
+        dividers: inout [NativePaneDivider],
+        minimumFrameRequirements: [ObjectIdentifier: NSSize]
     ) {
         if layout.kind == "leaf", let paneId = layout.pane_id {
             frames[paneId] = rect
@@ -175,7 +243,13 @@ extension TerminalShellViewController {
         guard let axis = layout.axis, let first = layout.first, let second = layout.second else {
             return
         }
-        let ratio = CGFloat(min(max(layout.ratio ?? 0.5, 0.05), 0.95))
+        let ratio = paneSplitRatio(
+            layoutRatio: layout.ratio,
+            axis: axis,
+            available: axis == "vertical" ? rect.width : rect.height,
+            firstRequirement: minimumFrameRequirements[ObjectIdentifier(first)],
+            secondRequirement: minimumFrameRequirements[ObjectIdentifier(second)]
+        )
         if let dividerAxis = NativePaneDividerAxis(rawValue: axis),
             let firstMarker = paneId(
                 at: dividerAxis == .vertical ? .trailing : .bottom,
@@ -201,7 +275,8 @@ extension TerminalShellViewController {
                 first,
                 rect: NSRect(x: rect.minX, y: rect.minY, width: firstWidth, height: rect.height),
                 frames: &frames,
-                dividers: &dividers
+                dividers: &dividers,
+                minimumFrameRequirements: minimumFrameRequirements
             )
             collectPaneFrames(
                 second,
@@ -212,7 +287,8 @@ extension TerminalShellViewController {
                     height: rect.height
                 ),
                 frames: &frames,
-                dividers: &dividers
+                dividers: &dividers,
+                minimumFrameRequirements: minimumFrameRequirements
             )
         } else {
             let firstHeight = floor(rect.height * ratio)
@@ -220,7 +296,8 @@ extension TerminalShellViewController {
                 first,
                 rect: NSRect(x: rect.minX, y: rect.minY, width: rect.width, height: firstHeight),
                 frames: &frames,
-                dividers: &dividers
+                dividers: &dividers,
+                minimumFrameRequirements: minimumFrameRequirements
             )
             collectPaneFrames(
                 second,
@@ -231,9 +308,30 @@ extension TerminalShellViewController {
                     height: rect.height - firstHeight
                 ),
                 frames: &frames,
-                dividers: &dividers
+                dividers: &dividers,
+                minimumFrameRequirements: minimumFrameRequirements
             )
         }
+    }
+
+    func tmuxPaneFrameRequirements(
+        for layout: PaneLayoutSnapshot
+    ) -> [ObjectIdentifier: NSSize] {
+        guard let session = tmuxSession else {
+            return [:]
+        }
+        let cell = terminalTextView.terminalCellSize()
+        let leafRequirements = session.tmuxPaneIds.reduce(into: [Int: NSSize]()) {
+            requirements, entry in
+            guard let pane = session.latestPanes[entry.value] else {
+                return
+            }
+            requirements[entry.key] = NSSize(
+                width: CGFloat(pane.cols) * cell.width,
+                height: CGFloat(pane.rows) * cell.height + nativePaneChromeHeight
+            )
+        }
+        return paneFrameRequirements(layout: layout, leafRequirements: leafRequirements)
     }
 
     func firstPaneId(in layout: PaneLayoutSnapshot) -> Int? {
