@@ -117,6 +117,10 @@ import Foundation
                 if let path = environment["SATIN_NATIVE_SMOKE_RESULT"], !path.isEmpty {
                     controller.applyNvimScrollSmokeScenario(resultPath: path)
                 }
+            case "nvim-scroll-visual":
+                if let path = environment["SATIN_NATIVE_SMOKE_RESULT"], !path.isEmpty {
+                    controller.applyNvimScrollVisualSmokeScenario(resultPath: path)
+                }
             case "nvim-jump":
                 if let path = environment["SATIN_NATIVE_SMOKE_RESULT"], !path.isEmpty {
                     controller.applyNvimJumpSmokeScenario(resultPath: path)

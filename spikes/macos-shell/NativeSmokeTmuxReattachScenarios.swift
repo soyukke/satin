@@ -223,14 +223,23 @@ import Foundation
                 }
                 return
             }
-            guard let pane = activePaneId.flatMap({ paneStore.runtimes[$0] as? RustTmuxPane })
+            guard let paneId = activePaneId,
+                let pane = paneStore.runtimes[paneId] as? RustTmuxPane,
+                let projectedCwd = paneStore.workingDirectories[paneId],
+                nativeNeovimWorkingDirectory(
+                    paneId: paneId,
+                    terminal: pane,
+                    requestedDirectory: nil
+                ) == projectedCwd
             else {
                 _ = session.gateway.tmuxCommand("detach-client")
-                writeSessionSmokeResult(resultPath, result: "failed tmux-reattach active-pane=no\n")
+                writeSessionSmokeResult(
+                    resultPath, result: "failed tmux-reattach active-pane-or-cwd=no\n")
                 return
             }
+            let previousScreen = pane.controlScreenText()
             let initialFrames = metalView.skiaFrames()
-            guard pane.writeThroughTmux(Data([4])) else {
+            guard sendTmuxReattachControlD(pane) else {
                 _ = session.gateway.tmuxCommand("detach-client")
                 writeSessionSmokeResult(
                     resultPath, result: "failed tmux-reattach nvim-scroll-input=no\n")
@@ -241,7 +250,8 @@ import Foundation
                 attachment: attachment,
                 pane: pane,
                 initialFrames: initialFrames,
-                topMarker: expectedContent,
+                previousScreen: previousScreen,
+                remainingScrolls: 2,
                 retries: 40
             )
         }
@@ -251,12 +261,13 @@ import Foundation
             attachment: NativeTmuxAttachment,
             pane: RustTmuxPane,
             initialFrames: Int,
-            topMarker: String,
+            previousScreen: String,
+            remainingScrolls: Int,
             retries: Int
         ) {
             let frames = metalView.skiaFrames()
             let position = abs(pane.rendererScrollPosition())
-            let scrolled = !pane.controlScreenText().contains(topMarker)
+            let scrolled = pane.controlScreenText() != previousScreen
             guard scrolled, frames > initialFrames, position > maxTerminalBottomInputSmokePosition
             else {
                 if retries > 0 {
@@ -270,7 +281,8 @@ import Foundation
                             attachment: attachment,
                             pane: pane,
                             initialFrames: initialFrames,
-                            topMarker: topMarker,
+                            previousScreen: previousScreen,
+                            remainingScrolls: remainingScrolls,
                             retries: retries - 1
                         )
                     }
@@ -293,7 +305,8 @@ import Foundation
                     attachment: attachment,
                     pane: pane,
                     initialFrames: frames,
-                    initialPosition: position
+                    initialPosition: position,
+                    remainingScrolls: remainingScrolls
                 )
             }
         }
@@ -303,17 +316,33 @@ import Foundation
             attachment: NativeTmuxAttachment,
             pane: RustTmuxPane,
             initialFrames: Int,
-            initialPosition: Double
+            initialPosition: Double,
+            remainingScrolls: Int
         ) {
             let frames = metalView.skiaFrames()
             let position = abs(pane.rendererScrollPosition())
-            guard frames > initialFrames, position < initialPosition else {
+            let fractional = abs(position.rounded() - position)
+            guard frames > initialFrames,
+                position < initialPosition,
+                position > maxTerminalBottomInputSmokePosition,
+                fractional > maxTerminalBottomInputSmokePosition
+            else {
                 _ = tmuxSession?.gateway.tmuxCommand("detach-client")
                 writeSessionSmokeResult(
                     resultPath,
                     result: "failed tmux-reattach nvim-scroll-progress=no "
                         + "frames=\(frames - initialFrames) "
-                        + "position=\(initialPosition)->\(position)\n"
+                        + "position=\(initialPosition)->\(position) fractional=\(fractional)\n"
+                )
+                return
+            }
+            if remainingScrolls > 0 {
+                waitForTmuxReattachScrollIdle(
+                    resultPath,
+                    attachment: attachment,
+                    pane: pane,
+                    remainingScrolls: remainingScrolls,
+                    retries: 120
                 )
                 return
             }
@@ -322,6 +351,87 @@ import Foundation
                 resultPath,
                 attachment: attachment,
                 retries: 30
+            )
+        }
+
+        func waitForTmuxReattachScrollIdle(
+            _ resultPath: String,
+            attachment: NativeTmuxAttachment,
+            pane: RustTmuxPane,
+            remainingScrolls: Int,
+            retries: Int
+        ) {
+            let position = abs(pane.rendererScrollPosition())
+            guard position <= maxTerminalBottomInputSmokePosition else {
+                if retries > 0 {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.01) {
+                        [weak self, weak pane] in
+                        guard let pane else {
+                            return
+                        }
+                        self?.waitForTmuxReattachScrollIdle(
+                            resultPath,
+                            attachment: attachment,
+                            pane: pane,
+                            remainingScrolls: remainingScrolls,
+                            retries: retries - 1
+                        )
+                    }
+                } else {
+                    _ = tmuxSession?.gateway.tmuxCommand("detach-client")
+                    writeSessionSmokeResult(
+                        resultPath,
+                        result: "failed tmux-reattach nvim-scroll-idle=no "
+                            + "position=\(position)\n"
+                    )
+                }
+                return
+            }
+
+            let previousScreen = pane.controlScreenText()
+            let initialFrames = metalView.skiaFrames()
+            guard sendTmuxReattachControlD(pane) else {
+                _ = tmuxSession?.gateway.tmuxCommand("detach-client")
+                writeSessionSmokeResult(
+                    resultPath, result: "failed tmux-reattach nvim-scroll-input=no\n")
+                return
+            }
+            waitForTmuxReattachScroll(
+                resultPath,
+                attachment: attachment,
+                pane: pane,
+                initialFrames: initialFrames,
+                previousScreen: previousScreen,
+                remainingScrolls: remainingScrolls - 1,
+                retries: 40
+            )
+        }
+
+        func sendTmuxReattachControlD(_ pane: RustTmuxPane) -> Bool {
+            guard let paneId = activePaneId,
+                paneStore.runtimes[paneId] === pane,
+                let pressed = tmuxReattachControlDEvent(released: false),
+                let released = tmuxReattachControlDEvent(released: true)
+            else {
+                return false
+            }
+            terminalTextView.keyDown(with: pressed)
+            terminalTextView.keyUp(with: released)
+            return true
+        }
+
+        func tmuxReattachControlDEvent(released: Bool) -> NSEvent? {
+            NSEvent.keyEvent(
+                with: released ? .keyUp : .keyDown,
+                location: .zero,
+                modifierFlags: .control,
+                timestamp: ProcessInfo.processInfo.systemUptime,
+                windowNumber: view.window?.windowNumber ?? 0,
+                context: nil,
+                characters: "\u{04}",
+                charactersIgnoringModifiers: "d",
+                isARepeat: false,
+                keyCode: 2
             )
         }
 
@@ -401,7 +511,7 @@ import Foundation
             writeSessionSmokeResult(
                 resultPath,
                 result: "\(status) tmux-reattach attached=yes descriptor=yes alternate=yes "
-                    + "primary-restored=yes nvim-scroll=yes "
+                    + "primary-restored=yes nvim-cwd=yes nvim-split-scroll=3x "
                     + "local-list=\(sessionListed ? "yes" : "no") "
                     + "explicit-detach-clears=\(attachmentCleared ? "yes" : "no") "
                     + "discovery=\(discoveryDetail)\n"

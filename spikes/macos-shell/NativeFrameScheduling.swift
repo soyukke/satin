@@ -1,10 +1,6 @@
 private let deterministicFrameSmokeScenarios: Set<String> = [
-    "nvim-jump",
     "nvim-layout-redraw",
-    "nvim-scroll",
-    "nvim-side-pane",
     "terminal-resize",
-    "tmux-reattach",
 ]
 
 func nativeSmokeUsesDeterministicFrames(_ scenario: String?) -> Bool {
@@ -18,13 +14,13 @@ func nativeSmokeUsesDeterministicFrames(_ scenario: String?) -> Bool {
 func runNativeFrameSchedulingSelfTests() -> Bool {
     [
         "nvim-cursor-move",
-        "nvim-jump",
         "nvim-layout-redraw",
-        "nvim-scroll",
-        "nvim-side-pane",
         "terminal-resize",
-        "tmux-reattach",
     ].allSatisfy(nativeSmokeUsesDeterministicFrames)
         && !nativeSmokeUsesDeterministicFrames(nil)
+        && !nativeSmokeUsesDeterministicFrames("nvim-jump")
+        && !nativeSmokeUsesDeterministicFrames("nvim-scroll")
+        && !nativeSmokeUsesDeterministicFrames("nvim-side-pane")
+        && !nativeSmokeUsesDeterministicFrames("tmux-reattach")
         && !nativeSmokeUsesDeterministicFrames("tmux-reattach-missing")
 }

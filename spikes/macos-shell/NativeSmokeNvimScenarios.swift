@@ -16,28 +16,62 @@ import Foundation
             )
             try? FileManager.default.removeItem(atPath: cwdFile)
 
-            let cwdCommand = [
-                "cd \(shellQuote(cwd))",
-                "printf '\\u{1b}]7;file://localhost\(cwd)\\u{07}'",
-            ].joined(separator: "; ")
-            writeToActivePane(Data("\(cwdCommand)\r".utf8))
-
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
-                self?.openNativeNeovim(nil)
-            }
-
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.6) { [weak self] in
-                self?.runNvimCommandOrWrite(
-                    "call writefile([getcwd()], '\(vimSingleQuote(cwdFile))')",
-                    fallback: Data()
-                )
-            }
-
-            DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
-                self?.writeTerminalNvimCwdSmokeResult(
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
+                guard let self else {
+                    return
+                }
+                writeToActivePane(Data("cd \(shellQuote(cwd))\r".utf8))
+                waitForTerminalCwdThenOpenNvim(
                     resultPath,
                     expected: cwd,
                     actualFile: cwdFile,
+                    retries: 30
+                )
+            }
+        }
+
+        func waitForTerminalCwdThenOpenNvim(
+            _ resultPath: String,
+            expected: String,
+            actualFile: String,
+            retries: Int
+        ) {
+            drainTerminalPanes()
+            let paneId = activePaneId
+            let terminalCwd = paneId.flatMap {
+                (paneStore.runtimes[$0] as? RustTerminalPane)?.currentWorkingDirectory()
+            }
+            guard terminalCwd == expected else {
+                if retries > 0 {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+                        self?.waitForTerminalCwdThenOpenNvim(
+                            resultPath,
+                            expected: expected,
+                            actualFile: actualFile,
+                            retries: retries - 1
+                        )
+                    }
+                    return
+                }
+                let result =
+                    "failed terminal-nvim-cwd terminal-cwd="
+                    + "\(terminalCwd ?? "nil") expected=\(expected)\n"
+                try? result.write(toFile: resultPath, atomically: true, encoding: .utf8)
+                NSApp.terminate(nil)
+                return
+            }
+            openNativeNeovim(nil)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
+                self?.runNvimCommandOrWrite(
+                    "call writefile([getcwd()], '\(vimSingleQuote(actualFile))')",
+                    fallback: Data()
+                )
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.4) { [weak self] in
+                self?.writeTerminalNvimCwdSmokeResult(
+                    resultPath,
+                    expected: expected,
+                    actualFile: actualFile,
                     retries: 16
                 )
             }
@@ -67,7 +101,7 @@ import Foundation
                 }
                 clearSmokeScrollShift()
                 metalView.resetSkiaFrameCount()
-                writeToActivePane(Data([0x04]))
+                sendNvimSmokeControlD()
             }
 
             DispatchQueue.main.asyncAfter(deadline: .now() + 4.75) { [weak self] in
@@ -77,7 +111,29 @@ import Foundation
                 )
             }
 
+            DispatchQueue.main.asyncAfter(deadline: .now() + 5.25) { [weak self] in
+                guard let self else {
+                    return
+                }
+                clearSmokeScrollShift()
+                metalView.resetSkiaFrameCount()
+                sendNvimSmokeControlD()
+            }
+
             DispatchQueue.main.asyncAfter(deadline: .now() + 5.75) { [weak self] in
+                guard let self else {
+                    return
+                }
+                clearSmokeScrollShift()
+                metalView.resetSkiaFrameCount()
+                sendNvimSmokeControlD()
+            }
+
+            DispatchQueue.main.asyncAfter(deadline: .now() + 5.80) { [weak self] in
+                self?.sendNvimSmokeControlD()
+            }
+
+            DispatchQueue.main.asyncAfter(deadline: .now() + 6.30) { [weak self] in
                 self?.writeNvimAnimationSmokeResult(
                     resultPath,
                     retries: 12,
@@ -129,7 +185,7 @@ import Foundation
                 }
                 clearSmokeScrollShift()
                 metalView.resetSkiaFrameCount()
-                writeToActivePane(Data([0x04]))
+                sendNvimSmokeControlD()
             }
 
             DispatchQueue.main.asyncAfter(deadline: .now() + 4.7) { [weak self] in
@@ -281,6 +337,9 @@ import Foundation
         }
 
         func applyNvimFileTreeSmokeScenario(resultPath: String) {
+            let repoRoot =
+                ProcessInfo.processInfo.environment["SATIN_NATIVE_SMOKE_REPO_ROOT"]
+                ?? nativeWorkingDirectory()
             let openedPath = "/tmp/satin-nvim-file-tree-opened.txt"
             let treeLinesPath = "/tmp/satin-nvim-file-tree-lines.txt"
             let cwdPath = "/tmp/satin-nvim-file-tree-cwd.txt"
@@ -293,6 +352,10 @@ import Foundation
                 guard let self else {
                     return
                 }
+                runNvimCommandOrWrite(
+                    neovimChangeDirectoryCommand(repoRoot),
+                    fallback: Data()
+                )
                 runNvimCommandOrWrite(
                     "call writefile([getcwd()], '\(vimSingleQuote(cwdPath))')",
                     fallback: Data()

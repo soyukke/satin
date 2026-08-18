@@ -137,6 +137,11 @@ struct TmuxControlEvent: Decodable {
     let kind: String
     let pane_id: UInt32?
     let data: [UInt8]?
+    let rows: Int?
+    let region_top: UInt16?
+    let region_bottom: UInt16?
+    let region_left: UInt16?
+    let region_right: UInt16?
     let snapshot: TmuxSnapshot?
     let sessions: [TmuxSessionSummary]?
     let session_error: String?

@@ -3,11 +3,15 @@ set -euo pipefail
 
 app="${SATIN_NATIVE_EXECUTABLE:-spikes/macos-shell/.build/SatinApplication}"
 result_file="spikes/macos-shell/.build/native-shell-nvim.result"
+repo_root="$(pwd)"
 
 rm -f "$result_file"
 
-SATIN_NATIVE_SMOKE_SCENARIO=shell-nvim-native \
+env -u TMUX -u TMUX_PANE -u STY -u SSH_TTY -u SSH_CONNECTION \
+  SATIN_NATIVE_SMOKE_SCENARIO=shell-nvim-native \
   SATIN_NATIVE_SMOKE_RESULT="$result_file" \
+  SATIN_NATIVE_SMOKE_NVIM_LAUNCHER="$repo_root/target/debug/satin-nvim" \
+  SATIN_NATIVE_SMOKE_ZSH_INTEGRATION="$repo_root/scripts/shell-integration/zsh" \
   "$app" >"/tmp/satin-shell-nvim.log" 2>&1
 
 result=$(cat "$result_file")

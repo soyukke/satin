@@ -529,6 +529,35 @@ pub unsafe extern "C" fn satin_runtime_tmux_feed_pane(
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn satin_runtime_tmux_record_scroll_metadata(
+    pane: *mut NativeTerminalRuntime,
+    rows: isize,
+    region_top: u16,
+    region_bottom: u16,
+    region_left: u16,
+    region_right: u16,
+) -> u8 {
+    let Some(pane) = runtime_mut(pane) else {
+        return 0;
+    };
+    let region = (region_top != 0 || region_bottom != 0).then_some((
+        region_top,
+        region_bottom,
+        region_left,
+        region_right,
+    ));
+    if pane.record_tmux_scroll_metadata(rows, region).is_err() {
+        return 0;
+    }
+    1
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn satin_runtime_tmux_prepare_hydration(pane: *mut NativeTerminalRuntime) -> u8 {
+    runtime_mut(pane).is_some_and(|pane| pane.prepare_tmux_hydration().is_ok()) as u8
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn satin_runtime_tmux_shell_prompt_state(pane: *mut NativeTerminalRuntime) -> u8 {
     runtime_ref(pane)
         .and_then(|pane| pane.tmux_shell_prompt_state().ok())

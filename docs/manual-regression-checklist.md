@@ -1,0 +1,110 @@
+# Manual regression checklist
+
+Date: 2026-08-18
+
+This checklist covers the Neovim, tmux, split-pane, and working-directory
+regressions reported during the 2026-08-18 development cycle. Run it against
+`Satin Dev`, not an installed release build.
+
+## Preparation
+
+- [ ] Start the current development build with `just terminal`.
+- [ ] Confirm the window title and menu identify the application as `Satin Dev`.
+- [ ] Open a file longer than two screens, such as `src/terminal_runtime.rs`.
+- [ ] Use the normal user Neovim configuration for Neo-tree checks. Use
+  `:vsplit` as the plugin-independent fallback.
+
+## Local Neovim scrolling
+
+- [ ] From a local Satin terminal, run `nvim src/terminal_runtime.rs` and confirm
+  it opens in the native Neovim pane.
+- [ ] Wait two seconds, press `Ctrl-D` once, and confirm the first input animates.
+- [ ] Press `Ctrl-D` five more times with a short pause between inputs. Confirm
+  every input animates; animation must not be limited to the first input.
+- [ ] Press `Ctrl-U` five times and confirm every reverse scroll animates.
+- [ ] Double-tap `Ctrl-D`, then double-tap `Ctrl-U`. Confirm rapid inputs restart
+  or extend the current animation instead of jumping without animation.
+- [ ] Enter and leave command-line mode with `:` and `Escape`. Confirm this does
+  not create a false scroll animation or leave cmdline/statusline trails.
+
+## Neo-tree and split windows
+
+- [ ] Open Neo-tree on the left and keep a long file in the right editor window.
+- [ ] With the editor focused, repeat `Ctrl-D` and `Ctrl-U` five times each.
+  Confirm the editor animates every time while Neo-tree remains fixed.
+- [ ] Close Neo-tree, run `:vsplit`, and repeat the same inputs in the right
+  window. Confirm only the focused window animates.
+- [ ] Move focus with `Ctrl-W h` and `Ctrl-W l`, then scroll each eligible window.
+  Confirm the animation follows the focused Neovim grid and does not move the
+  neighboring window, separator, statusline, or cmdline.
+- [ ] Close and reopen the side window. Confirm no stale text or separator trail
+  remains.
+
+## tmux Neovim scrolling
+
+- [ ] From a local terminal, attach to or create a tmux session and run
+  `nvim src/terminal_runtime.rs` inside tmux.
+- [ ] In a full-width tmux Neovim window, wait two seconds and repeat `Ctrl-D`
+  and `Ctrl-U` five times each. Confirm the first and every later input animate.
+- [ ] Open Neo-tree or `:vsplit` inside tmux and repeat the scrolling checks.
+  Confirm only the target rectangle animates and the neighboring columns remain
+  fixed.
+- [ ] Double-tap `Ctrl-D` and `Ctrl-U` inside the tmux split. Confirm both inputs
+  are retained; there must be no one-shot-only behavior.
+- [ ] Detach and reattach the tmux session, then repeat one `Ctrl-D` and one
+  `Ctrl-U`. Confirm animation still works after rehydration.
+
+## tmux connection and return path
+
+- [ ] Open native Neovim from a local terminal so the original shell is
+  suspended behind the Neovim pane.
+- [ ] Use the Session control to connect to an existing tmux session.
+- [ ] Confirm Satin uses the suspended terminal as the connection gateway and
+  does not show `Select a terminal pane before connecting to tmux.`
+- [ ] Detach from tmux and confirm the original local shell returns and accepts
+  input.
+- [ ] Restart `Satin Dev` while a tmux session with splits and Neovim is active.
+  Confirm the session, split layout, content, active window, and cwd restore.
+
+## Working-directory contract
+
+- [ ] In a local terminal, run
+  `mkdir -p /tmp/satin-cwd-check && cd /tmp/satin-cwd-check`, then run `nvim`.
+  Confirm `:pwd` reports `/tmp/satin-cwd-check` exactly.
+- [ ] Repeat the same cwd check from a projected tmux pane. Confirm tmux
+  `current_path`, not Satin's process cwd, is used.
+- [ ] In one pane, enter an empty temporary directory. Remove that directory
+  from another pane, then try to open native Neovim from the first pane.
+- [ ] Confirm Satin shows `Could Not Open Neovim` and does not silently open
+  Neovim in the repository root, home directory, or another stale directory.
+- [ ] Return the shell to an existing directory and confirm Neovim opens there.
+
+## Pane geometry during tmux resize
+
+- [ ] Create three tmux panes, with Neovim running in one of them.
+- [ ] Use `Command-+`, `Command--`, and `Command-0`. Confirm font size is shared
+  across the whole Satin window and every tmux pane still fits its frame.
+- [ ] Rapidly grow the window and shrink it back. Confirm tmux settles on the
+  final smaller grid rather than retaining the peak grid size.
+- [ ] Confirm text, cursor, mouse targeting, and IME stay inside each pane after
+  the resize, with no crop or renderer-only scaling.
+
+## Automated evidence
+
+Run screen-capture checks only from outside Satin after explicitly allowing the
+macOS screen-recording permission.
+
+- [ ] Run `just nvim-smoke-scroll-visual` and confirm it reports exactly two
+  presented scroll animation groups and near-zero fixed-pane pixel changes.
+- [ ] Run `just nvim-smoke-scroll`, `just nvim-smoke-jump`, and
+  `just nvim-smoke-side-pane`.
+- [ ] Run `just native-tmux-smoke` and `just pane-grid-smoke`.
+- [ ] Run `just terminal-nvim-cwd-smoke` and `just precommit`.
+
+## Acceptance
+
+- [ ] No item above reproduces the first-input-only, intermittent animation,
+  split/Neo-tree, tmux return, wrong cwd, or stale tmux grid regressions.
+- [ ] Record any failure with the exact section, whether it was local or tmux,
+  the focused Neovim window, and whether it failed on the first or a later
+  input.

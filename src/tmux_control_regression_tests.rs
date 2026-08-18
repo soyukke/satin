@@ -1,4 +1,26 @@
 #[test]
+fn keeps_passthrough_protocols_while_a_pane_is_rehydrating() {
+    let mut control = TmuxControl {
+        rehydrating_panes: [7].into(),
+        ..Default::default()
+    };
+    control.push_output(
+        7,
+        b"duplicate text\x1bPtmux;\x1b\x1b_Ga=T,i=7;AAAA\x1b\x1b\\\x1b\\".to_vec(),
+    );
+    assert_eq!(control.take_event(), None);
+    control.rehydrating_panes.remove(&7);
+    control.flush_rehydration_passthrough(7);
+    assert_eq!(
+        control.take_event(),
+        Some(TmuxControlEvent::PaneOutput {
+            pane_id: 7,
+            data: b"\x1b_Ga=T,i=7;AAAA\x1b\\".to_vec(),
+        })
+    );
+}
+
+#[test]
 fn session_notification_requests_and_parses_topology() {
     let mut control = TmuxControl::default();
     control
@@ -102,4 +124,28 @@ fn topology_change_while_snapshot_pending_queues_trailing_sync() {
     );
     assert!(control.sync_pending);
     assert!(!control.sync_requested_while_pending);
+}
+
+#[test]
+fn rehydration_forwards_live_scroll_metadata_without_replaying_cells() {
+    let mut control = TmuxControl {
+        rehydrating_panes: [7].into(),
+        ..Default::default()
+    };
+    control.push_output(7, b"updated cells\x1b[1;22r\x1b[H\x1b[".to_vec());
+    assert!(control.take_event().is_none());
+    control.push_output(7, b"11M\x1b[1;24r".to_vec());
+
+    assert_eq!(
+        control.take_event(),
+        Some(TmuxControlEvent::PaneScrollMetadata {
+            pane_id: 7,
+            rows: 11,
+            region_top: Some(1),
+            region_bottom: Some(22),
+            region_left: None,
+            region_right: None,
+        })
+    );
+    assert!(control.take_event().is_none());
 }

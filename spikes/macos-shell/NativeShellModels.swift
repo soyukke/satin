@@ -1,6 +1,14 @@
 import AppKit
 import Foundation
 
+struct NativeTmuxScrollMetadata {
+    let rows: Int
+    let regionTop: UInt16?
+    let regionBottom: UInt16?
+    let regionLeft: UInt16?
+    let regionRight: UInt16?
+}
+
 protocol TerminalContextMenuProvider: AnyObject {
     func terminalContextMenu(tabIndex: Int?) -> NSMenu
 }
@@ -35,6 +43,8 @@ final class NativeTmuxSession {
     var nativeTabIds: [UInt32: Int] = [:]
     var tmuxWindowIds: [Int: UInt32] = [:]
     var bufferedOutput: [UInt32: Data] = [:]
+    var bufferedHydration: [UInt32: Data] = [:]
+    var bufferedScrollMetadata: [UInt32: [NativeTmuxScrollMetadata]] = [:]
     var latestPanes: [UInt32: TmuxPaneSnapshot] = [:]
     var requestedClientGrid: NativePaneGridCapacity?
     var clientResizeThrottleWorkItem: DispatchWorkItem?

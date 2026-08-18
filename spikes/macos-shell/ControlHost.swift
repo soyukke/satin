@@ -227,6 +227,15 @@ enum NativeControlEnvironment {
     }
 
     static func nvimLauncherPath() -> String {
+        if ProcessInfo.processInfo.environment["SATIN_NATIVE_SMOKE_SCENARIO"] != nil,
+            let override = ProcessInfo.processInfo.environment[
+                "SATIN_NATIVE_SMOKE_NVIM_LAUNCHER"
+            ],
+            (override as NSString).isAbsolutePath,
+            FileManager.default.isExecutableFile(atPath: override)
+        {
+            return override
+        }
         let bundled = Bundle.main.executableURL?
             .deletingLastPathComponent()
             .appendingPathComponent("satin-nvim")
@@ -242,6 +251,19 @@ enum NativeControlEnvironment {
     }
 
     static func zshIntegrationPath() -> String {
+        if ProcessInfo.processInfo.environment["SATIN_NATIVE_SMOKE_SCENARIO"] != nil,
+            let override = ProcessInfo.processInfo.environment[
+                "SATIN_NATIVE_SMOKE_ZSH_INTEGRATION"
+            ],
+            (override as NSString).isAbsolutePath,
+            FileManager.default.fileExists(
+                atPath: URL(fileURLWithPath: override)
+                    .appendingPathComponent(".zshrc")
+                    .path
+            )
+        {
+            return override
+        }
         let bundled = Bundle.main.resourceURL?
             .appendingPathComponent("ShellIntegration", isDirectory: true)
             .appendingPathComponent("zsh", isDirectory: true)

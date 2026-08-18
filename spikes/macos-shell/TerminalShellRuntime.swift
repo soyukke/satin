@@ -42,7 +42,12 @@ extension TerminalShellViewController {
             return
         }
         _ = pane.drain()
-        updateTerminalMetadata(pane, paneId: paneId)
+        while let event = pane.takeTmuxEvent() {
+            handleTmuxEvent(event, gatewayPaneId: paneId, gateway: pane)
+        }
+        if tmuxSession?.gatewayPaneId != paneId {
+            updateTerminalMetadata(pane, paneId: paneId)
+        }
     }
 
     func projectedTmuxPane(_ paneId: Int) -> RustTmuxPane? {
@@ -149,6 +154,20 @@ extension TerminalShellViewController {
                 return
             }
             feedTmuxOutput(paneId: paneId, data: Data(bytes))
+        case "pane_scroll_metadata":
+            guard let paneId = event.pane_id, let rows = event.rows else {
+                return
+            }
+            recordTmuxScrollMetadata(
+                paneId: paneId,
+                metadata: NativeTmuxScrollMetadata(
+                    rows: rows,
+                    regionTop: event.region_top,
+                    regionBottom: event.region_bottom,
+                    regionLeft: event.region_left,
+                    regionRight: event.region_right
+                )
+            )
         case "sessions":
             guard
                 let controller = sessionPopover?.contentViewController
@@ -220,6 +239,28 @@ extension TerminalShellViewController {
         session.bufferedOutput[paneId, default: Data()].append(data)
     }
 
+    func recordTmuxScrollMetadata(
+        paneId: UInt32,
+        metadata: NativeTmuxScrollMetadata
+    ) {
+        guard let session = tmuxSession else {
+            return
+        }
+        if let nativePaneId = session.nativePaneIds[paneId],
+            let pane = projectedTmuxPane(nativePaneId)
+        {
+            _ = pane.recordScrollMetadata(
+                rows: metadata.rows,
+                regionTop: metadata.regionTop,
+                regionBottom: metadata.regionBottom,
+                regionLeft: metadata.regionLeft,
+                regionRight: metadata.regionRight
+            )
+            return
+        }
+        session.bufferedScrollMetadata[paneId, default: []].append(metadata)
+    }
+
     func hydrateTmuxPane(paneId: UInt32, data: Data) {
         guard let session = tmuxSession else {
             return
@@ -227,6 +268,7 @@ extension TerminalShellViewController {
         if let nativePaneId = session.nativePaneIds[paneId],
             let pane = projectedTmuxPane(nativePaneId)
         {
+            _ = pane.prepareHydration()
             pane.feed(data)
             if let latest = session.latestPanes[paneId] {
                 pane.syncCursor(latest)
@@ -236,7 +278,7 @@ extension TerminalShellViewController {
             }
             return
         }
-        session.bufferedOutput[paneId] = data
+        session.bufferedHydration[paneId] = data
     }
 
     func applyTmuxSnapshot(
@@ -309,6 +351,21 @@ extension TerminalShellViewController {
             paneStore.modes[nativePaneId] = .terminal
             runtime.setOptionAsAlt(optionAsAltEnabled)
             runtime.setCurrentCommand(pane.current_command)
+            if let metadata = session.bufferedScrollMetadata.removeValue(forKey: pane.pane_id) {
+                for update in metadata {
+                    runtime.recordScrollMetadata(
+                        rows: update.rows,
+                        regionTop: update.regionTop,
+                        regionBottom: update.regionBottom,
+                        regionLeft: update.regionLeft,
+                        regionRight: update.regionRight
+                    )
+                }
+            }
+            if let hydration = session.bufferedHydration.removeValue(forKey: pane.pane_id) {
+                runtime.prepareHydration()
+                runtime.feed(hydration)
+            }
             if let buffered = session.bufferedOutput.removeValue(forKey: pane.pane_id) {
                 runtime.feed(buffered)
             }

@@ -19,6 +19,9 @@ restart_bundle_id="dev.soyukke.satin.tmuxrestartsmoke.$$"
 restart_app="$preferences_root/Satin Tmux Restart Smoke.app"
 restart_contents="$restart_app/Contents"
 restart_binary="$restart_contents/MacOS/satin-tmux-restart-smoke"
+nvim_launcher="$(pwd)/target/debug/satin-nvim"
+
+[[ -x "$nvim_launcher" ]]
 
 cleanup() {
   tmux -L "$socket_name" kill-server >/dev/null 2>&1 || true
@@ -46,7 +49,7 @@ echo "$result"
 tmux -L "$socket_name" new-session -d -s "$session_name"
 socket_path="$(tmux -L "$socket_name" display-message -p '#{socket_path}')"
 tmux -S "$socket_path" send-keys -t "$session_name" \
-  "printf '%s\\n' '$primary_marker'; nvim -u NONE -n -c 'call setline(1, range(1, 200))' -c 'call setline(1, \"$existing_marker\")'" \
+  "printf '%s\\n' '$primary_marker'; SATIN_SMOKE_SPLIT_SCROLL_OSC=1 SATIN_NVIM_TUI=1 '$nvim_launcher' -u NONE -n -c 'call setline(1, range(1, 200))' -c 'call setline(1, \"$existing_marker\")' -c 'set scrolloff=0 nosmoothscroll' -c 'vsplit' -c 'wincmd l'" \
   Enter
 
 content_ready=false

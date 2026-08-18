@@ -86,7 +86,25 @@ extension TerminalShellViewController {
         guard let paneId = activePaneId else {
             return
         }
-        _ = switchTerminalPaneToNeovim(paneId: paneId)
+        guard switchTerminalPaneToNeovim(paneId: paneId) else {
+            presentNativeNeovimLaunchError()
+            return
+        }
+    }
+
+    func presentNativeNeovimLaunchError() {
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Could Not Open Neovim"
+        alert.informativeText =
+            "The selected pane's working directory is unavailable. "
+            + "Return the shell to an existing directory and try again."
+        alert.addButton(withTitle: "OK")
+        if let window = view.window {
+            alert.beginSheetModal(for: window)
+        } else {
+            alert.runModal()
+        }
     }
 
     @objc func closeActivePane(_ sender: Any?) {

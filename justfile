@@ -292,6 +292,14 @@ nvim-smoke-scroll:
         just native-build && just _nvim-smoke nvim-scroll; \
     fi
 
+# Record two physical Ctrl-D scrolls in a split and verify their presented pixels.
+nvim-smoke-scroll-visual:
+    @if [[ -z "${IN_NIX_SHELL:-}" ]]; then \
+        exec nix develop --command just nvim-smoke-scroll-visual; \
+    else \
+        just native-build && SATIN_ALLOW_SCREEN_CAPTURE=1 ./scripts/native-nvim-scroll-visual-smoke; \
+    fi
+
 # Verify large Neovim jump animation.
 nvim-smoke-jump:
     @if [[ -z "${IN_NIX_SHELL:-}" ]]; then \
@@ -451,6 +459,7 @@ _nvim-smoke scenario:
     if [[ "{{scenario}}" == nvim-file-tree* ]]; then clean_nvim=0; fi; \
     SATIN_NATIVE_PANE=nvim \
     SATIN_NATIVE_SMOKE_CLEAN_NVIM="$clean_nvim" \
+    SATIN_NATIVE_SMOKE_REPO_ROOT="$PWD" \
     SATIN_NATIVE_SMOKE_SCENARIO="{{scenario}}" \
     SATIN_NATIVE_SMOKE_RESULT="$tmp" \
         spikes/macos-shell/.build/SatinApplication \

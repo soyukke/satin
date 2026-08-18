@@ -62,6 +62,10 @@ connection while native surfaces render the individual panes.
   add the attached session to the macOS window title. The control opens the
   session picker; do not rely on the absence of a tmux status line to communicate
   that input and layout are being proxied.
+- Resolve a projected pane's working directory from tmux `current_path`, not
+  from its renderer-only terminal runtime. When native Neovim temporarily hides
+  a local shell, keep that suspended shell eligible as the control-mode gateway
+  so the session picker can return to tmux without requiring another pane.
 - Give every tmux pane an external `libghostty-vt` runtime. Feed `%output` bytes
   into that runtime and reuse the existing Skia-Metal terminal renderer. Route
   encoded keyboard, text, mouse, focus, and resize operations back to the gateway
@@ -70,6 +74,10 @@ connection while native surfaces render the individual panes.
   Apply pending explicit VT scroll commands before checking whether the retained
   scroll spring needs another Metal frame. This keeps terminal Neovim scrolling
   smooth even when no cursor animation or later `%output` happens to schedule it.
+  Preserve the VT/OSC parser between ordinary `%output` records because tmux may
+  split one control sequence across records; reset it only when installing a
+  captured hydration state. Bound coalesced row deltas to the declared inner
+  scroll region so rapid repeated input cannot collapse into a one-row far jump.
 - On first projection of a pane whose effective `allow-passthrough` value is
   `off`, set that pane-local option to `on`; preserve an existing `on` or `all`
   value and never change the window/global default. Decode tmux's outer

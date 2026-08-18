@@ -1,7 +1,7 @@
 # 0007: Vendor Neovide rendering assets for native Neovim quality
 
 Date: 2026-07-02
-Amended: 2026-08-13
+Amended: 2026-08-18
 
 Status: Accepted
 
@@ -41,14 +41,17 @@ Neovide's `grid_position`/`grid_size` split. Renderer cache dimensions always
 come from `grid_resize`, even when `win_viewport_margins` creates window state
 before `win_pos`; placement defaults must never shrink a newly resized cache.
 `win_viewport.scroll_delta` remains the sole Neovim scroll-animation signal:
-zero deltas do not cancel an active spring, and buffer length or rendered text
-is never used to override Neovim's viewport semantics.
+zero deltas do not cancel either a pending delta in the current redraw batch or
+an active spring, and buffer length or rendered text is never used to override
+Neovim's viewport semantics.
 The retained visible lines and scrollback both use Neovide's
 logical-current-index ring model; scrollback capacity is twice the inner
 viewport height. Rotation, circular indexing, resizing, and far-jump blank rows
 follow `RenderedWindow::flush` in both directions. In particular, positive
 animation offsets after an upward viewport jump wrap past the backing array
-edge instead of dropping the lower visible rows.
+edge instead of dropping the lower visible rows. When viewport margins are
+present, the far-jump threshold is the inner viewport height rather than the
+outer grid height.
 
 The native host now sends the retained model to a Rust Skia/Metal adapter for
 the Neovim cell path. The adapter follows Neovide's macOS Metal pattern: wrap
@@ -97,11 +100,11 @@ loop nor blocks the main thread in `CAMetalLayer.nextDrawable()`.
 Native smoke processes can execute while `loginwindow` is frontmost, in which
 case macOS suppresses display-link callbacks even though the Rust renderer
 still requests an immediate frame. Smoke scenarios that depend on delayed or
-multiple frames therefore use `MTKView` one-shot invalidation with the same
-Skia renderer: cursor animation, layout redraw, Neovim scroll and jump, and
-tmux reattach. Other smoke cases continue to exercise the display link, and
-production never enables the fallback. Remove it when the smoke runner
-guarantees an active display, or replace it with an offscreen drawable path.
+multiple frames may use `MTKView` one-shot invalidation with the same Skia
+renderer for cursor, layout-redraw, and resize coverage. Neovim scroll, jump,
+side-pane, and tmux reattach smokes deliberately use the production
+`CAMetalDisplayLink`; suppressing those callbacks must fail the animation gate
+instead of letting a test-only scheduler hide the regression.
 Like Neovide's per-window surface draw, each visible retained normal window
 clears its entire grid rectangle to the default background before cached lines
 are drawn. This lets a resized foreground grid cover stale root-grid separators
@@ -195,13 +198,20 @@ The normal terminal pane now uses the same Rust Skia/Metal adapter. The
 history scroll deltas are recorded as renderer scroll animation state, and
 four-corner cursor rendering is shared with the Neovim path. Primary-screen
 output growth comes from `libghostty-vt` scrollbar state. Alternate-screen TUI
-animation is triggered only by explicit VT line insert/delete or scroll commands
-(`CSI L/M/S/T`), and the command's declared VT scroll region supplies the fixed
-top and bottom margins. Visible rows and cell background colors are not inspected
-to infer either motion or statusline boundaries. Direct interactive Neovim
+animation is triggered by explicit VT line insert/delete or scroll commands
+(`CSI L/M/S/T`). A local tmux Neovim TUI may additionally emit the versioned
+`WinScrolled` OSC event defined by ADR 0012 when a split requires a rectangular
+repaint. Those commands supply fixed top, bottom, left, and right margins.
+Visible rows and cell background colors are not inspected to infer either
+motion or statusline boundaries. Direct interactive Neovim
 commands no longer use this terminal path; ADR 0012 routes them to the native
 event-origin compositor while retaining the calling PTY. The terminal scroll
 tracker remains generic support for other alternate-screen applications.
+During tmux hydration or resize recapture, the captured pane remains the cell
+state authority, while concurrent live output is decoded to row/region scroll
+metadata. Only a compact semantic event crosses the native boundary. This
+preserves explicit VT scroll commands without applying the same live cell
+mutations after capture or queueing unrelated redraw bytes.
 `native-smoke` requires `skia-frames=yes`, and `shell-nvim-smoke` guards native
 terminal-split scrolling plus same-shell restoration.
 

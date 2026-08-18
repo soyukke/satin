@@ -166,6 +166,21 @@ func satinRuntimeTmuxFeedPane(
     _ length: Int
 ) -> UInt8
 
+@_silgen_name("satin_runtime_tmux_record_scroll_metadata")
+func satinRuntimeTmuxRecordScrollMetadata(
+    _ pane: UnsafeMutableRawPointer?,
+    _ rows: Int,
+    _ regionTop: UInt16,
+    _ regionBottom: UInt16,
+    _ regionLeft: UInt16,
+    _ regionRight: UInt16
+) -> UInt8
+
+@_silgen_name("satin_runtime_tmux_prepare_hydration")
+func satinRuntimeTmuxPrepareHydration(
+    _ pane: UnsafeMutableRawPointer?
+) -> UInt8
+
 @_silgen_name("satin_runtime_tmux_shell_prompt_state")
 func satinRuntimeTmuxShellPromptState(
     _ pane: UnsafeMutableRawPointer?

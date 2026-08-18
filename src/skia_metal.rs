@@ -591,7 +591,8 @@ mod platform {
                     + placement.viewport_col as f32 * geometry.cell_width
                     + placement.x_offset as f32,
                 geometry.origin_y
-                    + animated_kitty_row(model, placement.viewport_row) * geometry.cell_height
+                    + animated_kitty_row(model, placement.viewport_row, placement.viewport_col)
+                        * geometry.cell_height
                     + placement.y_offset as f32,
                 placement.pixel_width as f32,
                 placement.pixel_height as f32,
@@ -620,7 +621,11 @@ mod platform {
         });
     }
 
-    fn animated_kitty_row(model: &NeovideRendererModelSnapshot, viewport_row: i32) -> f32 {
+    fn animated_kitty_row(
+        model: &NeovideRendererModelSnapshot,
+        viewport_row: i32,
+        viewport_col: i32,
+    ) -> f32 {
         let row = viewport_row as f32;
         let Some(window) = model.windows.iter().find(|window| {
             window.grid_id == 1
@@ -629,7 +634,10 @@ mod platform {
             return row;
         };
         let inner = window.inner_row_range();
-        if viewport_row < i32::try_from(inner.end).unwrap_or(i32::MAX) {
+        let columns = window.inner_col_range();
+        if inner.contains(&usize::try_from(viewport_row).unwrap_or(usize::MAX))
+            && columns.contains(&usize::try_from(viewport_col).unwrap_or(usize::MAX))
+        {
             row - window.scroll_position
         } else {
             row
@@ -706,6 +714,7 @@ mod platform {
         }
         let inner = window.inner_row_range();
         draw_fixed_lines(canvas, text_renderer, window, 0..inner.start, geometry);
+        draw_fixed_columns(canvas, text_renderer, window, inner.clone(), geometry);
         draw_scrollable_lines(canvas, text_renderer, window, inner.clone(), geometry);
         draw_fixed_lines(
             canvas,
@@ -877,6 +886,29 @@ mod platform {
         canvas.restore();
     }
 
+    fn draw_fixed_columns(
+        canvas: &Canvas,
+        text_renderer: &mut NeovideTextRenderer,
+        window: &NeovideRenderedWindowSnapshot,
+        rows: std::ops::Range<usize>,
+        geometry: SkiaRenderGeometry,
+    ) {
+        let inner = window.inner_col_range();
+        for columns in [0..inner.start, inner.end..window.width] {
+            if columns.is_empty() {
+                continue;
+            }
+            canvas.save();
+            canvas.clip_rect(
+                fixed_column_clip_rect(window, rows.clone(), columns, geometry),
+                None,
+                Some(false),
+            );
+            draw_fixed_lines(canvas, text_renderer, window, rows.clone(), geometry);
+            canvas.restore();
+        }
+    }
+
     fn scroll_offset_pixels(scroll_position: f32, cell_height: f32) -> f32 {
         ((scroll_position.floor() - scroll_position) * cell_height).round()
     }
@@ -898,11 +930,26 @@ mod platform {
         inner: std::ops::Range<usize>,
         geometry: SkiaRenderGeometry,
     ) -> Rect {
+        let columns = window.inner_col_range();
         Rect::from_xywh(
-            geometry.origin_x + window.left as f32 * geometry.cell_width,
+            geometry.origin_x + (window.left + columns.start) as f32 * geometry.cell_width,
             geometry.origin_y + (window.top + inner.start) as f32 * geometry.cell_height,
-            window.width as f32 * geometry.cell_width,
+            columns.len() as f32 * geometry.cell_width,
             inner.len() as f32 * geometry.cell_height,
+        )
+    }
+
+    fn fixed_column_clip_rect(
+        window: &NeovideRenderedWindowSnapshot,
+        rows: std::ops::Range<usize>,
+        columns: std::ops::Range<usize>,
+        geometry: SkiaRenderGeometry,
+    ) -> Rect {
+        Rect::from_xywh(
+            geometry.origin_x + (window.left + columns.start) as f32 * geometry.cell_width,
+            geometry.origin_y + (window.top + rows.start) as f32 * geometry.cell_height,
+            columns.len() as f32 * geometry.cell_width,
+            rows.len() as f32 * geometry.cell_height,
         )
     }
 
@@ -988,8 +1035,14 @@ mod platform {
             return point;
         };
         let local_y = point.y - window.top as f32;
+        let local_x = point.x - window.left as f32;
         let inner = window.inner_row_range();
-        if local_y < inner.start as f32 || local_y >= inner.end as f32 {
+        let columns = window.inner_col_range();
+        if local_y < inner.start as f32
+            || local_y >= inner.end as f32
+            || local_x < columns.start as f32
+            || local_x >= columns.end as f32
+        {
             return point;
         }
         let minimum_y = window.top as f32 + inner.start as f32;
