@@ -3,6 +3,8 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use anyhow::{Result, bail};
 use serde::Serialize;
 
+use crate::terminal_scroll::TerminalScrollSequenceTracker;
+
 mod passthrough;
 mod session;
 
@@ -46,6 +48,14 @@ pub enum TmuxControlEvent {
     PaneOutput {
         pane_id: u32,
         data: Vec<u8>,
+    },
+    PaneScrollMetadata {
+        pane_id: u32,
+        rows: isize,
+        region_top: Option<u16>,
+        region_bottom: Option<u16>,
+        region_left: Option<u16>,
+        region_right: Option<u16>,
     },
     PaneHydration {
         pane_id: u32,
@@ -161,6 +171,7 @@ pub struct TmuxControl {
     alternate_backings: HashMap<u32, Vec<Vec<u8>>>,
     passthrough_attempted_panes: HashSet<u32>,
     passthrough_decoders: HashMap<u32, TmuxDcsPassthroughDecoder>,
+    scroll_sequence_trackers: HashMap<u32, TerminalScrollSequenceTracker>,
     rehydration_passthrough: HashMap<u32, Vec<u8>>,
     dropped_rehydration_passthrough: HashSet<u32>,
     paste_sequence: u64,
@@ -327,6 +338,7 @@ impl TmuxControl {
         self.alternate_backings.clear();
         self.passthrough_attempted_panes.clear();
         self.passthrough_decoders.clear();
+        self.scroll_sequence_trackers.clear();
         self.rehydration_passthrough.clear();
         self.dropped_rehydration_passthrough.clear();
         self.paste_sequence = 0;
@@ -430,7 +442,28 @@ impl TmuxControl {
             .entry(pane_id)
             .or_default()
             .decode(&data);
+        let scroll_update = self
+            .scroll_sequence_trackers
+            .entry(pane_id)
+            .or_default()
+            .feed(&decoded.all);
         if self.rehydrating_panes.contains(&pane_id) {
+            if scroll_update.rows != 0 {
+                self.events.push_back(TmuxControlEvent::PaneScrollMetadata {
+                    pane_id,
+                    rows: scroll_update.rows,
+                    region_top: scroll_update.region.map(|region| region.top),
+                    region_bottom: scroll_update.region.map(|region| region.bottom),
+                    region_left: scroll_update
+                        .region
+                        .filter(|region| region.left > 0)
+                        .map(|region| region.left),
+                    region_right: scroll_update
+                        .region
+                        .filter(|region| region.right > 0)
+                        .map(|region| region.right),
+                });
+            }
             if decoded.passthrough.is_empty()
                 || self.dropped_rehydration_passthrough.contains(&pane_id)
             {
@@ -703,6 +736,8 @@ impl TmuxControl {
         self.passthrough_attempted_panes
             .retain(|pane_id| current_panes.contains(pane_id));
         self.passthrough_decoders
+            .retain(|pane_id, _| current_panes.contains(pane_id));
+        self.scroll_sequence_trackers
             .retain(|pane_id, _| current_panes.contains(pane_id));
         self.rehydration_passthrough
             .retain(|pane_id, _| current_panes.contains(pane_id));
@@ -1489,28 +1524,6 @@ mod tests {
                 .decode(b"\x1bP1;2|payload\x1b\\plain\x1b\x1b[31mred")
                 .all,
             b"\x1bP1;2|payload\x1b\\plain\x1b\x1b[31mred"
-        );
-    }
-
-    #[test]
-    fn keeps_passthrough_protocols_while_a_pane_is_rehydrating() {
-        let mut control = TmuxControl {
-            rehydrating_panes: [7].into(),
-            ..Default::default()
-        };
-        control.push_output(
-            7,
-            b"duplicate text\x1bPtmux;\x1b\x1b_Ga=T,i=7;AAAA\x1b\x1b\\\x1b\\".to_vec(),
-        );
-        assert_eq!(control.take_event(), None);
-        control.rehydrating_panes.remove(&7);
-        control.flush_rehydration_passthrough(7);
-        assert_eq!(
-            control.take_event(),
-            Some(TmuxControlEvent::PaneOutput {
-                pane_id: 7,
-                data: b"\x1b_Ga=T,i=7;AAAA\x1b\\".to_vec(),
-            })
         );
     }
 

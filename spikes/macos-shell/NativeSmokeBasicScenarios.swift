@@ -679,13 +679,18 @@ import Foundation
                 "printf '%s:%s:%s' \"$$\" \"$SATIN_SHELL_CONTINUITY\" \"$?\" "
                     + "> \(shellQuote(after))",
             ].joined(separator: "; ")
-            writeToActivePane(Data("\(command)\r".utf8))
-            waitForShellNvimNativeContent(
-                resultPath,
-                beforePath: before,
-                afterPath: after,
-                retries: 48
-            )
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
+                guard let self else {
+                    return
+                }
+                writeToActivePane(Data("\(command)\r".utf8))
+                waitForShellNvimNativeContent(
+                    resultPath,
+                    beforePath: before,
+                    afterPath: after,
+                    retries: 48
+                )
+            }
         }
 
         func waitForShellNvimNativeContent(
@@ -710,6 +715,13 @@ import Foundation
                     return
                 }
                 writeShellNvimNativeSmokeFailure(resultPath, reason: "native-launch-timeout")
+                return
+            }
+            guard let paneId = activePaneId,
+                let suspended = paneStore.suspendedSessions[paneId]?.pane,
+                tmuxConnectionGateway(paneId: paneId) === suspended
+            else {
+                writeShellNvimNativeSmokeFailure(resultPath, reason: "tmux-gateway-missing")
                 return
             }
             runNvimCommandOrWrite(
@@ -815,7 +827,7 @@ import Foundation
             }
             let result =
                 "ok shell-nvim-native terminal-split=yes same-shell=yes "
-                + "environment=yes exit-status=yes \(scrollSummary)\n"
+                + "environment=yes exit-status=yes tmux-gateway=yes \(scrollSummary)\n"
             try? result.write(toFile: resultPath, atomically: true, encoding: .utf8)
             NSApp.terminate(nil)
         }

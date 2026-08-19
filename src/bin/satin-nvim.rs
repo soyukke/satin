@@ -38,11 +38,19 @@ fn try_native_launch(real_nvim: &Path, arguments: &[OsString]) -> Option<i32> {
     }
     let pane = env::var("SATIN_PANE_ID").ok()?.parse::<usize>().ok()?;
     let socket = PathBuf::from(env::var_os("SATIN_SOCKET")?);
-    let cwd = env::current_dir()
-        .ok()?
-        .into_os_string()
-        .into_string()
-        .ok()?;
+    let cwd = match env::current_dir() {
+        Ok(cwd) => match cwd.into_os_string().into_string() {
+            Ok(cwd) => cwd,
+            Err(_) => {
+                eprintln!("satin-nvim: the current working directory is not valid UTF-8");
+                return Some(72);
+            }
+        },
+        Err(error) => {
+            eprintln!("satin-nvim: the current working directory is unavailable: {error}");
+            return Some(72);
+        }
+    };
     let executable = real_nvim.as_os_str().to_owned().into_string().ok()?;
     let arguments = arguments
         .iter()
@@ -247,6 +255,9 @@ mod tests {
         assert!(command.starts_with("lua assert(load("));
         assert!(command.contains("satin_features"));
         assert!(command.contains("kitty_graphics = true"));
+        assert!(command.contains("scroll_events = true"));
+        assert!(command.contains("WinScrolled"));
+        assert!(command.contains("777;SatinScroll;1"));
         assert!(!command.contains("vim.g.satin_kitty_graphics"));
         assert!(command.contains("image/backends/kitty/helpers"));
         assert!(command.contains("transmit_medium.direct"));

@@ -16,6 +16,7 @@ native_swift_sources=(
   spikes/macos-shell/NativePaneGeometry.swift
   spikes/macos-shell/PaneChromeView.swift
   spikes/macos-shell/NativePaneRuntime.swift
+  spikes/macos-shell/NativeTmuxScrollMetadata.swift
   spikes/macos-shell/NativeTerminalSelection.swift
   spikes/macos-shell/NativePaneStatusStore.swift
   spikes/macos-shell/NativePaneStore.swift
@@ -55,6 +56,7 @@ native_smoke_swift_sources=(
   spikes/macos-shell/NativeSmokeNvimHelpers.swift
   spikes/macos-shell/NativeSmokeNvimLayoutScenarios.swift
   spikes/macos-shell/NativeSmokeNvimScenarios.swift
+  spikes/macos-shell/NativeSmokeNvimScrollVisualScenario.swift
   spikes/macos-shell/NativeSmokeNvimVisualScenarios.swift
   spikes/macos-shell/NativeSmokeReadmeScenarios.swift
   spikes/macos-shell/NativeSmokeState.swift

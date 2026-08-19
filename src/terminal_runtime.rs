@@ -37,6 +37,10 @@ use crate::neovide_render::{
     NeovideLine, NeovideRenderedWindowCache, NeovideRenderedWindowPlacement,
     NeovideRendererModelSnapshot, NeovideWindowDrawCommand, NeovideWindowKind,
 };
+use crate::terminal_scroll::{
+    MAX_TERMINAL_SCROLL_ANIMATION_ROWS, TerminalScrollSequenceTracker, TerminalScrollUpdate,
+    TerminalVtScrollRegion,
+};
 use crate::tmux_control::{TmuxControl, TmuxControlEvent};
 use crate::wakeup::{WakeupReceiver, WakeupSender};
 
@@ -595,6 +599,44 @@ impl NativeTerminalRuntime {
         Ok(())
     }
 
+    pub fn record_tmux_scroll_metadata(
+        &mut self,
+        rows: isize,
+        region: Option<(u16, u16, u16, u16)>,
+    ) -> Result<()> {
+        if self.pty.is_some() {
+            bail!("cannot externally update a PTY-backed terminal runtime");
+        }
+        let region = region
+            .map(|(top, bottom, left, right)| {
+                if top == 0
+                    || bottom < top
+                    || (left == 0) != (right == 0)
+                    || (left > 0 && right < left)
+                {
+                    bail!("invalid tmux scroll region");
+                }
+                Ok(TerminalVtScrollRegion {
+                    top,
+                    bottom,
+                    left,
+                    right,
+                })
+            })
+            .transpose()?;
+        self.renderer_model
+            .record_scroll_update(TerminalScrollUpdate { rows, region });
+        Ok(())
+    }
+
+    pub fn prepare_tmux_hydration(&mut self) -> Result<()> {
+        if self.pty.is_some() {
+            bail!("cannot externally hydrate a PTY-backed terminal runtime");
+        }
+        self.scroll_sequence_tracker = TerminalScrollSequenceTracker::default();
+        Ok(())
+    }
+
     pub fn tmux_shell_prompt_state(&self) -> Result<TmuxShellPromptState> {
         if self.terminal.active_screen()? != Screen::Primary {
             return Ok(TmuxShellPromptState::Unavailable);
@@ -746,10 +788,14 @@ impl NativeTerminalRuntime {
     }
 
     fn feed_terminal(&mut self, bytes: &[u8]) {
-        let scroll_update = self.scroll_sequence_tracker.feed(bytes);
+        self.record_terminal_scroll_metadata(bytes);
         self.terminal.vt_write(bytes);
-        self.renderer_model.record_scroll_update(scroll_update);
         self.update_working_directory_from_terminal();
+    }
+
+    fn record_terminal_scroll_metadata(&mut self, bytes: &[u8]) {
+        let scroll_update = self.scroll_sequence_tracker.feed(bytes);
+        self.renderer_model.record_scroll_update(scroll_update);
     }
 
     fn flush_tmux_outgoing(&mut self) -> Result<()> {
@@ -1525,215 +1571,6 @@ struct TerminalRendererModel {
     last_screen: Option<TerminalScreenSnapshot>,
 }
 
-const MAX_TERMINAL_SCROLL_ANIMATION_ROWS: isize = 24;
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-enum TerminalScrollParseState {
-    #[default]
-    Ground,
-    Escape,
-    Csi,
-    Osc,
-    OscEscape,
-    String,
-    StringEscape,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct TerminalVtScrollRegion {
-    top: u16,
-    bottom: u16,
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-struct TerminalScrollUpdate {
-    rows: isize,
-    region: Option<TerminalVtScrollRegion>,
-}
-
-#[derive(Default)]
-struct TerminalScrollSequenceTracker {
-    state: TerminalScrollParseState,
-    parameters: [u16; 2],
-    parameter_present: [bool; 2],
-    parameter_index: usize,
-    csi_valid: bool,
-    active_scroll_region: Option<TerminalVtScrollRegion>,
-}
-
-impl TerminalScrollSequenceTracker {
-    fn feed(&mut self, bytes: &[u8]) -> TerminalScrollUpdate {
-        let mut update = TerminalScrollUpdate::default();
-        for &byte in bytes {
-            let next = self.feed_byte(byte);
-            if next.rows == 0 {
-                continue;
-            }
-            if update.rows == 0 || update.region == next.region {
-                update.rows = update.rows.saturating_add(next.rows);
-                update.region = next.region;
-            } else {
-                update = next;
-            }
-        }
-        update
-    }
-
-    fn feed_byte(&mut self, byte: u8) -> TerminalScrollUpdate {
-        match self.state {
-            TerminalScrollParseState::Ground => self.feed_ground(byte),
-            TerminalScrollParseState::Escape => {
-                self.feed_escape(byte);
-                TerminalScrollUpdate::default()
-            }
-            TerminalScrollParseState::Csi => self.feed_csi(byte),
-            TerminalScrollParseState::Osc => {
-                self.feed_control_string(byte, true);
-                TerminalScrollUpdate::default()
-            }
-            TerminalScrollParseState::OscEscape => {
-                self.feed_control_string_escape(byte, true);
-                TerminalScrollUpdate::default()
-            }
-            TerminalScrollParseState::String => {
-                self.feed_control_string(byte, false);
-                TerminalScrollUpdate::default()
-            }
-            TerminalScrollParseState::StringEscape => {
-                self.feed_control_string_escape(byte, false);
-                TerminalScrollUpdate::default()
-            }
-        }
-    }
-
-    fn feed_ground(&mut self, byte: u8) -> TerminalScrollUpdate {
-        match byte {
-            0x1b => self.state = TerminalScrollParseState::Escape,
-            0x9b => self.start_csi(),
-            0x9d => self.state = TerminalScrollParseState::Osc,
-            0x90 | 0x98 | 0x9e | 0x9f => self.state = TerminalScrollParseState::String,
-            _ => {}
-        }
-        TerminalScrollUpdate::default()
-    }
-
-    fn feed_escape(&mut self, byte: u8) {
-        match byte {
-            b'[' => self.start_csi(),
-            b']' => self.state = TerminalScrollParseState::Osc,
-            b'P' | b'X' | b'^' | b'_' => self.state = TerminalScrollParseState::String,
-            0x1b => {}
-            _ => self.state = TerminalScrollParseState::Ground,
-        }
-    }
-
-    fn start_csi(&mut self) {
-        self.state = TerminalScrollParseState::Csi;
-        self.parameters = [0; 2];
-        self.parameter_present = [false; 2];
-        self.parameter_index = 0;
-        self.csi_valid = true;
-    }
-
-    fn feed_csi(&mut self, byte: u8) -> TerminalScrollUpdate {
-        match byte {
-            b'0'..=b'9' if self.parameter_index < self.parameters.len() => {
-                self.parameter_present[self.parameter_index] = true;
-                self.parameters[self.parameter_index] = self.parameters[self.parameter_index]
-                    .saturating_mul(10)
-                    .saturating_add(u16::from(byte - b'0'));
-                TerminalScrollUpdate::default()
-            }
-            b';' => {
-                self.parameter_index = self.parameter_index.saturating_add(1);
-                if self.parameter_index >= self.parameters.len() {
-                    self.csi_valid = false;
-                }
-                TerminalScrollUpdate::default()
-            }
-            0x20..=0x2f | 0x3a..=0x3f => {
-                self.csi_valid = false;
-                TerminalScrollUpdate::default()
-            }
-            0x40..=0x7e => {
-                self.state = TerminalScrollParseState::Ground;
-                self.update_for_final(byte)
-            }
-            0x1b => {
-                self.state = TerminalScrollParseState::Escape;
-                TerminalScrollUpdate::default()
-            }
-            _ => {
-                self.state = TerminalScrollParseState::Ground;
-                TerminalScrollUpdate::default()
-            }
-        }
-    }
-
-    fn update_for_final(&mut self, byte: u8) -> TerminalScrollUpdate {
-        if !self.csi_valid {
-            return TerminalScrollUpdate::default();
-        }
-        if byte == b'r' {
-            self.active_scroll_region = self.parsed_scroll_region();
-            return TerminalScrollUpdate::default();
-        }
-        if self.parameter_index != 0 {
-            return TerminalScrollUpdate::default();
-        }
-        let count = if self.parameter_present[0] && self.parameters[0] != 0 {
-            self.parameters[0]
-        } else {
-            1
-        };
-        let count = isize::try_from(count)
-            .unwrap_or(MAX_TERMINAL_SCROLL_ANIMATION_ROWS)
-            .min(MAX_TERMINAL_SCROLL_ANIMATION_ROWS);
-        let rows = match byte {
-            b'M' | b'S' => count,
-            b'L' | b'T' => -count,
-            _ => 0,
-        };
-        TerminalScrollUpdate {
-            rows,
-            region: self.active_scroll_region,
-        }
-    }
-
-    fn parsed_scroll_region(&self) -> Option<TerminalVtScrollRegion> {
-        if self.parameter_index != 1 || !self.parameter_present[0] || !self.parameter_present[1] {
-            return None;
-        }
-        let top = self.parameters[0];
-        let bottom = self.parameters[1];
-        (top > 0 && bottom >= top).then_some(TerminalVtScrollRegion { top, bottom })
-    }
-
-    fn feed_control_string(&mut self, byte: u8, osc: bool) {
-        match byte {
-            0x07 if osc => self.state = TerminalScrollParseState::Ground,
-            0x9c => self.state = TerminalScrollParseState::Ground,
-            0x1b => {
-                self.state = if osc {
-                    TerminalScrollParseState::OscEscape
-                } else {
-                    TerminalScrollParseState::StringEscape
-                };
-            }
-            _ => {}
-        }
-    }
-
-    fn feed_control_string_escape(&mut self, byte: u8, osc: bool) {
-        self.state = match byte {
-            b'\\' => TerminalScrollParseState::Ground,
-            0x1b => self.state,
-            _ if osc => TerminalScrollParseState::Osc,
-            _ => TerminalScrollParseState::String,
-        };
-    }
-}
-
 impl TerminalRendererModel {
     fn new(size: TerminalGridSize) -> Self {
         let width = size.cols as usize;
@@ -1778,7 +1615,7 @@ impl TerminalRendererModel {
         }
         self.resize_window(width, height);
         if self.last_screen != Some(frame.active_screen) {
-            self.apply_viewport_margins(0, 0);
+            self.apply_viewport_margins(0, 0, 0, 0);
         }
         self.prepare_pending_scroll_region(height);
         self.window.flush(1);
@@ -1848,13 +1685,13 @@ impl TerminalRendererModel {
         self.height = height;
     }
 
-    fn apply_viewport_margins(&mut self, top: usize, bottom: usize) {
+    fn apply_viewport_margins(&mut self, top: usize, bottom: usize, left: usize, right: usize) {
         self.window
             .apply(&NeovideWindowDrawCommand::ViewportMargins {
                 top,
                 bottom,
-                left: 0,
-                right: 0,
+                left,
+                right,
             });
     }
 
@@ -1862,12 +1699,15 @@ impl TerminalRendererModel {
         if self.pending_scroll.rows == 0 {
             return;
         }
-        let (top, bottom) = self
+        let (top, bottom, left, right) = self
             .pending_scroll
             .region
-            .and_then(|region| viewport_margins_for_region(region, height))
-            .unwrap_or((0, 0));
-        self.apply_viewport_margins(top, bottom);
+            .and_then(|region| viewport_margins_for_region(region, height, self.width))
+            .unwrap_or((0, 0, 0, 0));
+        let inner_height = height.saturating_sub(top).saturating_sub(bottom).max(1);
+        let max_delta = isize::try_from(inner_height).unwrap_or(isize::MAX);
+        self.pending_scroll.rows = self.pending_scroll.rows.clamp(-max_delta, max_delta);
+        self.apply_viewport_margins(top, bottom, left, right);
     }
 
     fn apply_pending_scroll_delta(&mut self) {
@@ -1907,13 +1747,24 @@ impl TerminalRendererModel {
 fn viewport_margins_for_region(
     region: TerminalVtScrollRegion,
     height: usize,
-) -> Option<(usize, usize)> {
+    width: usize,
+) -> Option<(usize, usize, usize, usize)> {
     let top = usize::from(region.top.saturating_sub(1));
     let bottom_row = usize::from(region.bottom).min(height);
     if top >= bottom_row || top >= height {
         return None;
     }
-    Some((top, height.saturating_sub(bottom_row)))
+    let (left, right) = if region.left == 0 && region.right == 0 {
+        (0, 0)
+    } else {
+        let left = usize::from(region.left.saturating_sub(1));
+        let right_col = usize::from(region.right).min(width);
+        if left >= right_col || left >= width {
+            return None;
+        }
+        (left, width.saturating_sub(right_col))
+    };
+    Some((top, height.saturating_sub(bottom_row), left, right))
 }
 
 fn scrollbar_is_at_bottom(scrollbar: &ScrollbarSnapshot) -> bool {
@@ -3010,7 +2861,30 @@ mod tests {
             tracker.feed(b"11M\x1b[r"),
             TerminalScrollUpdate {
                 rows: 11,
-                region: Some(TerminalVtScrollRegion { top: 1, bottom: 22 }),
+                region: Some(TerminalVtScrollRegion {
+                    top: 1,
+                    bottom: 22,
+                    left: 0,
+                    right: 0,
+                }),
+            }
+        );
+    }
+
+    #[test]
+    fn terminal_scroll_tracker_reads_satin_rectangular_scroll_event() {
+        let mut tracker = TerminalScrollSequenceTracker::default();
+
+        assert_eq!(
+            tracker.feed(b"\x1b]777;SatinScroll;1;31;2;47;26;160\x1b\\"),
+            TerminalScrollUpdate {
+                rows: 24,
+                region: Some(TerminalVtScrollRegion {
+                    top: 2,
+                    bottom: 47,
+                    left: 26,
+                    right: 160,
+                }),
             }
         );
     }
@@ -3085,10 +2959,39 @@ mod tests {
         let window = &snapshot.windows[0];
         assert_eq!(window.scroll_position, -1.0);
         assert_eq!(window.viewport_margins.bottom, 1);
+        assert_eq!(window.viewport_margins.left, 0);
+        assert_eq!(window.viewport_margins.right, 0);
         assert_eq!(
             window.lines[7].as_ref().unwrap().text.as_ref(),
             "vim status"
         );
+    }
+
+    #[test]
+    fn terminal_renderer_model_retains_rectangular_split_scroll_region() {
+        let mut model = TerminalRendererModel::new(grid_size(4, 16));
+        model.snapshot(&frame(&[
+            "TREE001│MAIN001 ",
+            "TREE002│MAIN002 ",
+            "TREE003│MAIN003 ",
+            "tree st│main sts",
+        ]));
+        let mut tracker = TerminalScrollSequenceTracker::default();
+        model.record_scroll_update(tracker.feed(b"\x1b]777;SatinScroll;1;1;1;3;9;16\x1b\\"));
+
+        let snapshot = model.snapshot(&frame(&[
+            "TREE001│MAIN002 ",
+            "TREE002│MAIN003 ",
+            "TREE003│MAIN004 ",
+            "tree st│main sts",
+        ]));
+        let window = &snapshot.windows[0];
+
+        assert_eq!(window.scroll_position, -1.0);
+        assert_eq!(window.viewport_margins.top, 0);
+        assert_eq!(window.viewport_margins.bottom, 1);
+        assert_eq!(window.viewport_margins.left, 8);
+        assert_eq!(window.viewport_margins.right, 0);
     }
 
     #[test]
@@ -3355,4 +3258,6 @@ mod tests {
             pixel_height: rows * 20,
         }
     }
+
+    include!("terminal_runtime/scroll_regression_tests.rs");
 }

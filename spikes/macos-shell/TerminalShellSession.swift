@@ -104,7 +104,7 @@ extension TerminalShellViewController {
     func schedulePendingTmuxReattach() {
         guard let attachment = pendingTmuxReattach,
             let paneId = activePaneId,
-            let gateway = paneStore.runtimes[paneId] as? RustTerminalPane
+            let gateway = tmuxConnectionGateway(paneId: paneId)
         else {
             return
         }
@@ -210,10 +210,15 @@ extension TerminalShellViewController {
         else {
             return false
         }
-        let cwd =
-            requestedDirectory
-            ?? terminal.currentWorkingDirectory()
-            ?? nativeWorkingDirectory()
+        guard
+            let cwd = nativeNeovimWorkingDirectory(
+                paneId: paneId,
+                terminal: terminal,
+                requestedDirectory: requestedDirectory
+            )
+        else {
+            return false
+        }
         guard
             let pane = RustNeovimPane(
                 grid: paneGridSize(paneId),
@@ -243,6 +248,32 @@ extension TerminalShellViewController {
         drainTerminalPanes()
         updateActiveFrame()
         return true
+    }
+
+    func nativeNeovimWorkingDirectory(
+        paneId: Int,
+        terminal: RustTerminalPane,
+        requestedDirectory: String?
+    ) -> String? {
+        let runtimeDirectory = terminal.currentWorkingDirectory()
+        let projectedDirectory = paneStore.workingDirectories[paneId]
+        let directory =
+            requestedDirectory
+            ?? (terminal is RustTmuxPane
+                ? projectedDirectory ?? runtimeDirectory : runtimeDirectory)
+            ?? projectedDirectory
+            ?? nativeWorkingDirectory()
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: directory, isDirectory: &isDirectory),
+            isDirectory.boolValue
+        else {
+            NativeLog.runtimeError(
+                "neovim_launch_cwd_unavailable pane=\(paneId) cwd=\(directory)"
+            )
+            return nil
+        }
+        paneStore.workingDirectories[paneId] = directory
+        return directory
     }
 
     func scrollActivePane(deltaRows: CGFloat) {

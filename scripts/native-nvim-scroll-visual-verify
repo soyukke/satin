@@ -1,0 +1,169 @@
+#!/usr/bin/env python3
+import subprocess
+import sys
+
+
+SCALED_WIDTH = 550
+SCALED_HEIGHT = 360
+PIXEL_STRIDE = 2
+CHANNEL_DELTA = 18
+
+
+def main() -> int:
+    if len(sys.argv) != 3:
+        raise SystemExit("usage: native-nvim-scroll-visual-verify VIDEO RESULT")
+    video_path, result_path = sys.argv[1:]
+    result = read_result(result_path)
+    if not result.startswith("ok nvim-scroll-visual "):
+        raise SystemExit(f"native nvim scroll visual model check failed: {result}")
+
+    activity = decode_activity(video_path)
+    active_samples = region_sample_count(70, 535, 40, 335)
+    movement_floor = max(160, active_samples // 100)
+    groups = movement_groups(activity, movement_floor)
+    animated = [group for group in groups if group.active_frames >= 6 and group.span >= 8]
+    if len(animated) != 2:
+        summaries = ",".join(group.summary() for group in groups) or "none"
+        raise SystemExit(
+            "expected two presented scroll animations; "
+            f"movement-floor={movement_floor} groups={summaries}"
+        )
+
+    for index, group in enumerate(animated, start=1):
+        if group.fixed_total > max(240, group.active_total // 8):
+            raise SystemExit(f"scroll {index} moved the fixed side pane: {group.summary()}")
+
+    summaries = " ".join(
+        f"scroll-{index}={group.summary()}" for index, group in enumerate(animated, start=1)
+    )
+    print(
+        "native nvim scroll visual verified: "
+        f"frames={len(activity) + 1} movement-floor={movement_floor} {summaries}"
+    )
+    return 0
+
+
+def read_result(path: str) -> str:
+    with open(path, encoding="utf-8") as result_file:
+        return result_file.read().strip()
+
+
+def decode_activity(path: str) -> list[tuple[int, int]]:
+    command = [
+        "ffmpeg",
+        "-v",
+        "error",
+        "-i",
+        path,
+        "-vf",
+        f"scale={SCALED_WIDTH}:{SCALED_HEIGHT}",
+        "-pix_fmt",
+        "rgb24",
+        "-f",
+        "rawvideo",
+        "-",
+    ]
+    process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    if process.stdout is None:
+        raise SystemExit("ffmpeg did not expose decoded frames")
+    frame_size = SCALED_WIDTH * SCALED_HEIGHT * 3
+    previous = read_exact(process.stdout, frame_size)
+    if len(previous) != frame_size:
+        raise SystemExit("scroll visual recording has no complete frames")
+
+    activity: list[tuple[int, int]] = []
+    while True:
+        current = read_exact(process.stdout, frame_size)
+        if not current:
+            break
+        if len(current) != frame_size:
+            raise SystemExit("scroll visual recording ended with a partial frame")
+        fixed = changed_pixels(previous, current, 8, 55, 40, 335)
+        active = changed_pixels(previous, current, 70, 535, 40, 335)
+        activity.append((active, fixed))
+        previous = current
+
+    stderr = process.stderr.read().decode("utf-8", errors="replace") if process.stderr else ""
+    return_code = process.wait()
+    if return_code != 0:
+        raise SystemExit(f"ffmpeg failed to decode scroll visual recording: {stderr.strip()}")
+    return activity
+
+
+def read_exact(stream, size: int) -> bytes:
+    chunks = bytearray()
+    while len(chunks) < size:
+        chunk = stream.read(size - len(chunks))
+        if not chunk:
+            break
+        chunks.extend(chunk)
+    return bytes(chunks)
+
+
+def changed_pixels(
+    previous: bytes,
+    current: bytes,
+    x_start: int,
+    x_end: int,
+    y_start: int,
+    y_end: int,
+) -> int:
+    changed = 0
+    row_width = SCALED_WIDTH * 3
+    for y in range(y_start, y_end, PIXEL_STRIDE):
+        row_offset = y * row_width
+        for x in range(x_start, x_end, PIXEL_STRIDE):
+            offset = row_offset + x * 3
+            delta = (
+                abs(previous[offset] - current[offset])
+                + abs(previous[offset + 1] - current[offset + 1])
+                + abs(previous[offset + 2] - current[offset + 2])
+            )
+            if delta >= CHANNEL_DELTA:
+                changed += 1
+    return changed
+
+
+def region_sample_count(x_start: int, x_end: int, y_start: int, y_end: int) -> int:
+    columns = len(range(x_start, x_end, PIXEL_STRIDE))
+    rows = len(range(y_start, y_end, PIXEL_STRIDE))
+    return columns * rows
+
+
+class MovementGroup:
+    def __init__(self, start: int, end: int, frames: list[tuple[int, int]], floor: int):
+        self.start = start
+        self.end = end
+        self.span = end - start + 1
+        selected = frames[start : end + 1]
+        self.active_frames = sum(active >= floor for active, _ in selected)
+        self.active_total = sum(active for active, _ in selected)
+        self.fixed_total = sum(fixed for _, fixed in selected)
+
+    def summary(self) -> str:
+        return (
+            f"{self.start}-{self.end}:span={self.span}:moving={self.active_frames}"
+            f":active={self.active_total}:fixed={self.fixed_total}"
+        )
+
+
+def movement_groups(frames: list[tuple[int, int]], floor: int) -> list[MovementGroup]:
+    moving = [index for index, (active, _) in enumerate(frames) if active >= floor]
+    if not moving:
+        return []
+    ranges: list[tuple[int, int]] = []
+    start = moving[0]
+    end = moving[0]
+    for index in moving[1:]:
+        if index - end <= 3:
+            end = index
+        else:
+            ranges.append((start, end))
+            start = index
+            end = index
+    ranges.append((start, end))
+    return [MovementGroup(start, end, frames, floor) for start, end in ranges]
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -1,0 +1,100 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+app="spikes/macos-shell/.build/SatinApplication"
+artifact_root="spikes/macos-shell/.build/native-nvim-scroll-visual"
+video="${artifact_root}.mov"
+result_file="${artifact_root}.result"
+window_id_file="${artifact_root}-window-id"
+baseline_ready="${artifact_root}-baseline-ready"
+continue_first="${artifact_root}-continue-first"
+continue_second="${artifact_root}-continue-second"
+
+if [[ -n "${SATIN_SOCKET:-}" ]]; then
+  echo "native nvim scroll visual smoke must run outside Satin" >&2
+  exit 64
+fi
+if [[ "${SATIN_ALLOW_SCREEN_CAPTURE:-0}" != 1 ]]; then
+  echo "native nvim scroll visual smoke requires SATIN_ALLOW_SCREEN_CAPTURE=1" >&2
+  exit 77
+fi
+
+rm -f \
+  "$video" \
+  "$result_file" \
+  "$window_id_file" \
+  "$baseline_ready" \
+  "$continue_first" \
+  "$continue_second"
+
+./scripts/native-window-record --build-only
+/usr/bin/caffeinate -du -t 300 >/dev/null 2>&1 &
+caffeinate_pid=$!
+
+SATIN_NATIVE_PANE=nvim \
+  SATIN_NATIVE_SMOKE_CLEAN_NVIM=1 \
+  SATIN_NATIVE_SMOKE_REPO_ROOT="$PWD" \
+  SATIN_NATIVE_SMOKE_SCENARIO=nvim-scroll-visual \
+  SATIN_NATIVE_SMOKE_RESULT="$result_file" \
+  SATIN_NATIVE_SMOKE_WINDOW_ID="$window_id_file" \
+  SATIN_NATIVE_SMOKE_BASELINE_READY="$baseline_ready" \
+  SATIN_NATIVE_SMOKE_CONTINUE="$continue_first" \
+  SATIN_NATIVE_SMOKE_CONTINUE_SECOND="$continue_second" \
+  SATIN_NATIVE_SMOKE_KEEP_OPEN=1 \
+  "$app" &
+app_pid=$!
+recorder_pid=""
+
+# shellcheck disable=SC2329 # Invoked indirectly by the EXIT trap.
+cleanup() {
+  if [[ -n "$recorder_pid" ]] && kill -0 "$recorder_pid" 2>/dev/null; then
+    kill "$recorder_pid" 2>/dev/null || true
+    wait "$recorder_pid" 2>/dev/null || true
+  fi
+  if kill -0 "$app_pid" 2>/dev/null; then
+    kill "$app_pid" 2>/dev/null || true
+    wait "$app_pid" 2>/dev/null || true
+  fi
+  if kill -0 "$caffeinate_pid" 2>/dev/null; then
+    kill "$caffeinate_pid" 2>/dev/null || true
+    wait "$caffeinate_pid" 2>/dev/null || true
+  fi
+}
+trap cleanup EXIT
+
+for _ in {1..240}; do
+  if [[ -s "$window_id_file" && -s "$baseline_ready" ]]; then
+    break
+  fi
+  sleep 0.05
+done
+if [[ ! -s "$window_id_file" || ! -s "$baseline_ready" ]]; then
+  echo "native nvim scroll visual smoke did not reach its split baseline" >&2
+  exit 1
+fi
+
+window_id=$(tr -d '[:space:]' <"$window_id_file")
+env -u SATIN_SOCKET SATIN_ALLOW_SCREEN_CAPTURE=1 \
+  ./scripts/native-window-record "$window_id" 3.2 0 "$video" &
+recorder_pid=$!
+
+sleep 0.35
+touch "$continue_first"
+sleep 1.20
+touch "$continue_second"
+wait "$recorder_pid"
+recorder_pid=""
+
+for _ in {1..80}; do
+  if [[ -s "$result_file" ]]; then
+    break
+  fi
+  sleep 0.05
+done
+if [[ ! -s "$result_file" ]]; then
+  echo "native nvim scroll visual smoke did not write a result" >&2
+  exit 1
+fi
+
+./scripts/native-nvim-scroll-visual-verify "$video" "$result_file"
+cat "$result_file"

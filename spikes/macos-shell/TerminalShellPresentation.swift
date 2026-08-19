@@ -145,21 +145,23 @@ extension TerminalShellViewController {
         guard let session = tmuxSession else {
             return
         }
-        if immediately {
-            session.clientResizeThrottleWorkItem?.cancel()
-            session.clientResizeThrottleWorkItem = nil
-        } else if session.clientResizeThrottleWorkItem != nil {
+        session.clientResizeThrottleWorkItem?.cancel()
+        session.clientResizeThrottleWorkItem = nil
+        if immediately || session.requestedClientGrid == nil {
+            _ = requestTmuxClientSizeIfNeeded(session)
             return
         }
-        guard requestTmuxClientSizeIfNeeded(session) else {
-            return
-        }
+        // Debounce host-window geometry instead of sending every intermediate
+        // grid. Each tmux resize can trigger a topology snapshot and pane
+        // rehydration, so a resize-command backlog can otherwise apply a stale
+        // peak size after the native window has already returned to its final
+        // dimensions.
         let workItem = DispatchWorkItem { [weak self, weak session] in
             guard let self, let session, tmuxSession === session else {
                 return
             }
             session.clientResizeThrottleWorkItem = nil
-            syncTmuxClientSize()
+            _ = requestTmuxClientSizeIfNeeded(session)
         }
         session.clientResizeThrottleWorkItem = workItem
         DispatchQueue.main.asyncAfter(
@@ -694,14 +696,24 @@ extension TerminalShellViewController {
 
     func runTmuxCommandInActiveShell(_ command: String) {
         guard let paneId = activePaneId,
-            paneStore.runtimes[paneId] is RustTerminalPane
+            let gateway = tmuxConnectionGateway(paneId: paneId)
         else {
             presentTmuxSessionError("Select a terminal pane before connecting to tmux.")
             return
         }
         var input = Data([21])
         input.append(Data("\(command)\r".utf8))
-        writeToActivePane(input)
+        gateway.write(input)
+        if paneStore.runtimes[paneId] === gateway {
+            drainTerminalPanes()
+        } else {
+            drainSuspendedTerminalPane(paneId)
+        }
+    }
+
+    func tmuxConnectionGateway(paneId: Int) -> RustTerminalPane? {
+        (paneStore.runtimes[paneId] as? RustTerminalPane)
+            ?? paneStore.suspendedSessions[paneId]?.pane
     }
 
     func presentTmuxSessionError(_ message: String) {

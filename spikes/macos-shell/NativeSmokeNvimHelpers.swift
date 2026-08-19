@@ -342,6 +342,31 @@ import Foundation
             return pane.rendererScrollPosition()
         }
 
+        func sendNvimSmokeControlD() {
+            guard let pressed = nvimSmokeControlDEvent(released: false),
+                let released = nvimSmokeControlDEvent(released: true)
+            else {
+                return
+            }
+            terminalTextView.keyDown(with: pressed)
+            terminalTextView.keyUp(with: released)
+        }
+
+        func nvimSmokeControlDEvent(released: Bool) -> NSEvent? {
+            NSEvent.keyEvent(
+                with: released ? .keyUp : .keyDown,
+                location: .zero,
+                modifierFlags: .control,
+                timestamp: ProcessInfo.processInfo.systemUptime,
+                windowNumber: view.window?.windowNumber ?? 0,
+                context: nil,
+                characters: "\u{04}",
+                charactersIgnoringModifiers: "d",
+                isARepeat: false,
+                keyCode: 2
+            )
+        }
+
         func runNvimCommandOrWrite(_ command: String, fallback: Data) {
             if !runNvimCommand(command) {
                 writeToActivePane(fallback)

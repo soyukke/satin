@@ -456,11 +456,16 @@ fn kitty_row_uses_the_same_scroll_animation_as_terminal_text() {
     let mut model = renderer_model(8, 6);
     model.windows[0].scroll_position = -2.0;
 
-    assert_eq!(animated_kitty_row(&model, 3), 5.0);
+    assert_eq!(animated_kitty_row(&model, 3, 2), 5.0);
     model.windows[0].scroll_position = -1.0;
-    assert_eq!(animated_kitty_row(&model, 3), 4.0);
+    assert_eq!(animated_kitty_row(&model, 3, 2), 4.0);
     model.windows[0].scroll_position = 0.0;
-    assert_eq!(animated_kitty_row(&model, 3), 3.0);
+    assert_eq!(animated_kitty_row(&model, 3, 2), 3.0);
+
+    model.windows[0].scroll_position = -2.0;
+    model.windows[0].viewport_margins.left = 3;
+    assert_eq!(animated_kitty_row(&model, 3, 2), 3.0);
+    assert_eq!(animated_kitty_row(&model, 3, 3), 5.0);
 }
 
 #[test]
@@ -468,6 +473,23 @@ fn text_scroll_offset_is_rounded_to_device_pixels_like_neovide() {
     assert_eq!(scroll_offset_pixels(0.0, 20.0), 0.0);
     assert_eq!(scroll_offset_pixels(-0.55, 20.0), -9.0);
     assert_eq!(scroll_offset_pixels(-0.017, 20.0), -20.0);
+}
+
+#[test]
+fn rectangular_scroll_clip_excludes_neighboring_split_columns() {
+    let mut model = renderer_model(8, 6);
+    model.windows[0].viewport_margins = crate::neovide_render::NeovideViewportMargins {
+        top: 1,
+        bottom: 1,
+        left: 3,
+        right: 1,
+    };
+    let rect = scroll_clip_rect(&model.windows[0], 1..5, geometry());
+
+    assert_eq!(rect.left(), 40.0);
+    assert_eq!(rect.top(), 40.0);
+    assert_eq!(rect.width(), 40.0);
+    assert_eq!(rect.height(), 80.0);
 }
 
 #[test]
@@ -487,6 +509,11 @@ fn cursor_uses_parent_window_scroll_and_stays_inside_viewport() {
 
     let border = cursor_render_point(&model, &cursor(4, 0, "block", 100, 0, 0, 0));
     assert_eq!(border, GridPoint { x: 4.0, y: 0.0 });
+
+    model.windows[0].viewport_margins.left = 5;
+    let fixed_column = cursor_render_point(&model, &cursor(4, 3, "block", 100, 0, 0, 0));
+    assert_eq!(fixed_column, GridPoint { x: 4.0, y: 3.0 });
+    model.windows[0].viewport_margins.left = 0;
 
     model.windows[0].scroll_position = -20.0;
     let clamped = cursor_render_point(&model, &cursor(4, 3, "block", 100, 0, 0, 0));

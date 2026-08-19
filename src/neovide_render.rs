@@ -1,5 +1,5 @@
 use serde::Serialize;
-use std::sync::Arc;
+use std::{ops::Range, sync::Arc};
 
 use crate::terminal_runtime::{TerminalCellSnapshot, TerminalColor, TerminalCursorSnapshot};
 
@@ -185,7 +185,7 @@ impl NeovideRenderedWindowCache {
             NeovideWindowDrawCommand::Hide => {
                 self.hidden = true;
             }
-            NeovideWindowDrawCommand::Viewport { scroll_delta } => {
+            NeovideWindowDrawCommand::Viewport { scroll_delta } if *scroll_delta != 0 => {
                 self.scroll_delta = *scroll_delta;
             }
             NeovideWindowDrawCommand::ViewportMargins {
@@ -219,7 +219,7 @@ impl NeovideRenderedWindowCache {
         self.rotate_scrollback(scroll_delta);
         self.clone_inner_lines_to_scrollback(inner_range);
         if scroll_delta != 0 {
-            let max_delta = self.scrollback_lines.len().saturating_sub(self.height);
+            let max_delta = self.scrollback_lines.len().saturating_sub(inner_height);
             if scroll_delta.unsigned_abs() > max_delta {
                 let far_lines = far_lines.min(self.lines.len()) as isize;
                 self.scroll_animation.position = -(far_lines * scroll_delta.signum()) as f32;
@@ -584,13 +584,18 @@ impl NeovideRenderedWindowSnapshot {
         self.scrollback_lines.get(index)?.as_ref()
     }
 
-    pub fn inner_row_range(&self) -> std::ops::Range<usize> {
-        let top = self.viewport_margins.top.min(self.height);
-        let bottom_margin = self
-            .viewport_margins
-            .bottom
-            .min(self.height.saturating_sub(top));
-        top..self.height.saturating_sub(bottom_margin)
+    pub fn inner_row_range(&self) -> Range<usize> {
+        let margin = &self.viewport_margins;
+        let start = margin.top.min(self.height);
+        let end = self.height - margin.bottom.min(self.height - start);
+        start..end
+    }
+
+    pub fn inner_col_range(&self) -> Range<usize> {
+        let margin = &self.viewport_margins;
+        let start = margin.left.min(self.width);
+        let end = self.width - margin.right.min(self.width - start);
+        start..end
     }
 
     pub fn line_text_range(&self, row: usize, start_col: usize, end_col: usize) -> Option<String> {
@@ -598,7 +603,6 @@ impl NeovideRenderedWindowSnapshot {
         if cells.is_empty() {
             return Some(String::new());
         }
-
         let max_col = cells.len().saturating_sub(1);
         let start = start_col.min(max_col);
         let end = end_col.min(max_col);
@@ -896,10 +900,8 @@ mod tests {
         window.apply(&NeovideWindowDrawCommand::Viewport { scroll_delta: 2 });
         window.flush(1);
         assert_eq!(window.scroll_position(), -2.0);
-
         window.apply(&NeovideWindowDrawCommand::Viewport { scroll_delta: 0 });
         window.flush(1);
-
         assert_eq!(window.scroll_position(), -2.0);
         assert!(window.has_active_animation());
     }
@@ -915,9 +917,7 @@ mod tests {
             right: 0,
         });
         window.flush(1);
-
         let snapshot = window.snapshot(1, NeovideRenderedWindowPlacement::main(3, 4));
-
         assert_eq!(snapshot.inner_row_range(), 1..3);
         assert!(snapshot.scrollback_line(-1).is_none());
         assert_eq!(

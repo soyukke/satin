@@ -26,6 +26,17 @@ Neovim runtimes feed two event-driven scroll sources into it:
 - Direct interactive Neovim uses `win_viewport.scroll_delta`. Other full-screen
   terminal applications use explicit VT insert, delete, or scroll commands and
   their declared scroll region.
+- Projected tmux panes decode those VT commands into compact row/region metadata
+  while a resize capture replaces the pane cells. Hydration never drops an
+  overlapping scroll animation, forwards unrelated redraw bytes, or replays the
+  live cells a second time. Normal `%output` preserves the incremental VT/OSC
+  parser across record boundaries; only an actual hydration resets it.
+- Neovim TUI inside local tmux emits a private, versioned OSC event from
+  `WinScrolled` when a vertical split or file tree forces a partial-width redraw.
+  The terminal retained window animates only the declared row/column rectangle;
+  neighboring windows, separators, and statuslines stay fixed. Coalesced rapid
+  scroll events are bounded to that inner rectangle before they enter the
+  retained spring, avoiding the far-jump discontinuity at a pane boundary.
 
 Visible rows are never compared to guess TUI scrolling. Cursor-only redraws,
 relative numbers, virtual text, and statusline colors therefore cannot move the
@@ -61,6 +72,9 @@ disabled.
 Renderer changes normally run the non-capturing `just native-smoke` plus the
 relevant focused recipes. For retained Neovim scrolling and layout, start with:
 
+The user-facing reproduction sequence is kept in
+[`manual-regression-checklist.md`](manual-regression-checklist.md).
+
 - `just nvim-smoke-scroll` checks Ctrl-D-style retained scroll animation.
 - `just nvim-smoke-jump` checks large jump animation.
 - `just nvim-smoke-side-pane` keeps file-tree and other side-pane scroll hints
@@ -70,8 +84,16 @@ relevant focused recipes. For retained Neovim scrolling and layout, start with:
 - `just nvim-smoke-commandline` and `just nvim-smoke-cursor-move` reject false
   scroll animation from command-line or cursor-only redraws.
 
+The scroll, jump, side-pane, and tmux reattach recipes use the production
+`CAMetalDisplayLink`. Their input is routed as an AppKit key event, and each
+scroll must retain a nonzero fractional position on a later presented frame;
+raw control-byte injection or a smoke-only frame scheduler is insufficient.
+
 Pixel-backed checks add:
 
+- `just nvim-smoke-scroll-visual` records two physical `Ctrl-D` inputs at
+  60 fps, requires multiple presented intermediate frames for both inputs, and
+  rejects movement in the fixed side pane.
 - `just nvim-smoke-shaped-text-visual` checks Japanese, Nerd Font,
   combining-mark, and ambiguous-width glyph pixels.
 - `just nvim-smoke-cursor-switch` checks cursor ownership after tab switches.

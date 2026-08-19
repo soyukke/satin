@@ -1,3 +1,61 @@
+local satin_features = type(vim.g.satin_features) == "table" and vim.g.satin_features or {}
+
+if vim.env.TMUX then
+  -- A tmux server child does not necessarily have a controlling /dev/tty on
+  -- macOS. satin-nvim only installs this bridge when stdout itself is a TTY.
+  local scroll_output = io.stdout
+  if scroll_output then
+    local function write_scroll_event(rows, top, bottom, left, right)
+      local payload = string.format(
+        "\27]777;SatinScroll;1;%d;%d;%d;%d;%d\7",
+        rows,
+        top,
+        bottom,
+        left,
+        right
+      )
+      if vim.env.SATIN_SMOKE_SPLIT_SCROLL_OSC == "1" then
+        local split_at = math.floor(#payload / 2)
+        scroll_output:write(payload:sub(1, split_at))
+        scroll_output:flush()
+        vim.uv.sleep(10)
+        scroll_output:write(payload:sub(split_at + 1))
+        scroll_output:flush()
+        return
+      end
+      scroll_output:write(payload)
+      scroll_output:flush()
+    end
+
+    local group = vim.api.nvim_create_augroup("SatinTuiScroll", { clear = true })
+    vim.api.nvim_create_autocmd("WinScrolled", {
+      group = group,
+      callback = function()
+        for key, change in pairs(vim.v.event) do
+          local window = tonumber(key)
+          local rows = type(change) == "table" and tonumber(change.topline) or nil
+          local resized =
+            type(change) ~= "table"
+            or tonumber(change.width) ~= 0
+            or tonumber(change.height) ~= 0
+          if window and rows and rows ~= 0 and not resized and vim.api.nvim_win_is_valid(window) then
+            local position = vim.fn.win_screenpos(window)
+            local top = tonumber(position[1]) or 0
+            local left = tonumber(position[2]) or 0
+            local bottom = top + vim.api.nvim_win_get_height(window) - 1
+            local right = left + vim.api.nvim_win_get_width(window) - 1
+            local rectangular = left > 1 or right < vim.o.columns
+            if rectangular and top > 0 and bottom >= top and right >= left then
+              write_scroll_event(rows, top, bottom, left, right)
+            end
+          end
+        end
+      end,
+    })
+    satin_features.scroll_events = true
+  end
+end
+
 package.preload["image/backends/kitty/helpers"] = function()
   local codes = require("image/backends/kitty/codes")
   local utils = require("image/utils")
@@ -160,6 +218,5 @@ package.preload["image/backends/kitty/helpers"] = function()
   }
 end
 
-local satin_features = type(vim.g.satin_features) == "table" and vim.g.satin_features or {}
 satin_features.kitty_graphics = true
 vim.g.satin_features = satin_features

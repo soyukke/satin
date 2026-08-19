@@ -138,11 +138,23 @@ import Foundation
         ) {
             drainTerminalPanes()
             let expected = tmuxClientGrid()
+            let requested = tmuxSession?.requestedClientGrid
+            let reported = tmuxReportedClientGrid()
+            let paneIds =
+                lastSnapshot?.tabs.first?.panes.filter {
+                    tmuxSession?.tmuxPaneIds[$0] != nil
+                } ?? []
+            let gridFit = tmuxSmokeGridFitState(paneIds)
             let ready =
-                lastSnapshot?.tabs.first?.panes.count == 3
+                paneIds.count == 3
                 && activePaneId != previousPaneId
-                && tmuxSession?.requestedClientGrid?.cols == expected.cols
-                && tmuxSession?.requestedClientGrid?.rows == expected.rows
+                && requested
+                    == NativePaneGridCapacity(
+                        rows: expected.rows,
+                        cols: expected.cols
+                    )
+                && reported == requested
+                && gridFit.valid
             guard ready else {
                 if retries > 0 {
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
@@ -153,7 +165,14 @@ import Foundation
                         )
                     }
                 } else {
-                    failTmuxZoomResizeSmoke(resultPath, reason: "horizontal-split-settle")
+                    failTmuxZoomResizeSmoke(
+                        resultPath,
+                        reason: "horizontal-split-settle",
+                        details: "expected=\(expected.cols)x\(expected.rows) "
+                            + "requested=\(requested?.cols ?? -1)x\(requested?.rows ?? -1) "
+                            + "reported=\(reported?.cols ?? -1)x\(reported?.rows ?? -1) "
+                            + "fit=\(gridFit.summary)"
+                    )
                 }
                 return
             }
