@@ -518,6 +518,10 @@ extension TerminalShellViewController {
             self?.dismissSessionPopover()
             self?.createTmuxSession(named: name)
         }
+        controller.onRequestEndSession = { [weak self] descriptor in
+            self?.dismissSessionPopover()
+            self?.confirmEndingTmuxSession(descriptor)
+        }
 
         let popover = NSPopover()
         popover.behavior = .transient
@@ -692,6 +696,54 @@ extension TerminalShellViewController {
             "\(shellQuote(executable.path)) \(socketArgument)-CC new-session "
                 + "-s \(shellQuote(name))"
         )
+    }
+
+    func confirmEndingTmuxSession(_ descriptor: NativeTmuxSessionDescriptor) {
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "End tmux session “\(descriptor.name)”?"
+        alert.informativeText =
+            "All windows and running programs in this session will be terminated. This cannot be undone."
+        alert.addButton(withTitle: "End Session")
+        alert.addButton(withTitle: "Cancel")
+        if let window = view.window {
+            alert.beginSheetModal(for: window) { [weak self] response in
+                guard NativeTmuxSessionTermination.confirmed(response) else {
+                    return
+                }
+                self?.endTmuxSession(descriptor)
+            }
+        } else if NativeTmuxSessionTermination.confirmed(alert.runModal()) {
+            endTmuxSession(descriptor)
+        }
+    }
+
+    func endTmuxSession(_ descriptor: NativeTmuxSessionDescriptor) {
+        if let session = tmuxSession {
+            let target = tmuxCommandArgument("=\(descriptor.name)")
+            guard descriptor.socketPath == session.socketPath,
+                session.gateway.tmuxCommand("kill-session -t \(target)")
+            else {
+                presentTmuxSessionError("Satin could not end that tmux session.")
+                return
+            }
+            return
+        }
+        guard let executable = resolvedTmuxExecutable else {
+            presentTmuxSessionError("Satin could not resolve the tmux executable.")
+            return
+        }
+        NativeTmuxSessionTermination.end(
+            executablePath: executable.path,
+            descriptor: descriptor
+        ) { [weak self] result in
+            switch result {
+            case .ended:
+                break
+            case .unavailable(let message):
+                self?.presentTmuxSessionError(message)
+            }
+        }
     }
 
     func runTmuxCommandInActiveShell(_ command: String) {

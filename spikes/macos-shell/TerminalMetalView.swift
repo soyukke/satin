@@ -22,6 +22,10 @@ final class TerminalMetalView: MTKView, CAMetalDisplayLinkDelegate, MTKViewDeleg
     private var renderedFrameRequestRevision: UInt64 = 0
     private var lastRenderedTextureSize: (width: Int, height: Int)?
     private var rejectedDrawableCount = 0
+    #if SATIN_SMOKE_SCENARIOS
+        private var frameRequestInterleaveArmed = false
+        private var frameRequestInterleavedRevision: UInt64?
+    #endif
 
     required init(coder: NSCoder) {
         fatalError("init(coder:) is not supported")
@@ -207,14 +211,17 @@ final class TerminalMetalView: MTKView, CAMetalDisplayLinkDelegate, MTKViewDeleg
 
     func requestFrame() {
         NativePerformanceRecorder.shared.recordFrameRequest()
-        markFrameRequested()
+        frameRequestLock.lock()
+        frameRequestRevision &+= 1
         nextFrameWorkItem?.cancel()
         nextFrameWorkItem = nil
         if usesSmokeFrameFallback {
             needsDisplay = true
+            frameRequestLock.unlock()
             return
         }
         frameDisplayLink?.isPaused = false
+        frameRequestLock.unlock()
     }
 
     func hasSkiaFrames() -> Bool {
@@ -251,6 +258,26 @@ final class TerminalMetalView: MTKView, CAMetalDisplayLinkDelegate, MTKViewDeleg
         return "requested=\(revisions.requested) rendered=\(revisions.rendered) "
             + "pending=\(revisions.requested == revisions.rendered ? "no" : "yes")"
     }
+
+    func frameRequestRevisionSnapshot() -> (requested: UInt64, rendered: UInt64) {
+        frameRequestRevisions()
+    }
+
+    #if SATIN_SMOKE_SCENARIOS
+        func armFrameRequestInterleaveForSmoke() {
+            frameRequestLock.lock()
+            frameRequestInterleaveArmed = true
+            frameRequestInterleavedRevision = nil
+            frameRequestLock.unlock()
+        }
+
+        func interleavedFrameRequestRevisionForSmoke() -> UInt64? {
+            frameRequestLock.lock()
+            let revision = frameRequestInterleavedRevision
+            frameRequestLock.unlock()
+            return revision
+        }
+    #endif
 
     func hasPendingFrameRequest() -> Bool {
         let revisions = frameRequestRevisions()
@@ -294,25 +321,35 @@ final class TerminalMetalView: MTKView, CAMetalDisplayLinkDelegate, MTKViewDeleg
         _ commandBuffer: MTLCommandBuffer,
         renderedRequestRevision: UInt64
     ) {
+        let delayMs = satinSkiaMetalNextFrameDelayMs(skiaRenderer)
+        frameRequestLock.lock()
         nextFrameWorkItem?.cancel()
         nextFrameWorkItem = nil
-        markFrameRequestRendered(renderedRequestRevision)
-        if currentFrameRequestRevision() != renderedRequestRevision {
+        renderedFrameRequestRevision = max(
+            renderedFrameRequestRevision,
+            renderedRequestRevision
+        )
+        if frameRequestRevision != renderedRequestRevision {
             if usesSmokeFrameFallback {
                 needsDisplay = true
             } else {
                 frameDisplayLink?.isPaused = false
             }
+            frameRequestLock.unlock()
             return
         }
-        let delayMs = satinSkiaMetalNextFrameDelayMs(skiaRenderer)
+        #if SATIN_SMOKE_SCENARIOS
+            interleaveFrameRequestForSmoke()
+        #endif
         guard delayMs != UInt64.max else {
             if !usesSmokeFrameFallback {
                 frameDisplayLink?.isPaused = true
             }
+            frameRequestLock.unlock()
             return
         }
         if usesSmokeFrameFallback {
+            frameRequestLock.unlock()
             commandBuffer.addCompletedHandler { [weak self] _ in
                 let milliseconds = Int(min(delayMs, UInt64(Int.max)))
                 DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(milliseconds)) {
@@ -322,19 +359,17 @@ final class TerminalMetalView: MTKView, CAMetalDisplayLinkDelegate, MTKViewDeleg
             return
         }
         guard delayMs > 0 else {
+            frameRequestLock.unlock()
             requestFrame()
             return
         }
 
         frameDisplayLink?.isPaused = true
         let workItem = DispatchWorkItem { [weak self] in
-            guard let self else {
-                return
-            }
-            self.nextFrameWorkItem = nil
-            self.requestFrame()
+            self?.requestFrame()
         }
         nextFrameWorkItem = workItem
+        frameRequestLock.unlock()
         let milliseconds = Int(min(delayMs, UInt64(Int.max)))
         DispatchQueue.main.asyncAfter(
             deadline: .now() + .milliseconds(milliseconds),
@@ -342,20 +377,31 @@ final class TerminalMetalView: MTKView, CAMetalDisplayLinkDelegate, MTKViewDeleg
         )
     }
 
-    private func markFrameRequested() {
-        frameRequestLock.lock()
-        frameRequestRevision &+= 1
-        frameRequestLock.unlock()
-    }
+    #if SATIN_SMOKE_SCENARIOS
+        private func interleaveFrameRequestForSmoke() {
+            guard frameRequestInterleaveArmed else {
+                return
+            }
+            frameRequestInterleaveArmed = false
+            let started = DispatchSemaphore(value: 0)
+            DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+                started.signal()
+                guard let self else {
+                    return
+                }
+                self.requestFrame()
+                let revision = self.frameRequestRevisionSnapshot().requested
+                self.frameRequestLock.lock()
+                self.frameRequestInterleavedRevision = revision
+                self.frameRequestLock.unlock()
+            }
+            started.wait()
+            Thread.sleep(forTimeInterval: 0.01)
+        }
+    #endif
 
     private func currentFrameRequestRevision() -> UInt64 {
         frameRequestRevisions().requested
-    }
-
-    private func markFrameRequestRendered(_ revision: UInt64) {
-        frameRequestLock.lock()
-        renderedFrameRequestRevision = max(renderedFrameRequestRevision, revision)
-        frameRequestLock.unlock()
     }
 
     private func frameRequestRevisions() -> (requested: UInt64, rendered: UInt64) {

@@ -889,7 +889,27 @@ import Foundation
                 }
                 return
             }
-            tmuxSession?.gateway.tmuxCommand("kill-session")
+            guard let session = tmuxSession else {
+                writeSessionSmokeResult(
+                    resultPath, result: "failed tmux-native session-end-context\n")
+                return
+            }
+            let descriptor = NativeTmuxSessionDescriptor(
+                name: session.sessionName,
+                windowCount: lastSnapshot?.tabs.count ?? 0,
+                socketPath: session.socketPath
+            )
+            let picker = TmuxSessionPopoverController(currentSessionName: session.sessionName)
+            picker.update(sessions: [descriptor], status: nil, canCreate: true)
+            picker.onRequestEndSession = { [weak self] requested in
+                self?.endTmuxSession(requested)
+            }
+            guard picker.requestEndSessionForSmoke(descriptor) else {
+                session.gateway.tmuxCommand("kill-session")
+                writeSessionSmokeResult(
+                    resultPath, result: "failed tmux-native session-end-x=no\n")
+                return
+            }
             waitForTmuxSmokeExit(resultPath, retries: 30)
         }
 
@@ -914,6 +934,7 @@ import Foundation
                     + "agent-status=yes notification=yes "
                     + "rename=yes split=2 divider-resize=yes client-grid=full "
                     + "tabs=2 tab-close=x-redrawn cli=yes live-cursor=yes "
+                    + "session-end=x-targeted "
                     + "ime=yes focus-input=yes return-repeat=yes kitty=yes "
                     + "shell-env=yes "
                     + "shell-restored=yes detach-clears=yes\n"

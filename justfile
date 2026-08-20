@@ -129,6 +129,7 @@ native-ci-smoke:
         ./scripts/native-tmux-zoom-resize-smoke; \
         ./scripts/native-session-smoke; \
         ./scripts/native-tab-bar-actions-smoke; \
+        ./scripts/native-frame-liveness-smoke; \
         ./scripts/native-home-cwd-smoke; \
         ./scripts/native-terminal-exit-closes-tab-smoke; \
     fi
@@ -218,6 +219,10 @@ pane-grid-smoke:
 # Verify tab-bar buttons create a tab and both split axes through their click actions.
 native-tab-bar-actions-smoke:
     @if [[ -z "${IN_NIX_SHELL:-}" ]]; then exec nix develop --command just native-tab-bar-actions-smoke; else just native-build && ./scripts/native-tab-bar-actions-smoke; fi
+
+# Repeatedly verify terminal input and tab switches reach a newly presented Metal frame.
+frame-liveness-smoke:
+    @if [[ -z "${IN_NIX_SHELL:-}" ]]; then exec nix develop --command just frame-liveness-smoke; else just native-build && ./scripts/native-frame-liveness-smoke; fi
 
 # Verify an empty startup-directory setting resolves to the macOS user home.
 native-home-cwd-smoke:

@@ -81,6 +81,8 @@ The user-facing reproduction sequence is kept in
   column-bounded.
 - `just nvim-layout-redraw-smoke` checks pane close and rapid host resize without
   a lost Metal frame request.
+- `just frame-liveness-smoke` injects a redraw request at the idle/pause boundary,
+  then repeats terminal input and tab switching against newly presented frames.
 - `just nvim-smoke-commandline` and `just nvim-smoke-cursor-move` reject false
   scroll animation from command-line or cursor-only redraws.
 

@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+app="spikes/macos-shell/.build/SatinApplication"
+result_file="spikes/macos-shell/.build/native-frame-liveness.result"
+log_file="/tmp/satin-frame-liveness.log"
+
+rm -f -- "$result_file" "$log_file"
+SATIN_NATIVE_SMOKE_SCENARIO=frame-liveness \
+  SATIN_NATIVE_SMOKE_RESULT="$result_file" \
+  "$app" >"$log_file" 2>&1
+
+if [[ ! -s "$result_file" ]]; then
+  echo "frame liveness smoke failed before result was written" >&2
+  sed -n '1,160p' "$log_file" >&2 || true
+  exit 1
+fi
+
+result="$(cat "$result_file")"
+printf '%s\n' "$result"
+[[ "$result" == ok\ frame-liveness* ]]
