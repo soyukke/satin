@@ -1,6 +1,37 @@
 import AppKit
 import Foundation
 
+func nativeQuitConfirmationRequired(
+    preferenceEnabled: Bool,
+    launchedForFinderEditor: Bool,
+    smokeScenarioActive: Bool
+) -> Bool {
+    preferenceEnabled && !launchedForFinderEditor && !smokeScenarioActive
+}
+
+func runNativeQuitConfirmationSelfTests() -> Bool {
+    nativeQuitConfirmationRequired(
+        preferenceEnabled: true,
+        launchedForFinderEditor: false,
+        smokeScenarioActive: false
+    )
+        && !nativeQuitConfirmationRequired(
+            preferenceEnabled: false,
+            launchedForFinderEditor: false,
+            smokeScenarioActive: false
+        )
+        && !nativeQuitConfirmationRequired(
+            preferenceEnabled: true,
+            launchedForFinderEditor: true,
+            smokeScenarioActive: false
+        )
+        && !nativeQuitConfirmationRequired(
+            preferenceEnabled: true,
+            launchedForFinderEditor: false,
+            smokeScenarioActive: true
+        )
+}
+
 final class SatinAppDelegate: NSObject, NSApplicationDelegate {
     private var window: NSWindow?
     private var shellController: TerminalShellViewController?
@@ -15,6 +46,8 @@ final class SatinAppDelegate: NSObject, NSApplicationDelegate {
     private var mainMenuController: NativeMainMenuController?
     private var pendingFinderPaths: [String] = []
     private var launchedForFinderEditor = false
+    private var suppressNextQuitConfirmation = false
+    private var quitConfirmationInProgress = false
 
     func applicationWillFinishLaunching(_ notification: Notification) {
         NSApp.servicesProvider = self
@@ -119,6 +152,7 @@ final class SatinAppDelegate: NSObject, NSApplicationDelegate {
         controller.view.frame = NSRect(origin: .zero, size: contentRect.size)
         window.contentViewController = controller
         window.toolbar = controller.toolbar()
+        window.isReleasedWhenClosed = false
         self.window = window
         self.shellController = controller
         pendingFinderPaths.removeAll()
@@ -172,11 +206,53 @@ final class SatinAppDelegate: NSObject, NSApplicationDelegate {
         alert.informativeText = message
         alert.addButton(withTitle: "Quit")
         alert.runModal()
-        NSApp.terminate(nil)
+        terminateWithoutConfirmation()
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         true
+    }
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        #if SATIN_SMOKE_SCENARIOS
+            let smokeScenarioActive =
+                ProcessInfo.processInfo.environment["SATIN_NATIVE_SMOKE_SCENARIO"] != nil
+        #else
+            let smokeScenarioActive = false
+        #endif
+        if suppressNextQuitConfirmation {
+            suppressNextQuitConfirmation = false
+            return .terminateNow
+        }
+        guard
+            nativeQuitConfirmationRequired(
+                preferenceEnabled: settingsStore.load().confirmBeforeQuit,
+                launchedForFinderEditor: launchedForFinderEditor,
+                smokeScenarioActive: smokeScenarioActive
+            )
+        else {
+            return .terminateNow
+        }
+        guard !quitConfirmationInProgress else {
+            return .terminateLater
+        }
+
+        let alert = quitConfirmationAlert()
+        if let window, window.isVisible, window.attachedSheet == nil {
+            quitConfirmationInProgress = true
+            alert.beginSheetModal(for: window) { [weak self] response in
+                self?.quitConfirmationInProgress = false
+                sender.reply(toApplicationShouldTerminate: response == .alertFirstButtonReturn)
+            }
+            return .terminateLater
+        }
+
+        let response = alert.runModal()
+        if response != .alertFirstButtonReturn, let window, !window.isVisible {
+            window.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+        }
+        return response == .alertFirstButtonReturn ? .terminateNow : .terminateCancel
     }
 
     func applicationDidBecomeActive(_ notification: Notification) {
@@ -408,7 +484,7 @@ final class SatinAppDelegate: NSObject, NSApplicationDelegate {
                         NativeLog.lifecycleInfo(
                             "update_install_ready version=\(prepared.version)"
                         )
-                        NSApp.terminate(nil)
+                        self.terminateWithoutConfirmation()
                     } catch {
                         self.updateInstaller.discard(prepared)
                         NativeLog.lifecycleError(
@@ -457,5 +533,21 @@ final class SatinAppDelegate: NSObject, NSApplicationDelegate {
         alert.informativeText = error.localizedDescription
         alert.addButton(withTitle: "OK")
         alert.runModal()
+    }
+
+    private func quitConfirmationAlert() -> NSAlert {
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Quit Satin?"
+        alert.informativeText =
+            "Running terminal processes will be closed. tmux sessions will keep running unless you end them explicitly."
+        alert.addButton(withTitle: "Quit Satin")
+        alert.addButton(withTitle: "Cancel")
+        return alert
+    }
+
+    private func terminateWithoutConfirmation() {
+        suppressNextQuitConfirmation = true
+        NSApp.terminate(nil)
     }
 }

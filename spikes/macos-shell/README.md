@@ -119,9 +119,9 @@ manifest marks the result as a development artifact.
   with legacy migration.
 - Explicit local `tmux -CC` projects byte-safe pane streams, bounded history,
   alternate screens, modes, zoom, bells, and tmux-owned tab/pane actions through
-  native surfaces. The unified toolbar picker switches, creates, attaches, and
-  detaches sessions on the local server. Reattach checkpoints are limited to a
-  live local tmux socket.
+  native surfaces. The unified toolbar picker switches, creates, attaches,
+  detaches, and confirmation-gates ending sessions on the local server. Reattach
+  checkpoints are limited to a live local tmux socket.
 - `just native-smoke` verifies that the native host can launch and render a
   window snapshot, native tabs, dark terminal surface, and PTY text without
   manual interaction. It also requires `skia-frames=yes`.
@@ -134,8 +134,8 @@ repeated lifecycle/handoff scenarios.
 active sibling pane and after resizing the host window.
 
 `just native-tmux-smoke` covers native projection, history, paste, zoom, Satin
-control actions, alternate-screen reattach, explicit detach, and missing-session
-recovery.
+control actions, the session-row end action, alternate-screen reattach, explicit
+detach, and missing-session recovery.
 
 `just native-tmux-zoom-resize-smoke` is the focused regression check for
 shared font zoom, nested projected-tmux grid alignment, terminal and TUI Neovim

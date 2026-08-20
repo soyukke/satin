@@ -54,7 +54,7 @@ and changes across the workspace.
 - Explicit local `tmux -CC` integration that projects tmux windows, panes, zoom,
   history, alternate screens, terminal modes, and bells as native tabs and
   splits, then reattaches that projection after a clean Satin restart. A native
-  session picker switches, creates, attaches, and detaches local sessions;
+  session picker switches, creates, attaches, detaches, and safely ends local sessions;
   ordinary `tmux attach` remains a terminal TUI.
 - A release-matched skill, available through `satin skill`, that lets terminal
   AIs identify their pane and operate tabs, splits, input, status, and artifacts
@@ -143,8 +143,9 @@ Help → Check for Updates… → Update and Restart.
 
 Install tmux 3.2 or newer, then run `tmux -CC attach` or `tmux -CC new-session`
 inside Satin to project tmux windows and panes as native tabs and splits. The
-session picker in the toolbar can create, switch, attach, and detach local
-sessions. Satin detects the user-owned tmux from the configured login shell and
+session picker in the toolbar can create, switch, attach, detach, and end local
+sessions. Ending a session from its `x` action requires confirmation because it
+terminates every program in that session. Satin detects the user-owned tmux from the configured login shell and
 uses its absolute path consistently; override it under Satin → Settings… →
 Terminal when needed. A clean Satin restart reattaches the last projected
 session; ordinary `tmux attach` stays inside the terminal as a TUI.
@@ -200,7 +201,8 @@ item.
 
 Open Satin → Settings… or press `Command-,`.
 
-- General controls Option-as-Alt, bell attention, and session restore.
+- General controls Option-as-Alt, bell attention, session restore, and the
+  default-on confirmation shown before quitting Satin.
 - Appearance selects a fixed-pitch font, font size, and theme. Font changes
   apply immediately to every pane; theme changes update the current tab and
   become the default for new tabs.

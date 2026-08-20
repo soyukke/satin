@@ -61,6 +61,7 @@ struct SatinApplication {
                 ("Finder editor launch", NativeFinderEditorLaunch.runSelfTests),
                 ("Rust core", RustCore.runSelfTests),
                 ("application activation", runNativeApplicationActivationSelfTests),
+                ("quit confirmation", runNativeQuitConfirmationSelfTests),
                 ("frame scheduling", runNativeFrameSchedulingSelfTests),
                 ("tmux split command", runNativeTmuxSplitCommandSelfTests),
                 ("pane geometry", runNativePaneGeometrySelfTests),

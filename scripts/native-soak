@@ -17,6 +17,7 @@ for iteration in $(seq 1 "$iterations"); do
   ./scripts/native-smoke
   ./scripts/native-resize-smoke
   ./scripts/native-session-smoke
+  ./scripts/native-frame-liveness-smoke
   ./scripts/native-terminal-bottom-input-smoke
   ./scripts/native-shell-nvim-smoke
   ./scripts/native-terminal-exit-closes-tab-smoke

@@ -63,6 +63,9 @@ regressions reported during the 2026-08-18 development cycle. Run it against
   does not show `Select a terminal pane before connecting to tmux.`
 - [ ] Detach from tmux and confirm the original local shell returns and accepts
   input.
+- [ ] Click a session row's `x`, cancel the warning, and confirm the session is
+  still listed. Repeat and choose **End Session**; confirm only that session is
+  removed and its running programs exit.
 - [ ] Restart `Satin Dev` while a tmux session with splits and Neovim is active.
   Confirm the session, split layout, content, active window, and cwd restore.
 
@@ -100,6 +103,9 @@ macOS screen-recording permission.
   `just nvim-smoke-side-pane`.
 - [ ] Run `just native-tmux-smoke` and `just pane-grid-smoke`.
 - [ ] Run `just terminal-nvim-cwd-smoke` and `just precommit`.
+- [ ] Quit Satin and cancel the warning once, then quit successfully. Disable
+  **Confirm before quitting Satin** in General settings and confirm Quit no
+  longer prompts.
 
 ## Acceptance
 

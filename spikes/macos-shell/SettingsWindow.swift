@@ -12,6 +12,7 @@ enum NativePreferenceKey {
     static let optionAsAlt = "optionAsAlt"
     static let notifications = "bellNotifications"
     static let sessionRestore = "restoreSession"
+    static let confirmBeforeQuit = "confirmBeforeQuit"
     static let sessionState = "sessionState"
     static let defaultTheme = "defaultTheme"
     static let shellPath = "shellPath"
@@ -30,6 +31,7 @@ enum NativePreferenceKey {
         optionAsAlt,
         notifications,
         sessionRestore,
+        confirmBeforeQuit,
         sessionState,
         defaultTheme,
         shellPath,
@@ -49,6 +51,7 @@ struct NativeSettings: Equatable {
     var optionAsAlt: Bool
     var notifications: Bool
     var sessionRestore: Bool
+    var confirmBeforeQuit: Bool
     var defaultTheme: String
     var shellPath: String
     var tmuxExecutablePath: String
@@ -109,6 +112,10 @@ final class NativeSettingsStore {
                 NativePreferenceKey.sessionRestore,
                 defaultValue: true
             ),
+            confirmBeforeQuit: preferredBool(
+                NativePreferenceKey.confirmBeforeQuit,
+                defaultValue: true
+            ),
             defaultTheme: validTheme(
                 defaults.string(forKey: NativePreferenceKey.defaultTheme) ?? nativeThemeNames[0]
             ),
@@ -145,6 +152,7 @@ final class NativeSettingsStore {
         defaults.set(settings.optionAsAlt, forKey: NativePreferenceKey.optionAsAlt)
         defaults.set(settings.notifications, forKey: NativePreferenceKey.notifications)
         defaults.set(settings.sessionRestore, forKey: NativePreferenceKey.sessionRestore)
+        defaults.set(settings.confirmBeforeQuit, forKey: NativePreferenceKey.confirmBeforeQuit)
         defaults.set(validTheme(settings.defaultTheme), forKey: NativePreferenceKey.defaultTheme)
         defaults.set(validShellPath(settings.shellPath), forKey: NativePreferenceKey.shellPath)
         defaults.set(
@@ -183,6 +191,7 @@ final class NativeSettingsStore {
             NativePreferenceKey.optionAsAlt,
             NativePreferenceKey.notifications,
             NativePreferenceKey.sessionRestore,
+            NativePreferenceKey.confirmBeforeQuit,
             NativePreferenceKey.defaultTheme,
             NativePreferenceKey.shellPath,
             NativePreferenceKey.tmuxExecutablePath,
@@ -334,6 +343,7 @@ final class NativeSettingsWindowController: NSWindowController, NSTextFieldDeleg
     private var optionAsAltButton: NSButton?
     private var notificationButton: NSButton?
     private var sessionRestoreButton: NSButton?
+    private var confirmBeforeQuitButton: NSButton?
     private var shellField: NSTextField?
     private var tmuxField: NSTextField?
     private var directoryField: NSTextField?
@@ -397,6 +407,7 @@ final class NativeSettingsWindowController: NSWindowController, NSTextFieldDeleg
         settings.optionAsAlt = optionAsAltButton?.state == .on
         settings.notifications = notificationButton?.state == .on
         settings.sessionRestore = sessionRestoreButton?.state == .on
+        settings.confirmBeforeQuit = confirmBeforeQuitButton?.state == .on
         settings.automaticUpdateChecks = automaticUpdatesButton?.state == .on
         updateIntervalPopup?.isEnabled = settings.automaticUpdateChecks
         commit()
@@ -559,13 +570,16 @@ final class NativeSettingsWindowController: NSWindowController, NSTextFieldDeleg
         let notifications = checkbox("Bell notifications", action: #selector(booleanChanged(_:)))
         let restore = checkbox(
             "Restore tabs and panes on launch", action: #selector(booleanChanged(_:)))
+        let confirmBeforeQuit = checkbox(
+            "Confirm before quitting Satin", action: #selector(booleanChanged(_:)))
         optionAsAltButton = option
         notificationButton = notifications
         sessionRestoreButton = restore
+        confirmBeforeQuitButton = confirmBeforeQuit
         return sectionView(
             title: "General",
-            description: "Changes to input and notifications apply to running terminal panes.",
-            rows: [option, notifications, restore],
+            description: "General terminal, session, and application behavior.",
+            rows: [option, notifications, restore, confirmBeforeQuit],
             footer: resetButton()
         )
     }
@@ -819,6 +833,7 @@ final class NativeSettingsWindowController: NSWindowController, NSTextFieldDeleg
         optionAsAltButton?.state = settings.optionAsAlt ? .on : .off
         notificationButton?.state = settings.notifications ? .on : .off
         sessionRestoreButton?.state = settings.sessionRestore ? .on : .off
+        confirmBeforeQuitButton?.state = settings.confirmBeforeQuit ? .on : .off
         fontPopup?.selectItem(
             withTitle: settings.fontFamily.isEmpty ? "Bundled Default" : settings.fontFamily
         )

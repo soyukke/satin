@@ -217,6 +217,17 @@ final class NativeTmuxExecutableResolver {
                     socketPath: "/tmp/tmux socket"
                 )
             && NativeTmuxSessionDiscovery.parse("broken\n") == nil
+            && NativeTmuxSessionTermination.arguments(
+                for: NativeTmuxSessionDescriptor(
+                    name: "name with spaces",
+                    windowCount: 2,
+                    socketPath: "/tmp/tmux socket"
+                )
+            ) == [
+                "-S", "/tmp/tmux socket", "kill-session", "-t", "=name with spaces",
+            ]
+            && NativeTmuxSessionTermination.confirmed(.alertFirstButtonReturn)
+            && !NativeTmuxSessionTermination.confirmed(.alertSecondButtonReturn)
     }
 
     private static func resolveNow(
@@ -508,10 +519,64 @@ enum NativeTmuxSessionDiscovery {
     }
 }
 
+enum NativeTmuxSessionTerminationResult {
+    case ended
+    case unavailable(String)
+}
+
+enum NativeTmuxSessionTermination {
+    static func confirmed(_ response: NSApplication.ModalResponse) -> Bool {
+        response == .alertFirstButtonReturn
+    }
+
+    static func arguments(for descriptor: NativeTmuxSessionDescriptor) -> [String] {
+        ["-S", descriptor.socketPath, "kill-session", "-t", "=\(descriptor.name)"]
+    }
+
+    static func end(
+        executablePath: String,
+        descriptor: NativeTmuxSessionDescriptor,
+        completion: @escaping (NativeTmuxSessionTerminationResult) -> Void
+    ) {
+        DispatchQueue.global(qos: .userInitiated).async {
+            let result = endNow(executablePath: executablePath, descriptor: descriptor)
+            DispatchQueue.main.async {
+                completion(result)
+            }
+        }
+    }
+
+    private static func endNow(
+        executablePath: String,
+        descriptor: NativeTmuxSessionDescriptor
+    ) -> NativeTmuxSessionTerminationResult {
+        guard
+            let output = NativeTmuxProcessRunner.run(
+                executable: executablePath,
+                arguments: arguments(for: descriptor),
+                timeout: 3
+            )
+        else {
+            return .unavailable("Satin could not launch tmux to end the session.")
+        }
+        if output.timedOut {
+            return .unavailable("Ending the tmux session timed out.")
+        }
+        guard output.status == 0 else {
+            let data = output.standardError.isEmpty ? output.standardOutput : output.standardError
+            let message = String(decoding: data, as: UTF8.self)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            return .unavailable(message.isEmpty ? "tmux could not end the session." : message)
+        }
+        return .ended
+    }
+}
+
 final class TmuxSessionPopoverController: NSViewController, NSSearchFieldDelegate {
     var onSelectLocal: (() -> Void)?
     var onSelectSession: ((NativeTmuxSessionDescriptor) -> Void)?
     var onCreateSession: ((String) -> Void)?
+    var onRequestEndSession: ((NativeTmuxSessionDescriptor) -> Void)?
 
     private var sessions: [NativeTmuxSessionDescriptor] = []
     private let currentSessionName: String?
@@ -639,6 +704,7 @@ final class TmuxSessionPopoverController: NSViewController, NSSearchFieldDelegat
             action: #selector(selectLocal(_:))
         )
         rows.addArrangedSubview(local)
+        local.widthAnchor.constraint(equalTo: rows.widthAnchor).isActive = true
         for descriptor in filtered {
             let button = NSButton(frame: .zero)
             let suffix =
@@ -653,8 +719,35 @@ final class TmuxSessionPopoverController: NSViewController, NSSearchFieldDelegat
                 symbol: symbol,
                 action: #selector(selectSession(_:))
             )
-            button.tag = sessions.firstIndex(of: descriptor) ?? -1
-            rows.addArrangedSubview(button)
+            let index = sessions.firstIndex(of: descriptor) ?? -1
+            button.tag = index
+            button.setContentHuggingPriority(.defaultLow, for: .horizontal)
+
+            let endButton = NSButton(frame: .zero)
+            endButton.bezelStyle = .inline
+            endButton.image = NSImage(
+                systemSymbolName: "xmark",
+                accessibilityDescription: "End tmux session \(descriptor.name)"
+            )
+            endButton.imagePosition = .imageOnly
+            endButton.contentTintColor = .secondaryLabelColor
+            endButton.target = self
+            endButton.action = #selector(requestEndSession(_:))
+            endButton.tag = index
+            endButton.toolTip = "End tmux session \(descriptor.name)"
+            endButton.setAccessibilityLabel("End tmux session \(descriptor.name)")
+            endButton.identifier = NSUserInterfaceItemIdentifier(
+                "dev.soyukke.satin.tmux-session-end.\(index)"
+            )
+            endButton.widthAnchor.constraint(equalToConstant: 28).isActive = true
+            endButton.heightAnchor.constraint(equalToConstant: 28).isActive = true
+
+            let row = NSStackView(views: [button, endButton])
+            row.orientation = .horizontal
+            row.alignment = .centerY
+            row.spacing = 4
+            rows.addArrangedSubview(row)
+            row.widthAnchor.constraint(equalTo: rows.widthAnchor).isActive = true
         }
         if filtered.isEmpty, !query.isEmpty {
             let empty = NSTextField(labelWithString: "No matching tmux sessions")
@@ -692,6 +785,13 @@ final class TmuxSessionPopoverController: NSViewController, NSSearchFieldDelegat
         onSelectSession?(sessions[sender.tag])
     }
 
+    @objc private func requestEndSession(_ sender: NSButton) {
+        guard sessions.indices.contains(sender.tag) else {
+            return
+        }
+        onRequestEndSession?(sessions[sender.tag])
+    }
+
     @objc private func beginCreatingSession(_ sender: Any?) {
         newSessionButton.isHidden = true
         creationRow.isHidden = false
@@ -727,4 +827,26 @@ final class TmuxSessionPopoverController: NSViewController, NSSearchFieldDelegat
         let visibleRows = min(max(rowCount + 1, 2), 10)
         return CGFloat(visibleRows * 30 + (rowCount > 5 ? 132 : 92))
     }
+
+    #if SATIN_SMOKE_SCENARIOS
+        func requestEndSessionForSmoke(_ descriptor: NativeTmuxSessionDescriptor) -> Bool {
+            loadViewIfNeeded()
+            guard let index = sessions.firstIndex(of: descriptor) else {
+                return false
+            }
+            let identifier = NSUserInterfaceItemIdentifier(
+                "dev.soyukke.satin.tmux-session-end.\(index)"
+            )
+            guard
+                rows.arrangedSubviews
+                    .compactMap({ $0 as? NSStackView })
+                    .flatMap(\.arrangedSubviews)
+                    .contains(where: { $0.identifier == identifier })
+            else {
+                return false
+            }
+            onRequestEndSession?(descriptor)
+            return true
+        }
+    #endif
 }
