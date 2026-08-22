@@ -225,7 +225,9 @@ extension TerminalShellViewController {
             return
         }
         if request.agent_session_start == true {
-            paneStore.agentTitleTracker.beginSession(paneId: paneId)
+            let agent: NativeAgentKind =
+                request.summary == "Claude Code ready" ? .claude : .codex
+            paneStore.agentTitleTracker.beginSession(paneId: paneId, agent: agent)
         }
         let value = paneStatuses.update(
             paneId: paneId,
@@ -309,6 +311,9 @@ extension TerminalShellViewController {
         let index = core.newTab()
         if let title {
             core.renameTab(index, title: title)
+            if let tabId = core.snapshot()?.tabs.first(where: { $0.index == index })?.id {
+                paneStore.tabTitles.markManual(tabId: tabId)
+            }
         }
         syncFromCore()
         guard let tab = lastSnapshot?.tabs.first(where: { $0.index == index }) else {
@@ -541,57 +546,20 @@ extension TerminalShellViewController {
         _ request: NativeControlRequest,
         reply: @escaping NativeControlReply
     ) {
-        if let session = tmuxSession {
-            guard let tabId = request.tab,
-                let index = request.index,
-                let snapshot = lastSnapshot,
-                let source = snapshot.tabs.first(where: { $0.id == tabId }),
-                let sourceWindow = session.tmuxWindowIds[source.id],
-                index >= 0,
-                index < snapshot.tabs.count
-            else {
-                reply(
-                    controlFailure("invalid_tab_index", "The tab or destination index is invalid."))
-                return
-            }
-            let remaining = snapshot.tabs.filter { $0.id != tabId }
-            if remaining.isEmpty || source.index == index {
-                reply(.success(["tab": tabId, "index": index]))
-                return
-            }
-            let positionFlag: String
-            let targetTab: TerminalCoreTabSnapshot
-            if index == 0 {
-                positionFlag = "-b"
-                targetTab = remaining[0]
-            } else {
-                positionFlag = "-a"
-                targetTab = remaining[min(index - 1, remaining.count - 1)]
-            }
-            guard let targetWindow = session.tmuxWindowIds[targetTab.id] else {
-                reply(controlFailure("tab_not_found", "The destination tab does not exist."))
-                return
-            }
-            replyTmuxCommand(
-                session,
-                command: "move-window -s @\(sourceWindow) \(positionFlag) -t @\(targetWindow)",
-                result: ["tab": tabId, "index": index],
-                reply: reply
-            )
-            return
-        }
-        guard let tabId = request.tab,
-            let index = request.index,
-            let snapshot = lastSnapshot,
-            index < snapshot.tabs.count,
-            snapshot.tabs.contains(where: { $0.id == tabId }),
-            core.moveTab(tabId, to: index)
-        else {
+        guard let tabId = request.tab, let index = request.index else {
             reply(controlFailure("invalid_tab_index", "The tab or destination index is invalid."))
             return
         }
-        syncFromCore()
-        reply(.success(["tab": tabId, "index": index]))
+        switch requestTabMove(id: tabId, to: index) {
+        case .success:
+            reply(.success(["tab": tabId, "index": index]))
+        case .failure(.destinationMissing):
+            reply(controlFailure("tab_not_found", "The destination tab does not exist."))
+        case .failure(.tmuxCommandFailed):
+            reply(controlFailure("tmux_command_failed", "The tmux command could not be queued."))
+        case .failure(.invalidTarget):
+            reply(controlFailure("invalid_tab_index", "The tab or destination index is invalid."))
+        }
     }
 
     func handleControlCloseTab(
@@ -637,6 +605,7 @@ extension TerminalShellViewController {
             }
             discardPaneState(paneId)
         }
+        paneStore.tabTitles.remove(tabId: tabId)
         syncFromCore()
         reply(.success(["tab": tabId, "closedPanes": tab.panes]))
     }
@@ -775,6 +744,7 @@ extension TerminalShellViewController {
             )
             return
         }
+        paneStore.tabTitles.markManual(tabId: tabId)
         core.renameTab(tab.index, title: title)
         syncFromCore()
         reply(.success(["tab": tabId, "title": title]))

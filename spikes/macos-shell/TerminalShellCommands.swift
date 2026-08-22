@@ -1,6 +1,12 @@
 import AppKit
 import Foundation
 
+enum NativeTabMoveFailure: Error {
+    case invalidTarget
+    case destinationMissing
+    case tmuxCommandFailed
+}
+
 func nativeTmuxSplitCommand(horizontal: Bool, targetPaneId: UInt32) -> String {
     let flag = horizontal ? "-h" : "-v"
     return "split-window \(flag) -c '#{pane_current_path}' -t %\(targetPaneId)"
@@ -20,6 +26,68 @@ extension TerminalShellViewController {
         }
 
         selectTab(sender.selectedSegment)
+    }
+
+    func moveTab(from sourceIndex: Int, to targetIndex: Int) -> Bool {
+        guard let snapshot = lastSnapshot,
+            let source = snapshot.tabs.first(where: { $0.index == sourceIndex })
+        else {
+            return false
+        }
+        switch requestTabMove(id: source.id, to: targetIndex) {
+        case .success:
+            return true
+        case .failure:
+            return false
+        }
+    }
+
+    func requestTabMove(
+        id tabId: Int,
+        to targetIndex: Int
+    ) -> Result<Void, NativeTabMoveFailure> {
+        guard let snapshot = lastSnapshot,
+            let source = snapshot.tabs.first(where: { $0.id == tabId }),
+            targetIndex >= 0,
+            targetIndex < snapshot.tabs.count
+        else {
+            return .failure(.invalidTarget)
+        }
+        if source.index == targetIndex {
+            return .success(())
+        }
+        if let session = tmuxSession {
+            guard let sourceWindow = session.tmuxWindowIds[source.id] else {
+                return .failure(.invalidTarget)
+            }
+            let remaining = snapshot.tabs.filter { $0.id != tabId }
+            let positionFlag: String
+            let targetTab: TerminalCoreTabSnapshot
+            if targetIndex == 0 {
+                positionFlag = "-b"
+                targetTab = remaining[0]
+            } else {
+                positionFlag = "-a"
+                targetTab = remaining[min(targetIndex - 1, remaining.count - 1)]
+            }
+            guard let targetWindow = session.tmuxWindowIds[targetTab.id] else {
+                return .failure(.destinationMissing)
+            }
+            guard
+                session.gateway.tmuxCommand(
+                    "move-window -s @\(sourceWindow) \(positionFlag) -t @\(targetWindow)"
+                )
+            else {
+                return .failure(.tmuxCommandFailed)
+            }
+            return .success(())
+        }
+        guard core.moveTab(tabId, to: targetIndex) else {
+            return .failure(.invalidTarget)
+        }
+        syncFromCore()
+        saveSessionState()
+        return .success(())
     }
 
     @objc func newTab(_ sender: Any?) {
@@ -263,7 +331,12 @@ extension TerminalShellViewController {
         }
         let tabs = snapshot.tabs.compactMap { tab in
             savedSessionPane(tab.layout, activePane: tab.active_pane).map { layout in
-                NativeSessionTab(title: tab.title, theme: tab.theme, layout: layout)
+                NativeSessionTab(
+                    title: tab.title,
+                    theme: tab.theme,
+                    layout: layout,
+                    titleIsManual: paneStore.tabTitles.isManual(tabId: tab.id)
+                )
             }
         }
         return NativeSessionState(
@@ -387,6 +460,7 @@ extension TerminalShellViewController {
             )
             return
         }
+        paneStore.tabTitles.markManual(tabId: tab.id)
         core.renameTab(tab.index, title: title)
         syncFromCore()
     }
@@ -440,6 +514,7 @@ extension TerminalShellViewController {
             }
             discardPaneState(paneId)
         }
+        paneStore.tabTitles.remove(tabId: tab.id)
         guard let updated = core.snapshot(), !updated.tabs.isEmpty else {
             NSApp.terminate(nil)
             return true

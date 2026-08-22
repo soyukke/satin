@@ -50,7 +50,9 @@ enum NativePlatformAppearance {
     }
 
     static func configureTabControl(_ control: NSSegmentedControl) {
-        control.segmentStyle = .automatic
+        control.segmentStyle = .separated
+        control.segmentDistribution = .fit
+        control.selectedSegmentBezelColor = nil
     }
 
 }

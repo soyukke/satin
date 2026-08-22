@@ -76,10 +76,14 @@ extension TerminalShellViewController {
         syncingTabs = true
         tabControl.segmentCount = snapshot.tabs.count
         for (idx, tab) in snapshot.tabs.enumerated() {
-            tabControl.setLabel(tab.title, forSegment: idx)
-            tabControl.setWidth(tabWidth(for: tab.title), forSegment: idx)
+            let width = tabWidth(for: tab.title)
+            tabControl.setWidth(width, forSegment: idx)
+            tabControl.setLabel(
+                tabControl.displayTitle(tab.title, segmentWidth: width),
+                forSegment: idx
+            )
             tabControl.setToolTip(
-                "Click to select; use × to close; double-click or right-click for tab actions",
+                "\(tab.title)\nDrag to reorder; use × to close; double-click or right-click for actions",
                 forSegment: idx
             )
         }
@@ -419,12 +423,15 @@ extension TerminalShellViewController {
         tabControl.onCloseRequested = { [weak self] index in
             self?.closeTab(at: index) ?? false
         }
+        tabControl.onMoveRequested = { [weak self] source, target in
+            self?.moveTab(from: source, to: target) ?? false
+        }
         tabControl.contextMenuProvider = { [weak self] index in
             self?.tabContextMenu(index: index)
         }
         tabControl.setAccessibilityLabel("Terminal Tabs")
         tabControl.setAccessibilityHelp(
-            "Click a tab to select it, use its close button to close it, "
+            "Click a tab to select it, drag it to reorder, use its close button to close it, "
                 + "or double-click or right-click for tab actions."
         )
         newTabButton.target = self
@@ -812,7 +819,7 @@ extension TerminalShellViewController {
         let measured = (title as NSString).size(withAttributes: [
             .font: NSFont.systemFont(ofSize: 13, weight: .semibold)
         ])
-        return min(max(measured.width + 58, 112), 214)
+        return min(max(measured.width + 66, 112), 214)
     }
 
 }

@@ -27,6 +27,11 @@ import Foundation
             _ = core.resizeSplit(firstPaneId: 1, secondPaneId: 2, ratio: 0.35)
             _ = core.resizeSplit(firstPaneId: 2, secondPaneId: 3, ratio: 0.65)
             syncFromCore()
+            if let snapshot = lastSnapshot,
+                let activeTab = snapshot.tabs.first(where: { $0.index == snapshot.active_tab })
+            {
+                paneStore.tabTitles.markManual(tabId: activeTab.id)
+            }
             guard let state = currentSessionState(),
                 let data = try? JSONEncoder().encode(state),
                 let decoded = decodeSessionState(data)
@@ -83,12 +88,14 @@ import Foundation
             let ratiosRetained =
                 decoded.tabs[decoded.activeTab].layout.ratio == 0.35
                 && decoded.tabs[decoded.activeTab].layout.second?.ratio == 0.65
+            let manualTitleRetained = decoded.tabs[decoded.activeTab].titleIsManual == true
             let ok =
                 decoded.schemaVersion == currentSessionSchemaVersion
                 && counts.leaves == 3
                 && counts.splits == 2
                 && counts.activeLeaves == 1
                 && ratiosRetained
+                && manualTitleRetained
                 && migrated?.schemaVersion == currentSessionSchemaVersion
                 && migrated?.tabs.first?.layout.kind == "leaf"
                 && attachedRoundTrip?.tmuxAttachment == attachment
@@ -108,6 +115,7 @@ import Foundation
                 result: "\(status) session-schema version=\(decoded.schemaVersion) "
                     + "leaves=\(counts.leaves) splits=\(counts.splits) active=\(counts.activeLeaves) "
                     + "ratios=\(ratiosRetained ? "retained" : "lost") "
+                    + "manual-title=\(manualTitleRetained ? "retained" : "lost") "
                     + "migration=\(migrated == nil ? "failed" : "ok") "
                     + "reattach=\(attachedRoundTrip?.tmuxAttachment == attachment ? "ok" : "failed") "
                     + "consume-once=\(consumed.tmuxAttachment == nil ? "ok" : "failed") "
@@ -225,6 +233,25 @@ import Foundation
                     $0.index == snapshot.active_tab
                 })?.title == renamedTitle
                 && tabControl.label(forSegment: snapshot.active_tab) == renamedTitle
+            let orderBeforeDrag = core.snapshot()?.tabs.map(\.id)
+            let moved = tabControl.simulateMoveForSmoke(
+                from: snapshot.active_tab,
+                to: 0
+            )
+            let movedSnapshot = core.snapshot()
+            let movedOrderReady =
+                moved
+                && movedSnapshot?.active_tab == 0
+                && movedSnapshot?.tabs.map(\.id) == orderBeforeDrag.map { Array($0.reversed()) }
+            let restored = tabControl.simulateMoveForSmoke(from: 0, to: snapshot.active_tab)
+            let dragReady =
+                movedOrderReady
+                && restored
+                && core.snapshot()?.active_tab == snapshot.active_tab
+                && core.snapshot()?.tabs.map(\.id) == orderBeforeDrag
+            let tabVisualsReady = tabControl.visualGeometryReadyForSmoke(
+                segment: snapshot.active_tab
+            )
             let paneCloseTarget = activeTab.active_pane
             terminalTextView.paneChromeView(for: paneCloseTarget)?.performForSmoke(.close)
             let paneClosedSnapshot = core.snapshot()
@@ -290,6 +317,8 @@ import Foundation
                 && contextMenuReady
                 && renamePromptReady
                 && renameReady
+                && dragReady
+                && tabVisualsReady
                 && paneCloseReady
                 && closeReady
             let status = ok ? "ok" : "failed"
@@ -311,6 +340,8 @@ import Foundation
                     + "context=\(contextMenuReady ? "right-click" : "missing") "
                     + "prompt=\(renamePromptReady ? "icon-free" : "invalid") "
                     + "rename=\(renameReady ? "double-click" : "missing") "
+                    + "tab-dnd=\(dragReady ? "reordered" : "missing") "
+                    + "tab-visuals=\(tabVisualsReady ? "clear" : "invalid") "
                     + "new-tab=\(tabStripView.actionsReady() ? "tab-strip" : "missing") "
                     + "pane-close=\(paneCloseReady ? "x-button" : "missing") "
                     + "tab-close=\(closeReady ? "x-button" : "missing")\n"
