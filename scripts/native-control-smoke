@@ -84,6 +84,23 @@ jq -e '
 ' <<<"$background_tab" >/dev/null
 "$cli" --socket "$socket" set-theme --tab 2 Harbor >/dev/null
 "$cli" --socket "$socket" select-tab --tab 2 >/dev/null
+"$cli" --socket "$socket" send --pane 2 \
+  "printf '\\033]0;⠹ automatic-agent-title\\007'; sleep 0.4" >/dev/null
+"$cli" --socket "$socket" key --pane 2 Enter >/dev/null
+for _ in {1..100}; do
+  manual_title_state="$("$cli" --socket "$socket" --json list)"
+  if jq -e '
+    (.result.tabs[] | select(.id == 2) | .title == "controlled")
+      and (.result.panes[] | select(.id == 2) | .status.status == "running")
+  ' <<<"$manual_title_state" >/dev/null; then
+    break
+  fi
+  sleep 0.05
+done
+jq -e '
+  (.result.tabs[] | select(.id == 2) | .title == "controlled")
+    and (.result.panes[] | select(.id == 2) | .status.status == "running")
+' <<<"${manual_title_state:-}" >/dev/null
 
 split="$("$cli" --socket "$socket" --json split \
   --pane 2 --horizontal --cwd "$smoke_root" --background)"

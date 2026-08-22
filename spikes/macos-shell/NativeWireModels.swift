@@ -41,6 +41,19 @@ struct NativeSessionTab: Codable {
     let title: String
     let theme: String
     let layout: NativeSessionPane
+    let titleIsManual: Bool?
+
+    init(
+        title: String,
+        theme: String,
+        layout: NativeSessionPane,
+        titleIsManual: Bool? = nil
+    ) {
+        self.title = title
+        self.theme = theme
+        self.layout = layout
+        self.titleIsManual = titleIsManual
+    }
 }
 
 final class NativeSessionPane: Codable {
