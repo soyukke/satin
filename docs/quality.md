@@ -61,6 +61,13 @@ non-mutating. `just ci-static` and `just ci-rust` expose the two CI subsets that
 `just verify` composes. `just precommit` adds staged secret scanning. `just
 quality` is the local publication gate and adds worktree secret scanning,
 dependency auditing, native build, updater self-test, and native smoke.
+The native portion explicitly includes frame-liveness, repeated bottom-line
+terminal input, multi-tab toolbar placement, full tmux control-mode behavior,
+and the pane/grid matrix. The full tmux boundary drives the real session
+popover, verifies Local and tmux discovery, switches sessions, and creates a
+visible Command-T window. The macOS CI smoke suite runs these same focused
+input and toolbar checks plus the full tmux boundary rather than only its
+zoom/resize subset.
 
 Lint suppressions must be scoped to the smallest affected expression or rule
 site and include a reason. Repository-wide warning suppression is not allowed.

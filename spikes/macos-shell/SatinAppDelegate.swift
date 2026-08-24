@@ -193,7 +193,7 @@ final class SatinAppDelegate: NSObject, NSApplicationDelegate {
         }
         #if SATIN_SMOKE_SCENARIOS
             writeSmokeWindowIdIfNeeded(window)
-            scheduleSmokeShotIfNeeded(window)
+            scheduleSmokeShotIfNeeded(window, controller: controller)
         #endif
         scheduleAutomaticUpdateCheck()
     }

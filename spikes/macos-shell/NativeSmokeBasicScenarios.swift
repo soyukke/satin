@@ -167,6 +167,16 @@ import Foundation
                 }
             let contentBelowChrome = metalView.frame.maxY <= view.safeAreaRect.maxY + 0.5
             let backdropSpansWindow = backdropView.frame.maxY >= view.bounds.maxY - 0.5
+            let tabStripFrame = tabStripView.convert(tabStripView.bounds, to: nil)
+            let artifactFrame = artifactButton.convert(artifactButton.bounds, to: nil)
+            let workFrame = workSwitcherButton.convert(workSwitcherButton.bounds, to: nil)
+            let sessionFrame = sessionControlButton.convert(sessionControlButton.bounds, to: nil)
+            let windowContentFrame = view.convert(view.bounds, to: nil)
+            let toolbarControlsAreTrailing =
+                artifactFrame.minX > tabStripFrame.maxX
+                && workFrame.minX > artifactFrame.minX
+                && sessionFrame.minX > workFrame.minX
+                && sessionFrame.maxX >= windowContentFrame.maxX - 32
             if controlsReady {
                 newTabButton.performClick(nil)
                 activePaneId.flatMap(terminalTextView.paneChromeView)?
@@ -296,6 +306,31 @@ import Foundation
                 && tabControl.segmentCount == 1
                 && tabControl.label(forSegment: 0) == renamedTitle
                 && tabControl.frame.width < tabWidthBeforeClose
+            for _ in 0..<9 {
+                newTabButton.performClick(nil)
+            }
+            view.layoutSubtreeIfNeeded()
+            let manyTabStripFrame = tabStripView.convert(tabStripView.bounds, to: nil)
+            let manyTabViewportFrame = tabStripView.visibleTabViewportFrameForSmoke()
+            let manyArtifactFrame = artifactButton.convert(artifactButton.bounds, to: nil)
+            let manyWorkFrame = workSwitcherButton.convert(workSwitcherButton.bounds, to: nil)
+            let manySessionFrame = sessionControlButton.convert(
+                sessionControlButton.bounds, to: nil)
+            let manyWindowContentFrame = view.convert(view.bounds, to: nil)
+            let manyTabToolbarControlsAreTrailing =
+                core.snapshot()?.tabs.count == 10
+                && manyTabStripFrame.intersects(manyWindowContentFrame)
+                && manyArtifactFrame.minX > manyTabStripFrame.maxX
+                && manyWorkFrame.minX > manyArtifactFrame.minX
+                && manySessionFrame.minX > manyWorkFrame.minX
+                && manySessionFrame.maxX >= manyWindowContentFrame.maxX - 32
+            let manyTabOverflowReady =
+                tabStripView.overflowLayoutReadyForSmoke(expectedSegments: 10)
+                && tabOverflowMenuReadyForSmoke(expectedCount: 10)
+                && manyTabViewportFrame.maxX <= manyTabStripFrame.maxX + 0.5
+                && manyTabViewportFrame.maxX < manyArtifactFrame.minX
+            let manyTabContinuationReady =
+                tabStripView.continuationAffordancesReadyForSmoke()
             let ok =
                 controlsReady
                 && shortcutsReady
@@ -304,6 +339,7 @@ import Foundation
                 && contentBelowChrome
                 && contentClearsPaneChrome
                 && backdropSpansWindow
+                && toolbarControlsAreTrailing
                 && snapshot.tabs.count == 2
                 && snapshot.active_tab == 1
                 && metrics.leaves == 3
@@ -321,6 +357,9 @@ import Foundation
                 && tabVisualsReady
                 && paneCloseReady
                 && closeReady
+                && manyTabToolbarControlsAreTrailing
+                && manyTabOverflowReady
+                && manyTabContinuationReady
             let status = ok ? "ok" : "failed"
             writeSessionSmokeResult(
                 resultPath,
@@ -330,6 +369,19 @@ import Foundation
                     + "density=\(compactChrome ? "compact" : "regular") "
                     + "content=\(contentBelowChrome && contentClearsPaneChrome ? "safe" : "overlap") "
                     + "background=\(backdropSpansWindow ? "edge-to-edge" : "inset") "
+                    + "toolbar=\(toolbarControlsAreTrailing ? "trailing" : "misplaced") "
+                    + "toolbar-x=\(Int(tabStripFrame.maxX))/\(Int(artifactFrame.minX))/"
+                    + "\(Int(workFrame.minX))/\(Int(sessionFrame.minX))/"
+                    + "\(Int(sessionFrame.maxX))/\(Int(windowContentFrame.maxX)) "
+                    + "many-tab-toolbar="
+                    + "\(manyTabToolbarControlsAreTrailing ? "trailing" : "misplaced") "
+                    + "overflow=\(manyTabOverflowReady ? "ready" : "invalid") "
+                    + "continuation="
+                    + "\(manyTabContinuationReady ? "bidirectional" : "invalid") "
+                    + "many-tab-x=\(Int(manyTabStripFrame.maxX))/"
+                    + "\(Int(manyArtifactFrame.minX))/\(Int(manyWorkFrame.minX))/"
+                    + "\(Int(manySessionFrame.minX))/\(Int(manySessionFrame.maxX))/"
+                    + "\(Int(manyWindowContentFrame.maxX)) "
                     + "tabs=\(snapshot.tabs.count) active=\(snapshot.active_tab) "
                     + "leaves=\(metrics.leaves) splits=\(metrics.splits) "
                     + "axes=\(axes.joined(separator: ",")) "
@@ -637,6 +689,11 @@ import Foundation
 
         func writeSessionSmokeResult(_ path: String, result: String) {
             try? result.write(toFile: path, atomically: true, encoding: .utf8)
+            if let shotPath = ProcessInfo.processInfo.environment["SATIN_NATIVE_SMOKE_SHOT"],
+                !shotPath.isEmpty
+            {
+                return
+            }
             NSApp.terminate(nil)
         }
 

@@ -1,3 +1,18 @@
+fn admit_control_client(control: &mut TmuxControl) {
+    control.feed(b"%begin 9 1 0\n%end 9 1 0\n").unwrap();
+    assert_eq!(
+        control.take_outgoing().unwrap(),
+        format!("{}\n", admission::CONTROL_CLIENT_CHECK_COMMAND).as_bytes()
+    );
+    control.feed(b"%begin 9 2 0\n1\n%end 9 2 0\n").unwrap();
+    assert_eq!(
+        control.take_outgoing().unwrap(),
+        b"refresh-client -f pause-after=5 -B 'satin-pane-title:%*:#{q:pane_title}' \
+          -B 'satin-session-clients::#{session_attached_list}'\n"
+    );
+    control.feed(b"%begin 9 3 0\n%end 9 3 0\n").unwrap();
+}
+
 #[test]
 fn keeps_passthrough_protocols_while_a_pane_is_rehydrating() {
     let mut control = TmuxControl {
@@ -26,6 +41,8 @@ fn session_notification_requests_and_parses_topology() {
     control
         .feed(b"\x1bP1000p%session-changed $0 satin\n")
         .unwrap();
+    assert!(control.take_outgoing().is_none());
+    admit_control_client(&mut control);
     let command = control.take_outgoing().unwrap();
     assert!(
         String::from_utf8(command)
@@ -64,6 +81,7 @@ fn session_notification_requests_and_parses_topology() {
 fn pane_title_subscription_refreshes_topology() {
     let mut control = TmuxControl {
         active: true,
+        control_client_admitted: true,
         ..Default::default()
     };
     control
@@ -87,7 +105,15 @@ fn initial_handshake_subscribes_to_pane_titles() {
 
     assert_eq!(
         control.take_outgoing().unwrap(),
-        b"refresh-client -f pause-after=5 -B 'satin-pane-title:%*:#{q:pane_title}'\n"
+        format!("{}\n", admission::CONTROL_CLIENT_CHECK_COMMAND).as_bytes()
+    );
+    control
+        .feed(b"%begin 1 2 0\n1\n%end 1 2 0\n")
+        .unwrap();
+    assert_eq!(
+        control.take_outgoing().unwrap(),
+        b"refresh-client -f pause-after=5 -B 'satin-pane-title:%*:#{q:pane_title}' \
+          -B 'satin-session-clients::#{session_attached_list}'\n"
     );
     assert!(
         String::from_utf8(control.take_outgoing().unwrap())
@@ -97,9 +123,55 @@ fn initial_handshake_subscribes_to_pane_titles() {
 }
 
 #[test]
+fn duplicate_control_client_is_rejected_without_waiting() {
+    let mut control = TmuxControl::default();
+    control
+        .feed(b"\x1bP1000p%begin 1 1 0\n%end 1 1 0\n")
+        .unwrap();
+    assert!(control.take_outgoing().is_some());
+    control
+        .feed(b"%begin 1 2 0\n1\n1\n%end 1 2 0\n")
+        .unwrap();
+    assert!(matches!(
+        control.take_event(),
+        Some(TmuxControlEvent::Entered)
+    ));
+    assert!(matches!(
+        control.take_event(),
+        Some(TmuxControlEvent::ProtocolError { .. })
+    ));
+    assert_eq!(control.take_outgoing().unwrap(), b"detach-client\n");
+}
+
+#[test]
+fn later_control_client_attachment_revokes_projection() {
+    let mut control = TmuxControl {
+        active: true,
+        control_client_admitted: true,
+        ..Default::default()
+    };
+    control
+        .feed(b"%subscription-changed satin-session-clients $0 : /dev/ttys001\n")
+        .unwrap();
+    assert_eq!(
+        control.take_outgoing().unwrap(),
+        format!("{}\n", admission::CONTROL_CLIENT_CHECK_COMMAND).as_bytes()
+    );
+    control
+        .feed(b"%begin 1 2 0\n1\n1\n%end 1 2 0\n")
+        .unwrap();
+    assert!(matches!(
+        control.take_event(),
+        Some(TmuxControlEvent::ProtocolError { .. })
+    ));
+    assert_eq!(control.take_outgoing().unwrap(), b"detach-client\n");
+}
+
+#[test]
 fn topology_change_while_snapshot_pending_queues_trailing_sync() {
     let mut control = TmuxControl {
         active: true,
+        control_client_admitted: true,
         hydrated_panes: [7].into(),
         ..Default::default()
     };

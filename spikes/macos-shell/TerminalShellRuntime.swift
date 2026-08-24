@@ -177,9 +177,11 @@ extension TerminalShellViewController {
             }
             let descriptors = (event.sessions ?? []).map {
                 NativeTmuxSessionDescriptor(
+                    sessionID: $0.session_id,
                     name: $0.name,
                     windowCount: $0.window_count,
-                    socketPath: $0.socket_path
+                    socketPath: $0.socket_path,
+                    serverPID: $0.server_pid
                 )
             }
             controller.update(
@@ -215,10 +217,18 @@ extension TerminalShellViewController {
             savedWorkspace: workspace
         )
         session.executablePath = pendingTmuxExecutable?.path ?? ""
+        session.lease = takePendingTmuxLease()
+        invalidateTmuxConnectionCallbacks()
         if let pendingTmuxExecutable {
             resolvedTmuxExecutable = pendingTmuxExecutable
         }
         self.pendingTmuxExecutable = nil
+        if pendingTmuxReattach != nil {
+            pendingTmuxReattach = nil
+            consumePersistedTmuxAttachment()
+        }
+        tmuxReattachInFlight = false
+        tmuxReattachDeferred = false
         tmuxSession = session
         NativeLog.lifecycleInfo("tmux_control_entered gateway_pane=\(gatewayPaneId)")
     }
@@ -292,6 +302,11 @@ extension TerminalShellViewController {
         guard let session = tmuxSession, session.gatewayPaneId == gatewayPaneId else {
             return
         }
+        guard admitTmuxSnapshot(snapshot, session: session) else {
+            _ = session.gateway.tmuxCommand("detach-client")
+            return
+        }
+        session.sessionID = snapshot.session_id
         session.sessionName = snapshot.session_name
         session.socketPath = snapshot.socket_path
         if !snapshot.socket_path.isEmpty {
@@ -391,6 +406,63 @@ extension TerminalShellViewController {
         saveSessionState()
     }
 
+    func stageTmuxLease(_ lease: NativeTmuxSessionLease) {
+        pendingTmuxLeaseTimeoutWorkItem?.cancel()
+        pendingTmuxLease = lease
+        let identity = lease.identity
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self, self.pendingTmuxLease?.identity == identity else {
+                return
+            }
+            self.pendingTmuxLease = nil
+            self.pendingTmuxLeaseTimeoutWorkItem = nil
+            self.tmuxReattachInFlight = false
+            self.tmuxReattachDeferred = self.pendingTmuxReattach != nil
+            NativeLog.lifecycleInfo(
+                "tmux_session_lease_staging_timed_out session=\(identity.sessionID)"
+            )
+        }
+        pendingTmuxLeaseTimeoutWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + 10, execute: workItem)
+    }
+
+    func takePendingTmuxLease() -> NativeTmuxSessionLease? {
+        pendingTmuxLeaseTimeoutWorkItem?.cancel()
+        pendingTmuxLeaseTimeoutWorkItem = nil
+        defer {
+            pendingTmuxLease = nil
+        }
+        return pendingTmuxLease
+    }
+
+    private func admitTmuxSnapshot(
+        _ snapshot: TmuxSnapshot,
+        session: NativeTmuxSession
+    ) -> Bool {
+        let identity = NativeTmuxSessionIdentity(snapshot: snapshot)
+        if session.lease?.identity == identity {
+            return true
+        }
+        if pendingTmuxLease?.identity == identity {
+            session.lease = takePendingTmuxLease()
+            return true
+        }
+        switch NativeTmuxSessionLease.acquire(identity: identity) {
+        case .acquired(let lease):
+            session.lease = lease
+            return true
+        case .busy:
+            NativeLog.runtimeError(
+                "tmux_projection_rejected reason=lease_busy session=\(snapshot.session_id)"
+            )
+        case .unavailable(let message):
+            NativeLog.runtimeError(
+                "tmux_projection_rejected reason=lease_unavailable message=\(message)"
+            )
+        }
+        return false
+    }
+
     private func updateTmuxPaneMetadata(_ pane: TmuxPaneSnapshot, nativePaneId: Int) {
         paneStore.workingDirectories[nativePaneId] = pane.current_path
         let previousTitle = paneStore.titles[nativePaneId] ?? ""
@@ -466,6 +538,7 @@ extension TerminalShellViewController {
         guard let session = tmuxSession, session.gatewayPaneId == gatewayPaneId else {
             return
         }
+        invalidateTmuxConnectionCallbacks()
         if !session.socketPath.isEmpty {
             lastTmuxSocketPath = session.socketPath
         }
@@ -475,6 +548,9 @@ extension TerminalShellViewController {
             paneStore.artifactSelectors.removeValue(forKey: paneId)
             paneStore.discardMetadata(for: paneId)
         }
+        pendingTmuxLeaseTimeoutWorkItem?.cancel()
+        pendingTmuxLeaseTimeoutWorkItem = nil
+        pendingTmuxLease = nil
         tmuxSession = nil
         guard core.applyWorkspace(session.savedWorkspace) else {
             NativeLog.runtimeError("tmux_workspace_restore_failed")

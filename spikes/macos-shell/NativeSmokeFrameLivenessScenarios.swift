@@ -57,6 +57,108 @@ import Foundation
                 }
                 return
             }
+            beginHiddenPaneAnimationCheck(resultPath, paneIds: paneIds)
+        }
+
+        private func beginHiddenPaneAnimationCheck(
+            _ resultPath: String,
+            paneIds: [Int]
+        ) {
+            selectTab(0)
+            metalView.resetSkiaFrameCount()
+            terminalTextView.insertText(
+                "printf 'SATIN_HIDDEN_SCROLL_%03d\\n' {1..240}\r",
+                replacementRange: NSRange(location: NSNotFound, length: 0)
+            )
+            waitForVisiblePaneAnimation(
+                resultPath,
+                paneIds: paneIds,
+                targetRevision: nil,
+                retries: frameLivenessRetries * 2
+            )
+        }
+
+        private func waitForVisiblePaneAnimation(
+            _ resultPath: String,
+            paneIds: [Int],
+            targetRevision: UInt64?,
+            retries: Int
+        ) {
+            drainTerminalPanes()
+            let markerVisible =
+                (terminalPane(for: paneIds[0]) as? RustTerminalPane)?
+                .controlScreenText()
+                .contains("SATIN_HIDDEN_SCROLL_240") == true
+            let revisions = metalView.frameRequestRevisionSnapshot()
+            let target = targetRevision ?? (markerVisible ? revisions.requested : nil)
+            let animationRendered =
+                markerVisible
+                && target.map { revisions.rendered >= $0 } == true
+                && metalView.skiaFrames() > 0
+                && metalView.pendingSkiaFrameDelayMs() == 0
+            guard animationRendered else {
+                guard retries > 0 else {
+                    writeFrameLivenessFailure(
+                        resultPath,
+                        phase: "visible-animation",
+                        iteration: 0,
+                        detail: "marker=\(markerVisible) "
+                            + "delay=\(metalView.pendingSkiaFrameDelayMs())"
+                    )
+                    return
+                }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.01) { [weak self] in
+                    self?.waitForVisiblePaneAnimation(
+                        resultPath,
+                        paneIds: paneIds,
+                        targetRevision: target,
+                        retries: retries - 1
+                    )
+                }
+                return
+            }
+
+            selectTab(1)
+            waitForHiddenPaneAnimationIdle(
+                resultPath,
+                paneIds: paneIds,
+                retries: frameLivenessRetries * 2
+            )
+        }
+
+        private func waitForHiddenPaneAnimationIdle(
+            _ resultPath: String,
+            paneIds: [Int],
+            retries: Int
+        ) {
+            drainTerminalPanes()
+            let revisions = metalView.frameRequestRevisionSnapshot()
+            let idle =
+                core.snapshot()?.active_tab == 1
+                && activePaneId == paneIds[1]
+                && revisions.requested == revisions.rendered
+                && metalView.pendingSkiaFrameDelayMs() == UInt64.max
+            guard idle else {
+                guard retries > 0 else {
+                    writeFrameLivenessFailure(
+                        resultPath,
+                        phase: "hidden-animation",
+                        iteration: 0,
+                        detail: "delay=\(metalView.pendingSkiaFrameDelayMs()) "
+                            + "active=\(core.snapshot()?.active_tab ?? -1)"
+                    )
+                    return
+                }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.025) { [weak self] in
+                    self?.waitForHiddenPaneAnimationIdle(
+                        resultPath,
+                        paneIds: paneIds,
+                        retries: retries - 1
+                    )
+                }
+                return
+            }
+
             metalView.resetSkiaFrameCount()
             metalView.armFrameRequestInterleaveForSmoke()
             metalView.requestFrame()
@@ -117,7 +219,7 @@ import Foundation
             guard iteration < frameLivenessIterations else {
                 let result =
                     "ok frame-liveness iterations=\(frameLivenessIterations) "
-                    + "race=covered tabs=presented input=presented "
+                    + "race=covered hidden-animation=idle tabs=presented input=presented "
                     + "frames=\(presentedFrames) "
                     + metalView.resizeDiagnosticsSummary() + "\n"
                 writeSessionSmokeResult(resultPath, result: result)

@@ -27,6 +27,21 @@ import Foundation
                 if let path = environment["SATIN_NATIVE_SMOKE_RESULT"], !path.isEmpty {
                     controller.applyTmuxNativeSmokeScenario(resultPath: path)
                 }
+            case "tmux-session-switch":
+                if let path = environment["SATIN_NATIVE_SMOKE_RESULT"], !path.isEmpty,
+                    let firstSession = environment["SATIN_NATIVE_SMOKE_TMUX_FIRST_SESSION"],
+                    let secondSession = environment["SATIN_NATIVE_SMOKE_TMUX_SECOND_SESSION"],
+                    let socketPath = environment["SATIN_NATIVE_SMOKE_TMUX_SOCKET"],
+                    let executablePath = environment["SATIN_NATIVE_SMOKE_TMUX_EXECUTABLE"]
+                {
+                    controller.applyTmuxSessionSwitchSmokeScenario(
+                        resultPath: path,
+                        firstSessionName: firstSession,
+                        secondSessionName: secondSession,
+                        socketPath: socketPath,
+                        executablePath: executablePath
+                    )
+                }
             case "tmux-reattach":
                 if let path = environment["SATIN_NATIVE_SMOKE_RESULT"], !path.isEmpty,
                     let sessionName = environment["SATIN_NATIVE_SMOKE_TMUX_SESSION"],
@@ -38,6 +53,28 @@ import Foundation
                         sessionName: sessionName,
                         socketPath: socketPath,
                         expectedContent: expectedContent
+                    )
+                }
+            case "tmux-lease-holder":
+                if let path = environment["SATIN_NATIVE_SMOKE_RESULT"], !path.isEmpty,
+                    let sessionName = environment["SATIN_NATIVE_SMOKE_TMUX_SESSION"],
+                    let socketPath = environment["SATIN_NATIVE_SMOKE_TMUX_SOCKET"]
+                {
+                    controller.applyTmuxLeaseHolderSmokeScenario(
+                        resultPath: path,
+                        sessionName: sessionName,
+                        socketPath: socketPath
+                    )
+                }
+            case "tmux-lease-busy":
+                if let path = environment["SATIN_NATIVE_SMOKE_RESULT"], !path.isEmpty,
+                    let sessionName = environment["SATIN_NATIVE_SMOKE_TMUX_SESSION"],
+                    let socketPath = environment["SATIN_NATIVE_SMOKE_TMUX_SOCKET"]
+                {
+                    controller.applyTmuxLeaseBusySmokeScenario(
+                        resultPath: path,
+                        sessionName: sessionName,
+                        socketPath: socketPath
                     )
                 }
             case "tmux-reattach-missing":
@@ -202,7 +239,10 @@ import Foundation
             }
         }
 
-        func scheduleSmokeShotIfNeeded(_ window: NSWindow) {
+        func scheduleSmokeShotIfNeeded(
+            _ window: NSWindow,
+            controller: TerminalShellViewController
+        ) {
             let environment = ProcessInfo.processInfo.environment
             guard let path = environment["SATIN_NATIVE_SMOKE_SHOT"], !path.isEmpty else {
                 return
@@ -212,9 +252,15 @@ import Foundation
                 ? settingsWindowController?.window ?? window
                 : window
 
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak targetWindow] in
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+                [weak self, weak targetWindow, weak controller] in
+                if environment["SATIN_NATIVE_SMOKE_SCENARIO"] == "tab-bar-actions" {
+                    controller?.tabStripView.prepareContinuationCaptureForSmoke(
+                        position: environment["SATIN_NATIVE_SMOKE_TAB_SCROLL_POSITION"]
+                    )
+                }
                 if let targetWindow {
-                    self.writeSmokeShot(path: path, window: targetWindow)
+                    self?.writeSmokeShot(path: path, window: targetWindow)
                 }
                 NSApp.terminate(nil)
             }
@@ -329,13 +375,14 @@ import Foundation
             }
             contentView.setFrameSize(
                 contentView.window?.contentLayoutRect.size ?? contentView.frame.size)
-            contentView.layoutSubtreeIfNeeded()
-            contentView.displayIfNeeded()
-            let bounds = contentView.bounds
-            guard let bitmap = contentView.bitmapImageRepForCachingDisplay(in: bounds) else {
+            let captureView = contentView.superview ?? contentView
+            captureView.layoutSubtreeIfNeeded()
+            captureView.displayIfNeeded()
+            let bounds = captureView.bounds
+            guard let bitmap = captureView.bitmapImageRepForCachingDisplay(in: bounds) else {
                 return
             }
-            contentView.cacheDisplay(in: bounds, to: bitmap)
+            captureView.cacheDisplay(in: bounds, to: bitmap)
             guard let data = bitmap.representation(using: .png, properties: [:]) else {
                 return
             }

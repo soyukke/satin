@@ -121,6 +121,11 @@ func satinRuntimeWrite(
     _ len: Int
 ) -> UInt8
 
+@_silgen_name("satin_runtime_interactive_shell_owns_foreground")
+func satinRuntimeInteractiveShellOwnsForeground(
+    _ handle: UnsafeMutableRawPointer?
+) -> UInt8
+
 @_silgen_name("satin_runtime_key")
 func satinRuntimeKey(
     _ handle: UnsafeMutableRawPointer?,
@@ -456,6 +461,9 @@ func satinSkiaMetalCreate(
 
 @_silgen_name("satin_skia_metal_destroy")
 func satinSkiaMetalDestroy(_ handle: UnsafeMutableRawPointer?)
+
+@_silgen_name("satin_skia_metal_begin_frame")
+func satinSkiaMetalBeginFrame(_ renderer: UnsafeMutableRawPointer?) -> UInt8
 
 @_silgen_name("satin_skia_metal_render_nvim")
 func satinSkiaMetalRenderNvim(

@@ -52,9 +52,11 @@ final class NativeTmuxSession {
         var clientResizeRequestCount = 0
     #endif
     var sessionName = "tmux"
+    var sessionID: UInt32 = 0
     var socketPath = ""
     var executablePath = ""
     var serverPid: UInt32 = 0
+    var lease: NativeTmuxSessionLease?
     var activeWindowZoomed = false
 
     init(gatewayPaneId: Int, gateway: RustTerminalPane, savedWorkspace: TerminalCoreSnapshot) {

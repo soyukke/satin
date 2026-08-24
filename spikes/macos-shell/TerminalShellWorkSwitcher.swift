@@ -6,6 +6,8 @@ extension TerminalShellViewController {
             dismissWorkSwitcher()
             return
         }
+        pendingWorkSwitcherRefresh?.cancel()
+        pendingWorkSwitcherRefresh = nil
         let controller = NativeWorkSwitcherViewController(
             items: nativeWorkItems(),
             activePaneId: activePaneId,
@@ -43,6 +45,8 @@ extension TerminalShellViewController {
     }
 
     func dismissWorkSwitcher() {
+        pendingWorkSwitcherRefresh?.cancel()
+        pendingWorkSwitcherRefresh = nil
         workSwitcherPopover?.performClose(nil)
         workSwitcherPopover = nil
         workSwitcherController = nil
@@ -84,11 +88,30 @@ extension TerminalShellViewController {
     }
 
     func refreshWorkSwitcherPresentation() {
-        let items = nativeWorkItems()
-        workSwitcherButton.setBadgeCount(items.filter(\.unread).count)
-        if workSwitcherPopover?.isShown == true {
-            workSwitcherController?.update(items: items)
+        workSwitcherButton.setBadgeCount(workAttentionStore.unreadCount)
+        guard workSwitcherPopover?.isShown == true else {
+            pendingWorkSwitcherRefresh?.cancel()
+            pendingWorkSwitcherRefresh = nil
+            return
         }
+        guard pendingWorkSwitcherRefresh == nil else {
+            return
+        }
+        let refresh = DispatchWorkItem { [weak self] in
+            guard let self else {
+                return
+            }
+            self.pendingWorkSwitcherRefresh = nil
+            guard self.workSwitcherPopover?.isShown == true else {
+                return
+            }
+            self.workSwitcherController?.update(items: self.nativeWorkItems())
+        }
+        pendingWorkSwitcherRefresh = refresh
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + .milliseconds(16),
+            execute: refresh
+        )
     }
 
     func nativeWorkItems() -> [NativeWorkItem] {

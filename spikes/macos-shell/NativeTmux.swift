@@ -3,7 +3,7 @@ import Darwin
 import Foundation
 
 let nativeTmuxSessionListFormat =
-    "#{q:session_name}|#{session_windows}|#{q:socket_path}"
+    "#{q:session_id}|#{q:session_name}|#{session_windows}|#{q:socket_path}|#{pid}"
 let nativeTmuxSessionListCommand =
     "list-sessions -F '\(nativeTmuxSessionListFormat)'"
 
@@ -206,22 +206,26 @@ final class NativeTmuxExecutableResolver {
             && !supportedVersion("3.1c")
             && !supportedVersion("unknown")
             && NativeTmuxSessionDiscovery.parse(
-                "alpha|2|/tmp/tmux.sock\nbeta|1|/tmp/tmux.sock\n"
+                "$0|alpha|2|/tmp/tmux.sock|4242\n$1|beta|1|/tmp/tmux.sock|4242\n"
             )?.map(\.name) == ["alpha", "beta"]
             && NativeTmuxSessionDiscovery.parse(
-                "name\\|with\\ space|1|/tmp/tmux\\ socket"
+                "$7|name\\|with\\ space|1|/tmp/tmux\\ socket|4242"
             )?.first
                 == NativeTmuxSessionDescriptor(
+                    sessionID: 7,
                     name: "name|with space",
                     windowCount: 1,
-                    socketPath: "/tmp/tmux socket"
+                    socketPath: "/tmp/tmux socket",
+                    serverPID: 4242
                 )
             && NativeTmuxSessionDiscovery.parse("broken\n") == nil
             && NativeTmuxSessionTermination.arguments(
                 for: NativeTmuxSessionDescriptor(
+                    sessionID: 7,
                     name: "name with spaces",
                     windowCount: 2,
-                    socketPath: "/tmp/tmux socket"
+                    socketPath: "/tmp/tmux socket",
+                    serverPID: 4242
                 )
             ) == [
                 "-S", "/tmp/tmux socket", "kill-session", "-t", "=name with spaces",
@@ -237,12 +241,6 @@ final class NativeTmuxExecutableResolver {
         if !configuredPath.isEmpty {
             return validate(path: configuredPath, source: .configured)
         }
-        let loginShell = selectedLoginShell(configured: shellPath)
-        if let path = loginShellPath(shell: loginShell),
-            let executable = findTmux(in: path)
-        {
-            return validate(path: executable, source: .loginShell)
-        }
         if let executable = findTmux(
             in: ProcessInfo.processInfo.environment["PATH"] ?? ""
         ) {
@@ -254,6 +252,16 @@ final class NativeTmuxExecutableResolver {
             if isExecutableFile(candidate) {
                 return validate(path: candidate, source: .fallback)
             }
+        }
+        // Starting another interactive login shell while the terminal's own shell is
+        // initializing can block on shared shell startup state. Keep that expensive
+        // lookup as the last fallback so opening the session picker and automatic
+        // reattach stay responsive when tmux is already in a known process path.
+        let loginShell = selectedLoginShell(configured: shellPath)
+        if let path = loginShellPath(shell: loginShell),
+            let executable = findTmux(in: path)
+        {
+            return validate(path: executable, source: .loginShell)
         }
         return .unavailable(
             "tmux was not found in the configured login shell. Choose its executable in Settings."
@@ -412,6 +420,78 @@ enum NativeTmuxSessionDiscoveryResult {
     case unavailable(String)
 }
 
+enum NativeTmuxProjectionAdmissionResult {
+    case admitted(NativeTmuxSessionLease)
+    case busy
+    case unavailable(String)
+}
+
+enum NativeTmuxProjectionAdmission {
+    static func request(
+        executable: NativeTmuxExecutable,
+        descriptor: NativeTmuxSessionDescriptor,
+        completion: @escaping (NativeTmuxProjectionAdmissionResult) -> Void
+    ) {
+        DispatchQueue.global(qos: .userInitiated).async {
+            let result = inspect(executable: executable, descriptor: descriptor)
+            DispatchQueue.main.async {
+                completion(result)
+            }
+        }
+    }
+
+    static func clientArguments(for descriptor: NativeTmuxSessionDescriptor) -> [String] {
+        [
+            "-S", descriptor.socketPath,
+            "list-clients", "-t", "=\(descriptor.name)",
+            "-F", "#{client_control_mode}",
+        ]
+    }
+
+    private static func inspect(
+        executable: NativeTmuxExecutable,
+        descriptor: NativeTmuxSessionDescriptor
+    ) -> NativeTmuxProjectionAdmissionResult {
+        let identity = NativeTmuxSessionIdentity(descriptor: descriptor)
+        let lease: NativeTmuxSessionLease
+        switch NativeTmuxSessionLease.acquire(identity: identity) {
+        case .acquired(let acquired):
+            lease = acquired
+        case .busy:
+            return .busy
+        case .unavailable(let message):
+            return .unavailable(message)
+        }
+        guard
+            let output = NativeTmuxProcessRunner.run(
+                executable: executable.path,
+                arguments: clientArguments(for: descriptor),
+                timeout: 3
+            )
+        else {
+            return .unavailable("Satin could not inspect the tmux session clients.")
+        }
+        if output.timedOut {
+            return .unavailable("tmux session client inspection timed out.")
+        }
+        if output.status != 0 {
+            let errorData =
+                output.standardError.isEmpty
+                ? output.standardOutput
+                : output.standardError
+            let detail = String(decoding: errorData, as: UTF8.self)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            return .unavailable(
+                detail.isEmpty ? "tmux session client inspection failed." : detail
+            )
+        }
+        let hasControlClient = String(decoding: output.standardOutput, as: UTF8.self)
+            .split(whereSeparator: \.isNewline)
+            .contains { $0.trimmingCharacters(in: .whitespacesAndNewlines) == "1" }
+        return hasControlClient ? .busy : .admitted(lease)
+    }
+}
+
 enum NativeTmuxSessionDiscovery {
     static func discover(
         executable: NativeTmuxExecutable,
@@ -432,24 +512,35 @@ enum NativeTmuxSessionDiscovery {
             guard let fields = parseFields(line) else {
                 return nil
             }
-            guard fields.count == 3,
-                let windowCount = Int(fields[1]),
-                !fields[0].isEmpty,
-                !fields[2].isEmpty
+            guard fields.count == 5,
+                let sessionID = parseTmuxID(fields[0], prefix: "$"),
+                let windowCount = Int(fields[2]),
+                let serverPID = UInt32(fields[4]),
+                !fields[1].isEmpty,
+                !fields[3].isEmpty
             else {
                 return nil
             }
             sessions.append(
                 NativeTmuxSessionDescriptor(
-                    name: String(fields[0]),
+                    sessionID: sessionID,
+                    name: String(fields[1]),
                     windowCount: windowCount,
-                    socketPath: String(fields[2])
+                    socketPath: String(fields[3]),
+                    serverPID: serverPID
                 )
             )
         }
         return sessions.sorted {
             $0.name.localizedStandardCompare($1.name) == .orderedAscending
         }
+    }
+
+    private static func parseTmuxID(_ value: String, prefix: Character) -> UInt32? {
+        guard value.first == prefix else {
+            return nil
+        }
+        return UInt32(value.dropFirst())
     }
 
     private static func parseFields(_ line: Substring) -> [String]? {
@@ -721,6 +812,9 @@ final class TmuxSessionPopoverController: NSViewController, NSSearchFieldDelegat
             )
             let index = sessions.firstIndex(of: descriptor) ?? -1
             button.tag = index
+            button.identifier = NSUserInterfaceItemIdentifier(
+                "dev.soyukke.satin.tmux-session-select.\(index)"
+            )
             button.setContentHuggingPriority(.defaultLow, for: .horizontal)
 
             let endButton = NSButton(frame: .zero)
@@ -829,6 +923,53 @@ final class TmuxSessionPopoverController: NSViewController, NSSearchFieldDelegat
     }
 
     #if SATIN_SMOKE_SCENARIOS
+        func sessionRowTitlesForSmoke() -> [String] {
+            loadViewIfNeeded()
+            return rows.arrangedSubviews.compactMap { row in
+                if let button = row as? NSButton {
+                    return button.title
+                }
+                return (row as? NSStackView)?.arrangedSubviews
+                    .compactMap { $0 as? NSButton }
+                    .first(where: {
+                        $0.identifier?.rawValue.hasPrefix(
+                            "dev.soyukke.satin.tmux-session-select."
+                        ) == true
+                    })?.title
+            }
+        }
+
+        func selectLocalForSmoke() -> Bool {
+            loadViewIfNeeded()
+            guard let button = rows.arrangedSubviews.first as? NSButton,
+                button.title == "Local Terminal"
+            else {
+                return false
+            }
+            button.performClick(nil)
+            return true
+        }
+
+        func selectSessionForSmoke(_ descriptor: NativeTmuxSessionDescriptor) -> Bool {
+            loadViewIfNeeded()
+            guard let index = sessions.firstIndex(of: descriptor) else {
+                return false
+            }
+            let identifier = NSUserInterfaceItemIdentifier(
+                "dev.soyukke.satin.tmux-session-select.\(index)"
+            )
+            guard
+                let button = rows.arrangedSubviews
+                    .compactMap({ $0 as? NSStackView })
+                    .flatMap(\.arrangedSubviews)
+                    .first(where: { $0.identifier == identifier }) as? NSButton
+            else {
+                return false
+            }
+            button.performClick(nil)
+            return true
+        }
+
         func requestEndSessionForSmoke(_ descriptor: NativeTmuxSessionDescriptor) -> Bool {
             loadViewIfNeeded()
             guard let index = sessions.firstIndex(of: descriptor) else {

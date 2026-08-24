@@ -83,11 +83,12 @@ import Foundation
                 tmuxSession?.requestedClientGrid?.cols == currentGrid.cols
                 && tmuxSession?.requestedClientGrid?.rows == currentGrid.rows
                 && projectedGridIsSettled
+            // The projection cursor belongs to the last topology snapshot and can lag
+            // live %output. The retained terminal cursor is the rendering/input source
+            // of truth, so do not turn normal control-protocol ordering into a timeout.
             guard let tmuxCursor = tmuxPane.cursorPosition(),
                 tmuxCursor.x > 0,
                 let projectedPane,
-                tmuxCursor.x == Int(projectedPane.cursor_x),
-                tmuxCursor.y == Int(projectedPane.cursor_y),
                 gridIsSettled
             else {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
@@ -328,11 +329,15 @@ import Foundation
                 return
             }
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
-                self?.continueTmuxSmokeIME(resultPath, pane: pane)
+                self?.continueTmuxSmokeIME(resultPath, pane: pane, retries: 30)
             }
         }
 
-        func continueTmuxSmokeIME(_ resultPath: String, pane tmuxPane: RustTmuxPane) {
+        func continueTmuxSmokeIME(
+            _ resultPath: String,
+            pane tmuxPane: RustTmuxPane,
+            retries: Int
+        ) {
             terminalTextView.setMarkedText(
                 "TMUX_IME_PREEDIT",
                 selectedRange: NSRange(location: 16, length: 0),
@@ -345,6 +350,20 @@ import Foundation
                 imeOrigin.x > paneFrame.minX + 1
             else {
                 terminalTextView.unmarkText()
+                if retries > 0 {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                        [weak self, weak tmuxPane] in
+                        guard let tmuxPane else {
+                            return
+                        }
+                        self?.continueTmuxSmokeIME(
+                            resultPath,
+                            pane: tmuxPane,
+                            retries: retries - 1
+                        )
+                    }
+                    return
+                }
                 tmuxSession?.gateway.tmuxCommand("kill-session")
                 writeSessionSmokeResult(resultPath, result: "failed tmux-native ime-anchor=no\n")
                 return
@@ -528,6 +547,14 @@ import Foundation
             else {
                 tmuxSession?.gateway.tmuxCommand("kill-session")
                 writeSessionSmokeResult(resultPath, result: "failed tmux-native repeat-input=no\n")
+                return
+            }
+            if remaining == 65, !pane.isAwaitingRepeatedReturnPrompt {
+                tmuxSession?.gateway.tmuxCommand("kill-session")
+                writeSessionSmokeResult(
+                    resultPath,
+                    result: "failed tmux-native repeat-gate=inactive\n"
+                )
                 return
             }
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.02) { [weak self, weak pane] in
@@ -895,9 +922,11 @@ import Foundation
                 return
             }
             let descriptor = NativeTmuxSessionDescriptor(
+                sessionID: session.sessionID,
                 name: session.sessionName,
                 windowCount: lastSnapshot?.tabs.count ?? 0,
-                socketPath: session.socketPath
+                socketPath: session.socketPath,
+                serverPID: session.serverPid
             )
             let picker = TmuxSessionPopoverController(currentSessionName: session.sessionName)
             picker.update(sessions: [descriptor], status: nil, canCreate: true)

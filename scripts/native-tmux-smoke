@@ -4,6 +4,8 @@ set -euo pipefail
 app="${SATIN_NATIVE_EXECUTABLE:-spikes/macos-shell/.build/SatinApplication}"
 result_file="spikes/macos-shell/.build/native-tmux.result"
 reattach_result_file="spikes/macos-shell/.build/native-tmux-reattach.result"
+lease_holder_result_file="spikes/macos-shell/.build/native-tmux-lease-holder.result"
+lease_busy_result_file="spikes/macos-shell/.build/native-tmux-lease-busy.result"
 missing_result_file="spikes/macos-shell/.build/native-tmux-reattach-missing.result"
 restart_checkpoint_result_file="spikes/macos-shell/.build/native-tmux-restart-checkpoint.result"
 restart_restore_result_file="spikes/macos-shell/.build/native-tmux-restart-restore.result"
@@ -20,10 +22,24 @@ restart_app="$preferences_root/Satin Tmux Restart Smoke.app"
 restart_contents="$restart_app/Contents"
 restart_binary="$restart_contents/MacOS/satin-tmux-restart-smoke"
 nvim_launcher="$(pwd)/target/debug/satin-nvim"
+lease_holder_pid=""
 
 [[ -x "$nvim_launcher" ]]
 
+SATIN_NATIVE_EXECUTABLE="$app" ./scripts/native-tmux-session-switch-smoke
+
+require_ok_result() {
+  local result="$1"
+  if [[ "$result" != ok* ]]; then
+    exit 1
+  fi
+}
+
 cleanup() {
+  if [[ -n "$lease_holder_pid" ]]; then
+    kill "$lease_holder_pid" >/dev/null 2>&1 || true
+    wait "$lease_holder_pid" >/dev/null 2>&1 || true
+  fi
   tmux -L "$socket_name" kill-server >/dev/null 2>&1 || true
   tmux -L "$restart_socket_name" kill-server >/dev/null 2>&1 || true
   defaults delete "$restart_bundle_id" >/dev/null 2>&1 || true
@@ -34,7 +50,8 @@ cleanup() {
 }
 trap cleanup EXIT
 
-rm -f "$result_file" "$reattach_result_file" "$missing_result_file" \
+rm -f "$result_file" "$reattach_result_file" "$lease_holder_result_file" \
+  "$lease_busy_result_file" "$missing_result_file" \
   "$restart_checkpoint_result_file" "$restart_restore_result_file"
 
 SATIN_NATIVE_PERF_FONT_SIZE=15 \
@@ -44,7 +61,7 @@ SATIN_NATIVE_PERF_FONT_SIZE=15 \
 
 result=$(cat "$result_file")
 echo "$result"
-[[ "$result" == ok* ]]
+require_ok_result "$result"
 
 tmux -L "$socket_name" new-session -d -s "$session_name"
 socket_path="$(tmux -L "$socket_name" display-message -p '#{socket_path}')"
@@ -53,7 +70,7 @@ tmux -S "$socket_path" send-keys -t "$session_name" \
   Enter
 
 content_ready=false
-for _ in {1..40}; do
+for _ in {1..120}; do
   if [[ "$(tmux -S "$socket_path" display-message -p -t "$session_name" '#{alternate_on}')" == 1 ]] &&
     tmux -S "$socket_path" capture-pane -p -t "$session_name" |
     rg --fixed-strings --quiet "$existing_marker"; then
@@ -62,7 +79,57 @@ for _ in {1..40}; do
   fi
   sleep 0.05
 done
-[[ "$content_ready" == true ]]
+if [[ "$content_ready" != true ]]; then
+  echo "tmux reattach fixture did not reach Neovim alternate screen" >&2
+  tmux -S "$socket_path" capture-pane -p -t "$session_name" >&2 || true
+  exit 1
+fi
+
+SATIN_NATIVE_SMOKE_SCENARIO=tmux-lease-holder \
+  SATIN_NATIVE_SMOKE_RESULT="$lease_holder_result_file" \
+  SATIN_NATIVE_SMOKE_TMUX_SESSION="$session_name" \
+  SATIN_NATIVE_SMOKE_TMUX_SOCKET="$socket_path" \
+  "$app" >"/tmp/satin-native-tmux-lease-holder.log" 2>&1 &
+lease_holder_pid=$!
+
+lease_holder_ready=false
+for _ in {1..60}; do
+  if [[ -f "$lease_holder_result_file" ]] &&
+    [[ "$(cat "$lease_holder_result_file")" == ready* ]]; then
+    lease_holder_ready=true
+    break
+  fi
+  sleep 0.1
+done
+if [[ "$lease_holder_ready" != true ]]; then
+  echo "tmux lease-holder did not become ready" >&2
+  sed -n '1,120p' "$lease_holder_result_file" >&2 || true
+  exit 1
+fi
+
+SATIN_NATIVE_SMOKE_SCENARIO=tmux-lease-busy \
+  SATIN_NATIVE_SMOKE_RESULT="$lease_busy_result_file" \
+  SATIN_NATIVE_SMOKE_TMUX_SESSION="$session_name" \
+  SATIN_NATIVE_SMOKE_TMUX_SOCKET="$socket_path" \
+  "$app" >"/tmp/satin-native-tmux-lease-busy.log" 2>&1
+
+lease_busy_result=$(cat "$lease_busy_result_file")
+echo "$lease_busy_result"
+require_ok_result "$lease_busy_result"
+kill -KILL "$lease_holder_pid"
+wait "$lease_holder_pid" >/dev/null 2>&1 || true
+lease_holder_pid=""
+
+lease_released=false
+for _ in {1..40}; do
+  if [[ -z "$(tmux -S "$socket_path" list-clients -t "=$session_name" \
+    -F '#{client_control_mode}' -f '#{client_control_mode}')" ]]; then
+    lease_released=true
+    break
+  fi
+  sleep 0.05
+done
+[[ "$lease_released" == true ]]
 
 SATIN_NATIVE_SMOKE_SCENARIO=tmux-reattach \
   SATIN_NATIVE_SMOKE_RESULT="$reattach_result_file" \
@@ -73,7 +140,7 @@ SATIN_NATIVE_SMOKE_SCENARIO=tmux-reattach \
 
 reattach_result=$(cat "$reattach_result_file")
 echo "$reattach_result"
-[[ "$reattach_result" == ok* ]]
+require_ok_result "$reattach_result"
 tmux -S "$socket_path" has-session -t "$session_name"
 
 SATIN_NATIVE_SMOKE_SCENARIO=tmux-reattach-missing \
@@ -84,7 +151,7 @@ SATIN_NATIVE_SMOKE_SCENARIO=tmux-reattach-missing \
 
 missing_result=$(cat "$missing_result_file")
 echo "$missing_result"
-[[ "$missing_result" == ok* ]]
+require_ok_result "$missing_result"
 
 mkdir -p "$restart_contents/MacOS"
 /usr/bin/ditto "$app" "$restart_binary"
@@ -121,7 +188,7 @@ CFFIXED_USER_HOME="$preferences_root" \
 
 restart_checkpoint_result=$(cat "$restart_checkpoint_result_file")
 echo "$restart_checkpoint_result"
-[[ "$restart_checkpoint_result" == ok* ]]
+require_ok_result "$restart_checkpoint_result"
 tmux -S "$restart_socket_path" has-session -t "$restart_session_name"
 [[ "$(tmux -S "$restart_socket_path" display-message -p \
   -t "$restart_session_name" '#{pane_pid}')" == "$restart_pane_pid" ]]
@@ -145,7 +212,7 @@ CFFIXED_USER_HOME="$preferences_root" \
 
 restart_restore_result=$(cat "$restart_restore_result_file")
 echo "$restart_restore_result"
-[[ "$restart_restore_result" == ok* ]]
+require_ok_result "$restart_restore_result"
 tmux -S "$restart_socket_path" has-session -t "$restart_session_name"
 [[ "$(tmux -S "$restart_socket_path" display-message -p \
   -t "$restart_session_name" '#{pane_pid}')" == "$restart_pane_pid" ]]

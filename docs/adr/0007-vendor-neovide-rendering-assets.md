@@ -1,7 +1,7 @@
 # 0007: Vendor Neovide rendering assets for native Neovim quality
 
 Date: 2026-07-02
-Amended: 2026-08-18
+Amended: 2026-08-23
 
 Status: Accepted
 
@@ -97,6 +97,11 @@ Rust reports an immediately active animation, then pauses again at rest. Future
 cursor or text-blink deadlines use one replaceable timer, while input resumes
 the link for one frame. Rendering therefore neither spins a zero-delay dispatch
 loop nor blocks the main thread in `CAMetalLayer.nextDrawable()`.
+Each drawable starts a renderer generation, and only runtime states actually
+drawn in that generation may request its successor. Hidden tabs and panes keep
+their retained animation state for when they become visible again, but cannot
+keep the shared display link awake while their animation clock is not
+advancing.
 Native smoke processes can execute while `loginwindow` is frontmost, in which
 case macOS suppresses display-link callbacks even though the Rust renderer
 still requests an immediate frame. Smoke scenarios that depend on delayed or
@@ -105,6 +110,8 @@ renderer for cursor, layout-redraw, and resize coverage. Neovim scroll, jump,
 side-pane, and tmux reattach smokes deliberately use the production
 `CAMetalDisplayLink`; suppressing those callbacks must fail the animation gate
 instead of letting a test-only scheduler hide the regression.
+The frame-liveness smoke starts a terminal scroll animation and immediately
+hides that tab; the display link must return to idle on the newly visible tab.
 Like Neovide's per-window surface draw, each visible retained normal window
 clears its entire grid rectangle to the default background before cached lines
 are drawn. This lets a resized foreground grid cover stale root-grid separators

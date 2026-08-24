@@ -517,14 +517,279 @@ import Foundation
                 }
                 return
             }
+            guard ok else {
+                let formattedPosition = String(format: "%.2f", observedScrollPosition)
+                let result =
+                    "failed terminal-bottom-input unexpected-scroll skia-frames=\(skiaFrames) "
+                    + "scroll-position=\(formattedPosition)\n"
+                try? result.write(toFile: resultPath, atomically: true, encoding: .utf8)
+                NSApp.terminate(nil)
+                return
+            }
+            beginTerminalReturnRepeatSmoke(
+                resultPath,
+                initialMaxScrollPosition: observedScrollPosition
+            )
+        }
 
-            let formattedPosition = String(format: "%.2f", observedScrollPosition)
+        func beginTerminalReturnRepeatSmoke(
+            _ resultPath: String,
+            initialMaxScrollPosition: Double
+        ) {
+            guard let pane = activePaneId.flatMap({ paneStore.runtimes[$0] as? RustTerminalPane }),
+                !(pane is RustTmuxPane)
+            else {
+                writeTerminalReturnRepeatFailure(
+                    resultPath,
+                    detail: "pane=missing"
+                )
+                return
+            }
+            pane.write(Data([21]))
+            let setup =
+                "function _satin_repeat_delay { command sleep 0.06; }; "
+                + "precmd_functions=(_satin_repeat_delay _satin_prepare_prompt); "
+                + "PS1=$'LOCAL_REPEAT> \\e]133;B\\a'\r"
+            pane.write(Data(setup.utf8))
+            waitForTerminalReturnRepeatPrompt(
+                resultPath,
+                pane: pane,
+                marker: "LOCAL_REPEAT>",
+                semanticPromptExpected: true,
+                retries: 30,
+                maxScrollPosition: initialMaxScrollPosition
+            )
+        }
+
+        func waitForTerminalReturnRepeatPrompt(
+            _ resultPath: String,
+            pane: RustTerminalPane,
+            marker: String,
+            semanticPromptExpected: Bool,
+            retries: Int,
+            maxScrollPosition: Double
+        ) {
+            drainTerminalPanes()
+            let foregroundShell = satinRuntimeInteractiveShellOwnsForeground(pane.handle) != 0
+            let promptReady =
+                pane.controlScreenText()
+                .split(separator: "\n")
+                .last?
+                .trimmingCharacters(in: .whitespaces) == marker
+            guard foregroundShell, promptReady else {
+                if retries > 0 {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                        [weak self, weak pane] in
+                        guard let pane else {
+                            return
+                        }
+                        self?.waitForTerminalReturnRepeatPrompt(
+                            resultPath,
+                            pane: pane,
+                            marker: marker,
+                            semanticPromptExpected: semanticPromptExpected,
+                            retries: retries - 1,
+                            maxScrollPosition: maxScrollPosition
+                        )
+                    }
+                } else {
+                    writeTerminalReturnRepeatFailure(
+                        resultPath,
+                        detail: "prompt=\(promptReady) foreground-shell=\(foregroundShell)"
+                    )
+                }
+                return
+            }
+            if !semanticPromptExpected {
+                _ = satinRuntimeTmuxResetPromptTracking(pane.handle)
+                pane.resetRepeatedReturnBackpressure()
+            }
+            let semanticPromptSeen = satinRuntimeTmuxSemanticPromptSeen(pane.handle) != 0
+            guard semanticPromptSeen == semanticPromptExpected else {
+                writeTerminalReturnRepeatFailure(
+                    resultPath,
+                    detail: "marker=\(marker) semantic=\(semanticPromptSeen)"
+                )
+                return
+            }
+            metalView.resetSkiaFrameCount()
+            sendTerminalReturnRepeat(
+                resultPath,
+                pane: pane,
+                marker: marker,
+                semanticPromptExpected: semanticPromptExpected,
+                remaining: 65,
+                foregroundTransitionObserved: false,
+                maxScrollPosition: maxScrollPosition
+            )
+        }
+
+        func sendTerminalReturnRepeat(
+            _ resultPath: String,
+            pane: RustTerminalPane,
+            marker: String,
+            semanticPromptExpected: Bool,
+            remaining: Int,
+            foregroundTransitionObserved: Bool,
+            maxScrollPosition: Double
+        ) {
+            let foregroundShell = satinRuntimeInteractiveShellOwnsForeground(pane.handle) != 0
+            let observedForegroundTransition =
+                foregroundTransitionObserved || !foregroundShell
+            let observedScrollPosition = max(
+                maxScrollPosition,
+                abs(pane.rendererScrollPosition())
+            )
+            guard remaining > 0 else {
+                if let event = terminalReturnRepeatSmokeEvent(repeated: false, released: true) {
+                    terminalTextView.keyUp(with: event)
+                }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self, weak pane] in
+                    guard let pane else {
+                        return
+                    }
+                    self?.validateTerminalReturnRepeat(
+                        resultPath,
+                        pane: pane,
+                        marker: marker,
+                        semanticPromptExpected: semanticPromptExpected,
+                        foregroundTransitionObserved: observedForegroundTransition,
+                        retries: 12,
+                        maxScrollPosition: observedScrollPosition
+                    )
+                }
+                return
+            }
+            let isRepeatedEvent = remaining < 65
+            guard
+                let event = terminalReturnRepeatSmokeEvent(
+                    repeated: isRepeatedEvent,
+                    released: false
+                )
+            else {
+                writeTerminalReturnRepeatFailure(resultPath, detail: "input=no")
+                return
+            }
+            terminalTextView.keyDown(with: event)
+            guard terminalTextView.terminalKeysDown.contains(event.keyCode) else {
+                writeTerminalReturnRepeatFailure(resultPath, detail: "view-input=no")
+                return
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.02) { [weak self, weak pane] in
+                guard let pane else {
+                    return
+                }
+                self?.sendTerminalReturnRepeat(
+                    resultPath,
+                    pane: pane,
+                    marker: marker,
+                    semanticPromptExpected: semanticPromptExpected,
+                    remaining: remaining - 1,
+                    foregroundTransitionObserved: observedForegroundTransition,
+                    maxScrollPosition: observedScrollPosition
+                )
+            }
+        }
+
+        func validateTerminalReturnRepeat(
+            _ resultPath: String,
+            pane: RustTerminalPane,
+            marker: String,
+            semanticPromptExpected: Bool,
+            foregroundTransitionObserved: Bool,
+            retries: Int,
+            maxScrollPosition: Double
+        ) {
+            drainTerminalPanes()
+            let observedScrollPosition = max(
+                maxScrollPosition,
+                abs(pane.rendererScrollPosition())
+            )
+            let lines = pane.controlScreenText().components(separatedBy: .newlines)
+            let markerRows = lines.indices.filter {
+                lines[$0].trimmingCharacters(in: .whitespaces) == marker
+            }
+            let continuous =
+                markerRows.count >= 10
+                && markerRows.first.flatMap { first in
+                    markerRows.last.map { last in
+                        lines[first...last].allSatisfy {
+                            $0.trimmingCharacters(in: .whitespaces) == marker
+                        }
+                    }
+                } == true
+            let responsive = observedScrollPosition <= 1.1
+            let semanticPromptSeen = satinRuntimeTmuxSemanticPromptSeen(pane.handle) != 0
+            let semanticPromptMatches = semanticPromptSeen == semanticPromptExpected
+            let foregroundTransitionMatches =
+                marker != "LOCAL_REPEAT>" || foregroundTransitionObserved
+            guard continuous, responsive, semanticPromptMatches, foregroundTransitionMatches else {
+                if retries > 0 {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                        [weak self, weak pane] in
+                        guard let pane else {
+                            return
+                        }
+                        self?.validateTerminalReturnRepeat(
+                            resultPath,
+                            pane: pane,
+                            marker: marker,
+                            semanticPromptExpected: semanticPromptExpected,
+                            foregroundTransitionObserved: foregroundTransitionObserved,
+                            retries: retries - 1,
+                            maxScrollPosition: observedScrollPosition
+                        )
+                    }
+                } else {
+                    writeTerminalReturnRepeatFailure(
+                        resultPath,
+                        detail: "marker=\(marker) continuous=\(continuous) "
+                            + "semantic=\(semanticPromptSeen) rows=\(markerRows.count) "
+                            + "foreground-transition=\(foregroundTransitionObserved) "
+                            + "scroll=\(String(format: "%.2f", observedScrollPosition))"
+                    )
+                }
+                return
+            }
+            if semanticPromptExpected {
+                pane.write(Data([21]))
+                pane.write(Data("precmd_functions=(); PS1='LOCAL_FALLBACK> '\r".utf8))
+                waitForTerminalReturnRepeatPrompt(
+                    resultPath,
+                    pane: pane,
+                    marker: "LOCAL_FALLBACK>",
+                    semanticPromptExpected: false,
+                    retries: 30,
+                    maxScrollPosition: observedScrollPosition
+                )
+                return
+            }
             let result =
-                ok
-                ? "ok terminal-bottom-input no-scroll skia-frames=\(skiaFrames) "
-                    + "scroll-position=\(formattedPosition)\n"
-                : "failed terminal-bottom-input unexpected-scroll skia-frames=\(skiaFrames) "
-                    + "scroll-position=\(formattedPosition)\n"
+                "ok terminal-bottom-input no-scroll return-repeat=yes duplicate-prompt-ready=yes "
+                + "foreground-transition=yes fallback-prompt=yes foreground-shell=yes "
+                + "rows=\(markerRows.count) skia-frames=\(metalView.skiaFrames()) "
+                + "scroll-position=\(String(format: "%.2f", observedScrollPosition))\n"
+            try? result.write(toFile: resultPath, atomically: true, encoding: .utf8)
+            NSApp.terminate(nil)
+        }
+
+        func terminalReturnRepeatSmokeEvent(repeated: Bool, released: Bool) -> NSEvent? {
+            NSEvent.keyEvent(
+                with: released ? .keyUp : .keyDown,
+                location: .zero,
+                modifierFlags: [],
+                timestamp: ProcessInfo.processInfo.systemUptime,
+                windowNumber: view.window?.windowNumber ?? 0,
+                context: nil,
+                characters: "\r",
+                charactersIgnoringModifiers: "\r",
+                isARepeat: repeated,
+                keyCode: 36
+            )
+        }
+
+        func writeTerminalReturnRepeatFailure(_ resultPath: String, detail: String) {
+            let result = "failed terminal-bottom-input return-repeat \(detail)\n"
             try? result.write(toFile: resultPath, atomically: true, encoding: .utf8)
             NSApp.terminate(nil)
         }

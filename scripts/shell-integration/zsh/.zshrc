@@ -28,6 +28,16 @@ chpwd_functions=(${chpwd_functions:#_satin_report_pwd} _satin_report_pwd)
 precmd_functions=(${precmd_functions:#_satin_report_pwd} _satin_report_pwd)
 _satin_report_pwd
 
+_satin_prepare_prompt() {
+  builtin emulate -L zsh
+  builtin local ready_marker=$'\e]133;B\e\\'
+  builtin print -nr -- $'\e]133;A\e\\'
+  if [[ $PS1 != *$ready_marker* ]]; then
+    PS1+="%{$ready_marker%}"
+  fi
+}
+precmd_functions=(${precmd_functions:#_satin_prepare_prompt} _satin_prepare_prompt)
+
 if [[ -x ${SATIN_NVIM_LAUNCHER:-} ]]; then
   unalias nvim 2>/dev/null || true
   unfunction nvim 2>/dev/null || true

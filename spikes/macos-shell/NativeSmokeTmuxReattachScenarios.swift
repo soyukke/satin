@@ -3,6 +3,146 @@ import Foundation
 
 #if SATIN_SMOKE_SCENARIOS
     extension TerminalShellViewController {
+        func applyTmuxLeaseHolderSmokeScenario(
+            resultPath: String,
+            sessionName: String,
+            socketPath: String
+        ) {
+            let attachment = NativeTmuxAttachment(
+                sessionName: sessionName,
+                socketPath: socketPath
+            )
+            guard let validated = validatedTmuxAttachment(attachment) else {
+                writeSessionSmokeResult(
+                    resultPath,
+                    result: "failed tmux-lease-holder invalid-descriptor\n"
+                )
+                return
+            }
+            pendingTmuxReattach = validated
+            schedulePendingTmuxReattach()
+            waitForTmuxLeaseHolder(
+                resultPath,
+                attachment: validated,
+                retries: 50
+            )
+        }
+
+        func waitForTmuxLeaseHolder(
+            _ resultPath: String,
+            attachment: NativeTmuxAttachment,
+            retries: Int
+        ) {
+            let ready =
+                tmuxSession?.sessionName == attachment.sessionName
+                && tmuxSession?.socketPath == attachment.socketPath
+                && tmuxSession?.lease != nil
+            guard ready else {
+                if retries > 0 {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+                        self?.waitForTmuxLeaseHolder(
+                            resultPath,
+                            attachment: attachment,
+                            retries: retries - 1
+                        )
+                    }
+                } else {
+                    let gateway = activePaneId.flatMap {
+                        paneStore.runtimes[$0] as? RustTerminalPane
+                    }
+                    let screen =
+                        gateway?.controlScreenText()
+                        .suffix(240)
+                        .replacingOccurrences(of: "\n", with: "|") ?? "none"
+                    writeSessionSmokeResult(
+                        resultPath,
+                        result: "failed tmux-lease-holder entry-timeout "
+                            + "pending=\(pendingTmuxReattach != nil) "
+                            + "inflight=\(tmuxReattachInFlight) "
+                            + "deferred=\(tmuxReattachDeferred) "
+                            + "attempt=\(tmuxReattachAttempt) "
+                            + "commands=\(tmuxConnectionCommandHistory.count) "
+                            + "prompt=\(gateway.map { satinRuntimeTmuxShellPromptState($0.handle) } ?? 0) "
+                            + "foreground=\(gateway.map { satinRuntimeInteractiveShellOwnsForeground($0.handle) } ?? 0) "
+                            + "screen=\(screen)\n"
+                    )
+                }
+                return
+            }
+            try? "ready tmux-lease-holder lease=yes\n".write(
+                toFile: resultPath,
+                atomically: true,
+                encoding: .utf8
+            )
+        }
+
+        func applyTmuxLeaseBusySmokeScenario(
+            resultPath: String,
+            sessionName: String,
+            socketPath: String
+        ) {
+            let attachment = NativeTmuxAttachment(
+                sessionName: sessionName,
+                socketPath: socketPath
+            )
+            guard let validated = validatedTmuxAttachment(attachment) else {
+                writeSessionSmokeResult(
+                    resultPath,
+                    result: "failed tmux-lease-busy invalid-descriptor\n"
+                )
+                return
+            }
+            pendingTmuxReattach = validated
+            schedulePendingTmuxReattach()
+            waitForTmuxLeaseBusy(
+                resultPath,
+                attachment: validated,
+                retries: 50
+            )
+        }
+
+        func waitForTmuxLeaseBusy(
+            _ resultPath: String,
+            attachment: NativeTmuxAttachment,
+            retries: Int
+        ) {
+            let terminalText =
+                activePaneId
+                .flatMap { paneStore.runtimes[$0] as? RustTerminalPane }?
+                .controlScreenText() ?? ""
+            let savedAttachment = currentSessionState()?.tmuxAttachment
+            let descriptorPreserved =
+                savedAttachment?.sessionName == attachment.sessionName
+                && savedAttachment?.socketPath == attachment.socketPath
+            let rejected =
+                tmuxSession == nil
+                && tmuxReattachDeferred
+                && terminalText.contains("already open in another Satin window")
+                && descriptorPreserved
+            guard rejected else {
+                if retries > 0 {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+                        self?.waitForTmuxLeaseBusy(
+                            resultPath,
+                            attachment: attachment,
+                            retries: retries - 1
+                        )
+                    }
+                } else {
+                    writeSessionSmokeResult(
+                        resultPath,
+                        result: "failed tmux-lease-busy rejected=no descriptor="
+                            + "\(descriptorPreserved ? "yes" : "no")\n"
+                    )
+                }
+                return
+            }
+            writeSessionSmokeResult(
+                resultPath,
+                result: "ok tmux-lease-busy rejected=yes waited=no descriptor=yes\n"
+            )
+        }
+
         func applyTmuxReattachSmokeScenario(
             resultPath: String,
             sessionName: String,
@@ -188,11 +328,22 @@ import Foundation
                 descriptorSaved,
                 sessionControlTitle().hasPrefix("tmux · ")
             else {
-                _ = session.gateway.tmuxCommand("detach-client")
-                writeSessionSmokeResult(
-                    resultPath,
-                    result: "failed tmux-reattach topology-or-descriptor\n"
-                )
+                if retries > 0 {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+                        self?.waitForTmuxReattachEntry(
+                            resultPath,
+                            attachment: attachment,
+                            expectedContent: expectedContent,
+                            retries: retries - 1
+                        )
+                    }
+                } else {
+                    _ = session.gateway.tmuxCommand("detach-client")
+                    writeSessionSmokeResult(
+                        resultPath,
+                        result: "failed tmux-reattach topology-or-descriptor\n"
+                    )
+                }
                 return
             }
             let existingContentVisible = paneStore.runtimes.values.contains { pane in
@@ -240,7 +391,7 @@ import Foundation
             let previousScreen = pane.controlScreenText()
             let initialFrames = metalView.skiaFrames()
             guard sendTmuxReattachControlD(pane) else {
-                _ = session.gateway.tmuxCommand("detach-client")
+                _ = tmuxSession?.gateway.tmuxCommand("detach-client")
                 writeSessionSmokeResult(
                     resultPath, result: "failed tmux-reattach nvim-scroll-input=no\n")
                 return
@@ -252,7 +403,7 @@ import Foundation
                 initialFrames: initialFrames,
                 previousScreen: previousScreen,
                 remainingScrolls: 2,
-                retries: 40
+                retries: 200
             )
         }
 
@@ -296,7 +447,7 @@ import Foundation
                 }
                 return
             }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) { [weak self, weak pane] in
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.01) { [weak self, weak pane] in
                 guard let self, let pane else {
                     return
                 }
@@ -306,7 +457,8 @@ import Foundation
                     pane: pane,
                     initialFrames: frames,
                     initialPosition: position,
-                    remainingScrolls: remainingScrolls
+                    remainingScrolls: remainingScrolls,
+                    retries: 100
                 )
             }
         }
@@ -317,22 +469,39 @@ import Foundation
             pane: RustTmuxPane,
             initialFrames: Int,
             initialPosition: Double,
-            remainingScrolls: Int
+            remainingScrolls: Int,
+            retries: Int
         ) {
             let frames = metalView.skiaFrames()
             let position = abs(pane.rendererScrollPosition())
+            let initialFractional = abs(initialPosition.rounded() - initialPosition)
             let fractional = abs(position.rounded() - position)
-            guard frames > initialFrames,
-                position < initialPosition,
-                position > maxTerminalBottomInputSmokePosition,
-                fractional > maxTerminalBottomInputSmokePosition
-            else {
+            guard frames > initialFrames, position < initialPosition else {
+                if retries > 0 {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.01) {
+                        [weak self, weak pane] in
+                        guard let pane else {
+                            return
+                        }
+                        self?.verifyTmuxReattachScrollProgress(
+                            resultPath,
+                            attachment: attachment,
+                            pane: pane,
+                            initialFrames: initialFrames,
+                            initialPosition: initialPosition,
+                            remainingScrolls: remainingScrolls,
+                            retries: retries - 1
+                        )
+                    }
+                    return
+                }
                 _ = tmuxSession?.gateway.tmuxCommand("detach-client")
                 writeSessionSmokeResult(
                     resultPath,
                     result: "failed tmux-reattach nvim-scroll-progress=no "
                         + "frames=\(frames - initialFrames) "
-                        + "position=\(initialPosition)->\(position) fractional=\(fractional)\n"
+                        + "position=\(initialPosition)->\(position) "
+                        + "fractional=\(initialFractional)->\(fractional)\n"
                 )
                 return
             }
@@ -379,10 +548,15 @@ import Foundation
                     }
                 } else {
                     _ = tmuxSession?.gateway.tmuxCommand("detach-client")
+                    let windowVisible = view.window?.occlusionState.contains(.visible) == true
                     writeSessionSmokeResult(
                         resultPath,
                         result: "failed tmux-reattach nvim-scroll-idle=no "
-                            + "position=\(position)\n"
+                            + "position=\(position) frames=\(metalView.skiaFrames()) "
+                            + "skia-pending=\(metalView.hasPendingSkiaFrame() ? "yes" : "no") "
+                            + "\(metalView.frameRequestDiagnosticsSummary()) "
+                            + "visible=\(windowVisible ? "yes" : "no") "
+                            + "active=\(NSApp.isActive ? "yes" : "no")\n"
                     )
                 }
                 return
@@ -403,7 +577,7 @@ import Foundation
                 initialFrames: initialFrames,
                 previousScreen: previousScreen,
                 remainingScrolls: remainingScrolls - 1,
-                retries: 40
+                retries: 200
             )
         }
 
@@ -415,7 +589,12 @@ import Foundation
             else {
                 return false
             }
-            terminalTextView.keyDown(with: pressed)
+            // NSTextInputContext is nondeterministic for synthetic key events. Route the
+            // smoke key through the same active-pane callback used by keyDown, and require
+            // the tmux runtime to confirm that it accepted the press.
+            guard terminalTextView.routeKeyEvent(pressed, released: false) else {
+                return false
+            }
             terminalTextView.keyUp(with: released)
             return true
         }

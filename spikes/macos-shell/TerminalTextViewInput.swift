@@ -144,13 +144,80 @@ func runTerminalTextInputSelfTests() -> Bool {
         return false
     }
     view.unmarkText()
-    return clearedPanes == [11, 12]
-        && focusChanges == [true, false]
-        && view.rendererMarkedText(for: 12) == nil
-        && markedTextChanges == 2
+    guard clearedPanes == [11, 12],
+        focusChanges == [true, false],
+        view.rendererMarkedText(for: 12) == nil,
+        markedTextChanges == 2,
+        let wheelEvent = terminalScrollWheelEvent(deltaY: 2)
+    else {
+        return false
+    }
+
+    var mouseInputs = 0
+    var localScrollRows: [CGFloat] = []
+    view.onMouseInput = { _ in
+        mouseInputs += 1
+        return .unhandled
+    }
+    view.onScroll = { localScrollRows.append($0) }
+    view.routeTerminalScrollWheel(wheelEvent, at: NSPoint(x: 10, y: 10))
+    guard mouseInputs == 1, localScrollRows == [-6] else {
+        return false
+    }
+
+    mouseInputs = 0
+    view.onMouseInput = { _ in
+        mouseInputs += 1
+        return .handled
+    }
+    view.routeTerminalScrollWheel(wheelEvent, at: NSPoint(x: 10, y: 10))
+    return mouseInputs == 6 && localScrollRows == [-6]
+}
+
+private func terminalScrollWheelEvent(deltaY: Int32) -> NSEvent? {
+    guard
+        let event = CGEvent(
+            scrollWheelEvent2Source: nil,
+            units: .line,
+            wheelCount: 1,
+            wheel1: deltaY,
+            wheel2: 0,
+            wheel3: 0
+        )
+    else {
+        return nil
+    }
+    return NSEvent(cgEvent: event)
 }
 
 extension TerminalTextView {
+    func routeTerminalScrollWheel(_ event: NSEvent, at point: NSPoint) {
+        if sendWheelMouseInput(for: event, at: point) {
+            return
+        }
+
+        let rows = scrollRows(for: event)
+        guard rows != 0 else {
+            return
+        }
+        onScroll?(rows)
+    }
+
+    #if SATIN_SMOKE_SCENARIOS
+        @discardableResult
+        func scrollWheelForSmoke(deltaY: Int32) -> Bool {
+            guard let event = terminalScrollWheelEvent(deltaY: deltaY) else {
+                return false
+            }
+            let rect = terminalTextRect()
+            routeTerminalScrollWheel(
+                event,
+                at: NSPoint(x: rect.midX, y: rect.midY)
+            )
+            return true
+        }
+    #endif
+
     func handleCommandKey(_ event: NSEvent) -> Bool {
         guard let key = event.charactersIgnoringModifiers ?? event.characters else {
             return false

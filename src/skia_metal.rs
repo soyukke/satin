@@ -59,6 +59,7 @@ mod platform {
         context: DirectContext,
         _backend: BackendContext,
         primary_font_family: Option<String>,
+        frame_id: u64,
         runtime_states: HashMap<usize, RuntimeRenderState>,
         kitty_images: HashMap<(usize, u32), CachedKittyImage>,
         reported_kitty_failures: HashSet<usize>,
@@ -80,10 +81,21 @@ mod platform {
                 context,
                 _backend: backend,
                 primary_font_family: None,
+                frame_id: 0,
                 runtime_states: HashMap::new(),
                 kitty_images: HashMap::new(),
                 reported_kitty_failures: HashSet::new(),
             })
+        }
+
+        pub fn begin_frame(&mut self) {
+            self.frame_id = self.frame_id.wrapping_add(1);
+            if self.frame_id == 0 {
+                self.frame_id = 1;
+                for state in self.runtime_states.values_mut() {
+                    state.last_render_frame_id = 0;
+                }
+            }
         }
 
         /// # Safety
@@ -120,6 +132,7 @@ mod platform {
             };
             retain_visible_kitty_images(&mut self.kitty_images, runtime_id, &placements);
             let primary_font_family = self.primary_font_family.as_deref();
+            let frame_id = self.frame_id;
             let state = self
                 .runtime_states
                 .entry(runtime_id)
@@ -131,6 +144,7 @@ mod platform {
             state.cursor_animation.update(&model, geometry, dt);
             state.cursor_blink.update(model.cursor.as_ref());
             state.text_blink_active = model_has_blink(&model);
+            state.last_render_frame_id = frame_id;
             let preedit = state.preedit.prepare(
                 preedit,
                 model.background,
@@ -190,6 +204,7 @@ mod platform {
             };
             retain_visible_kitty_images(&mut self.kitty_images, runtime_id, &placements);
             let primary_font_family = self.primary_font_family.as_deref();
+            let frame_id = self.frame_id;
             let state = self
                 .runtime_states
                 .entry(runtime_id)
@@ -201,6 +216,7 @@ mod platform {
             state.cursor_animation.update(&model, geometry, dt);
             state.cursor_blink.update(model.cursor.as_ref());
             state.text_blink_active = model_has_blink(&model);
+            state.last_render_frame_id = frame_id;
             let preedit = state.preedit.prepare(
                 preedit,
                 model.background,
@@ -245,10 +261,7 @@ mod platform {
         }
 
         pub fn next_frame_delay_ms(&self) -> Option<u64> {
-            self.runtime_states
-                .values()
-                .filter_map(RuntimeRenderState::next_frame_delay_ms)
-                .min()
+            next_frame_delay_ms_for_runtime_states(&self.runtime_states, self.frame_id)
         }
 
         unsafe fn surface(
@@ -285,6 +298,18 @@ mod platform {
         last_frame_at: Option<Instant>,
         scroll_animation_active: bool,
         text_blink_active: bool,
+        last_render_frame_id: u64,
+    }
+
+    fn next_frame_delay_ms_for_runtime_states(
+        states: &HashMap<usize, RuntimeRenderState>,
+        frame_id: u64,
+    ) -> Option<u64> {
+        states
+            .values()
+            .filter(|state| state.last_render_frame_id == frame_id)
+            .filter_map(RuntimeRenderState::next_frame_delay_ms)
+            .min()
     }
 
     impl RuntimeRenderState {
@@ -1544,6 +1569,8 @@ mod platform {
         pub unsafe fn new(_device: *mut c_void, _command_queue: *mut c_void) -> Option<Self> {
             None
         }
+
+        pub fn begin_frame(&mut self) {}
 
         pub unsafe fn render_nvim(
             &mut self,

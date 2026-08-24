@@ -355,6 +355,17 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
     var pendingTmuxExecutable: NativeTmuxExecutable?
     var lastTmuxSocketPath: String?
     var pendingTmuxReattach: NativeTmuxAttachment?
+    var pendingTmuxLease: NativeTmuxSessionLease?
+    var pendingTmuxLeaseTimeoutWorkItem: DispatchWorkItem?
+    var pendingTmuxConnectionWorkItem: DispatchWorkItem?
+    var tmuxAdmissionSequence = 0
+    var tmuxConnectionCommandSequence: Int?
+    var tmuxReattachAttempt = 0
+    var tmuxReattachInFlight = false
+    var tmuxReattachDeferred = false
+    #if SATIN_SMOKE_SCENARIOS
+        var tmuxConnectionCommandHistory: [String] = []
+    #endif
     var sessionPopover: NSPopover?
     var lastSearchQuery = ""
     var optionAsAltEnabled: Bool
@@ -385,6 +396,7 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
     let workAttentionStore = NativeWorkAttentionStore()
     var workSwitcherPopover: NSPopover?
     var workSwitcherController: NativeWorkSwitcherViewController?
+    var pendingWorkSwitcherRefresh: DispatchWorkItem?
     lazy var tabStripView = NativeTabStripView(
         tabControl: tabControl,
         newTabButton: newTabButton
