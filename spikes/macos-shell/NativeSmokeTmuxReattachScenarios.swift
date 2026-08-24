@@ -447,7 +447,7 @@ import Foundation
             )
             let scrolled = pane.controlScreenText() != previousScreen
             guard scrolled, frames > initialFrames,
-                renderedPeak > maxTerminalBottomInputSmokePosition
+                renderedPeak > minTerminalScrollAnimationSmokePosition
             else {
                 if retries > 0 {
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.01) {

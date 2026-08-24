@@ -52,6 +52,7 @@ let defaultTerminalFontSize = CGFloat(nativeDefaultFontSize)
 let minTerminalFontSize = CGFloat(nativeMinimumFontSize)
 let maxTerminalFontSize = CGFloat(nativeMaximumFontSize)
 let maxOutputScrollAnimationRows = 12
+let minTerminalScrollAnimationSmokePosition = 0.01
 let maxTerminalBottomInputSmokePosition = 0.1
 let maxNvimCursorMoveSmokeGrowth = 0.001
 let nvimStartupCommandDelay: TimeInterval = 0.4
