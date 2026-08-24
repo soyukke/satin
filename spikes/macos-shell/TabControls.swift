@@ -1,64 +1,5 @@
 import AppKit
 
-final class NativeTabStripView: NSView {
-    private enum Metrics {
-        static let spacing: CGFloat = 4
-        static let buttonSize = NSSize(width: 22, height: 22)
-    }
-
-    let tabControl: NativeTabControl
-    let newTabButton: NativeHoverIconButton
-
-    init(tabControl: NativeTabControl, newTabButton: NativeHoverIconButton) {
-        self.tabControl = tabControl
-        self.newTabButton = newTabButton
-        super.init(frame: .zero)
-        addSubview(tabControl)
-        addSubview(newTabButton)
-    }
-
-    required init?(coder: NSCoder) {
-        nil
-    }
-
-    override var intrinsicContentSize: NSSize {
-        let tabs = tabControl.intrinsicContentSize
-        return NSSize(
-            width: tabs.width + Metrics.spacing + Metrics.buttonSize.width,
-            height: max(tabs.height, Metrics.buttonSize.height)
-        )
-    }
-
-    override func layout() {
-        super.layout()
-        let tabs = tabControl.intrinsicContentSize
-        tabControl.frame = NSRect(
-            x: 0,
-            y: floor((bounds.height - tabs.height) / 2),
-            width: tabs.width,
-            height: tabs.height
-        )
-        newTabButton.frame = NSRect(
-            x: tabControl.frame.maxX + Metrics.spacing,
-            y: floor((bounds.height - Metrics.buttonSize.height) / 2),
-            width: Metrics.buttonSize.width,
-            height: Metrics.buttonSize.height
-        )
-    }
-
-    func contentSizeDidChange() {
-        invalidateIntrinsicContentSize()
-        needsLayout = true
-        superview?.needsLayout = true
-    }
-
-    func actionsReady() -> Bool {
-        newTabButton.superview === self
-            && newTabButton.image != nil
-            && !newTabButton.isBordered
-    }
-}
-
 final class RenameTextField: NSTextField, NSTextFieldDelegate {
     var onCommit: (() -> Void)?
 
@@ -299,8 +240,14 @@ final class NativeTabControl: NSSegmentedControl {
     }
 
     override func draw(_ dirtyRect: NSRect) {
+        guard let clipRect = drawingClipRect(for: dirtyRect) else {
+            return
+        }
+        NSGraphicsContext.saveGraphicsState()
+        NSBezierPath(rect: clipRect).addClip()
+        defer { NSGraphicsContext.restoreGraphicsState() }
         for segment in 0..<segmentCount {
-            guard let segmentRect = segmentRect(for: segment), segmentRect.intersects(dirtyRect)
+            guard let segmentRect = segmentRect(for: segment), segmentRect.intersects(clipRect)
             else {
                 continue
             }
@@ -440,6 +387,21 @@ final class NativeTabControl: NSSegmentedControl {
 
     func closeButtonHitTargetForSmoke(segment: Int) -> NSRect? {
         closeButtonRect(forSegment: segment)
+    }
+
+    func segmentFrameForNavigation(_ segment: Int) -> NSRect? {
+        segmentRect(for: segment)
+    }
+
+    func drawingClipReadyForSmoke() -> Bool {
+        let outside = NSRect(
+            x: bounds.maxX + 1,
+            y: bounds.minY,
+            width: max(1, bounds.width),
+            height: max(1, bounds.height)
+        )
+        return drawingClipRect(for: bounds) != nil
+            && drawingClipRect(for: outside) == nil
     }
 
     @discardableResult
@@ -601,6 +563,11 @@ final class NativeTabControl: NSSegmentedControl {
         }
         NSEvent.removeMonitor(contextEventMonitor)
         self.contextEventMonitor = nil
+    }
+
+    private func drawingClipRect(for dirtyRect: NSRect) -> NSRect? {
+        let clipRect = dirtyRect.intersection(bounds)
+        return clipRect.isNull || clipRect.isEmpty ? nil : clipRect
     }
 
     private func drawInteractionOverlay(forSegment segment: Int, in segmentRect: NSRect) {

@@ -367,15 +367,7 @@ final class TerminalTextView: NSView, NSTextInputClient {
             return
         }
 
-        if sendWheelMouseInput(for: event, at: point) {
-            return
-        }
-
-        let rows = scrollRows(for: event)
-        guard rows != 0 else {
-            return
-        }
-        onScroll?(rows)
+        routeTerminalScrollWheel(event, at: point)
     }
 
     @objc func copy(_ sender: Any?) {

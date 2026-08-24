@@ -210,6 +210,29 @@ fn terminal_vt_scroll_schedules_its_own_animation_frames() {
 }
 
 #[test]
+fn hidden_runtime_animation_does_not_keep_the_visible_frame_loop_alive() {
+    let mut hidden = RuntimeRenderState {
+        scroll_animation_active: true,
+        last_render_frame_id: 41,
+        ..RuntimeRenderState::default()
+    };
+    let mut visible = RuntimeRenderState {
+        last_render_frame_id: 42,
+        ..RuntimeRenderState::default()
+    };
+    let mut states = HashMap::from([(1, hidden), (2, visible)]);
+
+    assert_eq!(next_frame_delay_ms_for_runtime_states(&states, 42), None);
+
+    hidden = states.remove(&1).unwrap();
+    visible = states.remove(&2).unwrap();
+    visible.scroll_animation_active = true;
+    states.insert(1, hidden);
+    states.insert(2, visible);
+    assert_eq!(next_frame_delay_ms_for_runtime_states(&states, 42), Some(0));
+}
+
+#[test]
 fn foreground_window_background_masks_stale_root_grid_cells() {
     let background = TerminalColor { r: 3, g: 5, b: 7 };
     let stale = TerminalColor {

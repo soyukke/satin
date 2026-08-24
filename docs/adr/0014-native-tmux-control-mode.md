@@ -2,7 +2,7 @@
 
 Date: 2026-08-07
 
-Amended: 2026-08-15
+Amended: 2026-08-23
 
 Status: Accepted
 
@@ -27,10 +27,11 @@ connection while native surfaces render the individual panes.
 - Treat tmux as a user-owned external executable and require tmux 3.2 or newer;
   do not bundle or install it with Satin. Resolve one absolute executable path
   for native operations in this order: the explicit Terminal Settings override,
-  the configured login shell's `PATH`, the app environment, then known package
-  manager and system prefixes. Validate candidates with `tmux -V`, bound shell
-  environment and process probes with timeouts, cache the result per settings
-  identity, and surface a useful error when resolution fails.
+  the app environment, known package manager and system prefixes, then the
+  configured login shell's `PATH` as the last fallback. This avoids starting a
+  competing interactive shell during terminal startup. Validate candidates with
+  `tmux -V`, bound shell environment and process probes with timeouts, cache the
+  result per settings identity, and surface a useful error when resolution fails.
 - Use that resolved executable identity for every native operation performed
   outside control mode: session discovery, attach, create, and automatic
   reattach. Never inject a bare `tmux` command and leave its identity to the
@@ -127,13 +128,43 @@ connection while native surfaces render the individual panes.
   the pane's foreground command is a configured login shell on the primary
   screen, keep at most one pending repeat and release it when the projected VT
   reports that the next prompt is ready. Prefer OSC 133 semantic-prompt state;
+  count at most one `133;B` ready marker between prompt lifecycle transitions,
+  because multiple shell integrations can append equivalent markers to one prompt;
+  treat a new ready marker as authoritative shell ownership when tmux's
+  `pane_current_command` notification lags, and clear that ownership when a line
+  is submitted;
+  once backpressure starts, retain it across foreground children run by prompt hooks
+  until prompt readiness, key-up, or focus loss;
   before shell integration has been observed, use the nonempty cursor line as
-  the compatibility signal. Cancel the pending repeat on key-up, focus loss, or
-  a foreground-command change. This prevents the pane TTY from echoing queued
+  the compatibility signal. This prevents the pane TTY from echoing queued
   newlines ahead of a slow prompt without imposing a fixed repeat interval or
   changing input semantics for full-screen applications and other keys.
 - Keep one tmux-backed tab internally consistent: Satin-local panes are not
   inserted into a tmux-owned window.
+- Allow at most one Satin native projection for a tmux server session, while
+  continuing to allow ordinary non-control tmux clients. Identify the lease by
+  tmux's server PID, numeric session ID, and canonical socket path rather than
+  its renameable session name. Before attach or `switch-client`, acquire a
+  bundle-neutral, owner-only advisory file lock with `LOCK_NB`; retain the open
+  close-on-exec file descriptor for the projection lifetime. The lock-file
+  contents are diagnostic only. File existence, a saved PID, and application
+  preferences are never treated as ownership, so quit, crash, and reboot release
+  authority in the kernel without stale-lock recovery.
+- Never wait for another Satin projection while holding a lease. Each busy or
+  unavailable acquisition attempt fails immediately. During a session switch,
+  retain the current lease, acquire the target nonblockingly, and promote it only
+  when the target snapshot arrives, then release the old lease. A bounded staging
+  timeout releases a target whose attach or switch never completes. This avoids
+  hold-and-wait and circular-wait edges in the native session state machine.
+- Before attaching, inspect the target's tmux clients and reject an existing
+  control-mode client. This compatibility check catches release builds that
+  predate the shared lease. Immediately after tmux enters control mode, query
+  the current session again through that client and require exactly one
+  control-mode client before configuring flow control or projecting a snapshot.
+  Subscribe to changes in the session's attached-client list and repeat that
+  check so an older release attaching later also revokes the newer projection.
+  These checks close manual `tmux -CC` and attach-race gaps; failure sends
+  `detach-client` and restores the local workspace.
 - Continuously checkpoint the reattach descriptor while control mode is attached
   and clear it when the projection ends. Save it only when the socket is a local
   Unix socket and tmux's reported server PID is live, alongside the preserved
@@ -141,14 +172,23 @@ connection while native surfaces render the individual panes.
   path and persist that executable identity with the socket and session. Older
   descriptors without an executable path remain valid and fall back to normal
   resolution; a persisted executable that no longer exists does the same.
-  Consume this descriptor before issuing one automatic `tmux -S <socket> -CC
-  attach-session -t <session>` after workspace restore. Validate both values and
-  shell-quote them before writing the command to the restored local PTY.
+  Validate both values and shell-quote them before writing one automatic
+  `tmux -S <socket> -CC attach-session -t <session>` command to the restored
+  local PTY. Keep the descriptor until tmux enters control mode. If the target
+  lease is busy, retry acquisition for a bounded two-second shutdown window,
+  then remain Local and preserve the descriptor for a later restart rather than
+  consuming it or waiting indefinitely.
+- Serialize automatic restore, picker attach, session creation, and
+  `switch-client` as generation-scoped connection attempts. An explicit picker
+  choice invalidates every callback or delayed write from automatic restore and
+  consumes that pending descriptor. Permit at most one shell attach command per
+  generation; switching an attached client must stay on the control connection
+  and must never inject a second command into the projected pane.
 - Do not save a reattach descriptor after explicit detach. If the socket or
   session disappeared, surface tmux's initial attach error in the restored
-  terminal and remain in the ordinary Satin workspace. The consumed descriptor
-  is not retried on every launch; a later clean exit from an active projection
-  records a fresh one.
+  terminal, consume the missing descriptor, and remain in the ordinary Satin
+  workspace. A deferred busy descriptor remains restartable; a later clean exit
+  from an active projection records a fresh one.
 
 The parser and architecture follow tmux's official control-mode protocol. The
 controller/gateway split is informed by iTerm2's `sources/tmux` implementation.
@@ -160,6 +200,12 @@ the Neovim handoff remain independent. tmux survives Satin UI changes because
 Satin never owns its session state. A clean app restart returns to the exact
 local server and session that was projected, while explicit detach remains a
 durable request to stay in the ordinary workspace.
+
+Release and development bundles can run simultaneously, but they cannot project
+the same tmux server session at the same time. Rejection is nonblocking and does
+not terminate the tmux session. Killing or crashing the owner releases the lease
+automatically, so the surviving or restarted app can attach without deleting a
+lock file or clearing preferences.
 
 Finder/Dock launches no longer depend on macOS's sparse GUI `PATH`, and Nix,
 Homebrew, MacPorts, and manually installed tmux binaries can all be selected

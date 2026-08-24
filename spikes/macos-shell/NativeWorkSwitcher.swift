@@ -1,7 +1,7 @@
 import AppKit
 import Foundation
 
-struct NativeWorkItem {
+struct NativeWorkItem: Equatable {
     let tabId: Int
     let tabIndex: Int
     let paneId: Int
@@ -13,6 +13,43 @@ struct NativeWorkItem {
     let status: NativePaneControlStatus?
     let unread: Bool
     let active: Bool
+    private let normalizedSearchText: String
+
+    init(
+        tabId: Int,
+        tabIndex: Int,
+        paneId: Int,
+        paneOrdinal: Int,
+        tabTitle: String,
+        paneTitle: String,
+        workingDirectory: String,
+        sessionLabel: String,
+        status: NativePaneControlStatus?,
+        unread: Bool,
+        active: Bool
+    ) {
+        self.tabId = tabId
+        self.tabIndex = tabIndex
+        self.paneId = paneId
+        self.paneOrdinal = paneOrdinal
+        self.tabTitle = tabTitle
+        self.paneTitle = paneTitle
+        self.workingDirectory = workingDirectory
+        self.sessionLabel = sessionLabel
+        self.status = status
+        self.unread = unread
+        self.active = active
+        self.normalizedSearchText = nativeNormalizedWorkSearch(
+            [
+                tabTitle,
+                paneTitle,
+                workingDirectory,
+                sessionLabel,
+                status?.status ?? "",
+                nativeWorkSingleLine(status?.summary ?? "", limit: 512),
+            ].joined(separator: " ")
+        )
+    }
 
     var headline: String {
         let tabTitle = nativeWorkSingleLine(self.tabTitle, limit: 160)
@@ -63,22 +100,14 @@ struct NativeWorkItem {
     }
 
     func matches(_ query: String) -> Bool {
-        let tokens = nativeNormalizedWorkSearch(query)
-            .split(whereSeparator: \.isWhitespace)
+        matches(tokens: nativeWorkSearchTokens(query))
+    }
+
+    fileprivate func matches(tokens: [Substring]) -> Bool {
         guard !tokens.isEmpty else {
             return true
         }
-        let haystack = nativeNormalizedWorkSearch(
-            [
-                tabTitle,
-                paneTitle,
-                workingDirectory,
-                sessionLabel,
-                status?.status ?? "",
-                nativeWorkSingleLine(status?.summary ?? "", limit: 512),
-            ].joined(separator: " ")
-        )
-        return tokens.allSatisfy { haystack.contains($0) }
+        return tokens.allSatisfy { normalizedSearchText.contains($0) }
     }
 }
 
@@ -104,6 +133,10 @@ final class NativeWorkAttentionStore {
 
     func isUnread(paneId: Int) -> Bool {
         unreadPaneIds.contains(paneId)
+    }
+
+    var unreadCount: Int {
+        unreadPaneIds.count
     }
 }
 
@@ -222,10 +255,11 @@ private final class NativeWorkSwitcherRowView: NSTableCellView {
         nil
     }
 
-    func update(_ item: NativeWorkItem, snippet: String?) {
+    func update(_ item: NativeWorkItem, snippet: String?, previewPending: Bool) {
         headlineLabel.stringValue = item.headline
         detailLabel.stringValue = item.detail
-        snippetLabel.stringValue = snippet ?? "No visible text"
+        let previewDescription = previewPending ? "Loading preview…" : snippet ?? "No visible text"
+        snippetLabel.stringValue = previewDescription
         snippetLabel.textColor = snippet == nil ? .quaternaryLabelColor : .tertiaryLabelColor
         statusLabel.stringValue = item.statusTitle
         let color = nativeWorkStatusColor(item)
@@ -236,10 +270,69 @@ private final class NativeWorkSwitcherRowView: NSTableCellView {
             accessibilityDescription: item.statusTitle.isEmpty ? "Terminal pane" : item.statusTitle
         )
         setAccessibilityLabel(
-            [item.headline, item.statusTitle, item.detail, snippet ?? ""]
+            [item.headline, item.statusTitle, item.detail, previewDescription]
                 .filter { !$0.isEmpty }
                 .joined(separator: ", ")
         )
+    }
+}
+
+private enum NativeWorkPreviewLookup: Equatable {
+    case missing
+    case ready(String?)
+}
+
+private final class NativeWorkPreviewCache {
+    private var values: [Int: NativeWorkPreviewLookup] = [:]
+    private var queue: [Int] = []
+    private var queuedPaneIds = Set<Int>()
+
+    func lookup(paneId: Int) -> NativeWorkPreviewLookup {
+        values[paneId] ?? .missing
+    }
+
+    @discardableResult
+    func enqueue(paneId: Int, priority: Bool) -> Bool {
+        guard values[paneId] == nil else {
+            return false
+        }
+        if queuedPaneIds.contains(paneId) {
+            guard priority, queue.first != paneId else {
+                return false
+            }
+            queue.removeAll { $0 == paneId }
+        } else {
+            queuedPaneIds.insert(paneId)
+        }
+        if priority {
+            queue.insert(paneId, at: 0)
+        } else {
+            queue.append(paneId)
+        }
+        return true
+    }
+
+    func dequeue() -> Int? {
+        guard !queue.isEmpty else {
+            return nil
+        }
+        let paneId = queue.removeFirst()
+        queuedPaneIds.remove(paneId)
+        return paneId
+    }
+
+    func store(_ value: String?, paneId: Int) {
+        values[paneId] = .ready(value)
+    }
+
+    func invalidate(paneId: Int) {
+        values.removeValue(forKey: paneId)
+    }
+
+    func retain(paneIds: Set<Int>) {
+        values = values.filter { paneIds.contains($0.key) }
+        queue.removeAll { !paneIds.contains($0) }
+        queuedPaneIds.formIntersection(paneIds)
     }
 }
 
@@ -252,7 +345,8 @@ final class NativeWorkSwitcherViewController: NSViewController, NSTableViewDataS
     private var items: [NativeWorkItem]
     private var filteredItems: [NativeWorkItem] = []
     private var displayRows: [NativeWorkDisplayRow] = []
-    private var previewCache: [Int: String] = [:]
+    private let previewCache = NativeWorkPreviewCache()
+    private var previewCaptureScheduled = false
     private let initiallyActivePaneId: Int?
     private let previewProvider: (NativeWorkItem) -> String?
     private let searchField = NSSearchField(frame: .zero)
@@ -360,9 +454,22 @@ final class NativeWorkSwitcherViewController: NSViewController, NSTableViewDataS
     }
 
     func update(items: [NativeWorkItem]) {
+        guard items != self.items else {
+            return
+        }
         let selectedPaneId = selectedItem()?.paneId
+        let previousStatusRevisions = Dictionary(
+            uniqueKeysWithValues: self.items.map { ($0.paneId, $0.status?.revision ?? 0) }
+        )
+        for item in items
+        where previousStatusRevisions[item.paneId] != (item.status?.revision ?? 0) {
+            previewCache.invalidate(paneId: item.paneId)
+        }
         self.items = items
-        previewCache.removeAll(keepingCapacity: true)
+        previewCache.retain(paneIds: Set(items.map(\.paneId)))
+        guard isViewLoaded else {
+            return
+        }
         applyFilter(selecting: selectedPaneId)
     }
 
@@ -395,7 +502,18 @@ final class NativeWorkSwitcherViewController: NSViewController, NSTableViewDataS
                 as? NativeWorkSwitcherRowView
                 ?? NativeWorkSwitcherRowView(frame: .zero)
             rowView.identifier = identifier
-            rowView.update(item, snippet: nativeWorkPreviewSnippet(previewText(for: item)))
+            let preview = previewLookup(for: item, priority: false)
+            let snippet: String?
+            let previewPending: Bool
+            switch preview {
+            case .ready(let boundedText):
+                snippet = boundedText.flatMap(nativeWorkPreviewSnippetFromBounded)
+                previewPending = false
+            case .missing:
+                snippet = nil
+                previewPending = true
+            }
+            rowView.update(item, snippet: snippet, previewPending: previewPending)
             return rowView
         }
     }
@@ -493,7 +611,8 @@ final class NativeWorkSwitcherViewController: NSViewController, NSTableViewDataS
     }
 
     private func applyFilter(selecting requestedPaneId: Int?) {
-        filteredItems = nativeSortedWorkItems(items.filter { $0.matches(searchField.stringValue) })
+        let tokens = nativeWorkSearchTokens(searchField.stringValue)
+        filteredItems = nativeSortedWorkItems(items.filter { $0.matches(tokens: tokens) })
         displayRows = nativeWorkDisplayRows(filteredItems)
         tableView.reloadData()
         let attentionCount = items.filter(\.unread).count
@@ -523,21 +642,68 @@ final class NativeWorkSwitcherViewController: NSViewController, NSTableViewDataS
 
     private func updatePreview() {
         guard let item = selectedItem() else {
-            previewView.update(item: nil, text: nil)
+            previewView.update(item: nil, boundedText: nil)
             return
         }
-        previewView.update(item: item, text: previewText(for: item))
+        switch previewLookup(for: item, priority: true) {
+        case .ready(let preview):
+            previewView.update(item: item, boundedText: preview)
+        case .missing:
+            previewView.update(item: item, boundedText: nil, loading: true)
+        }
     }
 
-    private func previewText(for item: NativeWorkItem) -> String? {
-        if let cached = previewCache[item.paneId] {
-            return cached
+    private func previewLookup(
+        for item: NativeWorkItem,
+        priority: Bool
+    ) -> NativeWorkPreviewLookup {
+        let lookup = previewCache.lookup(paneId: item.paneId)
+        switch lookup {
+        case .ready:
+            return lookup
+        case .missing:
+            _ = previewCache.enqueue(paneId: item.paneId, priority: priority)
+            schedulePreviewCapture()
+            return .missing
         }
-        guard let preview = previewProvider(item) else {
-            return nil
+    }
+
+    private func schedulePreviewCapture() {
+        guard !previewCaptureScheduled else {
+            return
         }
-        previewCache[item.paneId] = preview
-        return preview
+        previewCaptureScheduled = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(8)) { [weak self] in
+            guard let self else {
+                return
+            }
+            self.previewCaptureScheduled = false
+            self.captureNextPreview()
+        }
+    }
+
+    private func captureNextPreview() {
+        guard let paneId = previewCache.dequeue() else {
+            return
+        }
+        if let item = items.first(where: { $0.paneId == paneId }) {
+            let preview = nativeBoundedWorkPreview(previewProvider(item))
+            previewCache.store(preview, paneId: paneId)
+            reloadPreview(paneId: paneId)
+        }
+        schedulePreviewCapture()
+    }
+
+    private func reloadPreview(paneId: Int) {
+        if let row = displayRows.firstIndex(where: { $0.item?.paneId == paneId }) {
+            tableView.reloadData(
+                forRowIndexes: IndexSet(integer: row),
+                columnIndexes: IndexSet(integer: 0)
+            )
+        }
+        if selectedItem()?.paneId == paneId {
+            updatePreview()
+        }
     }
 }
 
@@ -579,7 +745,33 @@ func runNativeWorkSwitcherSelfTests() -> Bool {
         return false
     }
     attention.observe(paneId: 12, status: waiting, isVisible: false)
-    guard attention.isUnread(paneId: 12) else {
+    guard attention.isUnread(paneId: 12), attention.unreadCount == 1 else {
+        return false
+    }
+    let previewCache = NativeWorkPreviewCache()
+    guard previewCache.lookup(paneId: 20) == .missing,
+        previewCache.enqueue(paneId: 20, priority: false),
+        previewCache.enqueue(paneId: 21, priority: false),
+        previewCache.enqueue(paneId: 21, priority: true),
+        previewCache.dequeue() == 21
+    else {
+        return false
+    }
+    previewCache.store(nil, paneId: 21)
+    guard previewCache.lookup(paneId: 21) == .ready(nil),
+        !previewCache.enqueue(paneId: 21, priority: true)
+    else {
+        return false
+    }
+    previewCache.invalidate(paneId: 21)
+    guard previewCache.lookup(paneId: 21) == .missing else {
+        return false
+    }
+    previewCache.store(nil, paneId: 21)
+    previewCache.retain(paneIds: Set([20]))
+    guard previewCache.lookup(paneId: 21) == .missing,
+        previewCache.dequeue() == 20
+    else {
         return false
     }
     let previewSource = (0..<70).map { "line \($0)" }.joined(separator: "\n")
@@ -620,6 +812,20 @@ func runNativeWorkSwitcherSelfTests() -> Bool {
         unread: true,
         active: false
     )
+    var previewCaptures = 0
+    let lazyPreviewController = NativeWorkSwitcherViewController(
+        items: [ordinary],
+        activePaneId: ordinary.paneId,
+        previewProvider: { _ in
+            previewCaptures += 1
+            return "preview"
+        }
+    )
+    _ = lazyPreviewController.view
+    lazyPreviewController.update(items: [ordinary])
+    guard previewCaptures == 0 else {
+        return false
+    }
     let sorted = nativeSortedWorkItems([ordinary, needsAttention])
     guard
         ordinary.matches("api project")
@@ -662,6 +868,10 @@ private func nativeNormalizedWorkSearch(_ value: String) -> String {
     ).lowercased()
 }
 
+private func nativeWorkSearchTokens(_ value: String) -> [Substring] {
+    nativeNormalizedWorkSearch(value).split(whereSeparator: \.isWhitespace)
+}
+
 private func nativeWorkSingleLine(_ value: String, limit: Int) -> String {
     let collapsed =
         value
@@ -694,8 +904,13 @@ private func nativeSortedWorkItems(_ items: [NativeWorkItem]) -> [NativeWorkItem
 }
 
 private func nativeWorkDisplayRows(_ items: [NativeWorkItem]) -> [NativeWorkDisplayRow] {
-    NativeWorkSection.allCases.flatMap { section -> [NativeWorkDisplayRow] in
-        let sectionItems = items.filter { nativeWorkSection(for: $0) == section }
+    var itemsBySection = Array(
+        repeating: [NativeWorkItem](), count: NativeWorkSection.allCases.count)
+    for item in items {
+        itemsBySection[nativeWorkSection(for: item).rawValue].append(item)
+    }
+    return NativeWorkSection.allCases.flatMap { section -> [NativeWorkDisplayRow] in
+        let sectionItems = itemsBySection[section.rawValue]
         guard !sectionItems.isEmpty else {
             return []
         }

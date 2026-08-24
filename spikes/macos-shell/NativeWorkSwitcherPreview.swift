@@ -16,7 +16,7 @@ final class NativeWorkSwitcherPreviewView: NSView {
         nil
     }
 
-    func update(item: NativeWorkItem?, text: String?) {
+    func update(item: NativeWorkItem?, boundedText: String?, loading: Bool = false) {
         guard let item else {
             titleLabel.stringValue = "Preview"
             detailLabel.stringValue = ""
@@ -27,10 +27,9 @@ final class NativeWorkSwitcherPreviewView: NSView {
         }
         titleLabel.stringValue = item.headline
         detailLabel.stringValue = item.detail
-        let preview = nativeBoundedWorkPreview(text)
-        textView.string = preview ?? ""
-        emptyLabel.stringValue = "No visible text in this pane"
-        emptyLabel.isHidden = preview != nil
+        textView.string = boundedText ?? ""
+        emptyLabel.stringValue = loading ? "Loading preview…" : "No visible text in this pane"
+        emptyLabel.isHidden = boundedText != nil
         textView.scrollToEndOfDocument(nil)
         setAccessibilityLabel("Preview of \(item.headline)")
     }
@@ -101,7 +100,7 @@ final class NativeWorkSwitcherPreviewView: NSView {
             emptyLabel.widthAnchor.constraint(
                 lessThanOrEqualTo: scrollView.widthAnchor, constant: -24),
         ])
-        update(item: nil, text: nil)
+        update(item: nil, boundedText: nil)
     }
 }
 
@@ -135,6 +134,10 @@ func nativeWorkPreviewSnippet(_ value: String?) -> String? {
     guard let preview = nativeBoundedWorkPreview(value) else {
         return nil
     }
+    return nativeWorkPreviewSnippetFromBounded(preview)
+}
+
+func nativeWorkPreviewSnippetFromBounded(_ preview: String) -> String? {
     let lines =
         preview
         .components(separatedBy: .newlines)

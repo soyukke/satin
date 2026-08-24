@@ -127,9 +127,11 @@ native-ci-smoke:
         ./scripts/native-resize-smoke; \
         ./scripts/native-nvim-layout-redraw-smoke; \
         ./scripts/native-tmux-zoom-resize-smoke; \
+        ./scripts/native-tmux-smoke; \
         ./scripts/native-session-smoke; \
         ./scripts/native-tab-bar-actions-smoke; \
         ./scripts/native-frame-liveness-smoke; \
+        ./scripts/native-terminal-bottom-input-smoke; \
         ./scripts/native-home-cwd-smoke; \
         ./scripts/native-terminal-exit-closes-tab-smoke; \
     fi
@@ -207,6 +209,10 @@ native-session-smoke:
 # Verify tmux projection, history/modes/paste/zoom/CLI, reattach, detach, and recovery.
 native-tmux-smoke:
     @if [[ -z "${IN_NIX_SHELL:-}" ]]; then exec nix develop --command just native-tmux-smoke; else just native-build && ./scripts/native-tmux-smoke; fi
+
+# Verify picker attach is single-shot, session switching stays in control mode, and wheel scrollback works.
+native-tmux-session-switch-smoke:
+    @if [[ -z "${IN_NIX_SHELL:-}" ]]; then exec nix develop --command just native-tmux-session-switch-smoke; else just native-build && ./scripts/native-tmux-session-switch-smoke; fi
 
 # Verify shared font zoom, nested tmux grid alignment, TUI Neovim resize, and rapid host resize.
 native-tmux-zoom-resize-smoke:
@@ -560,6 +566,10 @@ quality:
     @just native-build
     @just native-update-test
     @just native-smoke
+    @just frame-liveness-smoke
+    @just terminal-bottom-input-smoke
+    @just native-tab-bar-actions-smoke
+    @just native-tmux-smoke
     @just pane-grid-smoke
 
 # Verify third-party attribution, exact bundled font provenance, and Cargo licenses.

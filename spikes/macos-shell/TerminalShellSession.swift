@@ -23,7 +23,6 @@ extension TerminalShellViewController {
             return
         }
         pendingTmuxReattach = state.tmuxAttachment.flatMap(validatedTmuxAttachment)
-        consumePersistedTmuxAttachment(state)
         for (index, saved) in state.tabs.enumerated() {
             if index > 0 {
                 core.newTab()
@@ -83,7 +82,12 @@ extension TerminalShellViewController {
         )
     }
 
-    func consumePersistedTmuxAttachment(_ state: NativeSessionState) {
+    func consumePersistedTmuxAttachment() {
+        guard let persisted = UserDefaults.standard.data(forKey: NativePreferenceKey.sessionState),
+            let state = decodeSessionState(persisted)
+        else {
+            return
+        }
         guard state.tmuxAttachment != nil else {
             return
         }
@@ -107,12 +111,16 @@ extension TerminalShellViewController {
 
     func schedulePendingTmuxReattach() {
         guard let attachment = pendingTmuxReattach,
+            !tmuxReattachInFlight,
+            !tmuxReattachDeferred,
             let paneId = activePaneId,
             let gateway = tmuxConnectionGateway(paneId: paneId)
         else {
             return
         }
-        pendingTmuxReattach = nil
+        let sequence = beginTmuxConnectionAttempt(clearPendingReattach: false)
+        tmuxReattachInFlight = true
+        tmuxReattachAttempt = 0
         let persistedPath = attachment.executablePath ?? ""
         let configuredPath =
             FileManager.default.isExecutableFile(atPath: persistedPath)
@@ -122,43 +130,220 @@ extension TerminalShellViewController {
             configuredPath: configuredPath,
             shellPath: settings.shellPath
         ) { [weak self, weak gateway] resolution in
-            guard let self, let gateway, self.tmuxSession == nil, !gateway.isExited() else {
+            guard let self, let gateway,
+                self.tmuxAdmissionSequence == sequence,
+                self.pendingTmuxReattach == attachment,
+                self.tmuxSession == nil,
+                !gateway.isExited()
+            else {
                 return
             }
             switch resolution {
             case .available(let executable):
+                self.discoverPendingTmuxReattach(
+                    attachment,
+                    executable: executable,
+                    gateway: gateway,
+                    sequence: sequence
+                )
+            case .unavailable(let message):
+                self.deferPendingTmuxReattach(
+                    attachment,
+                    message: message,
+                    sequence: sequence
+                )
+            }
+        }
+    }
+
+    func discoverPendingTmuxReattach(
+        _ attachment: NativeTmuxAttachment,
+        executable: NativeTmuxExecutable,
+        gateway: RustTerminalPane,
+        sequence: Int
+    ) {
+        NativeTmuxSessionDiscovery.discover(
+            executable: executable,
+            socketPath: attachment.socketPath
+        ) { [weak self, weak gateway] result in
+            guard let self, let gateway,
+                self.tmuxAdmissionSequence == sequence,
+                self.pendingTmuxReattach == attachment,
+                self.tmuxSession == nil,
+                !gateway.isExited()
+            else {
+                return
+            }
+            switch result {
+            case .sessions(let sessions):
+                guard
+                    let descriptor = sessions.first(where: {
+                        $0.name == attachment.sessionName
+                            && $0.socketPath == attachment.socketPath
+                    })
+                else {
+                    self.failPendingTmuxReattach(
+                        attachment,
+                        message: "can't find session: \(attachment.sessionName)",
+                        sequence: sequence
+                    )
+                    return
+                }
+                self.requestPendingTmuxAdmission(
+                    attachment,
+                    executable: executable,
+                    descriptor: descriptor,
+                    gateway: gateway,
+                    sequence: sequence
+                )
+            case .unavailable(let message):
+                self.deferPendingTmuxReattach(
+                    attachment,
+                    message: message,
+                    sequence: sequence
+                )
+            }
+        }
+    }
+
+    func requestPendingTmuxAdmission(
+        _ attachment: NativeTmuxAttachment,
+        executable: NativeTmuxExecutable,
+        descriptor: NativeTmuxSessionDescriptor,
+        gateway: RustTerminalPane,
+        sequence: Int
+    ) {
+        NativeTmuxProjectionAdmission.request(
+            executable: executable,
+            descriptor: descriptor
+        ) { [weak self, weak gateway] result in
+            guard let self, let gateway,
+                self.tmuxAdmissionSequence == sequence,
+                self.pendingTmuxReattach == attachment,
+                self.tmuxSession == nil,
+                !gateway.isExited()
+            else {
+                return
+            }
+            switch result {
+            case .admitted(let lease):
+                self.stageTmuxLease(lease)
                 self.startTmuxReattach(
                     attachment,
                     executable: executable,
-                    gateway: gateway
+                    gateway: gateway,
+                    sequence: sequence
+                )
+            case .busy where self.tmuxReattachAttempt < 10:
+                self.tmuxReattachAttempt += 1
+                let workItem = DispatchWorkItem { [weak self, weak gateway] in
+                    guard let self, let gateway,
+                        self.tmuxAdmissionSequence == sequence
+                    else {
+                        return
+                    }
+                    self.pendingTmuxConnectionWorkItem = nil
+                    self.requestPendingTmuxAdmission(
+                        attachment,
+                        executable: executable,
+                        descriptor: descriptor,
+                        gateway: gateway,
+                        sequence: sequence
+                    )
+                }
+                self.pendingTmuxConnectionWorkItem = workItem
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.2, execute: workItem)
+            case .busy:
+                self.deferPendingTmuxReattach(
+                    attachment,
+                    message: "This tmux session is already open in another Satin window. "
+                        + "Close or detach it there, then select it again; automatic restore "
+                        + "will also retry on the next launch.",
+                    sequence: sequence
                 )
             case .unavailable(let message):
-                NativeLog.sessionWarning("tmux_reattach_resolve_failed message=\(message)")
-                gateway.write(Data("Satin tmux reattach skipped: \(message)\r\n".utf8))
-                self.drainTerminalPanes()
+                self.deferPendingTmuxReattach(
+                    attachment,
+                    message: message,
+                    sequence: sequence
+                )
             }
         }
+    }
+
+    func deferPendingTmuxReattach(
+        _ attachment: NativeTmuxAttachment,
+        message: String,
+        sequence: Int
+    ) {
+        guard tmuxAdmissionSequence == sequence,
+            pendingTmuxReattach == attachment
+        else {
+            return
+        }
+        invalidateTmuxConnectionCallbacks()
+        tmuxReattachInFlight = false
+        tmuxReattachDeferred = true
+        NativeLog.sessionWarning("tmux_reattach_deferred message=\(message)")
+        saveSessionState()
+        presentTmuxSessionError(message)
+    }
+
+    func failPendingTmuxReattach(
+        _ attachment: NativeTmuxAttachment,
+        message: String,
+        sequence: Int
+    ) {
+        guard tmuxAdmissionSequence == sequence,
+            pendingTmuxReattach == attachment
+        else {
+            return
+        }
+        invalidateTmuxConnectionCallbacks()
+        pendingTmuxReattach = nil
+        tmuxReattachInFlight = false
+        tmuxReattachDeferred = false
+        consumePersistedTmuxAttachment()
+        NativeLog.sessionWarning("tmux_reattach_failed message=\(message)")
+        saveSessionState()
+        presentTmuxSessionError(message)
     }
 
     func startTmuxReattach(
         _ attachment: NativeTmuxAttachment,
         executable: NativeTmuxExecutable,
-        gateway: RustTerminalPane
+        gateway: RustTerminalPane,
+        sequence: Int
     ) {
+        guard tmuxAdmissionSequence == sequence,
+            pendingTmuxReattach == attachment
+        else {
+            return
+        }
         pendingTmuxExecutable = executable
         let command =
             "\(shellQuote(executable.path)) -S \(shellQuote(attachment.socketPath)) "
             + "-CC attach-session -t \(shellQuote(attachment.sessionName))"
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self, weak gateway] in
-            guard let self, let gateway, self.tmuxSession == nil, !gateway.isExited() else {
+        let workItem = DispatchWorkItem { [weak self, weak gateway] in
+            guard let self, let gateway,
+                self.tmuxAdmissionSequence == sequence
+            else {
                 return
             }
-            gateway.write(Data("\(command)\r".utf8))
-            self.drainTerminalPanes()
+            self.pendingTmuxConnectionWorkItem = nil
+            guard self.pendingTmuxReattach == attachment,
+                self.tmuxSession == nil,
+                !gateway.isExited()
+            else {
+                return
+            }
+            self.runTmuxCommandInActiveShell(command, sequence: sequence)
             NativeLog.lifecycleInfo(
                 "tmux_reattach_started session=\(attachment.sessionName)"
             )
         }
+        pendingTmuxConnectionWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: workItem)
     }
 
     func sessionSchemaVersion(in data: Data) -> Int? {

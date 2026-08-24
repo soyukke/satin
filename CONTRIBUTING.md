@@ -74,7 +74,9 @@ just quality
 
 `just quality` includes formatting, static analysis, tests, license checks,
 secret scanning, dependency auditing, the native build, the updater self-test,
-and the native smoke test. The complete policy and tool mapping are in
+the native smoke test, frame-liveness, repeated terminal input, multi-tab
+toolbar placement, full tmux control-mode coverage, and the pane/grid matrix.
+The complete policy and tool mapping are in
 [docs/quality.md](docs/quality.md).
 
 ## Review checklist

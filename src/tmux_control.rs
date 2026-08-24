@@ -5,10 +5,14 @@ use serde::Serialize;
 
 use crate::terminal_scroll::TerminalScrollSequenceTracker;
 
+mod admission;
 mod passthrough;
+mod protocol;
 mod session;
 
+use admission::{SESSION_CLIENT_SUBSCRIPTION, session_clients_changed};
 use passthrough::TmuxDcsPassthroughDecoder;
+use protocol::{CommandResponse, PendingCommand, response_lines_lossy, topology_notification};
 pub use session::TmuxSessionSummary;
 use session::parse_session_summaries;
 
@@ -21,8 +25,7 @@ const MAX_HYDRATION_CAPTURE_BYTES: usize = 8 * 1024 * 1024;
 const MAX_REHYDRATION_PASSTHROUGH_BYTES: usize = 16 * 1024 * 1024;
 const FLOW_CONTROL_PAUSE_AFTER_SECONDS: u8 = 5;
 const PANE_TITLE_SUBSCRIPTION: &str = "satin-pane-title:%*:#{q:pane_title}";
-const SESSION_LIST_COMMAND: &str =
-    "list-sessions -F '#{q:session_name}|#{session_windows}|#{q:socket_path}'";
+const SESSION_LIST_COMMAND: &str = "list-sessions -F '#{q:session_id}|#{q:session_name}|#{session_windows}|#{q:socket_path}|#{pid}'";
 const SNAPSHOT_FIELD_COUNT: usize = 41;
 const SYNC_FORMAT: &str = concat!(
     "#{q:session_id}\t#{q:session_name}\t#{q:socket_path}\t#{q:window_id}\t",
@@ -163,6 +166,8 @@ pub struct TmuxControl {
     sync_pending: bool,
     sync_requested_while_pending: bool,
     flow_control_configured: bool,
+    control_client_admitted: bool,
+    control_client_check_pending: bool,
     hydrated_panes: HashSet<u32>,
     capture_pending: HashSet<u32>,
     rehydrating_panes: HashSet<u32>,
@@ -176,25 +181,6 @@ pub struct TmuxControl {
     dropped_rehydration_passthrough: HashSet<u32>,
     paste_sequence: u64,
     terminal_after_control: Vec<u8>,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-enum PendingCommand {
-    Initial,
-    Ignore,
-    Snapshot,
-    Sessions,
-    Resume { pane_id: u32 },
-    AlternateBacking { pane: TmuxPaneSnapshot },
-    Capture { pane: TmuxPaneSnapshot },
-}
-
-#[derive(Debug)]
-struct CommandResponse {
-    kind: PendingCommand,
-    guard: Vec<u8>,
-    lines: Vec<Vec<u8>>,
-    bytes: usize,
 }
 
 impl TmuxControl {
@@ -225,7 +211,7 @@ impl TmuxControl {
     }
 
     pub fn command(&mut self, command: impl Into<String>) -> bool {
-        if !self.active || self.closing {
+        if !self.active || self.closing || !self.control_client_admitted {
             return false;
         }
         let command = command.into();
@@ -330,6 +316,8 @@ impl TmuxControl {
         self.sync_pending = false;
         self.sync_requested_while_pending = false;
         self.flow_control_configured = false;
+        self.control_client_admitted = false;
+        self.control_client_check_pending = false;
         self.hydrated_panes.clear();
         self.capture_pending.clear();
         self.rehydrating_panes.clear();
@@ -390,6 +378,10 @@ impl TmuxControl {
         }
         if let Some(pane) = line.strip_prefix(b"%pause ") {
             self.resume_paused_pane(parse_prefixed_id_bytes(trim_ascii(pane), b'%')?);
+            return Ok(());
+        }
+        if session_clients_changed(line) {
+            self.recheck_control_clients();
             return Ok(());
         }
         if line.starts_with(b"%") {
@@ -538,6 +530,10 @@ impl TmuxControl {
         if self.closing {
             return;
         }
+        if !self.control_client_admitted {
+            self.sync_requested_while_pending = true;
+            return;
+        }
         if self.sync_pending {
             // A topology notification can arrive while list-panes is queued or
             // running. Remember it so the last reported layout is never stale.
@@ -559,7 +555,7 @@ impl TmuxControl {
         self.queue_command(
             format!(
                 "refresh-client -f pause-after={FLOW_CONTROL_PAUSE_AFTER_SECONDS} \
-                 -B '{PANE_TITLE_SUBSCRIPTION}'"
+                 -B '{PANE_TITLE_SUBSCRIPTION}' -B '{SESSION_CLIENT_SUBSCRIPTION}'"
             ),
             PendingCommand::Ignore,
         );
@@ -587,12 +583,10 @@ impl TmuxControl {
         };
         match response.kind {
             PendingCommand::Initial => {
-                if succeeded {
-                    self.configure_flow_control();
-                    self.request_sync();
-                } else {
-                    self.queue_terminal_error(&response.lines);
-                }
+                self.finish_initial_response(succeeded, &response.lines);
+            }
+            PendingCommand::ControlClientCheck => {
+                self.finish_control_client_check(succeeded, &response.lines);
             }
             PendingCommand::Snapshot => {
                 self.finish_snapshot_response(succeeded, &response.lines)?;
@@ -788,38 +782,6 @@ impl TmuxControl {
             self.terminal_after_control.extend_from_slice(b"\r\n");
         }
     }
-}
-
-fn response_lines_lossy(lines: &[Vec<u8>], fallback: &str) -> String {
-    if lines.is_empty() {
-        return fallback.to_owned();
-    }
-    lines
-        .iter()
-        .map(|line| String::from_utf8_lossy(line))
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
-fn topology_notification(line: &[u8]) -> bool {
-    if line.starts_with(b"%subscription-changed satin-pane-title ") {
-        return true;
-    }
-    [
-        b"%session-changed ".as_slice(),
-        b"%session-renamed ",
-        b"%session-window-changed ",
-        b"%sessions-changed",
-        b"%window-add ",
-        b"%window-close ",
-        b"%window-renamed ",
-        b"%window-pane-changed ",
-        b"%layout-change ",
-        b"%pane-exited ",
-        b"%pane-mode-changed ",
-    ]
-    .iter()
-    .any(|prefix| line.starts_with(prefix))
 }
 
 fn parse_quoted_rows(lines: &[Vec<u8>], field_count: usize) -> Result<Vec<Vec<Vec<u8>>>> {
@@ -1548,6 +1510,8 @@ mod tests {
         control
             .feed(b"\x1bP1000p%session-changed $0 satin\n")
             .unwrap();
+        assert!(control.take_outgoing().is_none());
+        admit_control_client(&mut control);
         assert!(control.take_outgoing().is_some());
         let row = snapshot_row("/tmp", 20, false, false);
         control
@@ -1626,6 +1590,8 @@ mod tests {
         control
             .feed(b"\x1bP1000p%session-changed $0 satin\n")
             .unwrap();
+        assert!(control.take_outgoing().is_none());
+        admit_control_client(&mut control);
         assert!(control.take_outgoing().is_some());
         let row = snapshot_row("/tmp", 3, false, false);
         control
@@ -1770,13 +1736,15 @@ mod tests {
 
     #[test]
     fn rejected_tmux_commands_are_reported_without_detaching() {
-        let mut control = TmuxControl::default();
-        control.feed(b"\x1bP1000p").unwrap();
+        let mut control = TmuxControl {
+            active: true,
+            control_client_admitted: true,
+            ..Default::default()
+        };
         assert!(control.command("not-a-command"));
         control
             .feed(b"%begin 1 2 0\nunknown command: not-a-command\n%error 1 2 0\n")
             .unwrap();
-        assert_eq!(control.take_event(), Some(TmuxControlEvent::Entered));
         assert_eq!(
             control.take_event(),
             Some(TmuxControlEvent::CommandError {
@@ -1788,30 +1756,39 @@ mod tests {
 
     #[test]
     fn session_discovery_uses_the_existing_control_client() {
-        let mut control = TmuxControl::default();
-        control.feed(b"\x1bP1000p").unwrap();
+        let mut control = TmuxControl {
+            active: true,
+            control_client_admitted: true,
+            ..Default::default()
+        };
         assert!(control.command(SESSION_LIST_COMMAND));
         assert_eq!(
             control.take_outgoing().unwrap(),
             format!("{SESSION_LIST_COMMAND}\n").as_bytes()
         );
         control
-            .feed(b"%begin 1 2 0\nalpha|2|/tmp/tmux.sock\nbeta|1|/tmp/tmux.sock\n%end 1 2 0\n")
+            .feed(
+                b"%begin 1 2 0\n$0|alpha|2|/tmp/tmux.sock|4242\n\
+                  $1|beta|1|/tmp/tmux.sock|4242\n%end 1 2 0\n",
+            )
             .unwrap();
-        assert_eq!(control.take_event(), Some(TmuxControlEvent::Entered));
         assert_eq!(
             control.take_event(),
             Some(TmuxControlEvent::Sessions {
                 sessions: vec![
                     TmuxSessionSummary {
+                        session_id: 0,
                         name: "alpha".to_owned(),
                         window_count: 2,
                         socket_path: "/tmp/tmux.sock".to_owned(),
+                        server_pid: 4242,
                     },
                     TmuxSessionSummary {
+                        session_id: 1,
                         name: "beta".to_owned(),
                         window_count: 1,
                         socket_path: "/tmp/tmux.sock".to_owned(),
+                        server_pid: 4242,
                     },
                 ],
                 session_error: None,

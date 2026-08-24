@@ -238,6 +238,13 @@ pub unsafe extern "C" fn satin_runtime_write(
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn satin_runtime_interactive_shell_owns_foreground(
+    handle: *mut NativeTerminalRuntime,
+) -> u8 {
+    runtime_ref(handle).is_some_and(NativeTerminalRuntime::interactive_shell_owns_foreground) as u8
+}
+
+#[unsafe(no_mangle)]
 /// # Safety
 ///
 /// Non-null text pointers must point to their specified number of readable bytes.
@@ -1087,6 +1094,15 @@ pub unsafe extern "C" fn satin_skia_metal_destroy(handle: *mut NativeSkiaMetalRe
     unsafe {
         drop(Box::from_raw(handle));
     }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn satin_skia_metal_begin_frame(renderer: *mut NativeSkiaMetalRenderer) -> u8 {
+    let Some(renderer) = skia_renderer_mut(renderer) else {
+        return 0;
+    };
+    renderer.begin_frame();
+    1
 }
 
 #[unsafe(no_mangle)]

@@ -1,6 +1,6 @@
 import Foundation
 
-struct NativePaneControlStatus {
+struct NativePaneControlStatus: Equatable {
     let status: String
     let summary: String
     let revision: UInt64

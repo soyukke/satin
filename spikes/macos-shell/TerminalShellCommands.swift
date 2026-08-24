@@ -92,12 +92,17 @@ extension TerminalShellViewController {
 
     @objc func newTab(_ sender: Any?) {
         if let session = tmuxSession {
-            _ = session.gateway.tmuxCommand("new-window")
+            guard session.gateway.tmuxCommand("new-window") else {
+                presentTmuxSessionError("Satin could not create a tmux window.")
+                return
+            }
+            focusTerminal()
             return
         }
         pendingPaneWorkingDirectory = newPaneWorkingDirectory()
         core.newTab()
         syncFromCore()
+        focusTerminal()
     }
 
     @objc func splitVertical(_ sender: Any?) {
@@ -339,11 +344,8 @@ extension TerminalShellViewController {
                 )
             }
         }
-        return NativeSessionState(
-            schemaVersion: currentSessionSchemaVersion,
-            activeTab: snapshot.active_tab,
-            tabs: tabs,
-            tmuxAttachment: tmuxSession.flatMap { session in
+        let tmuxAttachment =
+            tmuxSession.flatMap { session in
                 guard
                     isLocalTmuxEndpoint(
                         socketPath: session.socketPath,
@@ -361,7 +363,12 @@ extension TerminalShellViewController {
                             : session.executablePath
                     )
                 )
-            }
+            } ?? pendingTmuxReattach.flatMap(validatedTmuxAttachment)
+        return NativeSessionState(
+            schemaVersion: currentSessionSchemaVersion,
+            activeTab: snapshot.active_tab,
+            tabs: tabs,
+            tmuxAttachment: tmuxAttachment
         )
     }
 
@@ -476,6 +483,40 @@ extension TerminalShellViewController {
         menu.addItem(closeItem)
         return menu
     }
+
+    func tabOverflowMenu() -> NSMenu {
+        let menu = NSMenu(title: "All Tabs")
+        for tab in lastSnapshot?.tabs ?? [] {
+            let item = menuItem(tab.title, #selector(selectTabFromOverflowMenu(_:)))
+            item.representedObject = tab.index
+            item.state = tab.index == lastSnapshot?.active_tab ? .on : .off
+            menu.addItem(item)
+        }
+        return menu
+    }
+
+    @objc func selectTabFromOverflowMenu(_ sender: NSMenuItem) {
+        guard let index = sender.representedObject as? Int else {
+            return
+        }
+        selectTab(index)
+    }
+
+    #if SATIN_SMOKE_SCENARIOS
+        func tabOverflowMenuReadyForSmoke(expectedCount: Int) -> Bool {
+            guard let snapshot = lastSnapshot else {
+                return false
+            }
+            let items = tabOverflowMenu().items
+            return snapshot.tabs.count == expectedCount
+                && items.count == snapshot.tabs.count
+                && zip(items, snapshot.tabs).allSatisfy { item, tab in
+                    item.title == tab.title
+                        && item.representedObject as? Int == tab.index
+                        && item.state == (tab.index == snapshot.active_tab ? .on : .off)
+                }
+        }
+    #endif
 
     @objc func renameTabFromContextMenu(_ sender: NSMenuItem) {
         guard let index = sender.representedObject as? Int else {

@@ -11,111 +11,6 @@ struct SkiaRenderGeometry {
     let cellHeight: Float
 }
 
-final class RustCore {
-    private let handle: UnsafeMutableRawPointer
-
-    init?(defaultTheme: String = nativeThemeNames[0]) {
-        let handle = defaultTheme.withCString { value in
-            satinCoreCreateWithTheme(value)
-        }
-        guard let handle else {
-            return nil
-        }
-        self.handle = handle
-    }
-
-    deinit {
-        satinCoreDestroy(handle)
-    }
-
-    func snapshot() -> TerminalCoreSnapshot? {
-        decode(satinCoreSnapshotJson(handle), as: TerminalCoreSnapshot.self)
-    }
-
-    func applyWorkspace(_ snapshot: TerminalCoreSnapshot) -> Bool {
-        guard let data = try? JSONEncoder().encode(snapshot),
-            let json = String(data: data, encoding: .utf8)
-        else {
-            return false
-        }
-        return json.withCString { value in
-            satinCoreApplyWorkspaceJson(handle, value) != 0
-        }
-    }
-
-    @discardableResult
-    func newTab() -> Int {
-        satinCoreNewTab(handle)
-    }
-
-    func splitActive(axis: UInt32) -> Int? {
-        let paneId = satinCoreSplitActive(handle, axis)
-        return paneId >= 0 ? paneId : nil
-    }
-
-    func resizeSplit(firstPaneId: Int, secondPaneId: Int, ratio: Double) -> Bool {
-        satinCoreResizeSplit(handle, firstPaneId, secondPaneId, ratio) != 0
-    }
-
-    func closePane(_ paneId: Int) -> Bool {
-        satinCoreClosePane(handle, paneId) != 0
-    }
-
-    func selectTab(_ index: Int) -> Bool {
-        satinCoreSelectTab(handle, index) != 0
-    }
-
-    func moveTab(_ tabId: Int, to index: Int) -> Bool {
-        satinCoreMoveTab(handle, tabId, index) != 0
-    }
-
-    func selectPane(_ paneId: Int) -> Bool {
-        satinCoreSelectPane(handle, paneId) != 0
-    }
-
-    func paneInDirection(_ direction: NativePaneDirection) -> Int? {
-        let paneId = satinCorePaneInDirection(handle, direction.rawValue)
-        return paneId >= 0 ? paneId : nil
-    }
-
-    func renameTab(_ index: Int, title: String) {
-        title.withCString { value in
-            _ = satinCoreRenameTab(handle, index, value)
-        }
-    }
-
-    func setTheme(_ theme: String, tab index: Int) {
-        theme.withCString { value in
-            _ = satinCoreSetTabTheme(handle, index, value)
-        }
-    }
-
-    func setDefaultTheme(_ theme: String) {
-        theme.withCString { value in
-            _ = satinCoreSetDefaultTheme(handle, value)
-        }
-    }
-
-    private func decode<T: Decodable>(_ pointer: UnsafeMutablePointer<CChar>?, as type: T.Type)
-        -> T?
-    {
-        guard let pointer else {
-            return nil
-        }
-        defer {
-            satinStringFree(pointer)
-        }
-
-        let json = String(cString: pointer)
-        do {
-            return try JSONDecoder().decode(T.self, from: Data(json.utf8))
-        } catch {
-            NativeLog.runtimeError("core_snapshot_decode_failed error=\(error)")
-            return nil
-        }
-    }
-}
-
 protocol NativePane: AnyObject {
     var kind: NativePaneMode { get }
 
@@ -256,6 +151,7 @@ enum NativePaneMode: Equatable {
 class RustTerminalPane: NativePane {
     let kind = NativePaneMode.terminal
     let handle: UnsafeMutableRawPointer
+    private let repeatedReturnGate = TerminalReturnRepeatGate()
 
     init?(
         grid: (rows: Int, cols: Int, widthPixels: Int, heightPixels: Int),
@@ -321,6 +217,31 @@ class RustTerminalPane: NativePane {
     }
 
     func key(_ event: NSEvent, released: Bool) -> Bool {
+        let isReturn = terminalReturnKeyCodes.contains(event.keyCode)
+        let promptState = satinRuntimeTmuxShellPromptState(handle)
+        let managesShellRepeat = isReturn && managesRepeatedReturn(promptState: promptState)
+        return repeatedReturnGate.handle(
+            event,
+            released: released,
+            isReturn: isReturn,
+            managesRepeat: managesShellRepeat,
+            currentPromptGeneration: satinRuntimeTmuxPromptGeneration(handle)
+        ) { [weak self] event, released in
+            self?.forwardKey(event, released: released) ?? false
+        }
+    }
+
+    func managesRepeatedReturn(promptState: UInt8) -> Bool {
+        isAwaitingRepeatedReturnPrompt
+            || canReleaseRepeatedReturn(promptState: promptState)
+    }
+
+    func canReleaseRepeatedReturn(promptState: UInt8) -> Bool {
+        promptState != 0
+            && satinRuntimeInteractiveShellOwnsForeground(handle) != 0
+    }
+
+    func forwardKey(_ event: NSEvent, released: Bool) -> Bool {
         let text = terminalKeyText(event)
         let unshifted = event.charactersIgnoringModifiers ?? ""
         let textData = text.map { Data($0.utf8) }
@@ -386,6 +307,9 @@ class RustTerminalPane: NativePane {
     }
 
     func focus(_ focused: Bool) {
+        if !focused {
+            resetRepeatedReturnBackpressure()
+        }
         _ = satinRuntimeFocus(handle, focused ? 1 : 0)
     }
 
@@ -431,7 +355,34 @@ class RustTerminalPane: NativePane {
 
     @discardableResult
     func drain() -> Bool {
-        satinRuntimeDrain(handle) != 0
+        let changed = satinRuntimeDrain(handle) != 0
+        if changed {
+            forwardPendingReturnAtReadyPrompt()
+        }
+        return changed
+    }
+
+    var isAwaitingRepeatedReturnPrompt: Bool {
+        repeatedReturnGate.isAwaitingPrompt
+    }
+
+    func forwardPendingReturnAtReadyPrompt() {
+        let promptState = satinRuntimeTmuxShellPromptState(handle)
+        let promptGeneration = satinRuntimeTmuxPromptGeneration(handle)
+        let semanticPromptSeen = satinRuntimeTmuxSemanticPromptSeen(handle) != 0
+        repeatedReturnGate.forwardPendingIfReady(
+            managesRepeat: canReleaseRepeatedReturn(promptState: promptState),
+            currentPromptGeneration: promptGeneration,
+            fallbackPromptReady: !semanticPromptSeen && promptState == 2
+        ) { [weak self] event in
+            _ = self?.key(event, released: false)
+        }
+    }
+
+    func resetRepeatedReturnBackpressure() {
+        repeatedReturnGate.reset(
+            promptGeneration: satinRuntimeTmuxPromptGeneration(handle)
+        )
     }
 
     func isExited() -> Bool {
@@ -505,9 +456,7 @@ final class RustTmuxPane: RustTerminalPane {
     private weak var gateway: RustTerminalPane?
     private var currentShellCommand: String?
     private var shellOwnsPane = false
-    private var returnAwaitingPrompt = false
-    private var returnPromptGeneration: UInt64 = 0
-    private var pendingRepeatedReturn: NSEvent?
+    private var semanticPromptOwnsPane = false
 
     init?(
         grid: (rows: Int, cols: Int, widthPixels: Int, heightPixels: Int),
@@ -538,7 +487,7 @@ final class RustTmuxPane: RustTerminalPane {
         guard let gateway else {
             return false
         }
-        return data.withUnsafeBytes { buffer in
+        let sent = data.withUnsafeBytes { buffer in
             guard let base = buffer.bindMemory(to: UInt8.self).baseAddress else {
                 return false
             }
@@ -550,6 +499,10 @@ final class RustTmuxPane: RustTerminalPane {
                 buffer.count
             ) != 0
         }
+        if sent, data.contains(10) || data.contains(13) {
+            semanticPromptOwnsPane = false
+        }
+        return sent
     }
 
     override func writeText(_ text: String) {
@@ -574,47 +527,30 @@ final class RustTmuxPane: RustTerminalPane {
                 currentShellCommand = command
                 _ = satinRuntimeTmuxResetPromptTracking(handle)
                 resetRepeatedReturnBackpressure()
+                semanticPromptOwnsPane = false
             }
             shellOwnsPane = true
             return
         }
-        if returnAwaitingPrompt {
+        if isAwaitingRepeatedReturnPrompt {
             return
         }
         shellOwnsPane = false
+        semanticPromptOwnsPane = false
         resetRepeatedReturnBackpressure()
     }
 
-    override func key(_ event: NSEvent, released: Bool) -> Bool {
-        let isReturn = terminalReturnKeyCodes.contains(event.keyCode)
-        if isReturn, released {
-            resetRepeatedReturnBackpressure()
-            return forwardKey(event, released: true)
-        }
-        let promptState = satinRuntimeTmuxShellPromptState(handle)
-        let managesShellRepeat = isReturn && shellOwnsPane && promptState != 0
-        if managesShellRepeat {
-            if event.isARepeat, returnAwaitingPrompt {
-                pendingRepeatedReturn = event
-                return true
-            }
-            returnAwaitingPrompt = true
-            returnPromptGeneration = satinRuntimeTmuxPromptGeneration(handle)
-        }
-        let sent = forwardKey(event, released: released)
-        if !sent, managesShellRepeat {
-            resetRepeatedReturnBackpressure()
-        }
-        return sent
+    override func canReleaseRepeatedReturn(promptState: UInt8) -> Bool {
+        promptState != 0 && (shellOwnsPane || semanticPromptOwnsPane)
     }
 
-    private func forwardKey(_ event: NSEvent, released: Bool) -> Bool {
+    override func forwardKey(_ event: NSEvent, released: Bool) -> Bool {
         guard let gateway else {
             return false
         }
         let textData = terminalKeyText(event).map { Data($0.utf8) }
         let unshiftedData = Data((event.charactersIgnoringModifiers ?? "").utf8)
-        return unshiftedData.withUnsafeBytes { unshiftedBuffer in
+        let sent = unshiftedData.withUnsafeBytes { unshiftedBuffer in
             let unshifted = unshiftedBuffer.bindMemory(to: UInt8.self).baseAddress
             if let textData {
                 return textData.withUnsafeBytes { textBuffer in
@@ -647,6 +583,10 @@ final class RustTmuxPane: RustTerminalPane {
                 released ? 1 : 0
             ) != 0
         }
+        if sent, !released, terminalReturnKeyCodes.contains(event.keyCode) {
+            semanticPromptOwnsPane = false
+        }
+        return sent
     }
 
     override func paste(_ text: String) {
@@ -658,7 +598,7 @@ final class RustTmuxPane: RustTerminalPane {
         guard let gateway else {
             return false
         }
-        return withUtf8(text) { bytes, count in
+        let sent = withUtf8(text) { bytes, count in
             satinRuntimeTmuxPaste(
                 gateway.handle,
                 handle,
@@ -667,6 +607,10 @@ final class RustTmuxPane: RustTerminalPane {
                 count
             ) != 0
         }
+        if sent, text.contains("\n") || text.contains("\r") {
+            semanticPromptOwnsPane = false
+        }
+        return sent
     }
 
     override func mouse(_ input: NativeMouseInput) -> Bool {
@@ -707,6 +651,7 @@ final class RustTmuxPane: RustTerminalPane {
         guard gateway != nil else {
             return false
         }
+        let previousPromptGeneration = satinRuntimeTmuxPromptGeneration(handle)
         let fed = data.withUnsafeBytes { buffer in
             guard let base = buffer.bindMemory(to: UInt8.self).baseAddress else {
                 return false
@@ -718,37 +663,15 @@ final class RustTmuxPane: RustTerminalPane {
             ) != 0
         }
         if fed {
+            if satinRuntimeTmuxPromptGeneration(handle) != previousPromptGeneration {
+                semanticPromptOwnsPane = true
+                shellOwnsPane = true
+            }
             forwardPendingReturnAtReadyPrompt()
         }
         return fed
     }
 
-    private func forwardPendingReturnAtReadyPrompt() {
-        guard returnAwaitingPrompt else {
-            return
-        }
-        let promptGeneration = satinRuntimeTmuxPromptGeneration(handle)
-        let semanticPromptSeen = satinRuntimeTmuxSemanticPromptSeen(handle) != 0
-        let semanticPromptAdvanced = promptGeneration != returnPromptGeneration
-        let fallbackPromptReady =
-            !semanticPromptSeen
-            && satinRuntimeTmuxShellPromptState(handle) == 2
-        guard semanticPromptAdvanced || fallbackPromptReady else {
-            return
-        }
-        returnAwaitingPrompt = false
-        guard let event = pendingRepeatedReturn else {
-            return
-        }
-        pendingRepeatedReturn = nil
-        _ = key(event, released: false)
-    }
-
-    private func resetRepeatedReturnBackpressure() {
-        returnAwaitingPrompt = false
-        returnPromptGeneration = satinRuntimeTmuxPromptGeneration(handle)
-        pendingRepeatedReturn = nil
-    }
 }
 
 final class RustNeovimPane: NativePane {

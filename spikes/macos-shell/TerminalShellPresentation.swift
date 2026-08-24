@@ -429,6 +429,9 @@ extension TerminalShellViewController {
         tabControl.contextMenuProvider = { [weak self] index in
             self?.tabContextMenu(index: index)
         }
+        tabStripView.allTabsMenuProvider = { [weak self] in
+            self?.tabOverflowMenu()
+        }
         tabControl.setAccessibilityLabel("Terminal Tabs")
         tabControl.setAccessibilityHelp(
             "Click a tab to select it, drag it to reorder, use its close button to close it, "
@@ -556,6 +559,10 @@ extension TerminalShellViewController {
             }
             return
         }
+        if let executable = resolvedTmuxExecutable {
+            discoverTmuxSessions(executable: executable, into: controller)
+            return
+        }
         NativeTmuxExecutableResolver.shared.resolve(
             configuredPath: settings.tmuxExecutablePath,
             shellPath: settings.shellPath
@@ -568,31 +575,38 @@ extension TerminalShellViewController {
             switch resolution {
             case .available(let executable):
                 self.resolvedTmuxExecutable = executable
-                NativeTmuxSessionDiscovery.discover(
-                    executable: executable,
-                    socketPath: self.preferredTmuxSocketPath()
-                ) { [weak self, weak controller] result in
-                    guard let self, let controller,
-                        self.sessionPopover?.contentViewController === controller
-                    else {
-                        return
-                    }
-                    switch result {
-                    case .sessions(let sessions):
-                        controller.update(
-                            sessions: self.currentTmuxSessionAdded(to: sessions),
-                            status: sessions.isEmpty ? "No tmux sessions" : nil,
-                            canCreate: true
-                        )
-                    case .unavailable(let message):
-                        controller.update(
-                            sessions: self.currentTmuxSessionAdded(to: []),
-                            status: message,
-                            canCreate: false,
-                            isError: true
-                        )
-                    }
-                }
+                self.discoverTmuxSessions(executable: executable, into: controller)
+            case .unavailable(let message):
+                controller.update(
+                    sessions: self.currentTmuxSessionAdded(to: []),
+                    status: message,
+                    canCreate: false,
+                    isError: true
+                )
+            }
+        }
+    }
+
+    private func discoverTmuxSessions(
+        executable: NativeTmuxExecutable,
+        into controller: TmuxSessionPopoverController
+    ) {
+        NativeTmuxSessionDiscovery.discover(
+            executable: executable,
+            socketPath: preferredTmuxSocketPath()
+        ) { [weak self, weak controller] result in
+            guard let self, let controller,
+                self.sessionPopover?.contentViewController === controller
+            else {
+                return
+            }
+            switch result {
+            case .sessions(let sessions):
+                controller.update(
+                    sessions: self.currentTmuxSessionAdded(to: sessions),
+                    status: sessions.isEmpty ? "No tmux sessions" : nil,
+                    canCreate: true
+                )
             case .unavailable(let message):
                 controller.update(
                     sessions: self.currentTmuxSessionAdded(to: []),
@@ -615,9 +629,11 @@ extension TerminalShellViewController {
         {
             descriptors.append(
                 NativeTmuxSessionDescriptor(
+                    sessionID: session.sessionID,
                     name: session.sessionName,
                     windowCount: lastSnapshot?.tabs.count ?? 1,
-                    socketPath: session.socketPath
+                    socketPath: session.socketPath,
+                    serverPID: session.serverPid
                 )
             )
         }
@@ -636,9 +652,32 @@ extension TerminalShellViewController {
     func dismissSessionPopover() {
         sessionPopover?.performClose(nil)
         sessionPopover = nil
+        focusTerminal()
+    }
+
+    @discardableResult
+    func beginTmuxConnectionAttempt(clearPendingReattach: Bool) -> Int {
+        invalidateTmuxConnectionCallbacks()
+        _ = takePendingTmuxLease()
+        if clearPendingReattach, pendingTmuxReattach != nil {
+            pendingTmuxReattach = nil
+            tmuxReattachInFlight = false
+            tmuxReattachDeferred = false
+            consumePersistedTmuxAttachment()
+            saveSessionState()
+        }
+        return tmuxAdmissionSequence
+    }
+
+    func invalidateTmuxConnectionCallbacks() {
+        tmuxAdmissionSequence &+= 1
+        pendingTmuxConnectionWorkItem?.cancel()
+        pendingTmuxConnectionWorkItem = nil
+        tmuxConnectionCommandSequence = nil
     }
 
     func detachTmuxSession() {
+        _ = beginTmuxConnectionAttempt(clearPendingReattach: true)
         guard let session = tmuxSession else {
             focusTerminal()
             return
@@ -660,10 +699,33 @@ extension TerminalShellViewController {
                 focusTerminal()
                 return
             }
-            if !session.gateway.tmuxCommand(
-                "switch-client -t \(tmuxCommandArgument(descriptor.name))"
-            ) {
-                presentTmuxSessionError("Satin could not switch to that tmux session.")
+            guard let executable = resolvedTmuxExecutable else {
+                presentTmuxSessionError("Satin could not resolve the tmux executable.")
+                return
+            }
+            let sequence = beginTmuxConnectionAttempt(clearPendingReattach: false)
+            requestTmuxProjectionAdmission(
+                executable: executable,
+                descriptor: descriptor,
+                sequence: sequence
+            ) { [weak self, weak session] lease in
+                guard let self, let session, self.tmuxSession === session,
+                    self.tmuxAdmissionSequence == sequence
+                else {
+                    return
+                }
+                self.stageTmuxLease(lease)
+                guard
+                    session.gateway.tmuxCommand(
+                        "switch-client -t \(tmuxCommandArgument(descriptor.name))"
+                    )
+                else {
+                    _ = self.takePendingTmuxLease()
+                    self.presentTmuxSessionError(
+                        "Satin could not switch to that tmux session."
+                    )
+                    return
+                }
             }
             return
         }
@@ -671,16 +733,58 @@ extension TerminalShellViewController {
             presentTmuxSessionError("Satin could not resolve the tmux executable.")
             return
         }
-        pendingTmuxExecutable = executable
-        runTmuxCommandInActiveShell(
-            "\(shellQuote(executable.path)) -S \(shellQuote(descriptor.socketPath)) "
-                + "-CC attach-session "
-                + "-t \(shellQuote(descriptor.name))"
-        )
+        let sequence = beginTmuxConnectionAttempt(clearPendingReattach: true)
+        requestTmuxProjectionAdmission(
+            executable: executable,
+            descriptor: descriptor,
+            sequence: sequence
+        ) { [weak self] lease in
+            guard let self, self.tmuxSession == nil,
+                self.tmuxAdmissionSequence == sequence
+            else {
+                return
+            }
+            self.stageTmuxLease(lease)
+            self.pendingTmuxExecutable = executable
+            self.scheduleTmuxCommandInActiveShell(
+                "\(shellQuote(executable.path)) "
+                    + "-S \(shellQuote(descriptor.socketPath)) "
+                    + "-CC attach-session -t \(shellQuote(descriptor.name))",
+                sequence: sequence
+            )
+        }
+    }
+
+    func requestTmuxProjectionAdmission(
+        executable: NativeTmuxExecutable,
+        descriptor: NativeTmuxSessionDescriptor,
+        sequence: Int,
+        completion: @escaping (NativeTmuxSessionLease) -> Void
+    ) {
+        NativeTmuxProjectionAdmission.request(
+            executable: executable,
+            descriptor: descriptor
+        ) { [weak self] result in
+            guard let self, self.tmuxAdmissionSequence == sequence else {
+                return
+            }
+            switch result {
+            case .admitted(let lease):
+                completion(lease)
+            case .busy:
+                self.presentTmuxSessionError(
+                    "That tmux session is already open in another Satin window. "
+                        + "Close or detach it there before trying again."
+                )
+            case .unavailable(let message):
+                self.presentTmuxSessionError(message)
+            }
+        }
     }
 
     func createTmuxSession(named name: String) {
         if let session = tmuxSession {
+            _ = beginTmuxConnectionAttempt(clearPendingReattach: false)
             let argument = tmuxCommandArgument(name)
             guard session.gateway.tmuxCommand("new-session -d -s \(argument)"),
                 session.gateway.tmuxCommand("switch-client -t \(argument)")
@@ -698,10 +802,12 @@ extension TerminalShellViewController {
             presentTmuxSessionError("Satin could not resolve the tmux executable.")
             return
         }
+        let sequence = beginTmuxConnectionAttempt(clearPendingReattach: true)
         pendingTmuxExecutable = executable
-        runTmuxCommandInActiveShell(
+        scheduleTmuxCommandInActiveShell(
             "\(shellQuote(executable.path)) \(socketArgument)-CC new-session "
-                + "-s \(shellQuote(name))"
+                + "-s \(shellQuote(name))",
+            sequence: sequence
         )
     }
 
@@ -753,13 +859,22 @@ extension TerminalShellViewController {
         }
     }
 
-    func runTmuxCommandInActiveShell(_ command: String) {
+    func runTmuxCommandInActiveShell(_ command: String, sequence: Int) {
+        guard tmuxAdmissionSequence == sequence,
+            tmuxConnectionCommandSequence != sequence
+        else {
+            return
+        }
         guard let paneId = activePaneId,
             let gateway = tmuxConnectionGateway(paneId: paneId)
         else {
             presentTmuxSessionError("Select a terminal pane before connecting to tmux.")
             return
         }
+        tmuxConnectionCommandSequence = sequence
+        #if SATIN_SMOKE_SCENARIOS
+            tmuxConnectionCommandHistory.append(command)
+        #endif
         var input = Data([21])
         input.append(Data("\(command)\r".utf8))
         gateway.write(input)
@@ -770,12 +885,29 @@ extension TerminalShellViewController {
         }
     }
 
+    func scheduleTmuxCommandInActiveShell(_ command: String, sequence: Int) {
+        pendingTmuxConnectionWorkItem?.cancel()
+        focusTerminal()
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self, self.tmuxAdmissionSequence == sequence else {
+                return
+            }
+            self.pendingTmuxConnectionWorkItem = nil
+            self.runTmuxCommandInActiveShell(command, sequence: sequence)
+        }
+        pendingTmuxConnectionWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1, execute: workItem)
+    }
+
     func tmuxConnectionGateway(paneId: Int) -> RustTerminalPane? {
         (paneStore.runtimes[paneId] as? RustTerminalPane)
             ?? paneStore.suspendedSessions[paneId]?.pane
     }
 
     func presentTmuxSessionError(_ message: String) {
+        #if SATIN_SMOKE_SCENARIOS
+            tmuxSessionErrorHistory.append(message)
+        #endif
         let alert = NSAlert()
         alert.alertStyle = .warning
         alert.messageText = "tmux Session"

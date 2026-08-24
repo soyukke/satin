@@ -176,6 +176,7 @@ final class TerminalMetalView: MTKView, CAMetalDisplayLinkDelegate, MTKViewDeleg
             return
         }
 
+        _ = satinSkiaMetalBeginFrame(skiaRenderer)
         if renderProvider?(drawable.texture, skiaRenderer) == true {
             skiaFrameCount += 1
         } else {

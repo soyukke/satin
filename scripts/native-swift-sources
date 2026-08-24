@@ -9,6 +9,7 @@ native_swift_sources=(
   spikes/macos-shell/ControlHost.swift
   spikes/macos-shell/NativeAgentActivity.swift
   spikes/macos-shell/NativeAppearance.swift
+  spikes/macos-shell/NativeCoreRuntime.swift
   spikes/macos-shell/NativeCoreTheme.swift
   spikes/macos-shell/NativeFrameScheduling.swift
   spikes/macos-shell/NativeKeyBindings.swift
@@ -24,6 +25,7 @@ native_swift_sources=(
   spikes/macos-shell/NativeSettingsValidation.swift
   spikes/macos-shell/NativeShellModels.swift
   spikes/macos-shell/NativeTmux.swift
+  spikes/macos-shell/NativeTmuxSessionLease.swift
   spikes/macos-shell/NativeWireModels.swift
   spikes/macos-shell/NativeWorkSwitcher.swift
   spikes/macos-shell/NativeWorkSwitcherPreview.swift
@@ -32,6 +34,7 @@ native_swift_sources=(
   spikes/macos-shell/SatinFFI.swift
   spikes/macos-shell/SatinMain.swift
   spikes/macos-shell/SettingsWindow.swift
+  spikes/macos-shell/NativeTabStripView.swift
   spikes/macos-shell/TabControls.swift
   spikes/macos-shell/TerminalMetalView.swift
   spikes/macos-shell/TerminalShellArtifacts.swift
@@ -44,6 +47,7 @@ native_swift_sources=(
   spikes/macos-shell/TerminalShellSession.swift
   spikes/macos-shell/TerminalShellViewController.swift
   spikes/macos-shell/TerminalShellWorkSwitcher.swift
+  spikes/macos-shell/TerminalReturnRepeatGate.swift
   spikes/macos-shell/TerminalTextView.swift
   spikes/macos-shell/TerminalTextViewInput.swift
   spikes/macos-shell/UpdateInstaller.swift
@@ -63,6 +67,7 @@ native_smoke_swift_sources=(
   spikes/macos-shell/NativeSmokeState.swift
   spikes/macos-shell/NativeSmokeTmuxReattachScenarios.swift
   spikes/macos-shell/NativeSmokeTmuxScenarios.swift
+  spikes/macos-shell/NativeSmokeTmuxSessionSwitchScenarios.swift
   spikes/macos-shell/NativeSmokeTmuxZoomResizeScenarios.swift
   spikes/macos-shell/TerminalTextViewSmoke.swift
 )
