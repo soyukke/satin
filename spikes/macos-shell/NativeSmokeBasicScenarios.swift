@@ -306,6 +306,14 @@ import Foundation
                 && tabControl.segmentCount == 1
                 && tabControl.label(forSegment: 0) == renamedTitle
                 && tabControl.frame.width < tabWidthBeforeClose
+            if let window = view.window, let contentView = window.contentView {
+                window.setContentSize(
+                    NSSize(
+                        width: min(1_024, contentView.bounds.width),
+                        height: contentView.bounds.height
+                    )
+                )
+            }
             for _ in 0..<9 {
                 newTabButton.performClick(nil)
             }
@@ -317,9 +325,14 @@ import Foundation
             let manySessionFrame = sessionControlButton.convert(
                 sessionControlButton.bounds, to: nil)
             let manyWindowContentFrame = view.convert(view.bounds, to: nil)
+            let manyTabCount = core.snapshot()?.tabs.count ?? 0
+            let manyTabStripInsideWindow =
+                manyTabStripFrame.width > 0
+                && manyTabStripFrame.minX >= manyWindowContentFrame.minX - 0.5
+                && manyTabStripFrame.maxX <= manyWindowContentFrame.maxX + 0.5
             let manyTabToolbarControlsAreTrailing =
-                core.snapshot()?.tabs.count == 10
-                && manyTabStripFrame.intersects(manyWindowContentFrame)
+                manyTabCount == 10
+                && manyTabStripInsideWindow
                 && manyArtifactFrame.minX > manyTabStripFrame.maxX
                 && manyWorkFrame.minX > manyArtifactFrame.minX
                 && manySessionFrame.minX > manyWorkFrame.minX
@@ -375,6 +388,9 @@ import Foundation
                     + "\(Int(sessionFrame.maxX))/\(Int(windowContentFrame.maxX)) "
                     + "many-tab-toolbar="
                     + "\(manyTabToolbarControlsAreTrailing ? "trailing" : "misplaced") "
+                    + "many-tabs=\(manyTabCount) "
+                    + "many-tab-window="
+                    + "\(manyTabStripInsideWindow ? "inside" : "outside") "
                     + "overflow=\(manyTabOverflowReady ? "ready" : "invalid") "
                     + "continuation="
                     + "\(manyTabContinuationReady ? "bidirectional" : "invalid") "
