@@ -412,6 +412,12 @@ extension TerminalShellViewController {
     }
 
     func configureTabControl() {
+        tabStripView.onToolbarGeometryAvailable = { [weak self] in
+            self?.updateTabStripToolbarWidth()
+        }
+        tabStripView.toolbarWindowWidthProvider = { [weak self] in
+            self?.view.bounds.width
+        }
         tabControl.translatesAutoresizingMaskIntoConstraints = false
         NativePlatformAppearance.configureTabControl(tabControl)
         tabControl.trackingMode = .selectOne
@@ -502,6 +508,9 @@ extension TerminalShellViewController {
             item.paletteLabel = "Terminal Session"
             item.view = sessionControlButton
             item.visibilityPriority = .high
+            DispatchQueue.main.async { [weak self] in
+                self?.updateTabStripToolbarWidth()
+            }
         default:
             return nil
         }
@@ -921,6 +930,7 @@ extension TerminalShellViewController {
     }
 
     func updateSessionControl() {
+        let previousWidth = sessionControlButton.frame.width
         let title: String
         let symbol: String
         if let session = tmuxSession {
@@ -939,8 +949,14 @@ extension TerminalShellViewController {
         )
         sessionControlButton.setAccessibilityValue(title)
         sessionControlButton.sizeToFit()
+        tabStripView.adjustToolbarExcludedWidth(
+            by: sessionControlButton.frame.width - previousWidth
+        )
         sessionControlButton.invalidateIntrinsicContentSize()
         sessionControlButton.superview?.needsLayout = true
+        DispatchQueue.main.async { [weak self] in
+            self?.updateTabStripToolbarWidth()
+        }
     }
 
     func sessionControlTitle() -> String {

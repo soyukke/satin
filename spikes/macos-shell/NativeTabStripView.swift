@@ -10,13 +10,16 @@ final class NativeTabStripView: NSView {
         static let scrollPageFraction: CGFloat = 0.78
         static let minimumScrollPage: CGFloat = 72
         static let minimumTabViewportWidth: CGFloat = 44
-        // Keep permanent trailing toolbar actions available at all tab counts.
-        static let maximumToolbarWidth: CGFloat = 720
+        static let minimumToolbarWidth: CGFloat = 96
+        // Safe until the toolbar has laid out its permanent trailing actions.
+        static let initialMaximumToolbarWidth: CGFloat = 720
     }
 
     let tabControl: NativeTabControl
     let newTabButton: NativeHoverIconButton
     var allTabsMenuProvider: (() -> NSMenu?)?
+    var onToolbarGeometryAvailable: (() -> Void)?
+    var toolbarWindowWidthProvider: (() -> CGFloat?)?
 
     private let tabScrollView = NSScrollView(frame: .zero)
     private let overflowButton = NativeHoverIconButton(
@@ -34,6 +37,20 @@ final class NativeTabStripView: NSView {
     private let overflowMaskLayer = CAGradientLayer()
     private var revealSelectedTabAfterLayout = true
     private var continuationControlsVisible = false
+    // Includes AppKit's leading titlebar inset and the permanent trailing actions.
+    private var toolbarExcludedWidth: CGFloat?
+    private var geometryCallbackScheduled = false
+    private var observedWindowWidth: CGFloat?
+
+    private var maximumToolbarWidth: CGFloat {
+        guard let toolbarExcludedWidth,
+            let windowWidth = toolbarWindowWidthProvider?(),
+            windowWidth.isFinite
+        else {
+            return Metrics.initialMaximumToolbarWidth
+        }
+        return max(Metrics.minimumToolbarWidth, floor(windowWidth - toolbarExcludedWidth))
+    }
 
     init(tabControl: NativeTabControl, newTabButton: NativeHoverIconButton) {
         self.tabControl = tabControl
@@ -65,17 +82,40 @@ final class NativeTabStripView: NSView {
         nil
     }
 
+    deinit {
+        NotificationCenter.default.removeObserver(self)
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        NotificationCenter.default.removeObserver(
+            self,
+            name: NSWindow.didResizeNotification,
+            object: nil
+        )
+        guard let window else {
+            return
+        }
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(toolbarWindowDidResize(_:)),
+            name: NSWindow.didResizeNotification,
+            object: window
+        )
+        scheduleToolbarGeometryCallback()
+    }
+
     override var intrinsicContentSize: NSSize {
         let tabs = tabControl.intrinsicContentSize
         let primaryControlsWidth = Metrics.spacing + Metrics.buttonSize.width
         let overflowWidth =
-            tabs.width + primaryControlsWidth > Metrics.maximumToolbarWidth
+            tabs.width + primaryControlsWidth > maximumToolbarWidth
             ? Metrics.spacing + Metrics.buttonSize.width
             : 0
         return NSSize(
             width: min(
                 tabs.width + primaryControlsWidth + overflowWidth,
-                Metrics.maximumToolbarWidth
+                maximumToolbarWidth
             ),
             height: max(tabs.height, Metrics.buttonSize.height)
         )
@@ -150,6 +190,7 @@ final class NativeTabStripView: NSView {
             revealSelectedTab()
         }
         updateContinuationAffordances()
+        scheduleToolbarGeometryCallback()
     }
 
     func contentSizeDidChange() {
@@ -157,6 +198,68 @@ final class NativeTabStripView: NSView {
         invalidateIntrinsicContentSize()
         needsLayout = true
         superview?.needsLayout = true
+    }
+
+    func updateToolbarExcludedWidth(_ proposedWidth: CGFloat) {
+        guard proposedWidth.isFinite, proposedWidth > 0 else {
+            return
+        }
+        let width = ceil(proposedWidth)
+        guard toolbarExcludedWidth.map({ abs(width - $0) > 0.5 }) ?? true else {
+            return
+        }
+        toolbarExcludedWidth = width
+        invalidateToolbarWidth()
+    }
+
+    func adjustToolbarExcludedWidth(by widthDelta: CGFloat) {
+        guard let toolbarExcludedWidth,
+            widthDelta.isFinite,
+            abs(widthDelta) > 0.5
+        else {
+            return
+        }
+        updateToolbarExcludedWidth(toolbarExcludedWidth + widthDelta)
+    }
+
+    func windowWidthDidChange() {
+        guard toolbarExcludedWidth != nil,
+            let proposedWidth = toolbarWindowWidthProvider?(),
+            proposedWidth.isFinite,
+            proposedWidth > 0
+        else {
+            return
+        }
+        let width = floor(proposedWidth)
+        guard observedWindowWidth.map({ abs(width - $0) > 0.5 }) ?? true else {
+            return
+        }
+        observedWindowWidth = width
+        invalidateToolbarWidth()
+    }
+
+    private func invalidateToolbarWidth() {
+        invalidateIntrinsicContentSize()
+        needsLayout = true
+        superview?.needsLayout = true
+    }
+
+    private func scheduleToolbarGeometryCallback() {
+        guard !geometryCallbackScheduled else {
+            return
+        }
+        geometryCallbackScheduled = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else {
+                return
+            }
+            geometryCallbackScheduled = false
+            onToolbarGeometryAvailable?()
+        }
+    }
+
+    func maximumToolbarWidthForSmoke() -> CGFloat {
+        maximumToolbarWidth
     }
 
     func actionsReady() -> Bool {
@@ -414,6 +517,11 @@ final class NativeTabStripView: NSView {
 
     @objc private func scrolledTabBoundsDidChange(_ notification: Notification) {
         updateContinuationAffordances()
+    }
+
+    @objc private func toolbarWindowDidResize(_ notification: Notification) {
+        windowWidthDidChange()
+        scheduleToolbarGeometryCallback()
     }
 
     @objc private func scrollToEarlierTabs(_ sender: NSButton) {

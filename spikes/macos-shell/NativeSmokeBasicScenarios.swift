@@ -160,6 +160,7 @@ import Foundation
                 }
                 return
             }
+            updateTabStripToolbarWidth()
             let compactChrome =
                 view.window?.toolbarStyle == .unifiedCompact
                 && terminalTextView.paneChromeViews.values.allSatisfy {
@@ -344,6 +345,7 @@ import Foundation
                 && manyTabViewportFrame.maxX < manyArtifactFrame.minX
             let manyTabContinuationReady =
                 tabStripView.continuationAffordancesReadyForSmoke()
+            let adaptiveTabWidth = adaptiveTabWidthResultForSmoke()
             let ok =
                 controlsReady
                 && shortcutsReady
@@ -373,6 +375,7 @@ import Foundation
                 && manyTabToolbarControlsAreTrailing
                 && manyTabOverflowReady
                 && manyTabContinuationReady
+                && adaptiveTabWidth.ready
             let status = ok ? "ok" : "failed"
             writeSessionSmokeResult(
                 resultPath,
@@ -398,6 +401,7 @@ import Foundation
                     + "\(Int(manyArtifactFrame.minX))/\(Int(manyWorkFrame.minX))/"
                     + "\(Int(manySessionFrame.minX))/\(Int(manySessionFrame.maxX))/"
                     + "\(Int(manyWindowContentFrame.maxX)) "
+                    + adaptiveTabWidth.summary + " "
                     + "tabs=\(snapshot.tabs.count) active=\(snapshot.active_tab) "
                     + "leaves=\(metrics.leaves) splits=\(metrics.splits) "
                     + "axes=\(axes.joined(separator: ",")) "
