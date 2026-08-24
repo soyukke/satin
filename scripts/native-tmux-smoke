@@ -106,6 +106,16 @@ if [[ "$lease_holder_ready" != true ]]; then
   sed -n '1,120p' "$lease_holder_result_file" >&2 || true
   exit 1
 fi
+if ! kill -0 "$lease_holder_pid" 2>/dev/null; then
+  echo "tmux lease-holder exited after reporting ready" >&2
+  sed -n '1,120p' "/tmp/satin-native-tmux-lease-holder.log" >&2 || true
+  exit 1
+fi
+if [[ -z "$(tmux -S "$socket_path" list-clients -t "=$session_name" \
+  -F '#{client_control_mode}' -f '#{client_control_mode}')" ]]; then
+  echo "tmux lease-holder has no live control client" >&2
+  exit 1
+fi
 
 SATIN_NATIVE_SMOKE_SCENARIO=tmux-lease-busy \
   SATIN_NATIVE_SMOKE_RESULT="$lease_busy_result_file" \

@@ -97,7 +97,7 @@ import Foundation
             waitForTmuxLeaseBusy(
                 resultPath,
                 attachment: validated,
-                retries: 50
+                retries: 150
             )
         }
 
@@ -129,10 +129,26 @@ import Foundation
                         )
                     }
                 } else {
+                    let screen =
+                        terminalText
+                        .suffix(240)
+                        .replacingOccurrences(of: "\n", with: "|")
+                    let rejectionMessageVisible = terminalText.contains(
+                        "already open in another Satin window"
+                    )
                     writeSessionSmokeResult(
                         resultPath,
                         result: "failed tmux-lease-busy rejected=no descriptor="
-                            + "\(descriptorPreserved ? "yes" : "no")\n"
+                            + "\(descriptorPreserved ? "yes" : "no") "
+                            + "session=\(tmuxSession?.sessionName ?? "none") "
+                            + "pending=\(pendingTmuxReattach != nil) "
+                            + "inflight=\(tmuxReattachInFlight) "
+                            + "deferred=\(tmuxReattachDeferred) "
+                            + "attempt=\(tmuxReattachAttempt) "
+                            + "lease=\(pendingTmuxLease != nil) "
+                            + "message=\(rejectionMessageVisible) "
+                            + "commands=\(tmuxConnectionCommandHistory.count) "
+                            + "screen=\(screen)\n"
                     )
                 }
                 return
