@@ -150,7 +150,6 @@ extension TerminalShellViewController {
                 self.deferPendingTmuxReattach(
                     attachment,
                     message: message,
-                    gateway: gateway,
                     sequence: sequence
                 )
             }
@@ -186,7 +185,6 @@ extension TerminalShellViewController {
                     self.failPendingTmuxReattach(
                         attachment,
                         message: "can't find session: \(attachment.sessionName)",
-                        gateway: gateway,
                         sequence: sequence
                     )
                     return
@@ -202,7 +200,6 @@ extension TerminalShellViewController {
                 self.deferPendingTmuxReattach(
                     attachment,
                     message: message,
-                    gateway: gateway,
                     sequence: sequence
                 )
             }
@@ -262,14 +259,12 @@ extension TerminalShellViewController {
                     message: "This tmux session is already open in another Satin window. "
                         + "Close or detach it there, then select it again; automatic restore "
                         + "will also retry on the next launch.",
-                    gateway: gateway,
                     sequence: sequence
                 )
             case .unavailable(let message):
                 self.deferPendingTmuxReattach(
                     attachment,
                     message: message,
-                    gateway: gateway,
                     sequence: sequence
                 )
             }
@@ -279,7 +274,6 @@ extension TerminalShellViewController {
     func deferPendingTmuxReattach(
         _ attachment: NativeTmuxAttachment,
         message: String,
-        gateway: RustTerminalPane,
         sequence: Int
     ) {
         guard tmuxAdmissionSequence == sequence,
@@ -291,17 +285,13 @@ extension TerminalShellViewController {
         tmuxReattachInFlight = false
         tmuxReattachDeferred = true
         NativeLog.sessionWarning("tmux_reattach_deferred message=\(message)")
-        gateway.write(
-            Data("Satin tmux reattach deferred: \(message)\r\n".utf8)
-        )
-        drainTerminalPanes()
         saveSessionState()
+        presentTmuxSessionError(message)
     }
 
     func failPendingTmuxReattach(
         _ attachment: NativeTmuxAttachment,
         message: String,
-        gateway: RustTerminalPane,
         sequence: Int
     ) {
         guard tmuxAdmissionSequence == sequence,
@@ -315,9 +305,8 @@ extension TerminalShellViewController {
         tmuxReattachDeferred = false
         consumePersistedTmuxAttachment()
         NativeLog.sessionWarning("tmux_reattach_failed message=\(message)")
-        gateway.write(Data("Satin tmux reattach skipped: \(message)\r\n".utf8))
-        drainTerminalPanes()
         saveSessionState()
+        presentTmuxSessionError(message)
     }
 
     func startTmuxReattach(

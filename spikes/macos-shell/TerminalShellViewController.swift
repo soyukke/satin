@@ -365,6 +365,7 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
     var tmuxReattachDeferred = false
     #if SATIN_SMOKE_SCENARIOS
         var tmuxConnectionCommandHistory: [String] = []
+        var tmuxSessionErrorHistory: [String] = []
     #endif
     var sessionPopover: NSPopover?
     var lastSearchQuery = ""

@@ -114,11 +114,19 @@ import Foundation
             let descriptorPreserved =
                 savedAttachment?.sessionName == attachment.sessionName
                 && savedAttachment?.socketPath == attachment.socketPath
+            let rejectionMessagePresented = tmuxSessionErrorHistory.contains {
+                $0.contains("already open in another Satin window")
+            }
+            let shellInputUntouched =
+                tmuxConnectionCommandHistory.isEmpty
+                && !terminalText.contains("Satin tmux reattach deferred")
+                && !terminalText.contains("command not found")
             let rejected =
                 tmuxSession == nil
                 && tmuxReattachDeferred
-                && terminalText.contains("already open in another Satin window")
+                && rejectionMessagePresented
                 && descriptorPreserved
+                && shellInputUntouched
             guard rejected else {
                 if retries > 0 {
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
@@ -133,9 +141,6 @@ import Foundation
                         terminalText
                         .suffix(240)
                         .replacingOccurrences(of: "\n", with: "|")
-                    let rejectionMessageVisible = terminalText.contains(
-                        "already open in another Satin window"
-                    )
                     writeSessionSmokeResult(
                         resultPath,
                         result: "failed tmux-lease-busy rejected=no descriptor="
@@ -146,7 +151,8 @@ import Foundation
                             + "deferred=\(tmuxReattachDeferred) "
                             + "attempt=\(tmuxReattachAttempt) "
                             + "lease=\(pendingTmuxLease != nil) "
-                            + "message=\(rejectionMessageVisible) "
+                            + "message=\(rejectionMessagePresented) "
+                            + "shell-untouched=\(shellInputUntouched) "
                             + "commands=\(tmuxConnectionCommandHistory.count) "
                             + "screen=\(screen)\n"
                     )
@@ -155,7 +161,8 @@ import Foundation
             }
             writeSessionSmokeResult(
                 resultPath,
-                result: "ok tmux-lease-busy rejected=yes waited=no descriptor=yes\n"
+                result: "ok tmux-lease-busy rejected=yes waited=no descriptor=yes "
+                    + "message=ui shell-input=untouched\n"
             )
         }
 
@@ -739,9 +746,15 @@ import Foundation
                 activePaneId
                 .flatMap { paneStore.runtimes[$0] as? RustTerminalPane }?
                 .controlScreenText() ?? ""
-            let errorVisible = terminalText.contains("can't find session")
+            let errorPresented = tmuxSessionErrorHistory.contains {
+                $0.contains("can't find session")
+            }
+            let shellInputUntouched =
+                tmuxConnectionCommandHistory.isEmpty
+                && !terminalText.contains("Satin tmux reattach skipped")
+                && !terminalText.contains("command not found")
             let attachmentCleared = currentSessionState()?.tmuxAttachment == nil
-            guard tmuxSession == nil, errorVisible, attachmentCleared else {
+            guard tmuxSession == nil, errorPresented, attachmentCleared, shellInputUntouched else {
                 if retries > 0 {
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
                         self?.waitForMissingTmuxReattach(resultPath, retries: retries - 1)
@@ -749,15 +762,17 @@ import Foundation
                 } else {
                     writeSessionSmokeResult(
                         resultPath,
-                        result: "failed tmux-reattach-missing error-visible="
-                            + "\(errorVisible ? "yes" : "no")\n"
+                        result: "failed tmux-reattach-missing error-presented="
+                            + "\(errorPresented ? "yes" : "no") "
+                            + "shell-untouched=\(shellInputUntouched ? "yes" : "no")\n"
                     )
                 }
                 return
             }
             writeSessionSmokeResult(
                 resultPath,
-                result: "ok tmux-reattach-missing error-visible=yes shell-restored=yes\n"
+                result: "ok tmux-reattach-missing error-presented=yes "
+                    + "shell-input=untouched shell-restored=yes\n"
             )
         }
 

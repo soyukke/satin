@@ -905,6 +905,9 @@ extension TerminalShellViewController {
     }
 
     func presentTmuxSessionError(_ message: String) {
+        #if SATIN_SMOKE_SCENARIOS
+            tmuxSessionErrorHistory.append(message)
+        #endif
         let alert = NSAlert()
         alert.alertStyle = .warning
         alert.messageText = "tmux Session"
