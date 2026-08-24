@@ -547,8 +547,11 @@ import Foundation
             }
             pane.write(Data([21]))
             let setup =
-                "function _satin_repeat_delay { command sleep 0.06; }; "
-                + "precmd_functions=(_satin_repeat_delay _satin_prepare_prompt); "
+                "_satin_repeat_prompt() { command sleep 0.06; "
+                + "printf '\\033]133;A\\007'; }; "
+                + "if [ -n \"${ZSH_VERSION:-}\" ]; then "
+                + "precmd_functions=(_satin_repeat_prompt); "
+                + "else PROMPT_COMMAND=_satin_repeat_prompt; fi; "
                 + "PS1=$'LOCAL_REPEAT> \\e]133;B\\a'\r"
             pane.write(Data(setup.utf8))
             waitForTerminalReturnRepeatPrompt(
@@ -753,7 +756,10 @@ import Foundation
             }
             if semanticPromptExpected {
                 pane.write(Data([21]))
-                pane.write(Data("precmd_functions=(); PS1='LOCAL_FALLBACK> '\r".utf8))
+                let fallbackSetup =
+                    "precmd_functions=(); unset PROMPT_COMMAND; "
+                    + "PS1='LOCAL_FALLBACK> '\r"
+                pane.write(Data(fallbackSetup.utf8))
                 waitForTerminalReturnRepeatPrompt(
                     resultPath,
                     pane: pane,
