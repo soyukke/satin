@@ -746,6 +746,14 @@ extension TerminalShellViewController {
                 clear: clear,
                 preedit: terminalTextView.rendererMarkedText(for: entry.key)
             )
+            #if SATIN_SMOKE_SCENARIOS
+                if ok, entry.key == activePaneId, let pane = pane as? RustTmuxPane {
+                    smokeState.tmuxReattachRenderedPeakScrollPosition = max(
+                        smokeState.tmuxReattachRenderedPeakScrollPosition,
+                        abs(pane.rendererScrollPosition())
+                    )
+                }
+            #endif
             rendered = rendered || ok
         }
         return rendered

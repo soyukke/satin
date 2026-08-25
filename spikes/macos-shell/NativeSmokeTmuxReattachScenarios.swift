@@ -441,8 +441,13 @@ import Foundation
         ) {
             let frames = metalView.skiaFrames()
             let position = abs(pane.rendererScrollPosition())
+            let renderedPeak = max(
+                position,
+                smokeState.tmuxReattachRenderedPeakScrollPosition
+            )
             let scrolled = pane.controlScreenText() != previousScreen
-            guard scrolled, frames > initialFrames, position > maxTerminalBottomInputSmokePosition
+            guard scrolled, frames > initialFrames,
+                renderedPeak > minTerminalScrollAnimationSmokePosition
             else {
                 if retries > 0 {
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.01) {
@@ -465,9 +470,19 @@ import Foundation
                     writeSessionSmokeResult(
                         resultPath,
                         result: "failed tmux-reattach nvim-scroll-start=no "
-                            + "frames=\(frames - initialFrames) position=\(position)\n"
+                            + "frames=\(frames - initialFrames) position=\(position) "
+                            + "rendered-peak=\(renderedPeak)\n"
                     )
                 }
+                return
+            }
+            if position <= maxTerminalBottomInputSmokePosition {
+                continueAfterTmuxReattachScroll(
+                    resultPath,
+                    attachment: attachment,
+                    pane: pane,
+                    remainingScrolls: remainingScrolls
+                )
                 return
             }
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.01) { [weak self, weak pane] in
@@ -528,6 +543,20 @@ import Foundation
                 )
                 return
             }
+            continueAfterTmuxReattachScroll(
+                resultPath,
+                attachment: attachment,
+                pane: pane,
+                remainingScrolls: remainingScrolls
+            )
+        }
+
+        func continueAfterTmuxReattachScroll(
+            _ resultPath: String,
+            attachment: NativeTmuxAttachment,
+            pane: RustTmuxPane,
+            remainingScrolls: Int
+        ) {
             if remainingScrolls > 0 {
                 waitForTmuxReattachScrollIdle(
                     resultPath,
@@ -612,6 +641,7 @@ import Foundation
             else {
                 return false
             }
+            smokeState.tmuxReattachRenderedPeakScrollPosition = 0
             // NSTextInputContext is nondeterministic for synthetic key events. Route the
             // smoke key through the same active-pane callback used by keyDown, and require
             // the tmux runtime to confirm that it accepted the press.

@@ -52,6 +52,7 @@ let defaultTerminalFontSize = CGFloat(nativeDefaultFontSize)
 let minTerminalFontSize = CGFloat(nativeMinimumFontSize)
 let maxTerminalFontSize = CGFloat(nativeMaximumFontSize)
 let maxOutputScrollAnimationRows = 12
+let minTerminalScrollAnimationSmokePosition = 0.01
 let maxTerminalBottomInputSmokePosition = 0.1
 let maxNvimCursorMoveSmokeGrowth = 0.001
 let nvimStartupCommandDelay: TimeInterval = 0.4
@@ -321,6 +322,8 @@ func configuredTerminalFont(family: String, size: CGFloat) -> NSFont {
 final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
     TerminalContextMenuProvider, NSToolbarDelegate
 {
+    private static let toolbarItemSpacing: CGFloat = 8
+
     let core: RustCore
     var settings: NativeSettings
     let tabControl = NativeTabControl(frame: .zero)
@@ -567,7 +570,40 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
 
     override func viewDidLayout() {
         super.viewDidLayout()
+        updateTabStripToolbarWidth()
         startPaneRuntimeIfReady()
+    }
+
+    func updateTabStripToolbarWidth() {
+        tabStripView.windowWidthDidChange()
+        guard view.window != nil,
+            tabStripView.superview != nil,
+            artifactButton.superview != nil
+        else {
+            return
+        }
+        let tabLeadingEdge = tabStripView.convert(tabStripView.bounds, to: nil).minX
+        let actionsLeadingEdge = artifactButton.convert(artifactButton.bounds, to: nil).minX
+        let sessionFrame = sessionControlButton.convert(sessionControlButton.bounds, to: nil)
+        let windowContentFrame = view.convert(view.bounds, to: nil)
+        // Live resize briefly mixes the new content width with old toolbar frames.
+        // Retain the last complete measurement until every trailing action is back in place.
+        guard sessionFrame.maxX <= windowContentFrame.maxX + 0.5,
+            sessionFrame.maxX >= windowContentFrame.maxX - 32
+        else {
+            return
+        }
+        let availableWidth = actionsLeadingEdge - tabLeadingEdge - Self.toolbarItemSpacing
+        guard availableWidth > 0 else {
+            return
+        }
+        tabStripView.updateToolbarExcludedWidth(view.bounds.width - availableWidth)
+        tabStripView.windowWidthDidChange()
+    }
+
+    override func viewDidAppear() {
+        super.viewDidAppear()
+        updateTabStripToolbarWidth()
     }
 
     private func startPaneRuntimeIfReady() {
