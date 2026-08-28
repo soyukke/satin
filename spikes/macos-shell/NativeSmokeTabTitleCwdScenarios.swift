@@ -45,10 +45,56 @@ import Foundation
 
             core.renameTab(tab.index, title: tabTitleCwdSmokeManualTitle)
             syncFromCore()
+            pane.write(Data("builtin cd -- \(shellQuote(expectedCwd))\r".utf8))
+            waitForTabTitleCwdSmokeCwd(
+                resultPath: resultPath,
+                expectedCwd: expectedCwd,
+                originalTabId: tab.id,
+                originalPaneId: tab.active_pane,
+                retries: 80
+            )
+        }
+
+        private func waitForTabTitleCwdSmokeCwd(
+            resultPath: String,
+            expectedCwd: String,
+            originalTabId: Int,
+            originalPaneId: Int,
+            retries: Int
+        ) {
+            drainTerminalPanes()
+            let cwd = (paneStore.runtimes[originalPaneId] as? RustTerminalPane)?
+                .currentWorkingDirectory()
+            guard let pane = paneStore.runtimes[originalPaneId] as? RustTerminalPane,
+                cwd == expectedCwd,
+                paneStore.workingDirectories[originalPaneId] == expectedCwd,
+                lastSnapshot?.tabs.first(where: { $0.id == originalTabId })?.title
+                    == tabTitleCwdSmokeManualTitle
+            else {
+                if retries > 0 {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
+                        self?.waitForTabTitleCwdSmokeCwd(
+                            resultPath: resultPath,
+                            expectedCwd: expectedCwd,
+                            originalTabId: originalTabId,
+                            originalPaneId: originalPaneId,
+                            retries: retries - 1
+                        )
+                    }
+                } else {
+                    writeTabTitleCwdSmokeFailure(
+                        resultPath,
+                        phase: "cwd",
+                        detail: "expected=\(expectedCwd) actual=\(cwd ?? "nil") "
+                            + "stored=\(paneStore.workingDirectories[originalPaneId] ?? "nil")"
+                    )
+                }
+                return
+            }
+
             let activityReleasePath = tabTitleCwdSmokeReleasePath(expectedCwd)
             let command =
-                "builtin cd -- \(shellQuote(expectedCwd)); "
-                + "printf '\\033]0;\(tabTitleCwdSmokeRunningTitle)\\007'; "
+                "printf '\\033]0;\(tabTitleCwdSmokeRunningTitle)\\007'; "
                 + "while [ ! -e \(shellQuote(activityReleasePath)) ]; do "
                 + "command sleep 0.05; done; "
                 + "printf '\\033]0;\(tabTitleCwdSmokeIdleTitle)\\007'"
@@ -56,8 +102,8 @@ import Foundation
             waitForTabTitleCwdSmokeRunning(
                 resultPath: resultPath,
                 expectedCwd: expectedCwd,
-                originalTabId: tab.id,
-                originalPaneId: tab.active_pane,
+                originalTabId: originalTabId,
+                originalPaneId: originalPaneId,
                 retries: 80
             )
         }
