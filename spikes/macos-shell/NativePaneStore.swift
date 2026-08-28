@@ -3,7 +3,6 @@ import Foundation
 
 final class NativePaneStore {
     let agentTitleTracker = NativeAgentTitleTracker()
-    let tabTitles = NativeTabTitleCoordinator()
     var runtimes: [Int: NativePane] = [:]
     var scrollRemainders: [Int: CGFloat] = [:]
     var workingDirectories: [Int: String] = [:]

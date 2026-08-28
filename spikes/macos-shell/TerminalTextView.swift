@@ -16,6 +16,8 @@ final class TerminalTextView: NSView, NSTextInputClient {
     var onScroll: ((CGFloat) -> Void)?
     var onPaneSelected: ((Int) -> Void)?
     var onPaneChromeAction: ((NativePaneChromeAction, Int, NSView) -> Void)?
+    var onPaneDropChangesLayout: ((Int, Int, NativePaneDropPosition) -> Bool)?
+    var onPaneMoveRequested: ((Int, Int, NativePaneDropPosition) -> Bool)?
     var onSplitResize: ((Int, Int, NativePaneDividerAxis, CGFloat, Int) -> Void)?
     var onSelectionClearRequested: ((Int) -> Void)?
     var onFocusChanged: ((Bool) -> Void)?
@@ -32,6 +34,7 @@ final class TerminalTextView: NSView, NSTextInputClient {
 
     deinit {
         selectionAutoscrollTimer?.invalidate()
+        paneDragInteraction.invalidate()
     }
 
     var rendererModelSnapshot: NeovideRendererModelSnapshot?
@@ -42,6 +45,7 @@ final class TerminalTextView: NSView, NSTextInputClient {
     var paneBounds: [Int: NSRect] = [:]
     var paneDividers: [NativePaneDivider] = []
     var paneChromeViews: [Int: NativePaneChromeView] = [:]
+    let paneDragInteraction = NativePaneDragInteraction()
     var activeDividerDrag: NativePaneDivider?
     var activeDividerCommandRatio: CGFloat?
     // One view-wide font is the geometry source for runtime resize, rendering,
@@ -64,6 +68,7 @@ final class TerminalTextView: NSView, NSTextInputClient {
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
+        paneDragInteraction.view = self
         configure()
     }
 
@@ -88,6 +93,7 @@ final class TerminalTextView: NSView, NSTextInputClient {
         drawPaneChromeBackgrounds()
         drawPaneBorders()
         drawSplitDividerFeedback()
+        paneDragInteraction.draw()
         drawScrollbar()
     }
 
@@ -138,7 +144,8 @@ final class TerminalTextView: NSView, NSTextInputClient {
 
     override func accessibilityHelp() -> String? {
         "Interactive terminal. Each pane header contains close and split actions. "
-            + "Recent artifacts open from the window toolbar. Drag split borders to resize panes, "
+            + "Drag a pane header to move it and drag split borders to resize panes. "
+            + "Recent artifacts open from the window toolbar. "
             + "Command-click links, use "
             + "Control-Command-H/J/K/L to move between panes, and Command-F to search scrollback."
     }
@@ -429,6 +436,16 @@ final class TerminalTextView: NSView, NSTextInputClient {
             }
     }
 
+    #if SATIN_SMOKE_SCENARIOS
+        func paneDragHandlesReadyForSmoke() -> Bool {
+            let paneIds = paneBounds.keys.filter { $0 != nativeArtifactSidebarPaneId }
+            return paneIds.count > 1
+                && paneIds.allSatisfy {
+                    paneChromeViews[$0]?.dragHandleReadyForSmoke() == true
+                }
+        }
+    #endif
+
     func setActivePaneId(_ paneId: Int?) {
         if activePaneId != paneId {
             wheelMouseRemainder = 0
@@ -609,6 +626,7 @@ final class TerminalTextView: NSView, NSTextInputClient {
 
     private func updatePaneChromeViews() {
         let visiblePaneIds = Set(paneBounds.keys)
+        let movablePaneCount = paneBounds.keys.count { $0 != nativeArtifactSidebarPaneId }
         let stalePaneIds = paneChromeViews.keys.filter { !visiblePaneIds.contains($0) }
         for paneId in stalePaneIds {
             paneChromeViews[paneId]?.removeFromSuperview()
@@ -626,21 +644,36 @@ final class TerminalTextView: NSView, NSTextInputClient {
                 chrome.onAction = { [weak self] action, paneId, sourceView in
                     self?.onPaneChromeAction?(action, paneId, sourceView)
                 }
+                chrome.onPress = { [weak self] paneId in
+                    self?.handlePaneChromePress(paneId: paneId)
+                }
+                chrome.onDrag = { [weak self] phase, paneId, location in
+                    self?.handlePaneChromeDrag(
+                        phase: phase,
+                        paneId: paneId,
+                        locationInWindow: location
+                    ) ?? false
+                }
+                chrome.onContextMenu = { [weak self] event, sourceView in
+                    self?.onContextMenuRequested?(nil, event, sourceView)
+                }
                 paneChromeViews[paneId] = chrome
                 addSubview(chrome)
             }
             let availableWidth = max(1, paneRect.width - 8)
-            let width = min(chrome.preferredWidth, availableWidth)
             let headerHeight = min(nativePaneChromeHeight, paneRect.height)
             let height = min(NativePaneChromeView.controlHeight, headerHeight)
             chrome.frame = NSRect(
-                x: paneRect.maxX - width - 4,
+                x: paneRect.minX + 4,
                 y: paneRect.minY + floor((headerHeight - height) / 2),
-                width: width,
+                width: availableWidth,
                 height: height
             )
             chrome.isHidden = paneRect.width < 40 || paneRect.height < 12
             chrome.update(isActive: paneId == activePaneId)
+            chrome.update(
+                isDraggable: paneId != nativeArtifactSidebarPaneId && movablePaneCount > 1
+            )
         }
     }
 

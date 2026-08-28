@@ -104,7 +104,8 @@ status unchanged. `running` panes remain in their own section. Local panes read
 Codex and Claude Code lifecycle titles directly; projected tmux panes receive
 the same events through tmux's subscribed `pane_title` field. Retained screen
 text is used only for bounded preview excerpts, never to classify lifecycle
-state.
+state. These titles update pane status and the tab's independent running
+indicator only; they never rename a local tab or a tmux window.
 
 `satin status event claude` is the bounded stdin adapter used by Satin's bundled
 Claude Code hooks. It accepts one official hook-event JSON object, maps only

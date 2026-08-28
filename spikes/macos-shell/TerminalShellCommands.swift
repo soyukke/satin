@@ -7,14 +7,21 @@ enum NativeTabMoveFailure: Error {
     case tmuxCommandFailed
 }
 
+let nativeTmuxCurrentPaneDirectoryArgument = "'#{pane_current_path}'"
+
 func nativeTmuxSplitCommand(horizontal: Bool, targetPaneId: UInt32) -> String {
     let flag = horizontal ? "-h" : "-v"
-    return "split-window \(flag) -c '#{pane_current_path}' -t %\(targetPaneId)"
+    return "split-window \(flag) -c \(nativeTmuxCurrentPaneDirectoryArgument) -t %\(targetPaneId)"
 }
 
-func runNativeTmuxSplitCommandSelfTests() -> Bool {
-    nativeTmuxSplitCommand(horizontal: true, targetPaneId: 7)
-        == "split-window -h -c '#{pane_current_path}' -t %7"
+func nativeTmuxNewWindowCommand() -> String {
+    "new-window -c \(nativeTmuxCurrentPaneDirectoryArgument)"
+}
+
+func runNativeTmuxCreationCommandSelfTests() -> Bool {
+    nativeTmuxNewWindowCommand() == "new-window -c '#{pane_current_path}'"
+        && nativeTmuxSplitCommand(horizontal: true, targetPaneId: 7)
+            == "split-window -h -c '#{pane_current_path}' -t %7"
         && nativeTmuxSplitCommand(horizontal: false, targetPaneId: 42)
             == "split-window -v -c '#{pane_current_path}' -t %42"
 }
@@ -92,14 +99,18 @@ extension TerminalShellViewController {
 
     @objc func newTab(_ sender: Any?) {
         if let session = tmuxSession {
-            guard session.gateway.tmuxCommand("new-window") else {
+            guard session.gateway.tmuxCommand(nativeTmuxNewWindowCommand()) else {
                 presentTmuxSessionError("Satin could not create a tmux window.")
                 return
             }
             focusTerminal()
             return
         }
-        pendingPaneWorkingDirectory = newPaneWorkingDirectory()
+        guard let cwd = inheritedPaneWorkingDirectory() else {
+            presentPaneWorkingDirectoryError(title: "Could Not Open New Tab")
+            return
+        }
+        pendingPaneWorkingDirectory = cwd
         core.newTab()
         syncFromCore()
         focusTerminal()
@@ -180,6 +191,21 @@ extension TerminalShellViewController {
         }
     }
 
+    func presentPaneWorkingDirectoryError(title: String) {
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = title
+        alert.informativeText =
+            "The selected pane's working directory is unavailable. "
+            + "Return the shell to an existing directory and try again."
+        alert.addButton(withTitle: "OK")
+        if let window = view.window {
+            alert.beginSheetModal(for: window)
+        } else {
+            alert.runModal()
+        }
+    }
+
     @objc func closeActivePane(_ sender: Any?) {
         closePane(activePaneId)
     }
@@ -204,14 +230,41 @@ extension TerminalShellViewController {
         guard let paneId else {
             return
         }
+        if let session = tmuxSession {
+            guard let tmuxPaneId = session.tmuxPaneIds[paneId] else {
+                presentTmuxSessionError("Satin could not resolve the tmux pane to split.")
+                return
+            }
+            guard
+                session.gateway.tmuxCommand(
+                    nativeTmuxSplitCommand(
+                        horizontal: axis == ffiSplitVertical,
+                        targetPaneId: tmuxPaneId
+                    ))
+            else {
+                presentTmuxSessionError("Satin could not split the tmux pane.")
+                return
+            }
+            return
+        }
+        guard let cwd = inheritedPaneWorkingDirectory(paneId: paneId) else {
+            presentPaneWorkingDirectoryError(title: "Could Not Split Pane")
+            return
+        }
+        let previousPaneId = activePaneId
         guard selectPaneForChromeAction(paneId) else {
             return
         }
-        if routeTmuxSplit(horizontal: axis == ffiSplitVertical) {
+        pendingPaneWorkingDirectory = cwd
+        guard core.splitActive(axis: axis) != nil else {
+            pendingPaneWorkingDirectory = nil
+            if let previousPaneId {
+                _ = core.selectPane(previousPaneId)
+            }
+            syncFromCore()
+            NativeLog.runtimeError("pane_split_failed pane=\(paneId)")
             return
         }
-        pendingPaneWorkingDirectory = newPaneWorkingDirectory()
-        _ = core.splitActive(axis: axis)
         syncFromCore()
     }
 
@@ -283,18 +336,6 @@ extension TerminalShellViewController {
         selectPane(paneId)
     }
 
-    func routeTmuxSplit(horizontal: Bool) -> Bool {
-        guard let session = tmuxSession,
-            let paneId = activePaneId,
-            let tmuxPaneId = session.tmuxPaneIds[paneId]
-        else {
-            return false
-        }
-        return session.gateway.tmuxCommand(
-            nativeTmuxSplitCommand(horizontal: horizontal, targetPaneId: tmuxPaneId)
-        )
-    }
-
     @objc func toggleOptionAsAlt(_ sender: Any?) {
         optionAsAltEnabled.toggle()
         UserDefaults.standard.set(optionAsAltEnabled, forKey: NativePreferenceKey.optionAsAlt)
@@ -339,8 +380,7 @@ extension TerminalShellViewController {
                 NativeSessionTab(
                     title: tab.title,
                     theme: tab.theme,
-                    layout: layout,
-                    titleIsManual: paneStore.tabTitles.isManual(tabId: tab.id)
+                    layout: layout
                 )
             }
         }
@@ -467,7 +507,6 @@ extension TerminalShellViewController {
             )
             return
         }
-        paneStore.tabTitles.markManual(tabId: tab.id)
         core.renameTab(tab.index, title: title)
         syncFromCore()
     }
@@ -555,7 +594,6 @@ extension TerminalShellViewController {
             }
             discardPaneState(paneId)
         }
-        paneStore.tabTitles.remove(tabId: tab.id)
         guard let updated = core.snapshot(), !updated.tabs.isEmpty else {
             NSApp.terminate(nil)
             return true

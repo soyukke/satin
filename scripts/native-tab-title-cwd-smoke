@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+app="${SATIN_NATIVE_EXECUTABLE:-spikes/macos-shell/.build/SatinApplication}"
+smoke_root="$(mktemp -d "${TMPDIR:-/tmp}/satin-tab-title-cwd.XXXXXX")"
+expected_cwd="$smoke_root/inherited cwd"
+result_file="$smoke_root/result"
+log_file="$smoke_root/app.log"
+
+cleanup() {
+  case "$smoke_root" in
+    "${TMPDIR:-/tmp}"/satin-tab-title-cwd.*) rm -rf -- "$smoke_root" ;;
+    *) echo "refusing unexpected smoke cleanup path: $smoke_root" >&2 ;;
+  esac
+}
+trap cleanup EXIT INT TERM
+
+mkdir -p -- "$expected_cwd"
+SATIN_NATIVE_SMOKE_SCENARIO=tab-title-cwd \
+  SATIN_NATIVE_SMOKE_RESULT="$result_file" \
+  SATIN_NATIVE_SMOKE_EXPECTED_CWD="$expected_cwd" \
+  "$app" >"$log_file" 2>&1
+
+if [[ ! -s "$result_file" ]]; then
+  echo "tab title and working directory smoke failed before result was written" >&2
+  sed -n '1,200p' "$log_file" >&2 || true
+  exit 1
+fi
+
+result="$(cat "$result_file")"
+printf '%s\n' "$result"
+[[ "$result" == ok\ tab-title-cwd* ]]

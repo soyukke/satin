@@ -53,6 +53,9 @@ extension TerminalShellViewController {
     }
 
     func paneStatusDidChange(paneId: Int, status: NativePaneControlStatus?) {
+        if let snapshot = lastSnapshot {
+            syncTabActivityIndicators(snapshot)
+        }
         if let status {
             workAttentionStore.observe(
                 paneId: paneId,

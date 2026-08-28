@@ -27,6 +27,14 @@ func satinCoreResizeSplit(
 @_silgen_name("satin_core_close_pane")
 func satinCoreClosePane(_ handle: UnsafeMutableRawPointer?, _ paneId: Int) -> UInt8
 
+@_silgen_name("satin_core_move_pane")
+func satinCoreMovePane(
+    _ handle: UnsafeMutableRawPointer?,
+    _ sourcePaneId: Int,
+    _ targetPaneId: Int,
+    _ position: UInt32
+) -> UInt8
+
 @_silgen_name("satin_core_select_tab")
 func satinCoreSelectTab(_ handle: UnsafeMutableRawPointer?, _ index: Int) -> UInt8
 

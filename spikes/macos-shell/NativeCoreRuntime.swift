@@ -50,6 +50,14 @@ final class RustCore {
         satinCoreClosePane(handle, paneId) != 0
     }
 
+    func movePane(
+        _ sourcePaneId: Int,
+        relativeTo targetPaneId: Int,
+        position: NativePaneDropPosition
+    ) -> Bool {
+        satinCoreMovePane(handle, sourcePaneId, targetPaneId, position.rawValue) != 0
+    }
+
     func selectTab(_ index: Int) -> Bool {
         satinCoreSelectTab(handle, index) != 0
     }

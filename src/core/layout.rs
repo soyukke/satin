@@ -23,6 +23,15 @@ pub enum PaneDirection {
     Down,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PaneDropPosition {
+    Center,
+    Left,
+    Right,
+    Top,
+    Bottom,
+}
+
 #[derive(Clone, Debug, Serialize, PartialEq)]
 pub struct PaneLayoutSnapshot {
     pub kind: &'static str,
@@ -140,6 +149,45 @@ impl PaneLayout {
         }
     }
 
+    pub(crate) fn move_leaf(
+        &mut self,
+        source: PaneId,
+        target: PaneId,
+        position: PaneDropPosition,
+    ) -> bool {
+        if source == target || !self.contains_leaf(source) || !self.contains_leaf(target) {
+            return false;
+        }
+        if position == PaneDropPosition::Center {
+            self.swap_leaves(source, target);
+            return true;
+        }
+        let (axis, before) = match position {
+            PaneDropPosition::Left => (SplitAxis::Vertical, true),
+            PaneDropPosition::Right => (SplitAxis::Vertical, false),
+            PaneDropPosition::Top => (SplitAxis::Horizontal, true),
+            PaneDropPosition::Bottom => (SplitAxis::Horizontal, false),
+            PaneDropPosition::Center => unreachable!("center drop returned above"),
+        };
+        if let Some((sibling_axis, source_is_first)) = self.direct_sibling_relation(source, target)
+            && sibling_axis == axis
+        {
+            if source_is_first != before {
+                self.swap_leaves(source, target);
+            }
+            return true;
+        }
+
+        let Some(mut next) = self.clone().without_leaf(source) else {
+            return false;
+        };
+        if !next.insert_leaf_relative(target, source, axis, before) {
+            return false;
+        }
+        *self = next;
+        true
+    }
+
     pub(crate) fn from_input(input: PaneLayoutInput) -> Result<Self> {
         match input.kind.as_str() {
             "leaf" => {
@@ -231,6 +279,77 @@ impl PaneLayout {
             Self::Split { first, second, .. } => {
                 first.contains_leaf(target) || second.contains_leaf(target)
             }
+        }
+    }
+
+    fn swap_leaves(&mut self, first_id: PaneId, second_id: PaneId) {
+        match self {
+            Self::Leaf(id) if *id == first_id => *id = second_id,
+            Self::Leaf(id) if *id == second_id => *id = first_id,
+            Self::Leaf(_) => {}
+            Self::Split { first, second, .. } => {
+                first.swap_leaves(first_id, second_id);
+                second.swap_leaves(first_id, second_id);
+            }
+        }
+    }
+
+    fn insert_leaf_relative(
+        &mut self,
+        target: PaneId,
+        inserted: PaneId,
+        axis: SplitAxis,
+        before: bool,
+    ) -> bool {
+        match self {
+            Self::Leaf(id) if *id == target => {
+                let target_leaf = Self::Leaf(*id);
+                let inserted_leaf = Self::Leaf(inserted);
+                let (first, second) = if before {
+                    (inserted_leaf, target_leaf)
+                } else {
+                    (target_leaf, inserted_leaf)
+                };
+                *self = Self::Split {
+                    axis,
+                    ratio: 0.5,
+                    first: Box::new(first),
+                    second: Box::new(second),
+                };
+                true
+            }
+            Self::Leaf(_) => false,
+            Self::Split { first, second, .. } => {
+                first.insert_leaf_relative(target, inserted, axis, before)
+                    || second.insert_leaf_relative(target, inserted, axis, before)
+            }
+        }
+    }
+
+    fn direct_sibling_relation(&self, source: PaneId, target: PaneId) -> Option<(SplitAxis, bool)> {
+        let Self::Split {
+            axis,
+            first,
+            second,
+            ..
+        } = self
+        else {
+            return None;
+        };
+        match (first.as_ref(), second.as_ref()) {
+            (Self::Leaf(first_id), Self::Leaf(second_id))
+                if *first_id == source && *second_id == target =>
+            {
+                Some((*axis, true))
+            }
+            (Self::Leaf(first_id), Self::Leaf(second_id))
+                if *first_id == target && *second_id == source =>
+            {
+                Some((*axis, false))
+            }
+            _ => first
+                .direct_sibling_relation(source, target)
+                .or_else(|| second.direct_sibling_relation(source, target)),
         }
     }
 }

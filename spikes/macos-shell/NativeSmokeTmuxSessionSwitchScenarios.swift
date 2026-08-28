@@ -292,6 +292,17 @@ import Foundation
                 return
             }
             let initialTabCount = lastSnapshot?.tabs.count ?? 0
+            guard let activePaneId,
+                let activeTmuxPaneId = tmuxSession?.tmuxPaneIds[activePaneId],
+                let expectedCwd = tmuxSession?.latestPanes[activeTmuxPaneId]?.current_path
+            else {
+                writeTmuxSessionSwitchFailure(
+                    resultPath,
+                    phase: "command-t-cwd",
+                    detail: "source=missing"
+                )
+                return
+            }
             guard let action = menuItem.action,
                 NSApp.sendAction(action, to: menuItem.target, from: menuItem)
             else {
@@ -308,6 +319,7 @@ import Foundation
                 first: first,
                 second: second,
                 initialTabCount: initialTabCount,
+                expectedCwd: expectedCwd,
                 retries: 40
             )
         }
@@ -318,11 +330,16 @@ import Foundation
             first: NativeTmuxSessionDescriptor,
             second: NativeTmuxSessionDescriptor,
             initialTabCount: Int,
+            expectedCwd: String,
             retries: Int
         ) {
             drainTerminalPanes()
             guard lastSnapshot?.tabs.count == initialTabCount + 1,
-                let newPane = activePaneId.flatMap({ paneStore.runtimes[$0] as? RustTmuxPane })
+                let newPaneId = activePaneId,
+                let newPane = paneStore.runtimes[newPaneId] as? RustTmuxPane,
+                let newTmuxPaneId = tmuxSession?.tmuxPaneIds[newPaneId],
+                tmuxSession?.latestPanes[newTmuxPaneId]?.current_path == expectedCwd,
+                paneStore.workingDirectories[newPaneId] == expectedCwd
             else {
                 if retries > 0 {
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
@@ -336,6 +353,7 @@ import Foundation
                             first: first,
                             second: second,
                             initialTabCount: initialTabCount,
+                            expectedCwd: expectedCwd,
                             retries: retries - 1
                         )
                     }
@@ -343,7 +361,7 @@ import Foundation
                     writeTmuxSessionSwitchFailure(
                         resultPath,
                         phase: "command-t-tab",
-                        detail: "tabs=\(lastSnapshot?.tabs.count ?? -1)"
+                        detail: "tabs=\(lastSnapshot?.tabs.count ?? -1) cwd=not-inherited"
                     )
                 }
                 return
@@ -723,7 +741,8 @@ import Foundation
             writeSessionSmokeResult(
                 resultPath,
                 result: "ok tmux-session-switch picker=actual-popover lists=local+tmux "
-                    + "attach-command=deduplicated command-t=yes toolbar=trailing "
+                    + "attach-command=deduplicated command-t=yes command-t-cwd=inherited "
+                    + "toolbar=trailing "
                     + "reattach-race=cancelled wheel-scrollback=yes switch-client=yes "
                     + "detach-reattach=yes shell-command-count=2 detach=yes\n"
             )
