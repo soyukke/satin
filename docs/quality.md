@@ -75,6 +75,8 @@ Command-T window in the source pane's cwd; it also exercises `swap-pane` and
 `join-pane` through the same pane-header gesture callback. The macOS CI smoke
 suite runs these same focused input and toolbar checks plus the full tmux
 boundary rather than only its zoom/resize subset.
+The title/CWD smoke pins `/bin/zsh` so it exercises Satin's bundled, supported
+shell integration instead of inheriting a CI runner's account shell.
 
 Lint suppressions must be scoped to the smallest affected expression or rule
 site and include a reason. Repository-wide warning suppression is not allowed.

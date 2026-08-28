@@ -16,7 +16,8 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 mkdir -p -- "$expected_cwd"
-SATIN_NATIVE_SMOKE_SCENARIO=tab-title-cwd \
+SATIN_SHELL=/bin/zsh \
+  SATIN_NATIVE_SMOKE_SCENARIO=tab-title-cwd \
   SATIN_NATIVE_SMOKE_RESULT="$result_file" \
   SATIN_NATIVE_SMOKE_EXPECTED_CWD="$expected_cwd" \
   "$app" >"$log_file" 2>&1
