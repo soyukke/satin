@@ -454,22 +454,36 @@ extension TerminalShellViewController {
         return true
     }
 
-    func activeWorkingDirectory() -> String {
-        guard let paneId = activePaneId else {
-            return nativeWorkingDirectory()
+    func inheritedPaneWorkingDirectory(paneId requestedPaneId: Int? = nil) -> String? {
+        guard let paneId = requestedPaneId ?? activePaneId else {
+            return nil
         }
-        let cwd =
-            (paneStore.runtimes[paneId] as? RustTerminalPane)?.currentWorkingDirectory()
-            ?? paneStore.workingDirectories[paneId]
-            ?? nativeWorkingDirectory()
-        paneStore.workingDirectories[paneId] = cwd
-        return cwd
-    }
-
-    func newPaneWorkingDirectory() -> String {
-        settings.startupDirectory.isEmpty
-            ? activeWorkingDirectory()
-            : nativeWorkingDirectory()
+        let directory: String?
+        if let session = tmuxSession {
+            guard let tmuxPaneId = session.tmuxPaneIds[paneId] else {
+                NativeLog.runtimeError("pane_cwd_unavailable pane=\(paneId) reason=tmux_mapping")
+                return nil
+            }
+            directory = session.latestPanes[tmuxPaneId]?.current_path
+        } else if let terminal = paneStore.runtimes[paneId] as? RustTerminalPane {
+            directory = terminal.currentWorkingDirectory()
+        } else {
+            directory = paneStore.workingDirectories[paneId]
+        }
+        guard let directory, !directory.isEmpty else {
+            NativeLog.runtimeError("pane_cwd_unavailable pane=\(paneId) reason=missing")
+            return nil
+        }
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: directory, isDirectory: &isDirectory),
+            isDirectory.boolValue
+        else {
+            NativeLog.runtimeError("pane_cwd_unavailable pane=\(paneId) reason=not_directory")
+            return nil
+        }
+        let standardized = URL(fileURLWithPath: directory).standardizedFileURL.path
+        paneStore.workingDirectories[paneId] = standardized
+        return standardized
     }
 
 }

@@ -20,6 +20,14 @@ enum NativePaneDirection: UInt32 {
     case down = 3
 }
 
+enum NativePaneDropPosition: UInt32, CaseIterable {
+    case center = 0
+    case left = 1
+    case right = 2
+    case top = 3
+    case bottom = 4
+}
+
 final class NativeSuspendedTerminalSession {
     let pane: RustTerminalPane
     let completion: NativeControlReply?

@@ -2,6 +2,8 @@ import AppKit
 import Foundation
 
 #if SATIN_SMOKE_SCENARIOS
+    let tmuxSmokeStableTabTitle = "tmux manual smoke title"
+
     extension TerminalShellViewController {
         func applyTmuxNativeSmokeScenario(resultPath: String) {
             waitForTmuxSmokeLayout(resultPath, previousGrid: nil, retries: 10)
@@ -103,6 +105,9 @@ import Foundation
             let runningTitle = "⠹ Satin agent smoke"
             guard
                 tmuxSession?.gateway.tmuxCommand(
+                    "rename-window \(tmuxCommandArgument(tmuxSmokeStableTabTitle))"
+                ) == true,
+                tmuxSession?.gateway.tmuxCommand(
                     "select-pane -t %\(projectedPane.pane_id) "
                         + "-T \(tmuxCommandArgument(runningTitle))"
                 ) == true
@@ -120,127 +125,6 @@ import Foundation
                 runningTitle: runningTitle,
                 retries: 30
             )
-        }
-
-        func waitForTmuxSmokeAgentRunning(
-            _ resultPath: String,
-            pane: RustTmuxPane,
-            start: (x: Int, y: Int),
-            tmuxPaneId: UInt32,
-            runningTitle: String,
-            retries: Int
-        ) {
-            guard let nativePaneId = tmuxSession?.nativePaneIds[tmuxPaneId] else {
-                writeSessionSmokeResult(
-                    resultPath, result: "failed tmux-native agent-native-pane=no\n")
-                return
-            }
-            let title = paneStore.titles[nativePaneId]
-            let status = paneStatuses.status(for: nativePaneId)?.status
-            guard title == runningTitle, status == "running" else {
-                if retries > 0 {
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-                        [weak self, weak pane] in
-                        guard let pane else {
-                            return
-                        }
-                        self?.waitForTmuxSmokeAgentRunning(
-                            resultPath,
-                            pane: pane,
-                            start: start,
-                            tmuxPaneId: tmuxPaneId,
-                            runningTitle: runningTitle,
-                            retries: retries - 1
-                        )
-                    }
-                } else {
-                    tmuxSession?.gateway.tmuxCommand("kill-session")
-                    writeSessionSmokeResult(
-                        resultPath,
-                        result: "failed tmux-native agent-running title=\(title ?? "nil") "
-                            + "status=\(status ?? "nil")\n"
-                    )
-                }
-                return
-            }
-            let idleTitle = "Satin agent smoke"
-            guard
-                tmuxSession?.gateway.tmuxCommand(
-                    "select-pane -t %\(tmuxPaneId) -T \(tmuxCommandArgument(idleTitle))"
-                ) == true
-            else {
-                tmuxSession?.gateway.tmuxCommand("kill-session")
-                writeSessionSmokeResult(
-                    resultPath, result: "failed tmux-native agent-title-done-command=no\n")
-                return
-            }
-            waitForTmuxSmokeAgentDone(
-                resultPath,
-                pane: pane,
-                start: start,
-                tmuxPaneId: tmuxPaneId,
-                idleTitle: idleTitle,
-                retries: 30
-            )
-        }
-
-        func waitForTmuxSmokeAgentDone(
-            _ resultPath: String,
-            pane: RustTmuxPane,
-            start: (x: Int, y: Int),
-            tmuxPaneId: UInt32,
-            idleTitle: String,
-            retries: Int
-        ) {
-            guard let nativePaneId = tmuxSession?.nativePaneIds[tmuxPaneId] else {
-                writeSessionSmokeResult(
-                    resultPath, result: "failed tmux-native agent-native-pane-done=no\n")
-                return
-            }
-            let title = paneStore.titles[nativePaneId]
-            let status = paneStatuses.status(for: nativePaneId)?.status
-            let item = nativeWorkItems().first { $0.paneId == nativePaneId }
-            let notified =
-                workAttentionStore.isUnread(paneId: nativePaneId)
-                && item?.unread == true
-                && workSwitcherButton.badgeCountForSmoke() == 1
-            guard title == idleTitle, status == "done", notified else {
-                if retries > 0 {
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-                        [weak self, weak pane] in
-                        guard let pane else {
-                            return
-                        }
-                        self?.waitForTmuxSmokeAgentDone(
-                            resultPath,
-                            pane: pane,
-                            start: start,
-                            tmuxPaneId: tmuxPaneId,
-                            idleTitle: idleTitle,
-                            retries: retries - 1
-                        )
-                    }
-                } else {
-                    tmuxSession?.gateway.tmuxCommand("kill-session")
-                    writeSessionSmokeResult(
-                        resultPath,
-                        result: "failed tmux-native agent-done title=\(title ?? "nil") "
-                            + "status=\(status ?? "nil") unread=\(item?.unread == true) "
-                            + "badge=\(workSwitcherButton.badgeCountForSmoke())\n"
-                    )
-                }
-                return
-            }
-            markActiveWorkSeen()
-            guard !workAttentionStore.isUnread(paneId: nativePaneId),
-                workSwitcherButton.badgeCountForSmoke() == 0
-            else {
-                tmuxSession?.gateway.tmuxCommand("kill-session")
-                writeSessionSmokeResult(
-                    resultPath, result: "failed tmux-native agent-notification-ack=no\n")
-                return
-            }
-            continueTmuxSmokeAfterAgentStatus(resultPath, pane: pane, start: start)
         }
 
         func continueTmuxSmokeAfterAgentStatus(
@@ -736,7 +620,7 @@ import Foundation
                 }
                 return
             }
-            continueTmuxSmokeAfterDividerResize(resultPath)
+            beginTmuxSmokePaneDrag(resultPath)
         }
 
         func continueTmuxSmokeAfterDividerResize(_ resultPath: String) {
@@ -960,8 +844,9 @@ import Foundation
                 restored && attachmentCleared
                 ? "ok tmux-native indicator=yes output=yes history=yes paste=yes zoom=yes "
                     + "font-zoom=yes "
-                    + "agent-status=yes notification=yes "
-                    + "rename=yes split=2 divider-resize=yes client-grid=full "
+                    + "agent-status=yes agent-title=stable activity=separate notification=yes "
+                    + "rename=yes split=2 divider-resize=yes pane-dnd=noop+center+edge "
+                    + "no-change-highlight=none client-grid=full "
                     + "tabs=2 tab-close=x-redrawn cli=yes live-cursor=yes "
                     + "session-end=x-targeted "
                     + "ime=yes focus-input=yes return-repeat=yes kitty=yes "

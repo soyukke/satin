@@ -62,12 +62,21 @@ non-mutating. `just ci-static` and `just ci-rust` expose the two CI subsets that
 quality` is the local publication gate and adds worktree secret scanning,
 dependency auditing, native build, updater self-test, and native smoke.
 The native portion explicitly includes frame-liveness, repeated bottom-line
-terminal input, multi-tab toolbar placement, full tmux control-mode behavior,
-and the pane/grid matrix. The full tmux boundary drives the real session
-popover, verifies Local and tmux discovery, switches sessions, and creates a
-visible Command-T window. The macOS CI smoke suite runs these same focused
-input and toolbar checks plus the full tmux boundary rather than only its
-zoom/resize subset.
+terminal input, stable tab-title ownership, active-pane Command-T cwd
+inheritance, animated pane-header drag/drop, multi-tab toolbar placement, full
+tmux control-mode behavior, and the pane/grid matrix. The pane drag gate checks
+that unchanged sibling-side drops suppress their target highlight, then checks
+center swaps and edge reparenting without replacing local pane runtimes. The
+gate runs those checks through the same rebuilt `Satin Dev.app` executable used
+by `just terminal`, rather than only the unbundled native build. The full tmux
+boundary drives the real session popover,
+verifies Local and tmux discovery, switches sessions, and creates a visible
+Command-T window in the source pane's cwd; it also exercises `swap-pane` and
+`join-pane` through the same pane-header gesture callback. The macOS CI smoke
+suite runs these same focused input and toolbar checks plus the full tmux
+boundary rather than only its zoom/resize subset.
+The title/CWD smoke pins `/bin/zsh` so it exercises Satin's bundled, supported
+shell integration instead of inheriting a CI runner's account shell.
 
 Lint suppressions must be scoped to the smallest affected expression or rule
 site and include a reason. Repository-wide warning suppression is not allowed.

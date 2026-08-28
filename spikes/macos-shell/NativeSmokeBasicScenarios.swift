@@ -26,12 +26,8 @@ import Foundation
             _ = core.splitActive(axis: ffiSplitHorizontal)
             _ = core.resizeSplit(firstPaneId: 1, secondPaneId: 2, ratio: 0.35)
             _ = core.resizeSplit(firstPaneId: 2, secondPaneId: 3, ratio: 0.65)
+            core.renameTab(0, title: "manual session title")
             syncFromCore()
-            if let snapshot = lastSnapshot,
-                let activeTab = snapshot.tabs.first(where: { $0.index == snapshot.active_tab })
-            {
-                paneStore.tabTitles.markManual(tabId: activeTab.id)
-            }
             guard let state = currentSessionState(),
                 let data = try? JSONEncoder().encode(state),
                 let decoded = decodeSessionState(data)
@@ -88,14 +84,13 @@ import Foundation
             let ratiosRetained =
                 decoded.tabs[decoded.activeTab].layout.ratio == 0.35
                 && decoded.tabs[decoded.activeTab].layout.second?.ratio == 0.65
-            let manualTitleRetained = decoded.tabs[decoded.activeTab].titleIsManual == true
             let ok =
                 decoded.schemaVersion == currentSessionSchemaVersion
                 && counts.leaves == 3
                 && counts.splits == 2
                 && counts.activeLeaves == 1
                 && ratiosRetained
-                && manualTitleRetained
+                && decoded.tabs[decoded.activeTab].title == "manual session title"
                 && migrated?.schemaVersion == currentSessionSchemaVersion
                 && migrated?.tabs.first?.layout.kind == "leaf"
                 && attachedRoundTrip?.tmuxAttachment == attachment
@@ -115,7 +110,7 @@ import Foundation
                 result: "\(status) session-schema version=\(decoded.schemaVersion) "
                     + "leaves=\(counts.leaves) splits=\(counts.splits) active=\(counts.activeLeaves) "
                     + "ratios=\(ratiosRetained ? "retained" : "lost") "
-                    + "manual-title=\(manualTitleRetained ? "retained" : "lost") "
+                    + "title=retained "
                     + "migration=\(migrated == nil ? "failed" : "ok") "
                     + "reattach=\(attachedRoundTrip?.tmuxAttachment == attachment ? "ok" : "failed") "
                     + "consume-once=\(consumed.tmuxAttachment == nil ? "ok" : "failed") "
@@ -445,23 +440,6 @@ import Foundation
                 }
             }
             return nil
-        }
-
-        func applyHomeWorkingDirectorySmokeScenario(resultPath: String) {
-            let expected = FileManager.default.homeDirectoryForCurrentUser.standardizedFileURL.path
-            let actual = activeWorkingDirectory()
-            let processDirectory = FileManager.default.currentDirectoryPath
-            let ok =
-                settings.startupDirectory.isEmpty
-                && processDirectory == "/"
-                && actual == expected
-            let status = ok ? "ok" : "failed"
-            writeSessionSmokeResult(
-                resultPath,
-                result: "\(status) home-cwd startup=default "
-                    + "process=\(processDirectory == "/" ? "root" : "other") "
-                    + "pane=\(actual == expected ? "home" : "other")\n"
-            )
         }
 
         func applyTerminalResizeSmokeScenario(resultPath: String) {

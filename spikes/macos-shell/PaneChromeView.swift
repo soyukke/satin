@@ -209,16 +209,32 @@ final class NativeHoverIconButton: NSButton {
     }
 }
 
+enum NativePaneChromeDragPhase {
+    case began
+    case changed
+    case ended
+    case cancelled
+}
+
 final class NativePaneChromeView: NSView {
     static let buttonWidth: CGFloat = 22
     static let buttonSpacing: CGFloat = 1
     static let controlHeight: CGFloat = 22
+    static let dragThreshold: CGFloat = 4
     let paneId: Int
     var onAction: ((NativePaneChromeAction, Int, NSView) -> Void)?
+    var onPress: ((Int) -> Void)?
+    var onDrag: ((NativePaneChromeDragPhase, Int, NSPoint) -> Bool)?
+    var onContextMenu: ((NSEvent, NSView) -> Void)?
 
     private let actions: [NativePaneChromeAction]
     private var buttons: [NativePaneChromeAction: NativeHoverIconButton] = [:]
     private var active = true
+    private var draggable = false
+    private var hoverTrackingArea: NSTrackingArea?
+    private var hoveringHandle = false
+    private var mouseDownLocation: NSPoint?
+    private var dragging = false
 
     init(paneId: Int, actions: [NativePaneChromeAction] = NativePaneChromeAction.allCases) {
         self.paneId = paneId
@@ -239,14 +255,127 @@ final class NativePaneChromeView: NSView {
         super.layout()
         let count = CGFloat(actions.count)
         let spacingWidth = Self.buttonSpacing * max(0, count - 1)
-        let buttonWidth = max(1, (bounds.width - spacingWidth) / count)
+        let actionWidth = min(preferredWidth, bounds.width)
+        let buttonWidth = max(1, (actionWidth - spacingWidth) / count)
+        let actionOrigin = bounds.maxX - actionWidth
         for (index, action) in actions.enumerated() {
             buttons[action]?.frame = NSRect(
-                x: CGFloat(index) * (buttonWidth + Self.buttonSpacing),
+                x: actionOrigin + CGFloat(index) * (buttonWidth + Self.buttonSpacing),
                 y: 0,
                 width: buttonWidth,
                 height: bounds.height
             )
+        }
+        window?.invalidateCursorRects(for: self)
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        super.draw(dirtyRect)
+        guard draggable, dragHandleRect.width >= 18 else {
+            return
+        }
+        if hoveringHandle || dragging {
+            let color = dragging ? NSColor.controlAccentColor : NSColor.labelColor
+            color.withAlphaComponent(dragging ? 0.18 : 0.08).setFill()
+            NSBezierPath(
+                roundedRect: dragHandleRect.insetBy(dx: 1, dy: 1),
+                xRadius: 5,
+                yRadius: 5
+            ).fill()
+        }
+        drawGrip()
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let hoverTrackingArea {
+            removeTrackingArea(hoverTrackingArea)
+        }
+        let next = NSTrackingArea(
+            rect: bounds,
+            options: [.mouseEnteredAndExited, .mouseMoved, .activeInKeyWindow, .inVisibleRect],
+            owner: self,
+            userInfo: nil
+        )
+        addTrackingArea(next)
+        hoverTrackingArea = next
+    }
+
+    override func resetCursorRects() {
+        super.resetCursorRects()
+        if draggable, !dragHandleRect.isEmpty {
+            addCursorRect(dragHandleRect, cursor: dragging ? .closedHand : .openHand)
+        }
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        updateHandleHover(event)
+    }
+
+    override func mouseMoved(with event: NSEvent) {
+        updateHandleHover(event)
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        guard !dragging else {
+            return
+        }
+        hoveringHandle = false
+        needsDisplay = true
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        let point = convert(event.locationInWindow, from: nil)
+        guard dragHandleRect.contains(point) else {
+            super.mouseDown(with: event)
+            return
+        }
+        onPress?(paneId)
+        guard draggable else {
+            return
+        }
+        mouseDownLocation = event.locationInWindow
+        dragging = false
+        needsDisplay = true
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        guard let mouseDownLocation else {
+            return
+        }
+        let point = event.locationInWindow
+        let distance = hypot(point.x - mouseDownLocation.x, point.y - mouseDownLocation.y)
+        guard dragging || distance >= Self.dragThreshold else {
+            return
+        }
+        if !dragging {
+            dragging = true
+            guard onDrag?(.began, paneId, mouseDownLocation) == true else {
+                resetDragState()
+                return
+            }
+        }
+        NSCursor.closedHand.set()
+        _ = onDrag?(.changed, paneId, point)
+        needsDisplay = true
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        if dragging {
+            _ = onDrag?(.ended, paneId, event.locationInWindow)
+        }
+        resetDragState()
+    }
+
+    override func rightMouseDown(with event: NSEvent) {
+        onContextMenu?(event, self)
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if window == nil, dragging {
+            _ = onDrag?(.cancelled, paneId, .zero)
+            resetDragState()
         }
     }
 
@@ -258,6 +387,15 @@ final class NativePaneChromeView: NSView {
         for button in buttons.values {
             button.setEmphasized(isActive)
         }
+    }
+
+    func update(isDraggable: Bool) {
+        guard draggable != isDraggable else {
+            return
+        }
+        draggable = isDraggable
+        window?.invalidateCursorRects(for: self)
+        needsDisplay = true
     }
 
     func actionsReady() -> Bool {
@@ -276,6 +414,33 @@ final class NativePaneChromeView: NSView {
         onAction?(action, paneId, buttons[action] ?? self)
     }
 
+    #if SATIN_SMOKE_SCENARIOS
+        func dragHandleReadyForSmoke() -> Bool {
+            draggable && dragHandleRect.width >= 18 && onDrag != nil && onPress != nil
+        }
+
+        @discardableResult
+        func simulateDragForSmoke(
+            from start: NSPoint,
+            to end: NSPoint,
+            verifyPreview: (() -> Bool)? = nil
+        ) -> Bool {
+            guard dragHandleReadyForSmoke() else {
+                return false
+            }
+            onPress?(paneId)
+            guard onDrag?(.began, paneId, start) == true else {
+                return false
+            }
+            _ = onDrag?(.changed, paneId, end)
+            guard verifyPreview?() ?? true else {
+                _ = onDrag?(.cancelled, paneId, end)
+                return false
+            }
+            return onDrag?(.ended, paneId, end) == true
+        }
+    #endif
+
     private func configure() {
         for action in actions {
             let button = NativeHoverIconButton(
@@ -289,6 +454,10 @@ final class NativePaneChromeView: NSView {
             addSubview(button)
         }
         update(isActive: false)
+        setAccessibilityElement(true)
+        setAccessibilityRole(.group)
+        setAccessibilityLabel("Pane \(paneId) header")
+        setAccessibilityHelp("Drag the header to move this pane, or use its pane actions.")
     }
 
     @objc private func actionClicked(_ sender: NativeHoverIconButton) {
@@ -296,5 +465,44 @@ final class NativePaneChromeView: NSView {
             return
         }
         onAction?(action, paneId, sender)
+    }
+
+    private var dragHandleRect: NSRect {
+        let width = max(0, bounds.width - min(preferredWidth, bounds.width) - 4)
+        return NSRect(x: 0, y: 0, width: width, height: bounds.height)
+    }
+
+    private func drawGrip() {
+        let gripColor = active ? NSColor.secondaryLabelColor : NSColor.tertiaryLabelColor
+        gripColor.withAlphaComponent(hoveringHandle || dragging ? 0.95 : 0.72).setFill()
+        let origin = NSPoint(x: 8, y: bounds.midY - 4)
+        for row in 0..<3 {
+            for column in 0..<2 {
+                NSBezierPath(
+                    ovalIn: NSRect(
+                        x: origin.x + CGFloat(column) * 4,
+                        y: origin.y + CGFloat(row) * 4,
+                        width: 2,
+                        height: 2
+                    )
+                ).fill()
+            }
+        }
+    }
+
+    private func updateHandleHover(_ event: NSEvent) {
+        let next = draggable && dragHandleRect.contains(convert(event.locationInWindow, from: nil))
+        guard next != hoveringHandle else {
+            return
+        }
+        hoveringHandle = next
+        needsDisplay = true
+    }
+
+    private func resetDragState() {
+        mouseDownLocation = nil
+        dragging = false
+        window?.invalidateCursorRects(for: self)
+        needsDisplay = true
     }
 }

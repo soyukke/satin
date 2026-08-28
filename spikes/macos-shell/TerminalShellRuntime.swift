@@ -633,17 +633,6 @@ extension TerminalShellViewController {
         if let title = pane.title(), paneStore.titles[paneId] != title {
             paneStore.titles[paneId] = title
             updateAgentStatusFromTitle(title, paneId: paneId)
-            if let tab = lastSnapshot?.tabs.first(where: { $0.active_pane == paneId }),
-                let tabTitle = paneStore.tabTitles.automaticTitle(
-                    tabId: tab.id,
-                    rawTitle: title,
-                    claudeSession: paneStore.agentTitleTracker.isClaudeSession(paneId: paneId)
-                ),
-                tab.title != tabTitle
-            {
-                core.renameTab(tab.index, title: tabTitle)
-                syncFromCore()
-            }
         }
         let bells = pane.takeBellCount()
         handleTerminalBells(bells)

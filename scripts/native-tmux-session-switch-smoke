@@ -7,14 +7,21 @@ socket_name="satin-session-switch-smoke-$$"
 first_session="satin-switch-first-$$"
 second_session="satin-switch-second-$$"
 tmux_executable="$(command -v tmux)"
+smoke_root="$(mktemp -d "${TMPDIR:-/tmp}/satin-tmux-session-switch.XXXXXX")"
+first_cwd="$smoke_root/first session cwd"
 
 cleanup() {
   tmux -L "$socket_name" kill-server >/dev/null 2>&1 || true
+  case "$smoke_root" in
+    "${TMPDIR:-/tmp}"/satin-tmux-session-switch.*) rm -rf -- "$smoke_root" ;;
+    *) echo "refusing unexpected smoke cleanup path: $smoke_root" >&2 ;;
+  esac
 }
 trap cleanup EXIT
 
 rm -f -- "$result_file"
-tmux -L "$socket_name" new-session -d -s "$first_session"
+mkdir -p -- "$first_cwd"
+tmux -L "$socket_name" new-session -d -c "$first_cwd" -s "$first_session"
 socket_path="$(tmux -L "$socket_name" display-message -p '#{socket_path}')"
 tmux -S "$socket_path" new-session -d -s "$second_session"
 

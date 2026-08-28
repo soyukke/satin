@@ -1,6 +1,8 @@
 use std::{ffi::c_char, ptr};
 
-use crate::core::{PaneDirection, SplitAxis, TerminalCore, TerminalWorkspaceInput};
+use crate::core::{
+    PaneDirection, PaneDropPosition, SplitAxis, TerminalCore, TerminalWorkspaceInput,
+};
 
 use super::{c_string, json_ptr};
 
@@ -10,6 +12,11 @@ const SATIN_PANE_LEFT: u32 = 0;
 const SATIN_PANE_RIGHT: u32 = 1;
 const SATIN_PANE_UP: u32 = 2;
 const SATIN_PANE_DOWN: u32 = 3;
+const SATIN_PANE_DROP_CENTER: u32 = 0;
+const SATIN_PANE_DROP_LEFT: u32 = 1;
+const SATIN_PANE_DROP_RIGHT: u32 = 2;
+const SATIN_PANE_DROP_TOP: u32 = 3;
+const SATIN_PANE_DROP_BOTTOM: u32 = 4;
 
 #[unsafe(no_mangle)]
 pub extern "C" fn satin_core_create() -> *mut TerminalCore {
@@ -75,6 +82,20 @@ pub extern "C" fn satin_core_resize_split(
 #[unsafe(no_mangle)]
 pub extern "C" fn satin_core_close_pane(handle: *mut TerminalCore, pane_id: usize) -> u8 {
     core_mut(handle).is_some_and(|core| core.close_pane(pane_id)) as u8
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn satin_core_move_pane(
+    handle: *mut TerminalCore,
+    source_pane_id: usize,
+    target_pane_id: usize,
+    position: u32,
+) -> u8 {
+    let Some(position) = pane_drop_position(position) else {
+        return 0;
+    };
+    core_mut(handle).is_some_and(|core| core.move_pane(source_pane_id, target_pane_id, position))
+        as u8
 }
 
 #[unsafe(no_mangle)]
@@ -193,6 +214,17 @@ fn pane_direction(direction: u32) -> Option<PaneDirection> {
         SATIN_PANE_RIGHT => Some(PaneDirection::Right),
         SATIN_PANE_UP => Some(PaneDirection::Up),
         SATIN_PANE_DOWN => Some(PaneDirection::Down),
+        _ => None,
+    }
+}
+
+fn pane_drop_position(position: u32) -> Option<PaneDropPosition> {
+    match position {
+        SATIN_PANE_DROP_CENTER => Some(PaneDropPosition::Center),
+        SATIN_PANE_DROP_LEFT => Some(PaneDropPosition::Left),
+        SATIN_PANE_DROP_RIGHT => Some(PaneDropPosition::Right),
+        SATIN_PANE_DROP_TOP => Some(PaneDropPosition::Top),
+        SATIN_PANE_DROP_BOTTOM => Some(PaneDropPosition::Bottom),
         _ => None,
     }
 }

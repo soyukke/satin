@@ -90,6 +90,7 @@ extension TerminalShellViewController {
         if snapshot.active_tab < tabControl.segmentCount {
             tabControl.selectedSegment = snapshot.active_tab
         }
+        syncTabActivityIndicators(snapshot)
         tabControl.finishSnapshotSync(previousFrame: previousFrame)
         tabStripView.contentSizeDidChange()
         let activeTheme = snapshot.tabs.first {
@@ -98,6 +99,16 @@ extension TerminalShellViewController {
         backdropView.updateAccentColor(themeAccentColor(activeTheme))
         updateSessionControl()
         syncingTabs = false
+    }
+
+    func syncTabActivityIndicators(_ snapshot: TerminalCoreSnapshot) {
+        let running = Set(
+            snapshot.tabs.compactMap { tab in
+                tab.panes.contains { paneStatuses.status(for: $0)?.status == "running" }
+                    ? tab.index
+                    : nil
+            })
+        tabControl.setRunningSegments(running)
     }
 
     func syncPaneLayout(

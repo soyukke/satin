@@ -15,6 +15,7 @@ native_swift_sources=(
   spikes/macos-shell/NativeKeyBindings.swift
   spikes/macos-shell/NativeMainMenuController.swift
   spikes/macos-shell/NativePaneGeometry.swift
+  spikes/macos-shell/PaneDragInteraction.swift
   spikes/macos-shell/PaneChromeView.swift
   spikes/macos-shell/NativePaneRuntime.swift
   spikes/macos-shell/NativeTmuxScrollMetadata.swift
@@ -42,6 +43,7 @@ native_swift_sources=(
   spikes/macos-shell/TerminalShellControl.swift
   spikes/macos-shell/TerminalShellNeovimRuntime.swift
   spikes/macos-shell/TerminalShellPaneInteraction.swift
+  spikes/macos-shell/TerminalShellPaneDrag.swift
   spikes/macos-shell/TerminalShellPresentation.swift
   spikes/macos-shell/TerminalShellRuntime.swift
   spikes/macos-shell/TerminalShellSession.swift
@@ -58,6 +60,8 @@ native_smoke_swift_sources=(
   spikes/macos-shell/NativeSmokeBasicScenarios.swift
   spikes/macos-shell/NativeSmokeBootstrap.swift
   spikes/macos-shell/NativeSmokeFrameLivenessScenarios.swift
+  spikes/macos-shell/NativeSmokeHomeCwdScenarios.swift
+  spikes/macos-shell/NativeSmokePaneDragScenarios.swift
   spikes/macos-shell/NativeSmokeNvimHelpers.swift
   spikes/macos-shell/NativeSmokeNvimLayoutScenarios.swift
   spikes/macos-shell/NativeSmokeNvimScenarios.swift
@@ -66,7 +70,10 @@ native_smoke_swift_sources=(
   spikes/macos-shell/NativeSmokeReadmeScenarios.swift
   spikes/macos-shell/NativeSmokeState.swift
   spikes/macos-shell/NativeSmokeTabBarScenarios.swift
+  spikes/macos-shell/NativeSmokeTabTitleCwdScenarios.swift
   spikes/macos-shell/NativeSmokeTmuxReattachScenarios.swift
+  spikes/macos-shell/NativeSmokeTmuxAgentScenarios.swift
+  spikes/macos-shell/NativeSmokeTmuxPaneDragScenarios.swift
   spikes/macos-shell/NativeSmokeTmuxScenarios.swift
   spikes/macos-shell/NativeSmokeTmuxSessionSwitchScenarios.swift
   spikes/macos-shell/NativeSmokeTmuxZoomResizeScenarios.swift

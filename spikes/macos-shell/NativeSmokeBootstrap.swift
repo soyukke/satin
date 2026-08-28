@@ -118,6 +118,19 @@ import Foundation
                 if let path = environment["SATIN_NATIVE_SMOKE_RESULT"], !path.isEmpty {
                     controller.applyTabBarActionsSmokeScenario(resultPath: path)
                 }
+            case "tab-title-cwd":
+                if let path = environment["SATIN_NATIVE_SMOKE_RESULT"], !path.isEmpty,
+                    let expectedCwd = environment["SATIN_NATIVE_SMOKE_EXPECTED_CWD"]
+                {
+                    controller.applyTabTitleCwdSmokeScenario(
+                        resultPath: path,
+                        expectedCwd: expectedCwd
+                    )
+                }
+            case "pane-dnd":
+                if let path = environment["SATIN_NATIVE_SMOKE_RESULT"], !path.isEmpty {
+                    controller.applyPaneDragSmokeScenario(resultPath: path)
+                }
             case "frame-liveness":
                 if let path = environment["SATIN_NATIVE_SMOKE_RESULT"], !path.isEmpty {
                     controller.applyFrameLivenessSmokeScenario(resultPath: path)

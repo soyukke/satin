@@ -164,6 +164,9 @@ final class NativeTabControl: NSSegmentedControl {
         static let outerHorizontalInset: CGFloat = 2.5
         static let tabCornerRadius: CGFloat = 6
         static let titleLeadingInset: CGFloat = 12
+        static let activityTitleLeadingInset: CGFloat = 28
+        static let activityCenterInset: CGFloat = 15
+        static let activityRadius: CGFloat = 5
         static let titleTrailingSpacing: CGFloat = 3
         static let closeHitWidth: CGFloat = 26
         static let closeGlyphSize: CGFloat = 7
@@ -183,8 +186,11 @@ final class NativeTabControl: NSSegmentedControl {
     private var pressedSegment: Int?
     private var dragTargetSegment: Int?
     private var draggingTab = false
+    private var runningSegments = Set<Int>()
+    private var activityTimer: Timer?
 
     deinit {
+        activityTimer?.invalidate()
         removeContextEventMonitor()
     }
 
@@ -512,6 +518,20 @@ final class NativeTabControl: NSSegmentedControl {
         contextEventMonitor != nil
     }
 
+    func setRunningSegments(_ segments: Set<Int>) {
+        let next = Set(segments.filter { $0 >= 0 && $0 < segmentCount })
+        guard next != runningSegments else {
+            return
+        }
+        runningSegments = next
+        updateActivityTimer()
+        needsDisplay = true
+    }
+
+    func runningActivityReadyForSmoke(segment: Int) -> Bool {
+        runningSegments.contains(segment) && activityTimer?.isValid == true
+    }
+
     func contextMenuReadyForSmoke(segment: Int) -> Bool {
         let menu = contextMenuForSmoke(segment: segment)
         return contextMenuMonitorReadyForSmoke()
@@ -534,6 +554,7 @@ final class NativeTabControl: NSSegmentedControl {
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         removeContextEventMonitor()
+        updateActivityTimer()
         guard window != nil else {
             return
         }
@@ -646,7 +667,19 @@ final class NativeTabControl: NSSegmentedControl {
         ]
         let attributed = NSAttributedString(string: label, attributes: attributes)
         let height = ceil(attributed.size().height)
-        let leading = segmentRect.minX + Metrics.titleLeadingInset
+        let showsActivity = runningSegments.contains(segment)
+        if showsActivity {
+            drawActivityIndicator(
+                center: NSPoint(
+                    x: segmentRect.minX + Metrics.activityCenterInset,
+                    y: segmentRect.midY
+                ),
+                selected: selected
+            )
+        }
+        let leading =
+            segmentRect.minX
+            + (showsActivity ? Metrics.activityTitleLeadingInset : Metrics.titleLeadingInset)
         let trailing = closeRect.minX - Metrics.titleTrailingSpacing
         let titleRect = NSRect(
             x: leading,
@@ -655,6 +688,45 @@ final class NativeTabControl: NSSegmentedControl {
             height: height
         )
         attributed.draw(in: titleRect)
+    }
+
+    private func drawActivityIndicator(center: NSPoint, selected: Bool) {
+        let phase = ProcessInfo.processInfo.systemUptime * 5.2
+        let color = selected ? NSColor.controlAccentColor : NSColor.secondaryLabelColor
+        for index in 0..<8 {
+            let progress = Double(index) / 8
+            let angle = phase + progress * Double.pi * 2
+            let inner = Metrics.activityRadius * 0.48
+            let alpha = 0.2 + progress * 0.72
+            let path = NSBezierPath()
+            path.move(
+                to: NSPoint(
+                    x: center.x + CGFloat(cos(angle)) * inner,
+                    y: center.y + CGFloat(sin(angle)) * inner
+                ))
+            path.line(
+                to: NSPoint(
+                    x: center.x + CGFloat(cos(angle)) * Metrics.activityRadius,
+                    y: center.y + CGFloat(sin(angle)) * Metrics.activityRadius
+                ))
+            path.lineWidth = 1.5
+            path.lineCapStyle = .round
+            color.withAlphaComponent(alpha).setStroke()
+            path.stroke()
+        }
+    }
+
+    private func updateActivityTimer() {
+        activityTimer?.invalidate()
+        activityTimer = nil
+        guard window != nil, !runningSegments.isEmpty else {
+            return
+        }
+        let timer = Timer(timeInterval: 1.0 / 12.0, repeats: true) { [weak self] _ in
+            self?.needsDisplay = true
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        activityTimer = timer
     }
 
     private func drawCloseGlyph(forSegment segment: Int) {

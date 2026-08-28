@@ -2,7 +2,7 @@
 
 Date: 2026-08-08
 
-Amended: 2026-08-17
+Amended: 2026-08-27
 
 Status: Accepted
 
@@ -57,6 +57,12 @@ Tahoe-only custom glass view.
   or process-name polling.
   For projected tmux panes, subscribe to quoted `pane_title` changes and route
   those transitions through the same tracker instead of inspecting pane output.
+  Store those raw titles only as pane metadata. Render a running indicator from
+  the pane status store in the tab strip, without copying any lifecycle title,
+  spinner glyph, agent version, or pane title into the tab name. Local tab names
+  remain owned by the core/session rename path; projected tmux tab names remain
+  owned by tmux window names. A status transition must therefore never rename a
+  tab, whether or not the user has renamed it manually.
   When an agent-owned waiting prompt is dismissed with Escape, return that pane
   to `idle`; do not leave a stale attention badge after the UI is back at input.
 - Present session discovery, attach, detach, switch, and creation from a standard
@@ -66,6 +72,22 @@ Tahoe-only custom glass view.
   receive the system navigation material automatically. Pane-header controls
   retain the platform-appropriate AppKit appearance, interaction response,
   contrast adaptation, and accessibility behavior on every supported release.
+- Treat the unoccupied portion of each pane header as its drag handle. Use a
+  five-zone drop model: center swaps pane positions, while the four edges move
+  the source to the target's left, right, top, or bottom. Animate only a lifted
+  header proxy and the drop preview while dragging; commit the layout once on
+  drop so PTY/Neovim grid geometry is not repeatedly resized under the pointer.
+  Local drops are atomic Rust split-tree operations. Projected tmux drops remain
+  tmux-owned and use `swap-pane` or `join-pane`; they must never fall back to a
+  local core mutation. A pane already occupying the requested side across the
+  target's full orthogonal span is a no-op, including visually adjacent panes
+  nested under different split-tree parents. Resolve that from presented pane
+  bounds before drawing the preview and exclude it from the actionable drop
+  target. Suppress both pane highlights, show only a neutral lifted proxy
+  labelled `Already there`, and return it to its source without issuing a
+  layout command. Moving direct siblings to the opposite side preserves the
+  existing divider geometry. The artifact sidebar is not a movable terminal
+  pane.
 - Route titlebar availability and window appearance decisions through
   `NativePlatformAppearance`. Pane headers remain semantic AppKit controls and
   do not introduce a second custom glass-material implementation.

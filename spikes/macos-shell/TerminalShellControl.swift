@@ -225,9 +225,7 @@ extension TerminalShellViewController {
             return
         }
         if request.agent_session_start == true {
-            let agent: NativeAgentKind =
-                request.summary == "Claude Code ready" ? .claude : .codex
-            paneStore.agentTitleTracker.beginSession(paneId: paneId, agent: agent)
+            paneStore.agentTitleTracker.beginSession(paneId: paneId)
         }
         let value = paneStatuses.update(
             paneId: paneId,
@@ -284,15 +282,19 @@ extension TerminalShellViewController {
             return
         }
         if let session = tmuxSession {
-            guard let cwd = validatedControlDirectory(request.cwd) else {
-                reply(controlFailure("invalid_cwd", "The working directory is invalid."))
-                return
-            }
             var command = "new-window"
             if request.background == true {
                 command += " -d"
             }
-            command += " -c \(tmuxCommandArgument(cwd))"
+            if let requested = request.cwd {
+                guard let cwd = validatedControlDirectory(requested) else {
+                    reply(controlFailure("invalid_cwd", "The working directory is invalid."))
+                    return
+                }
+                command += " -c \(tmuxCommandArgument(cwd))"
+            } else {
+                command += " -c \(nativeTmuxCurrentPaneDirectoryArgument)"
+            }
             if let title {
                 command += " -n \(tmuxCommandArgument(title))"
             }
@@ -303,7 +305,10 @@ extension TerminalShellViewController {
             snapshot.tabs.first(where: { $0.index == snapshot.active_tab })?.id
         }
         let previousPaneId = activePaneId
-        guard let cwd = validatedControlDirectory(request.cwd) else {
+        let requestedCwd = request.cwd.flatMap(validatedControlDirectory)
+        guard request.cwd == nil || requestedCwd != nil,
+            let cwd = requestedCwd ?? inheritedPaneWorkingDirectory()
+        else {
             reply(controlFailure("invalid_cwd", "The working directory is invalid."))
             return
         }
@@ -311,9 +316,6 @@ extension TerminalShellViewController {
         let index = core.newTab()
         if let title {
             core.renameTab(index, title: title)
-            if let tabId = core.snapshot()?.tabs.first(where: { $0.index == index })?.id {
-                paneStore.tabTitles.markManual(tabId: tabId)
-            }
         }
         syncFromCore()
         guard let tab = lastSnapshot?.tabs.first(where: { $0.index == index }) else {
@@ -334,7 +336,6 @@ extension TerminalShellViewController {
         if let session = tmuxSession {
             guard let paneId = request.pane,
                 let tmuxPaneId = session.tmuxPaneIds[paneId],
-                let cwd = validatedControlDirectory(request.cwd),
                 let axisName = request.axis,
                 ["horizontal", "vertical"].contains(axisName)
             else {
@@ -343,8 +344,18 @@ extension TerminalShellViewController {
             }
             let flag = axisName == "horizontal" ? "-v" : "-h"
             let detached = request.background == true ? " -d" : ""
+            let cwdArgument: String
+            if let requested = request.cwd {
+                guard let cwd = validatedControlDirectory(requested) else {
+                    reply(controlFailure("invalid_split", "The directory is invalid."))
+                    return
+                }
+                cwdArgument = tmuxCommandArgument(cwd)
+            } else {
+                cwdArgument = nativeTmuxCurrentPaneDirectoryArgument
+            }
             let command =
-                "split-window \(flag)\(detached) -c \(tmuxCommandArgument(cwd)) "
+                "split-window \(flag)\(detached) -c \(cwdArgument) "
                 + "-t %\(tmuxPaneId)"
             replyTmuxCommand(
                 session,
@@ -358,19 +369,26 @@ extension TerminalShellViewController {
             snapshot.tabs.first(where: { $0.index == snapshot.active_tab })?.id
         }
         let previousPaneId = activePaneId
+        let requestedCwd = request.cwd.flatMap(validatedControlDirectory)
         guard let paneId = request.pane,
             let tab = lastSnapshot?.tabs.first(where: { $0.panes.contains(paneId) }),
-            let cwd = validatedControlDirectory(request.cwd),
-            let axisName = request.axis
+            let axisName = request.axis,
+            request.cwd == nil || requestedCwd != nil
         else {
             reply(controlFailure("invalid_split", "The pane, axis, or directory is invalid."))
             return
         }
+        guard let cwd = requestedCwd ?? inheritedPaneWorkingDirectory(paneId: paneId) else {
+            reply(controlFailure("invalid_split", "The directory is unavailable."))
+            return
+        }
         _ = core.selectTab(tab.index)
         _ = core.selectPane(paneId)
-        pendingPaneWorkingDirectory = request.cwd == nil ? activeWorkingDirectory() : cwd
+        pendingPaneWorkingDirectory = cwd
         let axis = axisName == "horizontal" ? ffiSplitHorizontal : ffiSplitVertical
         guard let newPane = core.splitActive(axis: axis) else {
+            pendingPaneWorkingDirectory = nil
+            restoreControlContext(tabId: previousTabId, paneId: previousPaneId)
             reply(controlFailure("core_error", "The pane could not be split."))
             return
         }
@@ -605,7 +623,6 @@ extension TerminalShellViewController {
             }
             discardPaneState(paneId)
         }
-        paneStore.tabTitles.remove(tabId: tabId)
         syncFromCore()
         reply(.success(["tab": tabId, "closedPanes": tab.panes]))
     }
@@ -744,7 +761,6 @@ extension TerminalShellViewController {
             )
             return
         }
-        paneStore.tabTitles.markManual(tabId: tabId)
         core.renameTab(tab.index, title: title)
         syncFromCore()
         reply(.success(["tab": tabId, "title": title]))
@@ -781,15 +797,14 @@ extension TerminalShellViewController {
         return lastSnapshot?.tabs.contains(where: { $0.panes.contains(paneId) }) == true
     }
 
-    func validatedControlDirectory(_ requested: String?) -> String? {
-        let value = requested ?? newPaneWorkingDirectory()
+    func validatedControlDirectory(_ requested: String) -> String? {
         var isDirectory: ObjCBool = false
-        guard FileManager.default.fileExists(atPath: value, isDirectory: &isDirectory),
+        guard FileManager.default.fileExists(atPath: requested, isDirectory: &isDirectory),
             isDirectory.boolValue
         else {
             return nil
         }
-        return URL(fileURLWithPath: value).standardizedFileURL.path
+        return URL(fileURLWithPath: requested).standardizedFileURL.path
     }
 
     func controlFailure(_ code: String, _ message: String) -> Result<

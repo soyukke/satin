@@ -4,8 +4,8 @@ use anyhow::{Result, bail};
 use serde::{Deserialize, Serialize};
 
 use super::layout::{
-    MAX_SPLIT_RATIO, MIN_SPLIT_RATIO, PaneDirection, PaneId, PaneLayout, PaneLayoutInput,
-    PaneLayoutSnapshot, SplitAxis,
+    MAX_SPLIT_RATIO, MIN_SPLIT_RATIO, PaneDirection, PaneDropPosition, PaneId, PaneLayout,
+    PaneLayoutInput, PaneLayoutSnapshot, SplitAxis,
 };
 
 const DEFAULT_THEME_NAME: &str = "Graphite";
@@ -89,6 +89,24 @@ impl TerminalCore {
             return true;
         }
         self.tabs[tab_index].close_pane(pane_id)
+    }
+
+    pub fn move_pane(
+        &mut self,
+        source_pane_id: usize,
+        target_pane_id: usize,
+        position: PaneDropPosition,
+    ) -> bool {
+        let source = PaneId(source_pane_id);
+        let target = PaneId(target_pane_id);
+        let Some(tab) = self
+            .tabs
+            .iter_mut()
+            .find(|tab| tab.contains_pane(source) && tab.contains_pane(target))
+        else {
+            return false;
+        };
+        tab.move_pane(source, target, position)
     }
 
     pub fn select_tab(&mut self, index: usize) -> bool {
@@ -304,6 +322,17 @@ impl TerminalCoreTab {
         true
     }
 
+    fn move_pane(&mut self, source: PaneId, target: PaneId, position: PaneDropPosition) -> bool {
+        if !self.layout.move_leaf(source, target, position) {
+            return false;
+        }
+        let mut panes = Vec::with_capacity(self.panes.len());
+        self.layout.leaves(&mut panes);
+        self.panes = panes;
+        self.active_pane = source;
+        true
+    }
+
     fn contains_pane(&self, pane_id: PaneId) -> bool {
         self.panes.contains(&pane_id)
     }
@@ -454,6 +483,117 @@ mod tests {
         assert!(!core.resize_split(1, 2, f64::NAN));
         assert!(!core.resize_split(1, 2, 0.01));
         assert_eq!(core.snapshot(), before);
+    }
+
+    #[test]
+    fn center_drop_swaps_panes_without_changing_split_geometry() {
+        let mut core = TerminalCore::new();
+        assert_eq!(core.split_active(SplitAxis::Vertical), Some(2));
+        assert_eq!(core.split_active(SplitAxis::Horizontal), Some(3));
+        assert!(core.resize_split(1, 2, 0.35));
+        assert!(core.resize_split(2, 3, 0.65));
+
+        assert!(core.move_pane(1, 3, PaneDropPosition::Center));
+        let snapshot = core.snapshot();
+        assert_eq!(snapshot.tabs[0].active_pane, 1);
+        assert_eq!(snapshot.tabs[0].panes, vec![3, 2, 1]);
+        assert_eq!(snapshot.tabs[0].layout.ratio, Some(0.35));
+        assert_eq!(
+            snapshot.tabs[0]
+                .layout
+                .second
+                .as_ref()
+                .and_then(|layout| layout.ratio),
+            Some(0.65)
+        );
+        assert_eq!(
+            snapshot.tabs[0]
+                .layout
+                .first
+                .as_ref()
+                .and_then(|leaf| leaf.pane_id),
+            Some(3)
+        );
+        assert_eq!(
+            snapshot.tabs[0]
+                .layout
+                .second
+                .as_ref()
+                .and_then(|layout| layout.second.as_ref())
+                .and_then(|leaf| leaf.pane_id),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn edge_drop_reparents_a_pane_and_invalid_moves_are_atomic() {
+        let mut core = TerminalCore::new();
+        assert_eq!(core.split_active(SplitAxis::Vertical), Some(2));
+        assert_eq!(core.split_active(SplitAxis::Horizontal), Some(3));
+
+        assert!(core.move_pane(1, 3, PaneDropPosition::Bottom));
+        let snapshot = core.snapshot();
+        let layout = &snapshot.tabs[0].layout;
+        assert_eq!(snapshot.tabs[0].active_pane, 1);
+        assert_eq!(snapshot.tabs[0].panes, vec![2, 3, 1]);
+        assert_eq!(layout.axis, Some(SplitAxis::Horizontal));
+        assert_eq!(layout.first.as_ref().and_then(|leaf| leaf.pane_id), Some(2));
+        assert_eq!(
+            layout
+                .second
+                .as_ref()
+                .and_then(|nested| nested.first.as_ref())
+                .and_then(|leaf| leaf.pane_id),
+            Some(3)
+        );
+        assert_eq!(
+            layout
+                .second
+                .as_ref()
+                .and_then(|nested| nested.second.as_ref())
+                .and_then(|leaf| leaf.pane_id),
+            Some(1)
+        );
+
+        let before_invalid = core.snapshot();
+        assert!(!core.move_pane(1, 1, PaneDropPosition::Left));
+        assert!(!core.move_pane(99, 2, PaneDropPosition::Right));
+        assert_eq!(core.snapshot(), before_invalid);
+    }
+
+    #[test]
+    fn edge_drop_maps_every_visual_side_to_the_expected_split() {
+        let cases = [
+            (PaneDropPosition::Left, SplitAxis::Vertical, 1, 2),
+            (PaneDropPosition::Right, SplitAxis::Vertical, 2, 1),
+            (PaneDropPosition::Top, SplitAxis::Horizontal, 1, 2),
+            (PaneDropPosition::Bottom, SplitAxis::Horizontal, 2, 1),
+        ];
+        for (position, expected_axis, expected_first, expected_second) in cases {
+            let mut core = TerminalCore::new();
+            assert_eq!(core.split_active(SplitAxis::Vertical), Some(2));
+            assert!(core.resize_split(1, 2, 0.35));
+            assert!(core.move_pane(1, 2, position));
+            let snapshot = core.snapshot();
+            let layout = &snapshot.tabs[0].layout;
+            assert_eq!(layout.axis, Some(expected_axis));
+            assert_eq!(
+                layout.ratio,
+                Some(if expected_axis == SplitAxis::Vertical {
+                    0.35
+                } else {
+                    0.5
+                })
+            );
+            assert_eq!(
+                layout.first.as_ref().and_then(|leaf| leaf.pane_id),
+                Some(expected_first)
+            );
+            assert_eq!(
+                layout.second.as_ref().and_then(|leaf| leaf.pane_id),
+                Some(expected_second)
+            );
+        }
     }
 
     #[test]

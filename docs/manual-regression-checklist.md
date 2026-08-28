@@ -1,10 +1,10 @@
 # Manual regression checklist
 
-Date: 2026-08-18
+Date: 2026-08-28
 
-This checklist covers the Neovim, tmux, split-pane, and working-directory
-regressions reported during the 2026-08-18 development cycle. Run it against
-`Satin Dev`, not an installed release build.
+This checklist covers the terminal, tab-title, agent-activity, Neovim, tmux,
+split-pane, and working-directory regressions reported through 2026-08-28. Run
+it against `Satin Dev`, not an installed release build.
 
 ## Preparation
 
@@ -71,6 +71,17 @@ regressions reported during the 2026-08-18 development cycle. Run it against
 
 ## Working-directory contract
 
+- [ ] In a local terminal, enter a directory containing a space, press
+  `Command-T`, and run `pwd` in the new tab. Confirm it exactly matches the
+  source pane, even when Appearance > Startup directory points elsewhere.
+- [ ] Repeat from a tmux pane after changing directory, including after
+  switching tmux sessions. Confirm the new tmux window uses that pane's
+  `pane_current_path` rather than Satin's startup, home, repository, or process
+  directory.
+- [ ] Repeat `Command-T` from different panes in the same local/tmux tab. Confirm
+  the currently active pane, not the tab's first pane or a cached previous pane,
+  owns the inherited cwd.
+
 - [ ] In a local terminal, run
   `mkdir -p /tmp/satin-cwd-check && cd /tmp/satin-cwd-check`, then run `nvim`.
   Confirm `:pwd` reports `/tmp/satin-cwd-check` exactly.
@@ -81,6 +92,62 @@ regressions reported during the 2026-08-18 development cycle. Run it against
 - [ ] Confirm Satin shows `Could Not Open Neovim` and does not silently open
   Neovim in the repository root, home directory, or another stale directory.
 - [ ] Return the shell to an existing directory and confirm Neovim opens there.
+
+## Tab title and agent activity ownership
+
+- [ ] Rename a local tab manually, start Claude Code or Codex, and submit work.
+  Confirm the running spinner appears beside the stable tab title without
+  inserting a spinner glyph, agent version, cwd, or OSC title into the name.
+- [ ] Let the turn finish, start another turn, and switch tabs while it runs.
+  Confirm the indicator stops and restarts with status while the manual title
+  remains unchanged through every transition and session save/restore.
+- [ ] Repeat in tmux after manually renaming the tmux window. Confirm
+  `pane_title` changes drive the same running/waiting/done states while the tmux
+  window name remains unchanged.
+- [ ] Exercise a tab containing multiple panes. Confirm one running pane is
+  enough to show one tab indicator, and that it stops only when no pane in that
+  tab is `running`.
+
+## Pane drag and drop
+
+- [ ] Create three local panes, including a terminal and native Neovim pane.
+  Grab the dotted area in a pane's top band, not an action button. Confirm a
+  lifted ghost band follows the pointer smoothly and the highlighted drop area
+  eases between targets rather than jumping.
+- [ ] Drop near the center of another pane. Confirm the two pane positions swap,
+  the dragged pane remains selected, and both runtimes retain their output,
+  cwd, cursor, title/status, and input responsiveness.
+- [ ] Repeat at the target's left, right, top, and bottom edges. Confirm the
+  preview covers the corresponding half and the final split tree places the
+  dragged pane on that side only after release.
+- [ ] Drop a directly adjacent pane onto the side where it already sits.
+  Confirm no target drop highlight appears, the lifted proxy becomes neutral
+  rather than actionable, and release returns it to the source without changing
+  the layout or divider ratio. Drop it on the opposite side and confirm only the
+  pane positions exchange.
+- [ ] Release outside every pane. Confirm the preview returns to its source and
+  the layout does not change. Confirm close/split buttons in the same band still
+  click normally and do not begin a drag.
+- [ ] Repeat center and edge drops in tmux. Confirm tmux pane identities and
+  processes survive, the tmux layout is authoritative after each drop, and no
+  duplicate local pane or fallback split appears.
+- [ ] Open the artifact sidebar and narrow several panes. Confirm the artifact
+  pane has no drag handle, pane controls remain clickable, and terminal content
+  stays below every header throughout the gesture.
+
+## Regression-path audit
+
+- [ ] Confirm terminal OSC title handling writes pane metadata/status only and
+  has no call to `core.renameTab`.
+- [ ] Confirm local rename, session restore, explicit CLI `--title`, and tmux
+  `rename-window` are the only tab-title mutation owners.
+- [ ] Confirm native and CLI tmux new-window/split defaults use
+  `#{pane_current_path}` and do not issue a bare `new-window`.
+- [ ] Confirm new local tabs require the active runtime cwd and do not silently
+  fall back to startup directory, home, repository root, or process cwd.
+- [ ] Search for removed compatibility state such as `NativeTabTitleCoordinator`,
+  `titleIsManual`, and `newPaneWorkingDirectory`; no production references
+  should remain.
 
 ## Pane geometry during tmux resize
 
@@ -102,6 +169,18 @@ macOS screen-recording permission.
 - [ ] Run `just nvim-smoke-scroll`, `just nvim-smoke-jump`, and
   `just nvim-smoke-side-pane`.
 - [ ] Run `just native-tmux-smoke` and `just pane-grid-smoke`.
+- [ ] Run `just native-tab-title-cwd-smoke`; confirm it reports
+  `title=stable activity=separate cwd=inherited fallback=none`.
+- [ ] Run `just native-pane-dnd-smoke`; confirm it reports
+  `handle=band preview=animated no-change-highlight=none`,
+  `no-change-adjacency=both`,
+  `runtime=retained layout=reparented`, and `cancel=noop fallback=none`.
+- [ ] With three side-by-side local panes, drag the middle pane over the
+  right-side 20% of the left pane, then over the left-side 20% of the right
+  pane. Confirm neither direction shows a source or target pane highlight,
+  the proxy reads `Already there`, and dropping preserves every divider ratio.
+- [ ] In `just native-tmux-smoke`, confirm the native result contains
+  `pane-dnd=noop+center+edge no-change-highlight=none`.
 - [ ] Run `just terminal-nvim-cwd-smoke` and `just precommit`.
 - [ ] Quit Satin and cancel the warning once, then quit successfully. Disable
   **Confirm before quitting Satin** in General settings and confirm Quit no
@@ -110,7 +189,8 @@ macOS screen-recording permission.
 ## Acceptance
 
 - [ ] No item above reproduces the first-input-only, intermittent animation,
-  split/Neo-tree, tmux return, wrong cwd, or stale tmux grid regressions.
+  split/Neo-tree, tmux return, pane-DnD, agent-title overwrite, wrong Command-T
+  cwd, or stale tmux grid regressions.
 - [ ] Record any failure with the exact section, whether it was local or tmux,
   the focused Neovim window, and whether it failed on the first or a later
   input.

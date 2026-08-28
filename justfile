@@ -130,6 +130,8 @@ native-ci-smoke:
         ./scripts/native-tmux-smoke; \
         ./scripts/native-session-smoke; \
         ./scripts/native-tab-bar-actions-smoke; \
+        ./scripts/native-tab-title-cwd-smoke; \
+        ./scripts/native-pane-dnd-smoke; \
         ./scripts/native-frame-liveness-smoke; \
         ./scripts/native-terminal-bottom-input-smoke; \
         ./scripts/native-home-cwd-smoke; \
@@ -225,6 +227,14 @@ pane-grid-smoke:
 # Verify tab-bar buttons create a tab and both split axes through their click actions.
 native-tab-bar-actions-smoke:
     @if [[ -z "${IN_NIX_SHELL:-}" ]]; then exec nix develop --command just native-tab-bar-actions-smoke; else just native-build && ./scripts/native-tab-bar-actions-smoke; fi
+
+# Verify agent activity never owns tab titles and Command-T inherits the active local cwd.
+native-tab-title-cwd-smoke:
+    @if [[ -z "${IN_NIX_SHELL:-}" ]]; then exec nix develop --command just native-tab-title-cwd-smoke; else just native-build && ./scripts/native-tab-title-cwd-smoke; fi
+
+# Verify pane-header drag/drop in the exact Satin Dev bundle launched by `just terminal`.
+native-pane-dnd-smoke:
+    @if [[ -z "${IN_NIX_SHELL:-}" ]]; then exec nix develop --command just native-pane-dnd-smoke; else just native-dev-app && SATIN_NATIVE_EXECUTABLE="spikes/macos-shell/.build/dev/Satin Dev.app/Contents/MacOS/satin-dev-app" ./scripts/native-pane-dnd-smoke; fi
 
 # Repeatedly verify terminal input and tab switches reach a newly presented Metal frame.
 frame-liveness-smoke:
@@ -569,6 +579,8 @@ quality:
     @just frame-liveness-smoke
     @just terminal-bottom-input-smoke
     @just native-tab-bar-actions-smoke
+    @just native-tab-title-cwd-smoke
+    @just native-pane-dnd-smoke
     @just native-tmux-smoke
     @just pane-grid-smoke
 

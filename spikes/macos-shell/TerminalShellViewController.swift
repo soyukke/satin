@@ -443,6 +443,22 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
         self.terminalTextView.onPaneChromeAction = { [weak self] action, paneId, sourceView in
             self?.performPaneChromeAction(action, paneId: paneId, sourceView: sourceView)
         }
+        self.terminalTextView.onPaneDropChangesLayout = {
+            [weak self] sourcePaneId, targetPaneId, position in
+            self?.paneDropChangesLayout(
+                sourcePaneId,
+                relativeTo: targetPaneId,
+                position: position
+            ) ?? false
+        }
+        self.terminalTextView.onPaneMoveRequested = {
+            [weak self] sourcePaneId, targetPaneId, position in
+            self?.movePane(
+                sourcePaneId,
+                relativeTo: targetPaneId,
+                position: position
+            ) ?? false
+        }
         self.terminalTextView.onSplitResize = {
             [weak self] firstPaneId, secondPaneId, axis, ratio, cellDelta in
             self?.resizeSplit(

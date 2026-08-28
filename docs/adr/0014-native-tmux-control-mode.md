@@ -117,6 +117,9 @@ connection while native surfaces render the individual panes.
   tab/pane actions to tmux. Apply the resulting notifications rather than
   optimistically mutating a second model. Native Neovim replacement is rejected
   while tmux owns the pane; ordinary terminal Neovim remains tmux content.
+- Resolve native and CLI `new-window` and `split-window` defaults inside tmux
+  with `-c '#{pane_current_path}'`. Do not reuse Satin's process cwd, startup
+  directory, or a cached local-pane fallback when tmux owns the active pane.
 - Forward pane bells through Satin's existing attention policy without replacing
   tmux window names with application pane titles.
 - Subscribe the control client to quoted `pane_title` changes and include that
