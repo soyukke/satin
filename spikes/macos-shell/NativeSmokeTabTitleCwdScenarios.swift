@@ -6,6 +6,10 @@ import Foundation
     private let tabTitleCwdSmokeRunningTitle = "⠹ Satin activity smoke"
     private let tabTitleCwdSmokeIdleTitle = "Satin activity smoke"
 
+    private func tabTitleCwdSmokeReleasePath(_ expectedCwd: String) -> String {
+        (expectedCwd as NSString).appendingPathComponent(".satin-activity-release")
+    }
+
     extension TerminalShellViewController {
         func applyTabTitleCwdSmokeScenario(resultPath: String, expectedCwd: String) {
             waitForTabTitleCwdSmokeStart(
@@ -41,10 +45,12 @@ import Foundation
 
             core.renameTab(tab.index, title: tabTitleCwdSmokeManualTitle)
             syncFromCore()
+            let activityReleasePath = tabTitleCwdSmokeReleasePath(expectedCwd)
             let command =
                 "builtin cd -- \(shellQuote(expectedCwd)); "
                 + "printf '\\033]0;\(tabTitleCwdSmokeRunningTitle)\\007'; "
-                + "command sleep 2; "
+                + "while [ ! -e \(shellQuote(activityReleasePath)) ]; do "
+                + "command sleep 0.05; done; "
                 + "printf '\\033]0;\(tabTitleCwdSmokeIdleTitle)\\007'"
             pane.write(Data("\(command)\r".utf8))
             waitForTabTitleCwdSmokeRunning(
@@ -52,7 +58,7 @@ import Foundation
                 expectedCwd: expectedCwd,
                 originalTabId: tab.id,
                 originalPaneId: tab.active_pane,
-                retries: 40
+                retries: 80
             )
         }
 
@@ -65,12 +71,15 @@ import Foundation
         ) {
             drainTerminalPanes()
             let title = lastSnapshot?.tabs.first(where: { $0.id == originalTabId })?.title
+            let paneTitle = paneStore.titles[originalPaneId]
             let cwd = (paneStore.runtimes[originalPaneId] as? RustTerminalPane)?
                 .currentWorkingDirectory()
+            let status = paneStatuses.status(for: originalPaneId)?.status
+            let activity = tabControl.runningActivityReadyForSmoke(segment: 0)
             let running =
-                paneStore.titles[originalPaneId] == tabTitleCwdSmokeRunningTitle
-                && paneStatuses.status(for: originalPaneId)?.status == "running"
-                && tabControl.runningActivityReadyForSmoke(segment: 0)
+                paneTitle == tabTitleCwdSmokeRunningTitle
+                && status == "running"
+                && activity
             guard title == tabTitleCwdSmokeManualTitle,
                 tabControl.label(forSegment: 0) == tabTitleCwdSmokeManualTitle,
                 cwd == expectedCwd,
@@ -90,8 +99,9 @@ import Foundation
                     writeTabTitleCwdSmokeFailure(
                         resultPath,
                         phase: "running",
-                        detail: "title=\(title ?? "nil") cwd=\(cwd ?? "nil") "
-                            + "status=\(paneStatuses.status(for: originalPaneId)?.status ?? "nil")"
+                        detail: "title=\(title ?? "nil") "
+                            + "pane-title=\(paneTitle ?? "nil") cwd=\(cwd ?? "nil") "
+                            + "status=\(status ?? "nil") activity=\(activity)"
                     )
                 }
                 return
@@ -147,12 +157,21 @@ import Foundation
                 }
                 return
             }
+            guard
+                FileManager.default.createFile(
+                    atPath: tabTitleCwdSmokeReleasePath(expectedCwd),
+                    contents: Data()
+                )
+            else {
+                writeTabTitleCwdSmokeFailure(resultPath, phase: "activity-release")
+                return
+            }
             waitForTabTitleCwdSmokeDone(
                 resultPath: resultPath,
                 expectedCwd: expectedCwd,
                 originalTabId: originalTabId,
                 originalPaneId: originalPaneId,
-                retries: 50
+                retries: 80
             )
         }
 
