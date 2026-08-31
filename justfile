@@ -580,6 +580,7 @@ quality:
     @just terminal-bottom-input-smoke
     @just native-tab-bar-actions-smoke
     @just native-tab-title-cwd-smoke
+    @just terminal-nvim-cwd-smoke
     @just native-pane-dnd-smoke
     @just native-tmux-smoke
     @just pane-grid-smoke

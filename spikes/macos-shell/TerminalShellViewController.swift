@@ -379,6 +379,7 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
     var pendingPaneDirectStartup = false
     var pendingPaneMode: NativePaneMode?
     let initialFinderLaunch: NativeFinderEditorLaunch?
+    var paneDirectoryOpener: (URL) -> Bool = { NSWorkspace.shared.open($0) }
     var activePaneId: Int?
     var lastSnapshot: TerminalCoreSnapshot?
     var lastNvimModelScrollShift: OutputScrollShift?
@@ -443,6 +444,12 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
         self.terminalTextView.onPaneChromeAction = { [weak self] action, paneId, sourceView in
             self?.performPaneChromeAction(action, paneId: paneId, sourceView: sourceView)
         }
+        self.terminalTextView.isPaneChromeActionEnabled = { [weak self] action, paneId in
+            guard action == .openInFinder else {
+                return true
+            }
+            return self?.paneWorkingDirectory(paneId: paneId, logFailure: false) != nil
+        }
         self.terminalTextView.onPaneDropChangesLayout = {
             [weak self] sourcePaneId, targetPaneId, position in
             self?.paneDropChangesLayout(
@@ -475,8 +482,8 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
         self.terminalTextView.onFocusChanged = { [weak self] focused in
             self?.setTerminalFocus(focused)
         }
-        self.terminalTextView.onContextMenuRequested = { [weak self] tabIndex, event, view in
-            guard let menu = self?.terminalContextMenu(tabIndex: tabIndex) else {
+        self.terminalTextView.onContextMenuRequested = { [weak self] paneId, event, view in
+            guard let menu = self?.terminalContextMenu(paneId: paneId) else {
                 return
             }
             NSMenu.popUpContextMenu(menu, with: event, for: view)

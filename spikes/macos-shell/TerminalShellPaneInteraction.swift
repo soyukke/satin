@@ -69,6 +69,7 @@ extension TerminalShellViewController {
         installPaneWakeup(paneId: paneId, pane: pane)
         paneStore.modes[paneId] = pane.kind
         paneStore.workingDirectories[paneId] = cwd
+        terminalTextView.refreshPaneChromeActionAvailability(paneId: paneId)
         (pane as? RustTerminalPane)?.setOptionAsAlt(optionAsAltEnabled)
         if pane.kind == .neovim {
             scheduleNvimDirectoryCorrection(
@@ -458,31 +459,43 @@ extension TerminalShellViewController {
         guard let paneId = requestedPaneId ?? activePaneId else {
             return nil
         }
+        return paneWorkingDirectory(paneId: paneId, logFailure: true)
+    }
+
+    func paneWorkingDirectory(paneId: Int, logFailure: Bool) -> String? {
+        func unavailable(_ reason: String) -> String? {
+            if logFailure {
+                NativeLog.runtimeError("pane_cwd_unavailable pane=\(paneId) reason=\(reason)")
+            }
+            return nil
+        }
+
         let directory: String?
         if let session = tmuxSession {
             guard let tmuxPaneId = session.tmuxPaneIds[paneId] else {
-                NativeLog.runtimeError("pane_cwd_unavailable pane=\(paneId) reason=tmux_mapping")
-                return nil
+                return unavailable("tmux_mapping")
             }
             directory = session.latestPanes[tmuxPaneId]?.current_path
         } else if let terminal = paneStore.runtimes[paneId] as? RustTerminalPane {
             directory = terminal.currentWorkingDirectory()
+        } else if let neovim = paneStore.runtimes[paneId] as? RustNeovimPane {
+            directory = neovim.currentWorkingDirectory()
         } else {
             directory = paneStore.workingDirectories[paneId]
         }
         guard let directory, !directory.isEmpty else {
-            NativeLog.runtimeError("pane_cwd_unavailable pane=\(paneId) reason=missing")
-            return nil
+            return unavailable("missing")
         }
-        var isDirectory: ObjCBool = false
-        guard FileManager.default.fileExists(atPath: directory, isDirectory: &isDirectory),
-            isDirectory.boolValue
-        else {
-            NativeLog.runtimeError("pane_cwd_unavailable pane=\(paneId) reason=not_directory")
-            return nil
+        guard (directory as NSString).isAbsolutePath else {
+            return unavailable("not_absolute")
         }
         let standardized = URL(fileURLWithPath: directory).standardizedFileURL.path
-        paneStore.workingDirectories[paneId] = standardized
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: standardized, isDirectory: &isDirectory),
+            isDirectory.boolValue
+        else {
+            return unavailable("not_directory")
+        }
         return standardized
     }
 

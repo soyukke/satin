@@ -358,10 +358,18 @@ import Foundation
                         )
                     }
                 } else {
+                    let newPaneId = activePaneId
+                    let newTmuxPaneId = newPaneId.flatMap { tmuxSession?.tmuxPaneIds[$0] }
+                    let projectedCwd = newTmuxPaneId.flatMap {
+                        tmuxSession?.latestPanes[$0]?.current_path
+                    }
+                    let storedCwd = newPaneId.flatMap { paneStore.workingDirectories[$0] }
                     writeTmuxSessionSwitchFailure(
                         resultPath,
                         phase: "command-t-tab",
-                        detail: "tabs=\(lastSnapshot?.tabs.count ?? -1) cwd=not-inherited"
+                        detail: "tabs=\(lastSnapshot?.tabs.count ?? -1) "
+                            + "expected=\(expectedCwd) projected=\(projectedCwd ?? "nil") "
+                            + "stored=\(storedCwd ?? "nil")"
                     )
                 }
                 return

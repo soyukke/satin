@@ -435,6 +435,12 @@ func satinNvimCommand(
     _ command: UnsafePointer<CChar>?
 ) -> UInt8
 
+@_silgen_name("satin_nvim_cwd")
+func satinNvimCwd(_ handle: UnsafeMutableRawPointer?) -> UnsafeMutablePointer<CChar>?
+
+@_silgen_name("satin_nvim_take_cwd_update")
+func satinNvimTakeCwdUpdate(_ handle: UnsafeMutableRawPointer?) -> UnsafeMutablePointer<CChar>?
+
 @_silgen_name("satin_nvim_drain")
 func satinNvimDrain(_ handle: UnsafeMutableRawPointer?) -> UInt8
 

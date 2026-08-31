@@ -61,6 +61,7 @@ native_smoke_swift_sources=(
   spikes/macos-shell/NativeSmokeBootstrap.swift
   spikes/macos-shell/NativeSmokeFrameLivenessScenarios.swift
   spikes/macos-shell/NativeSmokeHomeCwdScenarios.swift
+  spikes/macos-shell/NativeSmokePaneFinderSupport.swift
   spikes/macos-shell/NativeSmokePaneDragScenarios.swift
   spikes/macos-shell/NativeSmokeNvimHelpers.swift
   spikes/macos-shell/NativeSmokeNvimLayoutScenarios.swift

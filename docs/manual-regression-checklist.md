@@ -1,9 +1,9 @@
 # Manual regression checklist
 
-Date: 2026-08-28
+Date: 2026-08-31
 
 This checklist covers the terminal, tab-title, agent-activity, Neovim, tmux,
-split-pane, and working-directory regressions reported through 2026-08-28. Run
+split-pane, and working-directory regressions reported through 2026-08-31. Run
 it against `Satin Dev`, not an installed release build.
 
 ## Preparation
@@ -93,6 +93,29 @@ it against `Satin Dev`, not an installed release build.
   Neovim in the repository root, home directory, or another stale directory.
 - [ ] Return the shell to an existing directory and confirm Neovim opens there.
 
+## Pane Finder action
+
+- [ ] In a local terminal pane, change to a directory containing a space and
+  click the folder icon in that pane's top band. Confirm Finder opens that exact
+  directory and Satin does not change the active pane or split layout.
+- [ ] Create two panes with different working directories. Click the inactive
+  pane's dimmed folder icon. Confirm Finder uses the clicked pane's directory,
+  not the active pane's directory.
+- [ ] Repeat from a projected tmux pane after `cd`, and confirm the folder action
+  uses that pane's current `pane_current_path` after session switches and
+  reattachment.
+- [ ] In native Neovim, run `:cd` to a different existing directory and click
+  the folder icon. Confirm Finder uses the new `:pwd` value rather than the cwd
+  inherited when Neovim started.
+- [ ] Remove a pane's current directory from another pane. Confirm the folder
+  action becomes unavailable after cwd metadata refresh; if invoked during the
+  transition, Satin reports `Could Not Open Finder` and never opens home, the
+  repository root, the process cwd, or another pane's cached directory.
+- [ ] Confirm the folder icon remains visible but dimmed on every inactive pane,
+  uses the same focus and hover emphasis as the other pane actions, shows the
+  `Open Pane Directory in Finder` tooltip, is also available in the pane context
+  menu, and never begins a pane drag.
+
 ## Tab title and agent activity ownership
 
 - [ ] Rename a local tab manually, start Claude Code or Codex, and submit work.
@@ -170,7 +193,7 @@ macOS screen-recording permission.
   `just nvim-smoke-side-pane`.
 - [ ] Run `just native-tmux-smoke` and `just pane-grid-smoke`.
 - [ ] Run `just native-tab-title-cwd-smoke`; confirm it reports
-  `title=stable activity=separate cwd=inherited fallback=none`.
+  `title=stable activity=separate cwd=inherited finder=local fallback=none`.
 - [ ] Run `just native-pane-dnd-smoke`; confirm it reports
   `handle=band preview=animated no-change-highlight=none`,
   `no-change-adjacency=both`,
@@ -181,7 +204,11 @@ macOS screen-recording permission.
   the proxy reads `Already there`, and dropping preserves every divider ratio.
 - [ ] In `just native-tmux-smoke`, confirm the native result contains
   `pane-dnd=noop+center+edge no-change-highlight=none`.
-- [ ] Run `just terminal-nvim-cwd-smoke` and `just precommit`.
+- [ ] Run `just terminal-nvim-cwd-smoke`; confirm it reports
+  `cwd=inherited finder=neovim-live`.
+- [ ] In `just native-tmux-smoke`, confirm the native result also reports
+  `finder=tmux`.
+- [ ] Run `just precommit`.
 - [ ] Quit Satin and cancel the warning once, then quit successfully. Disable
   **Confirm before quitting Satin** in General settings and confirm Quit no
   longer prompts.

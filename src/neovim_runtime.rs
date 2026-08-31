@@ -28,7 +28,9 @@ use crate::{
 const F_SETNOSIGPIPE: libc::c_int = 73;
 
 const SATIN_IMAGE_BRIDGE_LUA: &str = include_str!("satin_image_bridge.lua");
+const SATIN_CWD_BRIDGE_LUA: &str = include_str!("satin_cwd_bridge.lua");
 const SATIN_KITTY_NOTIFICATION: &str = "satin_kitty_graphics";
+const SATIN_CWD_NOTIFICATION: &str = "satin_cwd_changed";
 const MAX_KITTY_NOTIFICATION_BYTES: usize = 64 * 1024;
 
 pub struct NativeNeovimRuntime {
@@ -37,6 +39,8 @@ pub struct NativeNeovimRuntime {
     next_msg_id: u64,
     editor: NeovimEditor,
     kitty_graphics: KittyGraphicsBridge,
+    current_working_directory: Option<PathBuf>,
+    pending_working_directory: Option<PathBuf>,
     pending_message_selection_text: Option<String>,
     exited: bool,
     exit_code: Option<i32>,
@@ -82,6 +86,8 @@ impl NativeNeovimRuntime {
             next_msg_id: 1,
             editor: NeovimEditor::new(size.cols, size.rows),
             kitty_graphics: KittyGraphicsBridge::new(size)?,
+            current_working_directory: initial_cwd.clone(),
+            pending_working_directory: initial_cwd.clone(),
             pending_message_selection_text: None,
             exited: false,
             exit_code: None,
@@ -90,6 +96,7 @@ impl NativeNeovimRuntime {
         if let Some(cwd) = initial_cwd {
             runtime.set_current_directory(&cwd)?;
         }
+        runtime.install_cwd_bridge()?;
         Ok(runtime)
     }
 
@@ -154,10 +161,25 @@ impl NativeNeovimRuntime {
         self.request("nvim_command", vec![command.into()])
     }
 
+    pub fn current_working_directory(&self) -> Option<&Path> {
+        self.current_working_directory.as_deref()
+    }
+
+    pub fn take_working_directory_update(&mut self) -> Option<PathBuf> {
+        self.pending_working_directory.take()
+    }
+
     fn set_current_directory(&mut self, cwd: &Path) -> Result<()> {
         self.request(
             "nvim_set_current_dir",
             vec![cwd.to_string_lossy().into_owned().into()],
+        )
+    }
+
+    fn install_cwd_bridge(&mut self) -> Result<()> {
+        self.request(
+            "nvim_exec_lua",
+            vec![SATIN_CWD_BRIDGE_LUA.into(), Value::Array(Vec::new())],
         )
     }
 
@@ -283,6 +305,16 @@ impl NativeNeovimRuntime {
                 self.kitty_graphics.feed(bytes);
                 true
             }
+            Some(SATIN_CWD_NOTIFICATION) => {
+                let Some(cwd) = cwd_notification_path(&items[2]) else {
+                    return false;
+                };
+                if self.current_working_directory.as_ref() != Some(&cwd) {
+                    self.current_working_directory = Some(cwd.clone());
+                    self.pending_working_directory = Some(cwd);
+                }
+                false
+            }
             _ => false,
         }
     }
@@ -394,6 +426,12 @@ fn satin_image_bridge_command() -> String {
 fn kitty_notification_payload(value: &Value) -> Option<&[u8]> {
     let payload = value.as_array()?.first()?.as_str()?.as_bytes();
     (payload.len() <= MAX_KITTY_NOTIFICATION_BYTES).then_some(payload)
+}
+
+fn cwd_notification_path(value: &Value) -> Option<PathBuf> {
+    let path = value.as_array()?.first()?.as_str()?;
+    let path = PathBuf::from(path);
+    path.is_absolute().then_some(path)
 }
 
 impl Drop for NeovimProcess {
@@ -621,6 +659,20 @@ mod tests {
     }
 
     #[test]
+    fn accepts_only_absolute_working_directory_notifications() {
+        let expected = PathBuf::from("/tmp/satin cwd");
+        assert_eq!(
+            cwd_notification_path(&Value::Array(vec!["/tmp/satin cwd".into()])),
+            Some(expected)
+        );
+        assert_eq!(
+            cwd_notification_path(&Value::Array(vec!["relative/path".into()])),
+            None
+        );
+        assert_eq!(cwd_notification_path(&Value::Array(Vec::new())), None);
+    }
+
+    #[test]
     fn embeds_the_image_bridge_before_user_configuration() {
         let command = satin_image_bridge_command();
         assert!(command.contains("satin_features"));
@@ -630,5 +682,12 @@ mod tests {
         assert!(command.contains("image/utils/term"));
         assert!(command.contains("write_graphics_at = write_graphics_at"));
         assert!(command.contains("write_graphics(config, data, direct_chunk_size)"));
+    }
+
+    #[test]
+    fn embeds_event_driven_working_directory_tracking() {
+        assert!(SATIN_CWD_BRIDGE_LUA.contains("DirChanged"));
+        assert!(SATIN_CWD_BRIDGE_LUA.contains(SATIN_CWD_NOTIFICATION));
+        assert!(!SATIN_CWD_BRIDGE_LUA.contains("vim.loop.new_timer"));
     }
 }

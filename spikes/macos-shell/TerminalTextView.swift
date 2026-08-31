@@ -16,6 +16,7 @@ final class TerminalTextView: NSView, NSTextInputClient {
     var onScroll: ((CGFloat) -> Void)?
     var onPaneSelected: ((Int) -> Void)?
     var onPaneChromeAction: ((NativePaneChromeAction, Int, NSView) -> Void)?
+    var isPaneChromeActionEnabled: ((NativePaneChromeAction, Int) -> Bool)?
     var onPaneDropChangesLayout: ((Int, Int, NativePaneDropPosition) -> Bool)?
     var onPaneMoveRequested: ((Int, Int, NativePaneDropPosition) -> Bool)?
     var onSplitResize: ((Int, Int, NativePaneDividerAxis, CGFloat, Int) -> Void)?
@@ -436,6 +437,12 @@ final class TerminalTextView: NSView, NSTextInputClient {
             }
     }
 
+    func refreshPaneChromeActionAvailability(paneId: Int? = nil) {
+        for (candidateId, chrome) in paneChromeViews where paneId == nil || paneId == candidateId {
+            updatePaneChromeActionAvailability(chrome, paneId: candidateId)
+        }
+    }
+
     #if SATIN_SMOKE_SCENARIOS
         func paneDragHandlesReadyForSmoke() -> Bool {
             let paneIds = paneBounds.keys.filter { $0 != nativeArtifactSidebarPaneId }
@@ -634,12 +641,15 @@ final class TerminalTextView: NSView, NSTextInputClient {
         }
         for (paneId, paneRect) in paneBounds {
             let chrome: NativePaneChromeView
+            let created: Bool
             if let existing = paneChromeViews[paneId] {
                 chrome = existing
+                created = false
             } else {
+                created = true
                 let actions: [NativePaneChromeAction] =
                     paneId == nativeArtifactSidebarPaneId
-                    ? [.close] : NativePaneChromeAction.allCases
+                    ? [.close] : NativePaneChromeAction.standardActions
                 chrome = NativePaneChromeView(paneId: paneId, actions: actions)
                 chrome.onAction = { [weak self] action, paneId, sourceView in
                     self?.onPaneChromeAction?(action, paneId, sourceView)
@@ -655,7 +665,10 @@ final class TerminalTextView: NSView, NSTextInputClient {
                     ) ?? false
                 }
                 chrome.onContextMenu = { [weak self] event, sourceView in
-                    self?.onContextMenuRequested?(nil, event, sourceView)
+                    self?.onContextMenuRequested?(paneId, event, sourceView)
+                }
+                chrome.onAvailabilityRefresh = { [weak self] paneId in
+                    self?.refreshPaneChromeActionAvailability(paneId: paneId)
                 }
                 paneChromeViews[paneId] = chrome
                 addSubview(chrome)
@@ -673,6 +686,21 @@ final class TerminalTextView: NSView, NSTextInputClient {
             chrome.update(isActive: paneId == activePaneId)
             chrome.update(
                 isDraggable: paneId != nativeArtifactSidebarPaneId && movablePaneCount > 1
+            )
+            if created {
+                updatePaneChromeActionAvailability(chrome, paneId: paneId)
+            }
+        }
+    }
+
+    private func updatePaneChromeActionAvailability(
+        _ chrome: NativePaneChromeView,
+        paneId: Int
+    ) {
+        for action in NativePaneChromeAction.standardActions {
+            chrome.update(
+                action: action,
+                isEnabled: isPaneChromeActionEnabled?(action, paneId) ?? true
             )
         }
     }

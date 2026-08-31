@@ -267,7 +267,7 @@ security boundary.
 - `Command-1` through `Command-8`: select that tab; `Command-9`: select the last tab
 - `Command-R`: rename the active tab
 - a borderless new-tab action immediately after the native tab strip
-- per-pane `×`, vertical split, and horizontal split actions
+- per-pane vertical split, horizontal split, Finder-directory, and `×` actions
 - right-side toolbar actions for the Artifact sidebar and Work Switcher
 - `Command-N`: open the unified native Neovim UI while retaining the current shell
 - `Command-C`, `Command-V`, `Command-A`, `Command-F`: copy, paste, select all,
