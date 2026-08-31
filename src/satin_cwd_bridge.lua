@@ -20,9 +20,10 @@ local function notify_cwd()
   end
 end
 
+-- The host already seeds the initial cwd. An eager startup notification can
+-- race the first embedded file redraw, so only real DirChanged events notify.
 local group = vim.api.nvim_create_augroup("SatinWorkingDirectory", { clear = true })
 vim.api.nvim_create_autocmd("DirChanged", {
   group = group,
   callback = notify_cwd,
 })
-notify_cwd()

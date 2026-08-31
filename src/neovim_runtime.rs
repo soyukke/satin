@@ -96,7 +96,6 @@ impl NativeNeovimRuntime {
         if let Some(cwd) = initial_cwd {
             runtime.set_current_directory(&cwd)?;
         }
-        runtime.install_cwd_bridge()?;
         Ok(runtime)
     }
 
@@ -173,13 +172,6 @@ impl NativeNeovimRuntime {
         self.request(
             "nvim_set_current_dir",
             vec![cwd.to_string_lossy().into_owned().into()],
-        )
-    }
-
-    fn install_cwd_bridge(&mut self) -> Result<()> {
-        self.request(
-            "nvim_exec_lua",
-            vec![SATIN_CWD_BRIDGE_LUA.into(), Value::Array(Vec::new())],
         )
     }
 
@@ -381,6 +373,8 @@ impl NeovimProcess {
             .arg("--cmd")
             .arg(satin_image_bridge_command())
             .arg("--cmd")
+            .arg(satin_cwd_bridge_command())
+            .arg("--cmd")
             .arg("let g:auto_session_enabled = v:false")
             .args(arguments)
             .stdin(Stdio::piped())
@@ -421,6 +415,12 @@ fn satin_image_bridge_command() -> String {
     let source = serde_json::to_string(SATIN_IMAGE_BRIDGE_LUA)
         .expect("embedded Satin image bridge must serialize");
     format!("lua assert(load({source}, '@satin-image-bridge'))()")
+}
+
+fn satin_cwd_bridge_command() -> String {
+    let source = serde_json::to_string(SATIN_CWD_BRIDGE_LUA)
+        .expect("embedded Satin working-directory bridge must serialize");
+    format!("lua assert(load({source}, '@satin-cwd-bridge'))()")
 }
 
 fn kitty_notification_payload(value: &Value) -> Option<&[u8]> {
@@ -689,5 +689,7 @@ mod tests {
         assert!(SATIN_CWD_BRIDGE_LUA.contains("DirChanged"));
         assert!(SATIN_CWD_BRIDGE_LUA.contains(SATIN_CWD_NOTIFICATION));
         assert!(!SATIN_CWD_BRIDGE_LUA.contains("vim.loop.new_timer"));
+        assert!(!SATIN_CWD_BRIDGE_LUA.trim_end().ends_with("notify_cwd()"));
+        assert!(satin_cwd_bridge_command().contains("@satin-cwd-bridge"));
     }
 }
