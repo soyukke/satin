@@ -107,6 +107,10 @@ extension TerminalShellViewController {
                 } else if tmuxSession?.gatewayPaneId != paneId {
                     updateTerminalMetadata(terminal, paneId: paneId)
                 }
+            } else if let neovim = pane as? RustNeovimPane {
+                if let cwd = neovim.takeWorkingDirectoryUpdate() {
+                    updateNeovimMetadata(cwd: cwd, paneId: paneId)
+                }
             }
             if paneId == nativeArtifactSidebarPaneId, pane.isExited() {
                 artifactSidebarExited = true
@@ -464,7 +468,10 @@ extension TerminalShellViewController {
     }
 
     private func updateTmuxPaneMetadata(_ pane: TmuxPaneSnapshot, nativePaneId: Int) {
-        paneStore.workingDirectories[nativePaneId] = pane.current_path
+        if paneStore.workingDirectories[nativePaneId] != pane.current_path {
+            paneStore.workingDirectories[nativePaneId] = pane.current_path
+            terminalTextView.refreshPaneChromeActionAvailability(paneId: nativePaneId)
+        }
         let previousTitle = paneStore.titles[nativePaneId] ?? ""
         guard previousTitle != pane.title else {
             return
@@ -627,8 +634,9 @@ extension TerminalShellViewController {
     }
 
     func updateTerminalMetadata(_ pane: RustTerminalPane, paneId: Int) {
-        if let cwd = pane.currentWorkingDirectory() {
+        if let cwd = pane.currentWorkingDirectory(), paneStore.workingDirectories[paneId] != cwd {
             paneStore.workingDirectories[paneId] = cwd
+            terminalTextView.refreshPaneChromeActionAvailability(paneId: paneId)
         }
         if let title = pane.title(), paneStore.titles[paneId] != title {
             paneStore.titles[paneId] = title
@@ -636,6 +644,14 @@ extension TerminalShellViewController {
         }
         let bells = pane.takeBellCount()
         handleTerminalBells(bells)
+    }
+
+    private func updateNeovimMetadata(cwd: String, paneId: Int) {
+        guard paneStore.workingDirectories[paneId] != cwd else {
+            return
+        }
+        paneStore.workingDirectories[paneId] = cwd
+        terminalTextView.refreshPaneChromeActionAvailability(paneId: paneId)
     }
 
     private func updateAgentStatusFromTitle(_ title: String, paneId: Int) {

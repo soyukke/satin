@@ -98,6 +98,16 @@ import Foundation
                 }
                 return
             }
+            guard let paneId = activePaneId,
+                verifyPaneFinderActionForSmoke(
+                    paneId: paneId,
+                    expectedCwd: projectedPane.current_path
+                )
+            else {
+                tmuxSession?.gateway.tmuxCommand("kill-session")
+                writeSessionSmokeResult(resultPath, result: "failed tmux-native finder=no\n")
+                return
+            }
             if tmuxZoomResizeSmokeOnly() {
                 continueTmuxSmokeSplit(resultPath)
                 return
@@ -844,6 +854,7 @@ import Foundation
                 restored && attachmentCleared
                 ? "ok tmux-native indicator=yes output=yes history=yes paste=yes zoom=yes "
                     + "font-zoom=yes "
+                    + "finder=tmux "
                     + "agent-status=yes agent-title=stable activity=separate notification=yes "
                     + "rename=yes split=2 divider-resize=yes pane-dnd=noop+center+edge "
                     + "no-change-highlight=none client-grid=full "

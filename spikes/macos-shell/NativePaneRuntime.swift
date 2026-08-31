@@ -772,6 +772,14 @@ final class RustNeovimPane: NativePane {
         }
     }
 
+    func currentWorkingDirectory() -> String? {
+        ownedRustString(satinNvimCwd(handle))
+    }
+
+    func takeWorkingDirectoryUpdate() -> String? {
+        ownedRustString(satinNvimTakeCwdUpdate(handle))
+    }
+
     @discardableResult
     func drain() -> Bool {
         satinNvimDrain(handle) != 0

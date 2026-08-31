@@ -153,6 +153,17 @@ import Foundation
                 return
             }
 
+            guard
+                verifyPaneFinderActionForSmoke(
+                    paneId: originalPaneId,
+                    expectedCwd: expectedCwd
+                ),
+                paneFinderRejectsInvalidDirectoryForSmoke(parentDirectory: expectedCwd)
+            else {
+                writeTabTitleCwdSmokeFailure(resultPath, phase: "finder")
+                return
+            }
+
             guard let menuItem = mainMenuItem(in: NSApp.mainMenu, command: .newTab),
                 menuItem.keyEquivalent == "t",
                 let action = menuItem.action,
@@ -261,7 +272,7 @@ import Foundation
             writeSessionSmokeResult(
                 resultPath,
                 result: "ok tab-title-cwd title=stable activity=separate cwd=inherited "
-                    + "fallback=none expected=\(expectedCwd)\n"
+                    + "finder=local fallback=none expected=\(expectedCwd)\n"
             )
         }
 

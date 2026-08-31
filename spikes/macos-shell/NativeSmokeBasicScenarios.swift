@@ -190,6 +190,10 @@ import Foundation
             let metrics = paneLayoutMetrics(activeTab.layout)
             let axes = metrics.axes.sorted()
             let paneChromeReady = terminalTextView.paneChromeViewsReady(expectedCount: 3)
+            let paneFinderReady = terminalTextView.paneChromeViews.values.allSatisfy {
+                $0.actionEnabledForSmoke(.openInFinder)
+                    && $0.finderPresentationReadyForSmoke()
+            }
             let contentClearsPaneChrome = terminalTextView.paneBounds.allSatisfy { paneId, bounds in
                 guard let content = paneStore.visibleFrames[paneId] else {
                     return false
@@ -345,6 +349,7 @@ import Foundation
                 controlsReady
                 && shortcutsReady
                 && paneChromeReady
+                && paneFinderReady
                 && compactChrome
                 && contentBelowChrome
                 && contentClearsPaneChrome
@@ -377,6 +382,7 @@ import Foundation
                 result: "\(status) tab-bar-actions controls=\(controlsReady ? "ready" : "invalid") "
                     + "shortcuts=\(shortcutsReady ? "ready" : "invalid") "
                     + "chrome=\(paneChromeReady ? "pane-local" : "missing") "
+                    + "finder=\(paneFinderReady ? "visible+dimmed" : "invalid") "
                     + "density=\(compactChrome ? "compact" : "regular") "
                     + "content=\(contentBelowChrome && contentClearsPaneChrome ? "safe" : "overlap") "
                     + "background=\(backdropSpansWindow ? "edge-to-edge" : "inset") "

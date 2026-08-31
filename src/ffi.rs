@@ -1015,6 +1015,24 @@ pub extern "C" fn satin_nvim_command(
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn satin_nvim_cwd(handle: *const NativeNeovimRuntime) -> *mut c_char {
+    let Some(cwd) = nvim_ref(handle).and_then(NativeNeovimRuntime::current_working_directory)
+    else {
+        return ptr::null_mut();
+    };
+    string_ptr(cwd.to_string_lossy().into_owned())
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn satin_nvim_take_cwd_update(handle: *mut NativeNeovimRuntime) -> *mut c_char {
+    nvim_mut(handle)
+        .and_then(NativeNeovimRuntime::take_working_directory_update)
+        .map_or(ptr::null_mut(), |cwd| {
+            string_ptr(cwd.to_string_lossy().into_owned())
+        })
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn satin_nvim_drain(handle: *mut NativeNeovimRuntime) -> u8 {
     let Some(runtime) = nvim_mut(handle) else {
         return 0;

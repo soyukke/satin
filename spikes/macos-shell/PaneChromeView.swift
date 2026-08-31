@@ -18,16 +18,25 @@ func nativePaneContentFrame(_ paneFrame: NSRect) -> NSRect {
     )
 }
 
-enum NativePaneChromeAction: Int, CaseIterable {
+enum NativePaneChromeAction: Int {
     case close
     case splitVertical
     case splitHorizontal
+    case openInFinder
+
+    static let standardActions: [Self] = [
+        .splitVertical,
+        .splitHorizontal,
+        .openInFinder,
+        .close,
+    ]
 
     var title: String {
         switch self {
         case .close: "Close Pane"
         case .splitVertical: "Split Left and Right"
         case .splitHorizontal: "Split Top and Bottom"
+        case .openInFinder: "Open Pane Directory in Finder"
         }
     }
 
@@ -36,6 +45,7 @@ enum NativePaneChromeAction: Int, CaseIterable {
         case .close: "xmark"
         case .splitVertical: "rectangle.split.2x1"
         case .splitHorizontal: "rectangle.split.1x2"
+        case .openInFinder: "folder"
         }
     }
 }
@@ -58,6 +68,12 @@ final class NativeHoverIconButton: NSButton {
 
     required init?(coder: NSCoder) {
         nil
+    }
+
+    override var isEnabled: Bool {
+        didSet {
+            updateHoverAppearance()
+        }
     }
 
     override var intrinsicContentSize: NSSize {
@@ -196,7 +212,9 @@ final class NativeHoverIconButton: NSButton {
     }
 
     private func updateHoverAppearance() {
-        if pressing {
+        if !isEnabled {
+            contentTintColor = .quaternaryLabelColor
+        } else if pressing {
             contentTintColor = .controlAccentColor
         } else if hovering {
             contentTintColor = .labelColor
@@ -226,6 +244,7 @@ final class NativePaneChromeView: NSView {
     var onPress: ((Int) -> Void)?
     var onDrag: ((NativePaneChromeDragPhase, Int, NSPoint) -> Bool)?
     var onContextMenu: ((NSEvent, NSView) -> Void)?
+    var onAvailabilityRefresh: ((Int) -> Void)?
 
     private let actions: [NativePaneChromeAction]
     private var buttons: [NativePaneChromeAction: NativeHoverIconButton] = [:]
@@ -236,7 +255,10 @@ final class NativePaneChromeView: NSView {
     private var mouseDownLocation: NSPoint?
     private var dragging = false
 
-    init(paneId: Int, actions: [NativePaneChromeAction] = NativePaneChromeAction.allCases) {
+    init(
+        paneId: Int,
+        actions: [NativePaneChromeAction] = NativePaneChromeAction.standardActions
+    ) {
         self.paneId = paneId
         self.actions = actions
         super.init(frame: .zero)
@@ -309,6 +331,7 @@ final class NativePaneChromeView: NSView {
     }
 
     override func mouseEntered(with event: NSEvent) {
+        onAvailabilityRefresh?(paneId)
         updateHandleHover(event)
     }
 
@@ -405,6 +428,10 @@ final class NativePaneChromeView: NSView {
             }
     }
 
+    func update(action: NativePaneChromeAction, isEnabled: Bool) {
+        buttons[action]?.isEnabled = isEnabled
+    }
+
     var preferredWidth: CGFloat {
         Self.buttonWidth * CGFloat(actions.count)
             + Self.buttonSpacing * CGFloat(max(0, actions.count - 1))
@@ -415,6 +442,32 @@ final class NativePaneChromeView: NSView {
     }
 
     #if SATIN_SMOKE_SCENARIOS
+        func actionEnabledForSmoke(_ action: NativePaneChromeAction) -> Bool {
+            buttons[action]?.isEnabled == true
+        }
+
+        func finderPresentationReadyForSmoke() -> Bool {
+            guard let button = buttons[.openInFinder] else {
+                return false
+            }
+            let originalActive = active
+            update(isActive: false)
+            let inactiveReady =
+                !button.isHidden
+                && button.contentTintColor?.isEqual(
+                    buttons[.splitVertical]?.contentTintColor
+                ) == true
+            update(isActive: true)
+            let activeReady =
+                !button.isHidden
+                && button.contentTintColor?.isEqual(
+                    buttons[.splitVertical]?.contentTintColor
+                ) == true
+            update(isActive: originalActive)
+            return inactiveReady && activeReady
+                && button.toolTip == NativePaneChromeAction.openInFinder.title
+        }
+
         func dragHandleReadyForSmoke() -> Bool {
             draggable && dragHandleRect.width >= 18 && onDrag != nil && onPress != nil
         }
@@ -457,7 +510,9 @@ final class NativePaneChromeView: NSView {
         setAccessibilityElement(true)
         setAccessibilityRole(.group)
         setAccessibilityLabel("Pane \(paneId) header")
-        setAccessibilityHelp("Drag the header to move this pane, or use its pane actions.")
+        setAccessibilityHelp(
+            "Drag the header to move this pane, or use its split, Finder, and close actions."
+        )
     }
 
     @objc private func actionClicked(_ sender: NativeHoverIconButton) {

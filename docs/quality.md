@@ -63,8 +63,11 @@ quality` is the local publication gate and adds worktree secret scanning,
 dependency auditing, native build, updater self-test, and native smoke.
 The native portion explicitly includes frame-liveness, repeated bottom-line
 terminal input, stable tab-title ownership, active-pane Command-T cwd
-inheritance, animated pane-header drag/drop, multi-tab toolbar placement, full
-tmux control-mode behavior, and the pane/grid matrix. The pane drag gate checks
+inheritance, per-pane Finder directory actions, animated pane-header drag/drop,
+multi-tab toolbar placement, full tmux control-mode behavior, and the pane/grid
+matrix. The Finder checks cover live local PTY cwd, tmux `current_path`, and
+event-driven native Neovim `DirChanged` metadata without a home/process-cwd
+fallback. The pane drag gate checks
 that unchanged sibling-side drops suppress their target highlight, then checks
 center swaps and edge reparenting without replacing local pane runtimes. The
 gate runs those checks through the same rebuilt `Satin Dev.app` executable used

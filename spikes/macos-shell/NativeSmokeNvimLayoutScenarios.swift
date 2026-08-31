@@ -451,17 +451,33 @@ import Foundation
         func writeTerminalNvimCwdSmokeResult(
             _ resultPath: String,
             expected: String,
+            finderCwd: String,
             actualFile: String,
             retries: Int
         ) {
+            drainTerminalPanes()
             let actual = (try? String(contentsOfFile: actualFile, encoding: .utf8))?
                 .trimmingCharacters(in: .whitespacesAndNewlines)
-            let ok = activePaneMode() == .neovim && actual == expected
+            let paneId = activePaneId
+            let liveCwd = paneId.flatMap {
+                (paneStore.runtimes[$0] as? RustNeovimPane)?.currentWorkingDirectory()
+            }
+            let cwdReady =
+                activePaneMode() == .neovim
+                && actual == expected
+                && liveCwd == finderCwd
+            let finderReady =
+                cwdReady
+                && paneId.map {
+                    verifyPaneFinderActionForSmoke(paneId: $0, expectedCwd: finderCwd)
+                } == true
+            let ok = cwdReady && finderReady
             if !ok, retries > 0 {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
                     self?.writeTerminalNvimCwdSmokeResult(
                         resultPath,
                         expected: expected,
+                        finderCwd: finderCwd,
                         actualFile: actualFile,
                         retries: retries - 1
                     )
@@ -471,8 +487,9 @@ import Foundation
 
             let result =
                 ok
-                ? "ok terminal-nvim-cwd cwd=\(expected)\n"
+                ? "ok terminal-nvim-cwd cwd=inherited finder=neovim-live expected=\(expected)\n"
                 : "failed terminal-nvim-cwd expected=\(expected) actual=\(actual ?? "nil") "
+                    + "live=\(liveCwd ?? "nil") finder=\(finderReady) "
                     + "mode=\(activePaneMode())\n"
             try? result.write(toFile: resultPath, atomically: true, encoding: .utf8)
             NSApp.terminate(nil)

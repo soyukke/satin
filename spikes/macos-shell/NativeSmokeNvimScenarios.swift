@@ -10,8 +10,10 @@ import Foundation
             let cwdFile =
                 ProcessInfo.processInfo.environment["SATIN_NATIVE_CWD_ACTUAL"]
                 ?? "/tmp/satin-terminal-nvim-cwd.actual"
+            let finderCwd = URL(fileURLWithPath: cwd, isDirectory: true)
+                .appendingPathComponent("finder live cwd", isDirectory: true).path
             try? FileManager.default.createDirectory(
-                atPath: cwd,
+                atPath: finderCwd,
                 withIntermediateDirectories: true
             )
             try? FileManager.default.removeItem(atPath: cwdFile)
@@ -24,6 +26,7 @@ import Foundation
                 waitForTerminalCwdThenOpenNvim(
                     resultPath,
                     expected: cwd,
+                    finderCwd: finderCwd,
                     actualFile: cwdFile,
                     retries: 30
                 )
@@ -33,6 +36,7 @@ import Foundation
         func waitForTerminalCwdThenOpenNvim(
             _ resultPath: String,
             expected: String,
+            finderCwd: String,
             actualFile: String,
             retries: Int
         ) {
@@ -47,6 +51,7 @@ import Foundation
                         self?.waitForTerminalCwdThenOpenNvim(
                             resultPath,
                             expected: expected,
+                            finderCwd: finderCwd,
                             actualFile: actualFile,
                             retries: retries - 1
                         )
@@ -63,7 +68,8 @@ import Foundation
             openNativeNeovim(nil)
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
                 self?.runNvimCommandOrWrite(
-                    "call writefile([getcwd()], '\(vimSingleQuote(actualFile))')",
+                    "call writefile([getcwd()], '\(vimSingleQuote(actualFile))') | "
+                        + "execute 'cd ' . fnameescape('\(vimSingleQuote(finderCwd))')",
                     fallback: Data()
                 )
             }
@@ -71,6 +77,7 @@ import Foundation
                 self?.writeTerminalNvimCwdSmokeResult(
                     resultPath,
                     expected: expected,
+                    finderCwd: finderCwd,
                     actualFile: actualFile,
                     retries: 16
                 )

@@ -206,6 +206,19 @@ extension TerminalShellViewController {
         }
     }
 
+    func presentPaneDirectoryOpenError() {
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Could Not Open Finder"
+        alert.informativeText = "Finder could not open the selected pane's working directory."
+        alert.addButton(withTitle: "OK")
+        if let window = view.window {
+            alert.beginSheetModal(for: window)
+        } else {
+            alert.runModal()
+        }
+    }
+
     @objc func closeActivePane(_ sender: Any?) {
         closePane(activePaneId)
     }
@@ -222,8 +235,25 @@ extension TerminalShellViewController {
             splitPane(paneId, axis: ffiSplitVertical)
         case .splitHorizontal:
             splitPane(paneId, axis: ffiSplitHorizontal)
+        case .openInFinder:
+            _ = openPaneDirectoryInFinder(paneId: paneId)
         }
         focusTerminal()
+    }
+
+    @discardableResult
+    func openPaneDirectoryInFinder(paneId: Int) -> Bool {
+        guard let directory = paneWorkingDirectory(paneId: paneId, logFailure: true) else {
+            presentPaneWorkingDirectoryError(title: "Could Not Open Finder")
+            return false
+        }
+        let url = URL(fileURLWithPath: directory, isDirectory: true)
+        guard paneDirectoryOpener(url) else {
+            NativeLog.runtimeError("pane_finder_open_failed pane=\(paneId) path=\(directory)")
+            presentPaneDirectoryOpenError()
+            return false
+        }
+        return true
     }
 
     private func splitPane(_ paneId: Int?, axis: UInt32) {
@@ -571,6 +601,14 @@ extension TerminalShellViewController {
         closeTab(at: index)
     }
 
+    @objc func openPaneDirectoryFromContextMenu(_ sender: NSMenuItem) {
+        guard let paneId = sender.representedObject as? Int else {
+            return
+        }
+        _ = openPaneDirectoryInFinder(paneId: paneId)
+        focusTerminal()
+    }
+
     @discardableResult
     func closeTab(at index: Int) -> Bool {
         guard let snapshot = lastSnapshot,
@@ -670,8 +708,22 @@ extension TerminalShellViewController {
             selectTabForContextMenu(tabIndex)
         }
 
+        return terminalContextMenu(paneId: activePaneId)
+    }
+
+    func terminalContextMenu(paneId requestedPaneId: Int?) -> NSMenu {
+        let paneId = requestedPaneId ?? activePaneId
         let menu = NSMenu()
         menu.addItem(menuItem("Rename Session", #selector(renameActiveTab(_:))))
+        if let paneId, paneId != nativeArtifactSidebarPaneId {
+            let finderItem = menuItem(
+                "Open Pane Directory in Finder",
+                #selector(openPaneDirectoryFromContextMenu(_:))
+            )
+            finderItem.representedObject = paneId
+            finderItem.isEnabled = paneWorkingDirectory(paneId: paneId, logFailure: false) != nil
+            menu.addItem(finderItem)
+        }
         if tmuxSession != nil {
             let zoomTitle =
                 tmuxSession?.activeWindowZoomed == true
