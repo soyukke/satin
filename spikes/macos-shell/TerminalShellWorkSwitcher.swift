@@ -53,9 +53,6 @@ extension TerminalShellViewController {
     }
 
     func paneStatusDidChange(paneId: Int, status: NativePaneControlStatus?) {
-        if let snapshot = lastSnapshot {
-            syncTabActivityIndicators(snapshot)
-        }
         if let status {
             workAttentionStore.observe(
                 paneId: paneId,
@@ -65,7 +62,33 @@ extension TerminalShellViewController {
         } else {
             workAttentionStore.remove(paneId: paneId)
         }
+        if let snapshot = lastSnapshot {
+            syncTabStatusBadges(snapshot)
+        }
         refreshWorkSwitcherPresentation()
+    }
+
+    func syncTabStatusBadges(_ snapshot: TerminalCoreSnapshot) {
+        var badges = [Int: NativeTabStatusBadge]()
+        for tab in snapshot.tabs {
+            let paneStates = tab.panes.compactMap { paneId in
+                paneStatuses.status(for: paneId).map { status in
+                    (
+                        status: status.status,
+                        unread: workAttentionStore.isUnread(paneId: paneId)
+                    )
+                }
+            }
+            let badge = nativeTabStatusBadge(for: paneStates)
+            badges[tab.index] = badge
+            let statusLine = badge.map { "\nStatus: \($0.toolTipDescription)" } ?? ""
+            tabControl.setToolTip(
+                "\(tab.title)\(statusLine)\n"
+                    + "Drag to reorder; use × to close; double-click or right-click for actions",
+                forSegment: tab.index
+            )
+        }
+        tabControl.setStatusBadges(badges)
     }
 
     func dismissAgentWaitingOnEscape(paneId: Int) {
@@ -87,6 +110,9 @@ extension TerminalShellViewController {
             return
         }
         workAttentionStore.markSeen(paneId: activePaneId)
+        if let snapshot = lastSnapshot {
+            syncTabStatusBadges(snapshot)
+        }
         refreshWorkSwitcherPresentation()
     }
 
@@ -197,6 +223,9 @@ extension TerminalShellViewController {
             syncFromCore()
         }
         workAttentionStore.markSeen(paneId: item.paneId)
+        if let snapshot = lastSnapshot {
+            syncTabStatusBadges(snapshot)
+        }
         dismissWorkSwitcher()
         refreshWorkSwitcherPresentation()
         focusTerminal()

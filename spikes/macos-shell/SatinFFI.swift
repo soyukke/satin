@@ -299,6 +299,7 @@ func satinRuntimeSelectionEvent(
     _ x: Float,
     _ y: Float,
     _ cellWidth: UInt32,
+    _ cellHeight: UInt32,
     _ rectangular: UInt8
 ) -> Int
 

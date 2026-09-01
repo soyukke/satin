@@ -25,6 +25,8 @@ final class TerminalMetalView: MTKView, CAMetalDisplayLinkDelegate, MTKViewDeleg
     #if SATIN_SMOKE_SCENARIOS
         private var frameRequestInterleaveArmed = false
         private var frameRequestInterleavedRevision: UInt64?
+        private var presentedFrameRequestRevision: UInt64 = 0
+        private var presentedFrameCount = 0
     #endif
 
     required init(coder: NSCoder) {
@@ -97,6 +99,19 @@ final class TerminalMetalView: MTKView, CAMetalDisplayLinkDelegate, MTKViewDeleg
             frameDisplayLink?.isPaused = true
             return
         }
+        configureDisplayRefreshRate(window)
+        requestFrame()
+    }
+
+    override func viewDidChangeBackingProperties() {
+        super.viewDidChangeBackingProperties()
+        if let window {
+            configureDisplayRefreshRate(window)
+        }
+        requestFrame()
+    }
+
+    private func configureDisplayRefreshRate(_ window: NSWindow) {
         let displayRate = min(120, max(30, window.screen?.maximumFramesPerSecond ?? 60))
         let rate = Float(displayRate)
         displayRefreshInterval = 1 / CFTimeInterval(displayRate)
@@ -105,7 +120,6 @@ final class TerminalMetalView: MTKView, CAMetalDisplayLinkDelegate, MTKViewDeleg
             maximum: rate,
             preferred: rate
         )
-        requestFrame()
     }
 
     override var acceptsFirstResponder: Bool {
@@ -193,6 +207,11 @@ final class TerminalMetalView: MTKView, CAMetalDisplayLinkDelegate, MTKViewDeleg
             commandBuffer,
             renderedRequestRevision: renderedRequestRevision
         )
+        #if SATIN_SMOKE_SCENARIOS
+            drawable.addPresentedHandler { [weak self] _ in
+                self?.recordPresentedFrame(revision: renderedRequestRevision)
+            }
+        #endif
         commandBuffer.present(drawable)
         let committedAt = performanceToken == nil ? 0 : CACurrentMediaTime()
         performanceRecorder.observeCommandBuffer(
@@ -237,6 +256,21 @@ final class TerminalMetalView: MTKView, CAMetalDisplayLinkDelegate, MTKViewDeleg
         skiaFrameCount = 0
     }
 
+    #if SATIN_SMOKE_SCENARIOS
+        func resetPresentedFrameCount() {
+            frameRequestLock.lock()
+            presentedFrameCount = 0
+            frameRequestLock.unlock()
+        }
+
+        func presentedFrameSnapshot() -> (revision: UInt64, count: Int) {
+            frameRequestLock.lock()
+            let snapshot = (presentedFrameRequestRevision, presentedFrameCount)
+            frameRequestLock.unlock()
+            return snapshot
+        }
+    #endif
+
     func resetResizeDiagnostics() {
         lastRenderedTextureSize = nil
         rejectedDrawableCount = 0
@@ -256,8 +290,15 @@ final class TerminalMetalView: MTKView, CAMetalDisplayLinkDelegate, MTKViewDeleg
 
     func frameRequestDiagnosticsSummary() -> String {
         let revisions = frameRequestRevisions()
-        return "requested=\(revisions.requested) rendered=\(revisions.rendered) "
+        let base =
+            "requested=\(revisions.requested) rendered=\(revisions.rendered) "
             + "pending=\(revisions.requested == revisions.rendered ? "no" : "yes")"
+        #if SATIN_SMOKE_SCENARIOS
+            let presented = presentedFrameSnapshot()
+            return base + " presented=\(presented.revision) count=\(presented.count)"
+        #else
+            return base
+        #endif
     }
 
     func frameRequestRevisionSnapshot() -> (requested: UInt64, rendered: UInt64) {
@@ -379,6 +420,13 @@ final class TerminalMetalView: MTKView, CAMetalDisplayLinkDelegate, MTKViewDeleg
     }
 
     #if SATIN_SMOKE_SCENARIOS
+        private func recordPresentedFrame(revision: UInt64) {
+            frameRequestLock.lock()
+            presentedFrameRequestRevision = max(presentedFrameRequestRevision, revision)
+            presentedFrameCount += 1
+            frameRequestLock.unlock()
+        }
+
         private func interleaveFrameRequestForSmoke() {
             guard frameRequestInterleaveArmed else {
                 return
@@ -423,10 +471,10 @@ final class TerminalMetalView: MTKView, CAMetalDisplayLinkDelegate, MTKViewDeleg
     }
 
     private func expectedDrawableSize() -> (width: Int, height: Int) {
-        let scale = window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 1
+        let backingSize = convertToBacking(bounds.size)
         return (
-            max(1, Int((bounds.width * scale).rounded())),
-            max(1, Int((bounds.height * scale).rounded()))
+            max(1, Int(abs(backingSize.width).rounded())),
+            max(1, Int(abs(backingSize.height).rounded()))
         )
     }
 

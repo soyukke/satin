@@ -160,6 +160,14 @@ final class TerminalTextView: NSView, NSTextInputClient {
         }
     }
 
+    override func viewDidChangeBackingProperties() {
+        super.viewDidChangeBackingProperties()
+        cancelTerminalSelectionGesture()
+        invalidateInputCoordinates()
+        onGeometryChanged?()
+        needsDisplay = true
+    }
+
     override func keyDown(with event: NSEvent) {
         if event.modifierFlags.contains(.command) {
             if handleCommandKey(event) {
@@ -573,10 +581,15 @@ final class TerminalTextView: NSView, NSTextInputClient {
         let cellSize = terminalCellSize()
         let cols = max(1, Int(textRect.width / cellSize.width))
         let rows = max(1, Int(textRect.height / cellSize.height))
-        let scale = window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 1
-        let widthPixels = max(1, Int(textRect.width * scale))
-        let heightPixels = max(1, Int(textRect.height * scale))
+        let backingSize = convertToBacking(textRect.size)
+        let widthPixels = max(1, Int(abs(backingSize.width).rounded()))
+        let heightPixels = max(1, Int(abs(backingSize.height).rounded()))
         return (rows, cols, widthPixels, heightPixels)
+    }
+
+    func terminalBackingCellSize() -> NSSize {
+        let size = convertToBacking(terminalCellSize())
+        return NSSize(width: abs(size.width), height: abs(size.height))
     }
 
     func skiaRenderGeometry() -> SkiaRenderGeometry {
@@ -585,14 +598,16 @@ final class TerminalTextView: NSView, NSTextInputClient {
 
     func skiaRenderGeometry(for textRect: NSRect) -> SkiaRenderGeometry {
         let cellSize = terminalCellSize()
-        let scale = window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 1
+        let backingCellSize = terminalBackingCellSize()
+        let scaleX = backingCellSize.width / cellSize.width
+        let scaleY = backingCellSize.height / cellSize.height
         return SkiaRenderGeometry(
-            originX: Float(textRect.minX * scale),
-            originY: Float(textRect.minY * scale),
-            contentWidth: Float(textRect.width * scale),
-            contentHeight: Float(textRect.height * scale),
-            cellWidth: Float(cellSize.width * scale),
-            cellHeight: Float(cellSize.height * scale)
+            originX: Float(textRect.minX * scaleX),
+            originY: Float(textRect.minY * scaleY),
+            contentWidth: Float(textRect.width * scaleX),
+            contentHeight: Float(textRect.height * scaleY),
+            cellWidth: Float(backingCellSize.width),
+            cellHeight: Float(backingCellSize.height)
         )
     }
 
@@ -600,7 +615,7 @@ final class TerminalTextView: NSView, NSTextInputClient {
         guard paneBounds.count > 1 else {
             return
         }
-        let scale = window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 1
+        let scale = max(1, terminalBackingCellSize().width / terminalCellSize().width)
         let lineWidth = 1 / max(1, scale)
         for (paneId, rect) in paneBounds {
             let path = NSBezierPath(

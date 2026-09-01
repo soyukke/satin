@@ -9,6 +9,25 @@ private enum TerminalSelectionAutoscrollEdge: Equatable {
     case bottom
 }
 
+private struct TerminalSurfaceAxis {
+    let position: Float
+    let cellPixels: UInt32
+}
+
+private func terminalSurfaceAxis(
+    offset: CGFloat,
+    cellPoints: CGFloat,
+    backingCellPixels: CGFloat
+) -> TerminalSurfaceAxis {
+    let logicalCell = max(1, cellPoints)
+    let cellPixels = UInt32(max(1, Int(backingCellPixels.rounded())))
+    // libghostty-vt's mouse/selection geometry uses an integer cell width.
+    // Express the pointer in that same synthetic pixel grid so fractional
+    // backing widths cannot accumulate a column-dependent phase error.
+    let position = offset / logicalCell * CGFloat(cellPixels)
+    return TerminalSurfaceAxis(position: Float(position), cellPixels: cellPixels)
+}
+
 private func terminalScrollRows(
     deltaY: CGFloat,
     hasPreciseDeltas: Bool,
@@ -95,6 +114,23 @@ func runTerminalTextInputSelfTests() -> Bool {
     let baselineFontSize = view.terminalFontSize
     let baselineCell = view.terminalCellSize()
     let baselineGrid = view.terminalGridSize(for: textRect)
+    for scale in [CGFloat(1), CGFloat(2)] {
+        for col in 0...160 {
+            for fraction in [CGFloat(0.1), CGFloat(0.5), CGFloat(0.75), CGFloat(0.9)] {
+                let axis = terminalSurfaceAxis(
+                    offset: (CGFloat(col) + fraction) * baselineCell.width,
+                    cellPoints: baselineCell.width,
+                    backingCellPixels: baselineCell.width * scale
+                )
+                let encoded = CGFloat(axis.position) / CGFloat(axis.cellPixels)
+                let encodedCol = Int(floor(encoded))
+                let encodedFraction = encoded - CGFloat(encodedCol)
+                guard encodedCol == col, abs(encodedFraction - fraction) < 0.0001 else {
+                    return false
+                }
+            }
+        }
+    }
     guard view.adjustZoom(by: 2),
         abs(view.terminalFontSize - baselineFontSize - 2) < 0.01,
         !view.adjustZoom(by: 0)
@@ -510,7 +546,17 @@ extension TerminalTextView {
         }
         let textRect = terminalTextRect()
         let cellSize = terminalCellSize()
-        let scale = window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 1
+        let backingCellSize = terminalBackingCellSize()
+        let surfaceX = terminalSurfaceAxis(
+            offset: point.x - textRect.minX,
+            cellPoints: cellSize.width,
+            backingCellPixels: backingCellSize.width
+        )
+        let surfaceY = terminalSurfaceAxis(
+            offset: point.y - textRect.minY,
+            cellPoints: cellSize.height,
+            backingCellPixels: backingCellSize.height
+        )
         return NativeMouseInput(
             button: button,
             action: action,
@@ -518,10 +564,10 @@ extension TerminalTextView {
             grid: 0,
             row: Int64(position.row),
             col: Int64(position.col),
-            surfaceX: Float((point.x - textRect.minX) * scale),
-            surfaceY: Float((point.y - textRect.minY) * scale),
-            cellWidth: UInt32(max(1, Int((cellSize.width * scale).rounded()))),
-            cellHeight: UInt32(max(1, Int((cellSize.height * scale).rounded())))
+            surfaceX: surfaceX.position,
+            surfaceY: surfaceY.position,
+            cellWidth: surfaceX.cellPixels,
+            cellHeight: surfaceY.cellPixels
         )
     }
 

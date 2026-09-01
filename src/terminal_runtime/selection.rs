@@ -17,6 +17,7 @@ pub(crate) struct TerminalSelectionInput {
     pub x: f32,
     pub y: f32,
     pub cell_width: u32,
+    pub cell_height: u32,
 }
 
 pub(super) struct TerminalSelectionGesture {
@@ -109,7 +110,7 @@ impl NativeTerminalRuntime {
         input: TerminalSelectionInput,
         rectangular: bool,
     ) -> Result<()> {
-        let geometry = self.selection_geometry(input.cell_width);
+        let geometry = self.selection_geometry(input.cell_width, input.cell_height);
         let point = self.clamped_viewport_point(input.point);
         let terminal = &self.terminal;
         let grid_ref = terminal.grid_ref(Point::Viewport(point))?;
@@ -127,7 +128,7 @@ impl NativeTerminalRuntime {
         input: TerminalSelectionInput,
         rectangular: bool,
     ) -> Result<isize> {
-        let geometry = self.selection_geometry(input.cell_width);
+        let geometry = self.selection_geometry(input.cell_width, input.cell_height);
         let point = self.clamped_viewport_point(input.point);
         let terminal = &self.terminal;
         let before = terminal.scrollbar()?.offset;
@@ -158,12 +159,12 @@ impl NativeTerminalRuntime {
         self.selection_gesture.reset(&self.terminal);
     }
 
-    fn selection_geometry(&self, cell_width: u32) -> Geometry {
+    fn selection_geometry(&self, cell_width: u32, cell_height: u32) -> Geometry {
         Geometry {
             columns: u32::from(self.size.cols.max(1)),
             cell_width: cell_width.max(1),
             padding_left: 0,
-            screen_height: u32::from(self.size.pixel_height.max(1)),
+            screen_height: u32::from(self.size.rows.max(1)).saturating_mul(cell_height.max(1)),
         }
     }
 }
@@ -173,5 +174,28 @@ fn signed_delta(before: u64, after: u64) -> isize {
         after.saturating_sub(before).min(isize::MAX as u64) as isize
     } else {
         -(before.saturating_sub(after).min(isize::MAX as u64) as isize)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::terminal_runtime::TerminalGridSize;
+
+    #[test]
+    fn selection_geometry_uses_the_current_input_cell_height() {
+        let runtime = NativeTerminalRuntime::external(TerminalGridSize {
+            rows: 3,
+            cols: 8,
+            pixel_width: 800,
+            pixel_height: 480,
+        })
+        .unwrap();
+
+        let geometry = runtime.selection_geometry(9, 19);
+
+        assert_eq!(geometry.columns, 8);
+        assert_eq!(geometry.cell_width, 9);
+        assert_eq!(geometry.screen_height, 57);
     }
 }

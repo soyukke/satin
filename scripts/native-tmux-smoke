@@ -12,7 +12,7 @@ restart_restore_result_file="spikes/macos-shell/.build/native-tmux-restart-resto
 socket_name="satin-reattach-smoke-$$"
 session_name="satin-reattach-smoke"
 restart_socket_name="satin-restart-smoke-$$"
-restart_session_name="satin-restart-smoke"
+restart_session_name="satin-日本語-restart-smoke"
 existing_marker="SATIN_TMUX_REATTACH_ALT_CONTENT"
 primary_marker="SATIN_TMUX_REATTACH_PRIMARY_CONTENT"
 restart_marker="SATIN_TMUX_RESTART_PROCESS_ALIVE"
@@ -188,7 +188,8 @@ restart_socket_path="$(tmux -L "$restart_socket_name" display-message -p '#{sock
 restart_pane_pid="$(tmux -S "$restart_socket_path" display-message -p \
   -t "$restart_session_name" '#{pane_pid}')"
 
-CFFIXED_USER_HOME="$preferences_root" \
+/usr/bin/env -u LC_ALL -u LC_CTYPE -u LANG \
+  CFFIXED_USER_HOME="$preferences_root" \
   SATIN_NATIVE_SMOKE_SCENARIO=tmux-restart-checkpoint \
   SATIN_NATIVE_SMOKE_RESULT="$restart_checkpoint_result_file" \
   SATIN_NATIVE_SMOKE_TMUX_SESSION="$restart_session_name" \
@@ -212,7 +213,8 @@ jq -e --arg session "$restart_session_name" --arg socket "$restart_socket_path" 
     and .tmuxAttachment.socketPath == $socket' \
   <<<"$restart_checkpoint_state" >/dev/null
 
-CFFIXED_USER_HOME="$preferences_root" \
+/usr/bin/env -u LC_ALL -u LC_CTYPE -u LANG \
+  CFFIXED_USER_HOME="$preferences_root" \
   SATIN_NATIVE_SMOKE_SCENARIO=tmux-restart-restore \
   SATIN_NATIVE_SMOKE_RESULT="$restart_restore_result_file" \
   SATIN_NATIVE_SMOKE_TMUX_SESSION="$restart_session_name" \

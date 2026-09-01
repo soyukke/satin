@@ -26,8 +26,11 @@ Neovim runtimes feed two event-driven scroll sources into it:
 - Direct interactive Neovim uses `win_viewport.scroll_delta`. Other full-screen
   terminal applications use explicit VT insert, delete, or scroll commands and
   their declared scroll region.
-- Projected tmux panes decode those VT commands into compact row/region metadata
-  while a resize capture replaces the pane cells. Hydration never drops an
+- Projected tmux panes decode those VT commands into compact row/region metadata.
+  An already-hydrated pane is resized through its live VT runtime; a size-only
+  snapshot never triggers a full scrollback capture. Initial history hydration
+  is active-window-first and permits only one capture in flight, keeping tmux
+  navigation out of a multi-window capture backlog. Hydration never drops an
   overlapping scroll animation, forwards unrelated redraw bytes, or replays the
   live cells a second time. Normal `%output` preserves the incremental VT/OSC
   parser across record boundaries; only an actual hydration resets it.
@@ -82,7 +85,9 @@ The user-facing reproduction sequence is kept in
 - `just nvim-layout-redraw-smoke` checks pane close and rapid host resize without
   a lost Metal frame request.
 - `just frame-liveness-smoke` injects a redraw request at the idle/pause boundary,
-  then repeats terminal input and tab switching against newly presented frames.
+  then repeats terminal input and tab switching. Every phase waits for the
+  matching `CAMetalDrawable` presentation rather than only accepting a submitted
+  Skia frame.
 - `just nvim-smoke-commandline` and `just nvim-smoke-cursor-move` reject false
   scroll animation from command-line or cursor-only redraws.
 

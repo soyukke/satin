@@ -205,7 +205,7 @@ import Foundation
             }
             let expectedCommand =
                 "\(shellQuote(resolvedTmuxExecutable?.path ?? "")) "
-                + "-S \(shellQuote(first.socketPath)) "
+                + "-u -S \(shellQuote(first.socketPath)) "
                 + "-CC attach-session -t \(shellQuote(first.name))"
             guard tmuxConnectionCommandHistory == [expectedCommand], let pane else {
                 writeTmuxSessionSwitchFailure(
@@ -749,6 +749,7 @@ import Foundation
             writeSessionSmokeResult(
                 resultPath,
                 result: "ok tmux-session-switch picker=actual-popover lists=local+tmux "
+                    + "unicode-session=yes gui-locale=unset "
                     + "attach-command=deduplicated command-t=yes command-t-cwd=inherited "
                     + "toolbar=trailing "
                     + "reattach-race=cancelled wheel-scrollback=yes switch-client=yes "

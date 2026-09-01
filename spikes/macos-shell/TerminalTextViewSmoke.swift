@@ -242,10 +242,10 @@ import Foundation
         }
 
         func skiaViewportSummary() -> String {
-            let scale = window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 1
+            let backingSize = convertToBacking(bounds.size)
             return [
-                Int((bounds.width * scale).rounded()),
-                Int((bounds.height * scale).rounded()),
+                Int(abs(backingSize.width).rounded()),
+                Int(abs(backingSize.height).rounded()),
             ]
             .map(String.init)
             .joined(separator: ":")

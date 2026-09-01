@@ -68,6 +68,12 @@ it against `Satin Dev`, not an installed release build.
   removed and its running programs exit.
 - [ ] Restart `Satin Dev` while a tmux session with splits and Neovim is active.
   Confirm the session, split layout, content, active window, and cwd restore.
+- [ ] Repeat restart with a non-ASCII tmux session name such as `日本語-work`.
+  Confirm Sessions shows the original name instead of underscores and automatic
+  restore does not report `can't find session`.
+- [ ] In a tmux session with seven or more windows and long scrollback, rapidly
+  resize Satin, then switch through every tab. Confirm each terminal changes
+  promptly without restarting Satin or creating another tmux session.
 
 ## Working-directory contract
 
@@ -122,14 +128,16 @@ it against `Satin Dev`, not an installed release build.
   Confirm the running spinner appears beside the stable tab title without
   inserting a spinner glyph, agent version, cwd, or OSC title into the name.
 - [ ] Let the turn finish, start another turn, and switch tabs while it runs.
-  Confirm the indicator stops and restarts with status while the manual title
-  remains unchanged through every transition and session save/restore.
+  Confirm the fixed badge slot shows the running spinner, amber waiting mark,
+  red failed/blocked mark, and a green dot only for an unread completion. The
+  title must not shift horizontally; selecting the completed work clears its
+  green dot while the manual title remains unchanged.
 - [ ] Repeat in tmux after manually renaming the tmux window. Confirm
   `pane_title` changes drive the same running/waiting/done states while the tmux
   window name remains unchanged.
-- [ ] Exercise a tab containing multiple panes. Confirm one running pane is
-  enough to show one tab indicator, and that it stops only when no pane in that
-  tab is `running`.
+- [ ] Exercise a tab containing multiple panes. Confirm it shows only one badge
+  with priority `waiting > failed/blocked > running > unread done`. Repeat the
+  aggregation check in Local and tmux sessions.
 
 ## Pane drag and drop
 
@@ -172,6 +180,15 @@ it against `Satin Dev`, not an installed release build.
   `titleIsManual`, and `newPaneWorkingDirectory`; no production references
   should remain.
 
+## Mixed-display selection
+
+- [ ] Print a line at least 160 columns wide, select known substrings near the
+  left edge and past columns 80 and 140, then copy them. Confirm the copied
+  endpoints match the highlighted characters without a one-character shift.
+- [ ] Move the Satin window between a 1x non-Retina display and a 2x Retina
+  display without resizing the window. Repeat the selection check in both
+  directions and confirm cursor, mouse targeting, and IME remain cell-aligned.
+
 ## Pane geometry during tmux resize
 
 - [ ] Create three tmux panes, with Neovim running in one of them.
@@ -191,9 +208,15 @@ macOS screen-recording permission.
   presented scroll animation groups and near-zero fixed-pane pixel changes.
 - [ ] Run `just nvim-smoke-scroll`, `just nvim-smoke-jump`, and
   `just nvim-smoke-side-pane`.
-- [ ] Run `just native-tmux-smoke` and `just pane-grid-smoke`.
+- [ ] Run `just native-tmux-smoke`; confirm it reports
+  `unicode-session=yes gui-locale=unset`, `tab-badge=running+done+seen`, and the
+  restart checks pass. Then run `just pane-grid-smoke`.
+- [ ] Run `just native-update-test`; its terminal-input check must retain the
+  same selection cell and fractional endpoint at synthetic 1x and 2x backing
+  scales through column 160.
 - [ ] Run `just native-tab-title-cwd-smoke`; confirm it reports
-  `title=stable activity=separate cwd=inherited finder=local fallback=none`.
+  `title=stable activity=separate tab-badge=running+done cwd=inherited
+  finder=local fallback=none`.
 - [ ] Run `just native-pane-dnd-smoke`; confirm it reports
   `handle=band preview=animated no-change-highlight=none`,
   `no-change-adjacency=both`,

@@ -180,6 +180,16 @@ extension TerminalShellViewController {
                 tmuxClientResizeImmediately: tmuxClientResizeImmediately
             )
         }
+        if let session = tmuxSession {
+            for (nativePaneId, tmuxPaneId) in session.tmuxPaneIds {
+                guard let snapshot = session.latestPanes[tmuxPaneId],
+                    let runtime = projectedTmuxPane(nativePaneId)
+                else {
+                    continue
+                }
+                runtime.resize(grid: tmuxPaneGrid(snapshot))
+            }
+        }
         updateActiveFrame()
     }
 
