@@ -22,7 +22,12 @@ extension TerminalShellViewController {
             let tab = lastSnapshot?.tabs.first(where: { $0.index == index }),
             let windowId = session.tmuxWindowIds[tab.id]
         {
-            _ = session.gateway.tmuxCommand("select-window -t @\(windowId)")
+            if session.gateway.tmuxCommand("select-window -t @\(windowId)") {
+                workAttentionStore.markSeen(paneId: tab.active_pane)
+                if let snapshot = lastSnapshot {
+                    syncTabStatusBadges(snapshot)
+                }
+            }
             focusTerminal()
             return
         }
@@ -82,15 +87,11 @@ extension TerminalShellViewController {
                 tabControl.displayTitle(tab.title, segmentWidth: width),
                 forSegment: idx
             )
-            tabControl.setToolTip(
-                "\(tab.title)\nDrag to reorder; use × to close; double-click or right-click for actions",
-                forSegment: idx
-            )
         }
         if snapshot.active_tab < tabControl.segmentCount {
             tabControl.selectedSegment = snapshot.active_tab
         }
-        syncTabActivityIndicators(snapshot)
+        syncTabStatusBadges(snapshot)
         tabControl.finishSnapshotSync(previousFrame: previousFrame)
         tabStripView.contentSizeDidChange()
         let activeTheme = snapshot.tabs.first {
@@ -99,16 +100,6 @@ extension TerminalShellViewController {
         backdropView.updateAccentColor(themeAccentColor(activeTheme))
         updateSessionControl()
         syncingTabs = false
-    }
-
-    func syncTabActivityIndicators(_ snapshot: TerminalCoreSnapshot) {
-        let running = Set(
-            snapshot.tabs.compactMap { tab in
-                tab.panes.contains { paneStatuses.status(for: $0)?.status == "running" }
-                    ? tab.index
-                    : nil
-            })
-        tabControl.setRunningSegments(running)
     }
 
     func syncPaneLayout(
@@ -210,7 +201,6 @@ extension TerminalShellViewController {
         let projectedPaneIds = paneStore.visibleFrames.keys.filter { paneId in
             tmuxSession?.tmuxPaneIds[paneId] != nil
         }
-        let cellSize = terminalTextView.terminalCellSize()
         let fallback = terminalTextView.terminalGridSize(
             for: nativePaneContentFrame(workspaceContentRect()))
         guard let snapshot = lastSnapshot,
@@ -235,14 +225,12 @@ extension TerminalShellViewController {
         else {
             return fallback
         }
-        let scale =
-            terminalTextView.window?.backingScaleFactor
-            ?? NSScreen.main?.backingScaleFactor ?? 1
+        let backingCellSize = terminalTextView.terminalBackingCellSize()
         return (
             max(1, capacity.rows),
             max(1, capacity.cols),
-            max(1, Int(CGFloat(capacity.cols) * cellSize.width * scale)),
-            max(1, Int(CGFloat(capacity.rows) * cellSize.height * scale))
+            max(1, Int((CGFloat(capacity.cols) * backingCellSize.width).rounded())),
+            max(1, Int((CGFloat(capacity.rows) * backingCellSize.height).rounded()))
         )
     }
 
@@ -767,7 +755,7 @@ extension TerminalShellViewController {
             self.stageTmuxLease(lease)
             self.pendingTmuxExecutable = executable
             self.scheduleTmuxCommandInActiveShell(
-                "\(shellQuote(executable.path)) "
+                "\(shellQuote(executable.path)) -u "
                     + "-S \(shellQuote(descriptor.socketPath)) "
                     + "-CC attach-session -t \(shellQuote(descriptor.name))",
                 sequence: sequence
@@ -825,7 +813,7 @@ extension TerminalShellViewController {
         let sequence = beginTmuxConnectionAttempt(clearPendingReattach: true)
         pendingTmuxExecutable = executable
         scheduleTmuxCommandInActiveShell(
-            "\(shellQuote(executable.path)) \(socketArgument)-CC new-session "
+            "\(shellQuote(executable.path)) -u \(socketArgument)-CC new-session "
                 + "-s \(shellQuote(name))",
             sequence: sequence
         )

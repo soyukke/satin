@@ -23,6 +23,7 @@ const MAX_COMMAND_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
 const MAX_HYDRATION_HISTORY_LINES: u32 = 100_000;
 const MAX_HYDRATION_CAPTURE_BYTES: usize = 8 * 1024 * 1024;
 const MAX_REHYDRATION_PASSTHROUGH_BYTES: usize = 16 * 1024 * 1024;
+const MAX_PENDING_PANE_CAPTURES: usize = 1;
 const FLOW_CONTROL_PAUSE_AFTER_SECONDS: u8 = 5;
 const PANE_TITLE_SUBSCRIPTION: &str = "satin-pane-title:%*:#{q:pane_title}";
 const SESSION_LIST_COMMAND: &str = "list-sessions -F '#{q:session_id}|#{q:session_name}|#{session_windows}|#{q:socket_path}|#{pid}'";
@@ -656,11 +657,12 @@ impl TmuxControl {
         for pane in snapshot.windows.iter().flat_map(|window| &window.panes) {
             if let Some(previous) = self.latest_panes.get(&pane.pane_id) {
                 let hydration_changed = pane_hydration_state_changed(previous, pane);
+                // A capture already in flight targets the old pane geometry/state and must be
+                // replaced. An already-hydrated pane is resized incrementally by its VT runtime;
+                // invalidating it here would put every window's scrollback ahead of navigation.
                 if self.capture_pending.contains(&pane.pane_id) && hydration_changed {
                     self.hydrated_panes.remove(&pane.pane_id);
                     self.recapture_panes.insert(pane.pane_id);
-                } else if pane_requires_live_recapture(previous, pane) {
-                    self.hydrated_panes.remove(&pane.pane_id);
                 }
             }
         }
@@ -737,11 +739,26 @@ impl TmuxControl {
             .retain(|pane_id, _| current_panes.contains(pane_id));
         self.dropped_rehydration_passthrough
             .retain(|pane_id| current_panes.contains(pane_id));
-        for pane in snapshot.windows.iter().flat_map(|window| &window.panes) {
+        let ordered_windows = snapshot
+            .windows
+            .iter()
+            .filter(|window| window.window_id == snapshot.active_window_id)
+            .chain(
+                snapshot
+                    .windows
+                    .iter()
+                    .filter(|window| window.window_id != snapshot.active_window_id),
+            );
+        // A full history capture can be several MiB. Hydrate the visible window first and keep
+        // only one capture in flight so select-window/input cannot sit behind every tmux window.
+        for pane in ordered_windows.flat_map(|window| &window.panes) {
             if self.hydrated_panes.contains(&pane.pane_id)
                 || self.capture_pending.contains(&pane.pane_id)
             {
                 continue;
+            }
+            if self.capture_pending.len() >= MAX_PENDING_PANE_CAPTURES {
+                break;
             }
             self.queue_pane_capture(pane.clone());
         }
@@ -1193,10 +1210,6 @@ fn hydration_history_lines(pane: &TmuxPaneSnapshot) -> u32 {
     pane.history_size
         .min(MAX_HYDRATION_HISTORY_LINES)
         .min(u32::try_from(byte_limited).unwrap_or(u32::MAX))
-}
-
-fn pane_requires_live_recapture(previous: &TmuxPaneSnapshot, current: &TmuxPaneSnapshot) -> bool {
-    previous.cols != current.cols || previous.rows != current.rows
 }
 
 fn pane_hydration_state_changed(previous: &TmuxPaneSnapshot, current: &TmuxPaneSnapshot) -> bool {

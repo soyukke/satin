@@ -94,12 +94,15 @@ import Foundation
             .title
             let activity = tabControl.runningActivityReadyForSmoke(
                 segment: lastSnapshot?.active_tab ?? -1)
+            let doneBadge =
+                tabControl.statusBadgeForSmoke(
+                    segment: lastSnapshot?.active_tab ?? -1) == .done
             let notified =
                 workAttentionStore.isUnread(paneId: nativePaneId)
                 && item?.unread == true
                 && workSwitcherButton.badgeCountForSmoke() == 1
             guard title == idleTitle, status == "done", notified,
-                tabTitle == tmuxSmokeStableTabTitle, !activity
+                tabTitle == tmuxSmokeStableTabTitle, !activity, doneBadge
             else {
                 if retries > 0 {
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
@@ -123,14 +126,17 @@ import Foundation
                         result: "failed tmux-native agent-done title=\(title ?? "nil") "
                             + "tab-title=\(tabTitle ?? "nil") status=\(status ?? "nil") "
                             + "activity=\(activity) unread=\(item?.unread == true) "
-                            + "badge=\(workSwitcherButton.badgeCountForSmoke())\n"
+                            + "badge=\(workSwitcherButton.badgeCountForSmoke()) "
+                            + "done-badge=\(doneBadge)\n"
                     )
                 }
                 return
             }
             markActiveWorkSeen()
             guard !workAttentionStore.isUnread(paneId: nativePaneId),
-                workSwitcherButton.badgeCountForSmoke() == 0
+                workSwitcherButton.badgeCountForSmoke() == 0,
+                tabControl.statusBadgeForSmoke(
+                    segment: lastSnapshot?.active_tab ?? -1) == nil
             else {
                 tmuxSession?.gateway.tmuxCommand("kill-session")
                 writeSessionSmokeResult(

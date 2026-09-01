@@ -748,6 +748,24 @@ func runNativeWorkSwitcherSelfTests() -> Bool {
     guard attention.isUnread(paneId: 12), attention.unreadCount == 1 else {
         return false
     }
+    guard nativeTabStatusBadge(for: [(status: "idle", unread: false)]) == nil,
+        nativeTabStatusBadge(for: [(status: "done", unread: false)]) == nil,
+        nativeTabStatusBadge(for: [(status: "done", unread: true)]) == .done,
+        nativeTabStatusBadge(for: [
+            (status: "done", unread: true),
+            (status: "running", unread: false),
+        ]) == .running,
+        nativeTabStatusBadge(for: [
+            (status: "running", unread: false),
+            (status: "blocked", unread: false),
+        ]) == .failed,
+        nativeTabStatusBadge(for: [
+            (status: "failed", unread: false),
+            (status: "waiting", unread: false),
+        ]) == .waiting
+    else {
+        return false
+    }
     let previewCache = NativeWorkPreviewCache()
     guard previewCache.lookup(paneId: 20) == .missing,
         previewCache.enqueue(paneId: 20, priority: false),

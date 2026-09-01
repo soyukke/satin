@@ -14,6 +14,71 @@ fn admit_control_client(control: &mut TmuxControl) {
 }
 
 #[test]
+fn resizing_hydrated_pane_does_not_enqueue_full_capture() {
+    let old_row = snapshot_row("/tmp", 100_000, false, false);
+    let old_snapshot = parse_snapshot(&[old_row.clone().into_bytes()]).unwrap();
+    let old_pane = old_snapshot.windows[0].panes[0].clone();
+    let pane_id = old_pane.pane_id;
+    let resized_row = old_row.replacen("\t80\t24\t", "\t120\t40\t", 1);
+    let mut control = TmuxControl {
+        active: true,
+        control_client_admitted: true,
+        hydrated_panes: [pane_id].into(),
+        passthrough_attempted_panes: [pane_id].into(),
+        latest_panes: [(pane_id, old_pane)].into(),
+        response: Some(CommandResponse {
+            kind: PendingCommand::Snapshot,
+            guard: Vec::new(),
+            lines: vec![resized_row.into_bytes()],
+            bytes: 0,
+        }),
+        sync_pending: true,
+        ..Default::default()
+    };
+
+    control.finish_response(true).unwrap();
+
+    assert!(control.hydrated_panes.contains(&pane_id));
+    assert!(control.outgoing.is_empty());
+    assert!(!control.capture_pending.contains(&pane_id));
+    assert!(!control.rehydrating_panes.contains(&pane_id));
+}
+
+#[test]
+fn initial_hydration_queues_one_active_pane_at_a_time() {
+    let row = snapshot_row("/tmp", 100_000, false, false);
+    let mut snapshot = parse_snapshot(&[row.into_bytes()]).unwrap();
+    let mut sibling = snapshot.windows[0].panes[0].clone();
+    sibling.pane_id = 8;
+    sibling.index = 1;
+    sibling.active = false;
+    snapshot.windows[0].panes.push(sibling);
+    let mut hidden_window = snapshot.windows[0].clone();
+    hidden_window.window_id = 3;
+    hidden_window.index = 1;
+    hidden_window.active_pane_id = 9;
+    hidden_window.panes[0].pane_id = 9;
+    hidden_window.panes[0].index = 0;
+    hidden_window.panes.truncate(1);
+    snapshot.windows.push(hidden_window);
+    let mut control = TmuxControl {
+        passthrough_attempted_panes: [7, 8, 9].into(),
+        ..Default::default()
+    };
+
+    control.queue_pane_hydrations(&snapshot);
+
+    assert_eq!(control.capture_pending, [7].into());
+    assert_eq!(control.outgoing.len(), 1);
+    let expected_history = hydration_history_lines(&snapshot.windows[0].panes[0]);
+    let expected_command = format!("capture-pane -p -e -C -S -{expected_history} -t %7\n");
+    assert_eq!(
+        control.outgoing.front().unwrap(),
+        expected_command.as_bytes()
+    );
+}
+
+#[test]
 fn keeps_passthrough_protocols_while_a_pane_is_rehydrating() {
     let mut control = TmuxControl {
         rehydrating_panes: [7].into(),

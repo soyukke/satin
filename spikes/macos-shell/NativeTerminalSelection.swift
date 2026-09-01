@@ -25,6 +25,7 @@ extension RustTerminalPane {
             input?.surfaceX ?? 0,
             input?.surfaceY ?? 0,
             input?.cellWidth ?? 1,
+            input?.cellHeight ?? 1,
             rectangular ? 1 : 0
         )
     }

@@ -243,10 +243,12 @@ import Foundation
             let title = lastSnapshot?.tabs.first(where: { $0.id == originalTabId })?.title
             let done = paneStatuses.status(for: originalPaneId)?.status == "done"
             let activityStopped = !tabControl.runningActivityReadyForSmoke(segment: 0)
+            let doneBadge = tabControl.statusBadgeForSmoke(segment: 0) == .done
             guard title == tabTitleCwdSmokeManualTitle,
                 paneStore.titles[originalPaneId] == tabTitleCwdSmokeIdleTitle,
                 done,
-                activityStopped
+                activityStopped,
+                doneBadge
             else {
                 if retries > 0 {
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
@@ -264,14 +266,16 @@ import Foundation
                         phase: "done",
                         detail: "title=\(title ?? "nil") "
                             + "pane-title=\(paneStore.titles[originalPaneId] ?? "nil") "
-                            + "status=\(paneStatuses.status(for: originalPaneId)?.status ?? "nil")"
+                            + "status=\(paneStatuses.status(for: originalPaneId)?.status ?? "nil") "
+                            + "done-badge=\(doneBadge)"
                     )
                 }
                 return
             }
             writeSessionSmokeResult(
                 resultPath,
-                result: "ok tab-title-cwd title=stable activity=separate cwd=inherited "
+                result: "ok tab-title-cwd title=stable activity=separate tab-badge=running+done "
+                    + "cwd=inherited "
                     + "finder=local fallback=none expected=\(expectedCwd)\n"
             )
         }

@@ -4,7 +4,7 @@ set -euo pipefail
 app="${SATIN_NATIVE_EXECUTABLE:-spikes/macos-shell/.build/SatinApplication}"
 result_file="spikes/macos-shell/.build/native-tmux-session-switch.result"
 socket_name="satin-session-switch-smoke-$$"
-first_session="satin-switch-first-$$"
+first_session="satin-日本語-switch-first-$$"
 second_session="satin-switch-second-$$"
 tmux_executable="$(command -v tmux)"
 smoke_root="$(mktemp -d "${TMPDIR:-/tmp}/satin-tmux-session-switch.XXXXXX")"
@@ -45,7 +45,8 @@ for _ in {1..40}; do
 done
 [[ "$ready" == true ]]
 
-SATIN_NATIVE_SMOKE_SCENARIO=tmux-session-switch \
+/usr/bin/env -u LC_ALL -u LC_CTYPE -u LANG \
+  SATIN_NATIVE_SMOKE_SCENARIO=tmux-session-switch \
   SATIN_NATIVE_SMOKE_RESULT="$result_file" \
   SATIN_NATIVE_SMOKE_TMUX_FIRST_SESSION="$first_session" \
   SATIN_NATIVE_SMOKE_TMUX_SECOND_SESSION="$second_session" \

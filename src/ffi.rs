@@ -373,12 +373,13 @@ pub extern "C" fn satin_runtime_selection_event(
     x: f32,
     y: f32,
     cell_width: u32,
+    cell_height: u32,
     rectangular: u8,
 ) -> isize {
     let Some(runtime) = runtime_mut(handle) else {
         return 0;
     };
-    let input = terminal_selection_input(row, col, x, y, cell_width);
+    let input = terminal_selection_input(row, col, x, y, cell_width, cell_height);
     match action {
         0 => runtime.selection_press(input).map(|()| 1),
         1 => runtime.selection_drag(input, rectangular != 0).map(|()| 1),
@@ -404,12 +405,14 @@ fn terminal_selection_input(
     x: f32,
     y: f32,
     cell_width: u32,
+    cell_height: u32,
 ) -> TerminalSelectionInput {
     TerminalSelectionInput {
         point: TerminalPoint { row, col },
         x,
         y,
         cell_width,
+        cell_height,
     }
 }
 

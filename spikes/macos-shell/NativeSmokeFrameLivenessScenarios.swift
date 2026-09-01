@@ -66,6 +66,7 @@ import Foundation
         ) {
             selectTab(0)
             metalView.resetSkiaFrameCount()
+            metalView.resetPresentedFrameCount()
             terminalTextView.insertText(
                 "printf 'SATIN_HIDDEN_SCROLL_%03d\\n' {1..240}\r",
                 replacementRange: NSRange(location: NSNotFound, length: 0)
@@ -90,10 +91,12 @@ import Foundation
                 .controlScreenText()
                 .contains("SATIN_HIDDEN_SCROLL_240") == true
             let revisions = metalView.frameRequestRevisionSnapshot()
+            let presented = metalView.presentedFrameSnapshot()
             let target = targetRevision ?? (markerVisible ? revisions.requested : nil)
             let animationRendered =
                 markerVisible
-                && target.map { revisions.rendered >= $0 } == true
+                && target.map { presented.revision >= $0 } == true
+                && presented.count > 0
                 && metalView.skiaFrames() > 0
                 && metalView.pendingSkiaFrameDelayMs() == 0
             guard animationRendered else {
@@ -133,10 +136,12 @@ import Foundation
         ) {
             drainTerminalPanes()
             let revisions = metalView.frameRequestRevisionSnapshot()
+            let presented = metalView.presentedFrameSnapshot()
             let idle =
                 core.snapshot()?.active_tab == 1
                 && activePaneId == paneIds[1]
                 && revisions.requested == revisions.rendered
+                && presented.revision >= revisions.requested
                 && metalView.pendingSkiaFrameDelayMs() == UInt64.max
             guard idle else {
                 guard retries > 0 else {
@@ -160,6 +165,7 @@ import Foundation
             }
 
             metalView.resetSkiaFrameCount()
+            metalView.resetPresentedFrameCount()
             metalView.armFrameRequestInterleaveForSmoke()
             metalView.requestFrame()
             waitForInterleavedFrameRequest(
@@ -177,9 +183,10 @@ import Foundation
             retries: Int
         ) {
             let target = targetRevision ?? metalView.interleavedFrameRequestRevisionForSmoke()
-            let revisions = metalView.frameRequestRevisionSnapshot()
+            let presented = metalView.presentedFrameSnapshot()
             let rendered =
-                target.map { revisions.rendered >= $0 } == true
+                target.map { presented.revision >= $0 } == true
+                && presented.count >= 2
                 && metalView.skiaFrames() >= 2
             guard rendered else {
                 guard retries > 0 else {
@@ -206,7 +213,7 @@ import Foundation
                 resultPath,
                 paneIds: paneIds,
                 iteration: 0,
-                presentedFrames: metalView.skiaFrames()
+                presentedFrames: presented.count
             )
         }
 
@@ -228,6 +235,7 @@ import Foundation
             let tabIndex = iteration % paneIds.count
             let previousRevision = metalView.frameRequestRevisionSnapshot().requested
             metalView.resetSkiaFrameCount()
+            metalView.resetPresentedFrameCount()
             selectTab(tabIndex)
             let targetRevision = metalView.frameRequestRevisionSnapshot().requested
             guard targetRevision > previousRevision else {
@@ -260,12 +268,13 @@ import Foundation
             retries: Int
         ) {
             drainTerminalPanes()
-            let revisions = metalView.frameRequestRevisionSnapshot()
+            let presented = metalView.presentedFrameSnapshot()
             let switched =
                 core.snapshot()?.active_tab == tabIndex
                 && activePaneId == paneIds[tabIndex]
                 && metalView.skiaFrames() > 0
-                && revisions.rendered >= targetRevision
+                && presented.count > 0
+                && presented.revision >= targetRevision
             guard switched else {
                 guard retries > 0 else {
                     writeFrameLivenessFailure(
@@ -291,7 +300,7 @@ import Foundation
                 return
             }
 
-            let baselineFrames = metalView.skiaFrames()
+            let baselineFrames = presented.count
             let marker = "SATIN_FRAME_LIVENESS_\(iteration)"
             terminalTextView.insertText(
                 "printf '\(marker)\\n'\r",
@@ -323,11 +332,12 @@ import Foundation
             let pane = terminalPane(for: paneIds[iteration % paneIds.count]) as? RustTerminalPane
             let markerVisible = pane?.controlScreenText().contains(marker) == true
             let revisions = metalView.frameRequestRevisionSnapshot()
+            let presented = metalView.presentedFrameSnapshot()
             let expectedRevision = targetRevision ?? (markerVisible ? revisions.requested : nil)
-            let newFramePresented = metalView.skiaFrames() > baselineFrames
+            let newFramePresented = presented.count > baselineFrames
             let rendered =
                 markerVisible && newFramePresented
-                && expectedRevision.map { revisions.rendered >= $0 } == true
+                && expectedRevision.map { presented.revision >= $0 } == true
             guard rendered else {
                 guard retries > 0 else {
                     writeFrameLivenessFailure(
@@ -335,7 +345,7 @@ import Foundation
                         phase: "input",
                         iteration: iteration,
                         detail: "marker=\(markerVisible ? "yes" : "no") "
-                            + "frames=\(metalView.skiaFrames()) baseline=\(baselineFrames) "
+                            + "frames=\(presented.count) baseline=\(baselineFrames) "
                             + "revision=\(expectedRevision.map { String($0) } ?? "none")"
                     )
                     return
@@ -358,7 +368,7 @@ import Foundation
                 resultPath,
                 paneIds: paneIds,
                 iteration: iteration + 1,
-                presentedFrames: presentedFrames + metalView.skiaFrames()
+                presentedFrames: presentedFrames + presented.count
             )
         }
 

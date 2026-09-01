@@ -318,7 +318,7 @@ extension TerminalShellViewController {
         }
         pendingTmuxExecutable = executable
         let command =
-            "\(shellQuote(executable.path)) -S \(shellQuote(attachment.socketPath)) "
+            "\(shellQuote(executable.path)) -u -S \(shellQuote(attachment.socketPath)) "
             + "-CC attach-session -t \(shellQuote(attachment.sessionName))"
         let workItem = DispatchWorkItem { [weak self, weak gateway] in
             guard let self, let gateway,

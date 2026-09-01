@@ -228,7 +228,7 @@ final class NativeTmuxExecutableResolver {
                     serverPID: 4242
                 )
             ) == [
-                "-S", "/tmp/tmux socket", "kill-session", "-t", "=name with spaces",
+                "-u", "-S", "/tmp/tmux socket", "kill-session", "-t", "=name with spaces",
             ]
             && NativeTmuxSessionTermination.confirmed(.alertFirstButtonReturn)
             && !NativeTmuxSessionTermination.confirmed(.alertSecondButtonReturn)
@@ -442,7 +442,7 @@ enum NativeTmuxProjectionAdmission {
 
     static func clientArguments(for descriptor: NativeTmuxSessionDescriptor) -> [String] {
         [
-            "-S", descriptor.socketPath,
+            "-u", "-S", descriptor.socketPath,
             "list-clients", "-t", "=\(descriptor.name)",
             "-F", "#{client_control_mode}",
         ]
@@ -571,7 +571,7 @@ enum NativeTmuxSessionDiscovery {
         executable: NativeTmuxExecutable,
         socketPath: String?
     ) -> NativeTmuxSessionDiscoveryResult {
-        var arguments: [String] = []
+        var arguments = ["-u"]
         if let socketPath, !socketPath.isEmpty {
             arguments += ["-S", socketPath]
         }
@@ -621,7 +621,7 @@ enum NativeTmuxSessionTermination {
     }
 
     static func arguments(for descriptor: NativeTmuxSessionDescriptor) -> [String] {
-        ["-S", descriptor.socketPath, "kill-session", "-t", "=\(descriptor.name)"]
+        ["-u", "-S", descriptor.socketPath, "kill-session", "-t", "=\(descriptor.name)"]
     }
 
     static func end(

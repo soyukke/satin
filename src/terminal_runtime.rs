@@ -2326,6 +2326,7 @@ mod tests {
                 x: 39.0,
                 y: 50.0,
                 cell_width: 10,
+                cell_height: 20,
             })
             .unwrap();
         runtime
@@ -2335,6 +2336,7 @@ mod tests {
                     x: 0.0,
                     y: 0.0,
                     cell_width: 10,
+                    cell_height: 20,
                 },
                 false,
             )
@@ -2345,6 +2347,7 @@ mod tests {
             x: 0.0,
             y: 0.0,
             cell_width: 10,
+            cell_height: 20,
         };
         assert_eq!(runtime.selection_autoscroll(tick, false).unwrap(), -1);
         assert_eq!(runtime.selection_autoscroll(tick, false).unwrap(), -1);
