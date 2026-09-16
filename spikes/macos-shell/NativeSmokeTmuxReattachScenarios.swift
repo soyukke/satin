@@ -191,6 +191,126 @@ import Foundation
             )
         }
 
+        func applyDelayedTmuxReattachSmokeScenario(
+            resultPath: String,
+            sessionName: String,
+            socketPath: String,
+            expectedContent: String
+        ) {
+            let attachment = NativeTmuxAttachment(
+                sessionName: sessionName,
+                socketPath: socketPath
+            )
+            guard let validated = validatedTmuxAttachment(attachment) else {
+                writeSessionSmokeResult(
+                    resultPath,
+                    result: "failed tmux-reattach-delayed invalid-descriptor\n"
+                )
+                return
+            }
+            pendingTmuxReattach = validated
+            schedulePendingTmuxReattach()
+            waitForDelayedTmuxServerMiss(
+                resultPath,
+                attachment: validated,
+                expectedContent: expectedContent,
+                retries: 60
+            )
+        }
+
+        func waitForDelayedTmuxServerMiss(
+            _ resultPath: String,
+            attachment: NativeTmuxAttachment,
+            expectedContent: String,
+            retries: Int
+        ) {
+            let descriptorPreserved = currentSessionState()?.tmuxAttachment == attachment
+            let serverMissObserved =
+                tmuxSession == nil
+                && tmuxReattachInFlight
+                && tmuxReattachDiscoveryAttempt > 0
+            guard descriptorPreserved, serverMissObserved else {
+                if retries > 0 {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
+                        self?.waitForDelayedTmuxServerMiss(
+                            resultPath,
+                            attachment: attachment,
+                            expectedContent: expectedContent,
+                            retries: retries - 1
+                        )
+                    }
+                } else {
+                    writeSessionSmokeResult(
+                        resultPath,
+                        result: "failed tmux-reattach-delayed initial-miss=no "
+                            + "descriptor=\(descriptorPreserved ? "preserved" : "lost")\n"
+                    )
+                }
+                return
+            }
+            try? "ready tmux-reattach-delayed\n".write(
+                toFile: resultPath,
+                atomically: true,
+                encoding: .utf8
+            )
+            waitForDelayedTmuxReattachEntry(
+                resultPath,
+                attachment: attachment,
+                expectedContent: expectedContent,
+                retries: 120
+            )
+        }
+
+        func waitForDelayedTmuxReattachEntry(
+            _ resultPath: String,
+            attachment: NativeTmuxAttachment,
+            expectedContent: String,
+            retries: Int
+        ) {
+            drainTerminalPanes()
+            let contentVisible = paneStore.runtimes.values.contains { pane in
+                (pane as? RustTmuxPane)?.controlScreenText().contains(expectedContent) == true
+            }
+            let commandTargetsSavedSocket =
+                tmuxConnectionCommandHistory.count == 1
+                && tmuxConnectionCommandHistory[0].contains(
+                    "-S \(shellQuote(attachment.socketPath)) -CC attach-session"
+                )
+            let attached =
+                tmuxSession?.sessionName == attachment.sessionName
+                && tmuxSession?.socketPath == attachment.socketPath
+                && pendingTmuxReattach == nil
+                && !tmuxReattachInFlight
+                && contentVisible
+                && commandTargetsSavedSocket
+            guard attached else {
+                if retries > 0 {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+                        self?.waitForDelayedTmuxReattachEntry(
+                            resultPath,
+                            attachment: attachment,
+                            expectedContent: expectedContent,
+                            retries: retries - 1
+                        )
+                    }
+                } else {
+                    writeSessionSmokeResult(
+                        resultPath,
+                        result: "failed tmux-reattach-delayed attached=no "
+                            + "session=\(tmuxSession?.sessionName ?? "none") "
+                            + "content=\(contentVisible ? "yes" : "no") "
+                            + "socket-command=\(commandTargetsSavedSocket ? "yes" : "no")\n"
+                    )
+                }
+                return
+            }
+            writeSessionSmokeResult(
+                resultPath,
+                result: "ok tmux-reattach-delayed initial-miss=observed "
+                    + "descriptor=preserved socket=saved attached=yes content=yes\n"
+            )
+        }
+
         func applyTmuxRestartCheckpointSmokeScenario(
             resultPath: String,
             sessionName: String,
@@ -731,7 +851,7 @@ import Foundation
                     }
                     discoveryDetail = sessions.map { "\($0.name):\($0.socketPath)" }.joined(
                         separator: ",")
-                case .unavailable(let message):
+                case .serverUnavailable(let message), .unavailable(let message):
                     sessionListed = false
                     discoveryDetail = message
                 }

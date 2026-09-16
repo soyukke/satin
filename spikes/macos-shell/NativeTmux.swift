@@ -417,6 +417,7 @@ final class NativeTmuxExecutableResolver {
 
 enum NativeTmuxSessionDiscoveryResult {
     case sessions([NativeTmuxSessionDescriptor])
+    case serverUnavailable(String)
     case unavailable(String)
 }
 
@@ -593,13 +594,15 @@ enum NativeTmuxSessionDiscovery {
             let errorValue = String(decoding: output.standardError, as: UTF8.self)
             let messageValue = errorValue.isEmpty ? value : errorValue
             let lowercased = messageValue.lowercased()
+            let message = messageValue.trimmingCharacters(in: .whitespacesAndNewlines)
             if lowercased.contains("no server running")
                 || lowercased.contains("no sessions")
                 || lowercased.contains("no such file or directory")
             {
-                return .sessions([])
+                return .serverUnavailable(
+                    message.isEmpty ? "The tmux server is not available yet." : message
+                )
             }
-            let message = messageValue.trimmingCharacters(in: .whitespacesAndNewlines)
             return .unavailable(message.isEmpty ? "tmux session discovery failed." : message)
         }
         guard output.standardOutput.count <= 16 * 1_024 * 1_024, let parsed = parse(value) else {
