@@ -110,12 +110,12 @@ native-ci-build:
 
 # Run every app-launching smoke. Needs an unlocked Mac with the display awake:
 # a host that does not composite the window renders almost no frames, so these
-# assertions cannot run on a CI runner.
+# assertions cannot run on a CI runner. Pixel capture stays opt-in through
+# `just native-visual-smoke`, since it needs screen-recording permission.
 native-smoke-suite:
     @if [[ -z "${IN_NIX_SHELL:-}" ]]; then \
         exec nix develop --command just native-smoke-suite; \
     else \
-        export SATIN_ALLOW_SCREEN_CAPTURE=1; \
         test -x spikes/macos-shell/.build/SatinApplication; \
         ./scripts/native-smoke; \
         ./scripts/native-settings-smoke; \
@@ -143,7 +143,6 @@ native-package-verify:
     @if [[ -z "${IN_NIX_SHELL:-}" ]]; then \
         exec nix develop --command just native-package-verify; \
     else \
-        export SATIN_ALLOW_SCREEN_CAPTURE=1; \
         test -d "spikes/macos-shell/.build/package/Satin.app"; \
         SATIN_USE_PREBUILT_PACKAGE=1 ./scripts/native-package-smoke; \
         SATIN_USE_PREBUILT_PACKAGE=1 ./scripts/native-finder-editor-smoke; \
