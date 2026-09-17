@@ -363,6 +363,7 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
     var pendingTmuxConnectionWorkItem: DispatchWorkItem?
     var tmuxAdmissionSequence = 0
     var tmuxConnectionCommandSequence: Int?
+    var tmuxReattachDiscoveryAttempt = 0
     var tmuxReattachAttempt = 0
     var tmuxReattachInFlight = false
     var tmuxReattachDeferred = false

@@ -55,6 +55,19 @@ import Foundation
                         expectedContent: expectedContent
                     )
                 }
+            case "tmux-reattach-delayed":
+                if let path = environment["SATIN_NATIVE_SMOKE_RESULT"], !path.isEmpty,
+                    let sessionName = environment["SATIN_NATIVE_SMOKE_TMUX_SESSION"],
+                    let socketPath = environment["SATIN_NATIVE_SMOKE_TMUX_SOCKET"],
+                    let expectedContent = environment["SATIN_NATIVE_SMOKE_TMUX_CONTENT"]
+                {
+                    controller.applyDelayedTmuxReattachSmokeScenario(
+                        resultPath: path,
+                        sessionName: sessionName,
+                        socketPath: socketPath,
+                        expectedContent: expectedContent
+                    )
+                }
             case "tmux-lease-holder":
                 if let path = environment["SATIN_NATIVE_SMOKE_RESULT"], !path.isEmpty,
                     let sessionName = environment["SATIN_NATIVE_SMOKE_TMUX_SESSION"],

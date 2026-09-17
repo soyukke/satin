@@ -9,9 +9,16 @@ second_session="satin-switch-second-$$"
 tmux_executable="$(command -v tmux)"
 smoke_root="$(mktemp -d "${TMPDIR:-/tmp}/satin-tmux-session-switch.XXXXXX")"
 first_cwd="$smoke_root/first session cwd"
+default_tmux_root="$(mktemp -d /private/tmp/satin-tmux-default.XXXXXX)"
+default_session="satin-default-socket-decoy-$$"
 
 cleanup() {
+  TMUX_TMPDIR="$default_tmux_root" tmux kill-server >/dev/null 2>&1 || true
   tmux -L "$socket_name" kill-server >/dev/null 2>&1 || true
+  case "$default_tmux_root" in
+    /private/tmp/satin-tmux-default.*) rm -rf -- "$default_tmux_root" ;;
+    *) echo "refusing unexpected tmux root cleanup path: $default_tmux_root" >&2 ;;
+  esac
   case "$smoke_root" in
     "${TMPDIR:-/tmp}"/satin-tmux-session-switch.*) rm -rf -- "$smoke_root" ;;
     *) echo "refusing unexpected smoke cleanup path: $smoke_root" >&2 ;;
@@ -21,6 +28,7 @@ trap cleanup EXIT
 
 rm -f -- "$result_file"
 mkdir -p -- "$first_cwd"
+TMUX_TMPDIR="$default_tmux_root" tmux new-session -d -s "$default_session"
 tmux -L "$socket_name" new-session -d -c "$first_cwd" -s "$first_session"
 socket_path="$(tmux -L "$socket_name" display-message -p '#{socket_path}')"
 tmux -S "$socket_path" new-session -d -s "$second_session"
@@ -46,6 +54,7 @@ done
 [[ "$ready" == true ]]
 
 /usr/bin/env -u LC_ALL -u LC_CTYPE -u LANG \
+  TMUX_TMPDIR="$default_tmux_root" \
   SATIN_NATIVE_SMOKE_SCENARIO=tmux-session-switch \
   SATIN_NATIVE_SMOKE_RESULT="$result_file" \
   SATIN_NATIVE_SMOKE_TMUX_FIRST_SESSION="$first_session" \

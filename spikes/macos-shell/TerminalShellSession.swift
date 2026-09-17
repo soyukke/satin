@@ -1,6 +1,12 @@
 import AppKit
 import Foundation
 
+// A login or restore agent can recreate the saved local socket just after Satin.
+// Exhaustion defers without deleting the descriptor, so these probes stay bounded.
+private let tmuxReattachServerRetryDelays: [TimeInterval] = [
+    0.1, 0.2, 0.4, 0.8, 1, 1, 1, 1, 1,
+]
+
 extension TerminalShellViewController {
     func restoreSessionIfNeeded() {
         let environment = ProcessInfo.processInfo.environment
@@ -22,7 +28,7 @@ extension TerminalShellViewController {
             UserDefaults.standard.removeObject(forKey: NativePreferenceKey.sessionState)
             return
         }
-        pendingTmuxReattach = state.tmuxAttachment.flatMap(validatedTmuxAttachment)
+        stagePendingTmuxReattach(state.tmuxAttachment.flatMap(validatedTmuxAttachment))
         for (index, saved) in state.tabs.enumerated() {
             if index > 0 {
                 core.newTab()
@@ -40,6 +46,15 @@ extension TerminalShellViewController {
             }
         }
         _ = core.selectTab(min(max(state.activeTab, 0), state.tabs.count - 1))
+    }
+
+    func stagePendingTmuxReattach(_ attachment: NativeTmuxAttachment?) {
+        pendingTmuxReattach = attachment
+        // The picker and new sessions keep using the saved socket before the
+        // first snapshot and after a deferred or failed reattach.
+        if let socketPath = attachment?.socketPath {
+            lastTmuxSocketPath = socketPath
+        }
     }
 
     func decodeSessionState(_ data: Data) -> NativeSessionState? {
@@ -116,6 +131,7 @@ extension TerminalShellViewController {
         }
         let sequence = beginTmuxConnectionAttempt(clearPendingReattach: false)
         tmuxReattachInFlight = true
+        tmuxReattachDiscoveryAttempt = 0
         tmuxReattachAttempt = 0
         let persistedPath = attachment.executablePath ?? ""
         let configuredPath =
@@ -192,6 +208,14 @@ extension TerminalShellViewController {
                     gateway: gateway,
                     sequence: sequence
                 )
+            case .serverUnavailable(let message):
+                self.retryPendingTmuxReattachDiscovery(
+                    attachment,
+                    executable: executable,
+                    gateway: gateway,
+                    message: message,
+                    sequence: sequence
+                )
             case .unavailable(let message):
                 self.deferPendingTmuxReattach(
                     attachment,
@@ -200,6 +224,53 @@ extension TerminalShellViewController {
                 )
             }
         }
+    }
+
+    func retryPendingTmuxReattachDiscovery(
+        _ attachment: NativeTmuxAttachment,
+        executable: NativeTmuxExecutable,
+        gateway: RustTerminalPane,
+        message: String,
+        sequence: Int
+    ) {
+        guard tmuxReattachDiscoveryAttempt < tmuxReattachServerRetryDelays.count else {
+            deferPendingTmuxReattach(
+                attachment,
+                message: message,
+                sequence: sequence
+            )
+            return
+        }
+        let delay = tmuxReattachServerRetryDelays[tmuxReattachDiscoveryAttempt]
+        tmuxReattachDiscoveryAttempt += 1
+        scheduleTmuxConnectionWork(after: delay, gateway: gateway, sequence: sequence) {
+            controller, gateway in
+            controller.discoverPendingTmuxReattach(
+                attachment,
+                executable: executable,
+                gateway: gateway,
+                sequence: sequence
+            )
+        }
+    }
+
+    func scheduleTmuxConnectionWork(
+        after delay: TimeInterval,
+        gateway: RustTerminalPane,
+        sequence: Int,
+        _ work: @escaping (TerminalShellViewController, RustTerminalPane) -> Void
+    ) {
+        let workItem = DispatchWorkItem { [weak self, weak gateway] in
+            guard let self, let gateway,
+                self.tmuxAdmissionSequence == sequence
+            else {
+                return
+            }
+            self.pendingTmuxConnectionWorkItem = nil
+            work(self, gateway)
+        }
+        pendingTmuxConnectionWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: workItem)
     }
 
     func requestPendingTmuxAdmission(
@@ -232,14 +303,9 @@ extension TerminalShellViewController {
                 )
             case .busy where self.tmuxReattachAttempt < 10:
                 self.tmuxReattachAttempt += 1
-                let workItem = DispatchWorkItem { [weak self, weak gateway] in
-                    guard let self, let gateway,
-                        self.tmuxAdmissionSequence == sequence
-                    else {
-                        return
-                    }
-                    self.pendingTmuxConnectionWorkItem = nil
-                    self.requestPendingTmuxAdmission(
+                self.scheduleTmuxConnectionWork(after: 0.2, gateway: gateway, sequence: sequence) {
+                    controller, gateway in
+                    controller.requestPendingTmuxAdmission(
                         attachment,
                         executable: executable,
                         descriptor: descriptor,
@@ -247,8 +313,6 @@ extension TerminalShellViewController {
                         sequence: sequence
                     )
                 }
-                self.pendingTmuxConnectionWorkItem = workItem
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.2, execute: workItem)
             case .busy:
                 self.deferPendingTmuxReattach(
                     attachment,
@@ -320,26 +384,19 @@ extension TerminalShellViewController {
         let command =
             "\(shellQuote(executable.path)) -u -S \(shellQuote(attachment.socketPath)) "
             + "-CC attach-session -t \(shellQuote(attachment.sessionName))"
-        let workItem = DispatchWorkItem { [weak self, weak gateway] in
-            guard let self, let gateway,
-                self.tmuxAdmissionSequence == sequence
-            else {
-                return
-            }
-            self.pendingTmuxConnectionWorkItem = nil
-            guard self.pendingTmuxReattach == attachment,
-                self.tmuxSession == nil,
+        scheduleTmuxConnectionWork(after: 0.15, gateway: gateway, sequence: sequence) {
+            controller, gateway in
+            guard controller.pendingTmuxReattach == attachment,
+                controller.tmuxSession == nil,
                 !gateway.isExited()
             else {
                 return
             }
-            self.runTmuxCommandInActiveShell(command, sequence: sequence)
+            controller.runTmuxCommandInActiveShell(command, sequence: sequence)
             NativeLog.lifecycleInfo(
                 "tmux_reattach_started session=\(attachment.sessionName)"
             )
         }
-        pendingTmuxConnectionWorkItem = workItem
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: workItem)
     }
 
     func sessionSchemaVersion(in data: Data) -> Int? {

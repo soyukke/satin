@@ -615,6 +615,12 @@ extension TerminalShellViewController {
                     status: sessions.isEmpty ? "No tmux sessions" : nil,
                     canCreate: true
                 )
+            case .serverUnavailable:
+                controller.update(
+                    sessions: self.currentTmuxSessionAdded(to: []),
+                    status: "No tmux sessions",
+                    canCreate: true
+                )
             case .unavailable(let message):
                 controller.update(
                     sessions: self.currentTmuxSessionAdded(to: []),

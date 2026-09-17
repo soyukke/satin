@@ -89,7 +89,9 @@ import Foundation
                 return
             }
 
-            lastTmuxSocketPath = first.socketPath
+            // Match cold restore: the saved attachment is staged before Satin has
+            // received a snapshot from its socket.
+            stagePendingTmuxReattach(attachment)
             showSessionSwitcher(nil)
             waitForTmuxSessionSwitchFirstPicker(
                 resultPath,
@@ -139,7 +141,6 @@ import Foundation
             // Reproduce the startup race only after the actual popover has
             // finished discovery: automatic restore and the explicit row click
             // now compete for the same session.
-            pendingTmuxReattach = attachment
             schedulePendingTmuxReattach()
             guard picker.selectSessionForSmoke(first) else {
                 writeTmuxSessionSwitchFailure(
@@ -163,7 +164,8 @@ import Foundation
             second: NativeTmuxSessionDescriptor
         ) -> Bool {
             let titles = picker.sessionRowTitlesForSmoke()
-            return titles.contains("Local Terminal")
+            return titles.count == 3
+                && titles.contains("Local Terminal")
                 && titles.contains(where: { $0.hasPrefix("\(first.name)  ·  ") })
                 && titles.contains(where: { $0.hasPrefix("\(second.name)  ·  ") })
         }
@@ -749,6 +751,7 @@ import Foundation
             writeSessionSmokeResult(
                 resultPath,
                 result: "ok tmux-session-switch picker=actual-popover lists=local+tmux "
+                    + "saved-socket-only=yes "
                     + "unicode-session=yes gui-locale=unset "
                     + "attach-command=deduplicated command-t=yes command-t-cwd=inherited "
                     + "toolbar=trailing "
