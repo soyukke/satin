@@ -27,6 +27,7 @@ final class TerminalMetalView: MTKView, CAMetalDisplayLinkDelegate, MTKViewDeleg
         private var frameRequestInterleavedRevision: UInt64?
         private var presentedFrameRequestRevision: UInt64 = 0
         private var presentedFrameCount = 0
+        private var scheduledAnimationFrameCount = 0
     #endif
 
     required init(coder: NSCoder) {
@@ -269,6 +270,21 @@ final class TerminalMetalView: MTKView, CAMetalDisplayLinkDelegate, MTKViewDeleg
             frameRequestLock.unlock()
             return snapshot
         }
+
+        func resetScheduledAnimationFrameCount() {
+            frameRequestLock.lock()
+            scheduledAnimationFrameCount = 0
+            frameRequestLock.unlock()
+        }
+
+        // An animation settles on its own, so a poll can miss it entirely. The
+        // renderer counts the frames it scheduled for one instead.
+        func scheduledAnimationFrames() -> Int {
+            frameRequestLock.lock()
+            let count = scheduledAnimationFrameCount
+            frameRequestLock.unlock()
+            return count
+        }
     #endif
 
     func resetResizeDiagnostics() {
@@ -365,6 +381,11 @@ final class TerminalMetalView: MTKView, CAMetalDisplayLinkDelegate, MTKViewDeleg
     ) {
         let delayMs = satinSkiaMetalNextFrameDelayMs(skiaRenderer)
         frameRequestLock.lock()
+        #if SATIN_SMOKE_SCENARIOS
+            if delayMs != UInt64.max {
+                scheduledAnimationFrameCount += 1
+            }
+        #endif
         nextFrameWorkItem?.cancel()
         nextFrameWorkItem = nil
         renderedFrameRequestRevision = max(
