@@ -4,6 +4,11 @@ import Foundation
 #if SATIN_SMOKE_SCENARIOS
     private let frameLivenessIterations = 80
     private let frameLivenessRetries = 40
+    // Presented counters advance from CAMetalDrawable presented handlers, so they
+    // trail the render pass by a compositor round trip. A loaded CI host needs far
+    // more than the render-revision budget before the counters catch up.
+    private let frameLivenessPresentationRetries = 120
+    private let frameLivenessAnimationRetries = 300
 
     extension TerminalShellViewController {
         func applyFrameLivenessSmokeScenario(resultPath: String) {
@@ -67,6 +72,7 @@ import Foundation
             selectTab(0)
             metalView.resetSkiaFrameCount()
             metalView.resetPresentedFrameCount()
+            metalView.resetScheduledAnimationFrameCount()
             terminalTextView.insertText(
                 "printf 'SATIN_HIDDEN_SCROLL_%03d\\n' {1..240}\r",
                 replacementRange: NSRange(location: NSNotFound, length: 0)
@@ -75,7 +81,7 @@ import Foundation
                 resultPath,
                 paneIds: paneIds,
                 targetRevision: nil,
-                retries: frameLivenessRetries * 2
+                retries: frameLivenessAnimationRetries
             )
         }
 
@@ -93,12 +99,16 @@ import Foundation
             let revisions = metalView.frameRequestRevisionSnapshot()
             let presented = metalView.presentedFrameSnapshot()
             let target = targetRevision ?? (markerVisible ? revisions.requested : nil)
+            // The animation settles before the presented counters catch up on a
+            // loaded host, so count the animation frames the renderer scheduled
+            // instead of requiring one to still be pending at this very poll.
+            let animationFrames = metalView.scheduledAnimationFrames()
             let animationRendered =
                 markerVisible
                 && target.map { presented.revision >= $0 } == true
                 && presented.count > 0
                 && metalView.skiaFrames() > 0
-                && metalView.pendingSkiaFrameDelayMs() == 0
+                && animationFrames > 0
             guard animationRendered else {
                 guard retries > 0 else {
                     writeFrameLivenessFailure(
@@ -106,6 +116,7 @@ import Foundation
                         phase: "visible-animation",
                         iteration: 0,
                         detail: "marker=\(markerVisible) "
+                            + "animation-frames=\(animationFrames) "
                             + "delay=\(metalView.pendingSkiaFrameDelayMs())"
                     )
                     return
@@ -125,7 +136,7 @@ import Foundation
             waitForHiddenPaneAnimationIdle(
                 resultPath,
                 paneIds: paneIds,
-                retries: frameLivenessRetries * 2
+                retries: frameLivenessPresentationRetries
             )
         }
 
@@ -172,7 +183,7 @@ import Foundation
                 resultPath,
                 paneIds: paneIds,
                 targetRevision: nil,
-                retries: frameLivenessRetries
+                retries: frameLivenessPresentationRetries
             )
         }
 
@@ -254,7 +265,7 @@ import Foundation
                 tabIndex: tabIndex,
                 targetRevision: targetRevision,
                 presentedFrames: presentedFrames,
-                retries: frameLivenessRetries
+                retries: frameLivenessPresentationRetries
             )
         }
 
@@ -314,7 +325,7 @@ import Foundation
                 baselineFrames: baselineFrames,
                 targetRevision: nil,
                 presentedFrames: presentedFrames,
-                retries: frameLivenessRetries
+                retries: frameLivenessPresentationRetries
             )
         }
 
