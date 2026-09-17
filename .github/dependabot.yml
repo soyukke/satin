@@ -22,3 +22,9 @@ updates:
     cooldown:
       default-days: 7
     open-pull-requests-limit: 5
+    groups:
+      # init and analyze refuse to run against each other's version, so they
+      # have to move in one pull request.
+      codeql-action:
+        patterns:
+          - github/codeql-action*
