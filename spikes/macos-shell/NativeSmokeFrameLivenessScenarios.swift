@@ -33,6 +33,34 @@ import Foundation
             }
         }
 
+        // macOS composites only a visible window, so an occluded host never runs
+        // the drawable presented handler. Hold the presentation requirement while
+        // the window is on screen and fall back to the rendered revision when it
+        // is not, instead of waiting for a frame nothing will present.
+        private func framesReachedScreen(
+            target: UInt64?,
+            minimumFrames: Int,
+            baselineFrames: Int = 0
+        ) -> Bool {
+            guard let target else {
+                return false
+            }
+            let presented = metalView.presentedFrameSnapshot()
+            if presented.revision >= target,
+                presented.count >= baselineFrames + minimumFrames
+            {
+                return true
+            }
+            guard !windowComposited() else {
+                return false
+            }
+            return metalView.frameRequestRevisionSnapshot().rendered >= target
+        }
+
+        private func windowComposited() -> Bool {
+            view.window?.occlusionState.contains(.visible) == true
+        }
+
         private func waitForFrameLivenessIdle(
             _ resultPath: String,
             paneIds: [Int],
@@ -97,7 +125,6 @@ import Foundation
                 .controlScreenText()
                 .contains("SATIN_HIDDEN_SCROLL_240") == true
             let revisions = metalView.frameRequestRevisionSnapshot()
-            let presented = metalView.presentedFrameSnapshot()
             let target = targetRevision ?? (markerVisible ? revisions.requested : nil)
             // The animation settles before the presented counters catch up on a
             // loaded host, so count the animation frames the renderer scheduled
@@ -105,8 +132,7 @@ import Foundation
             let animationFrames = metalView.scheduledAnimationFrames()
             let animationRendered =
                 markerVisible
-                && target.map { presented.revision >= $0 } == true
-                && presented.count > 0
+                && framesReachedScreen(target: target, minimumFrames: 1)
                 && metalView.skiaFrames() > 0
                 && animationFrames > 0
             guard animationRendered else {
@@ -117,6 +143,7 @@ import Foundation
                         iteration: 0,
                         detail: "marker=\(markerVisible) "
                             + "animation-frames=\(animationFrames) "
+                            + "visible=\(windowComposited() ? "yes" : "no") "
                             + "delay=\(metalView.pendingSkiaFrameDelayMs())"
                     )
                     return
@@ -147,12 +174,11 @@ import Foundation
         ) {
             drainTerminalPanes()
             let revisions = metalView.frameRequestRevisionSnapshot()
-            let presented = metalView.presentedFrameSnapshot()
             let idle =
                 core.snapshot()?.active_tab == 1
                 && activePaneId == paneIds[1]
                 && revisions.requested == revisions.rendered
-                && presented.revision >= revisions.requested
+                && framesReachedScreen(target: revisions.requested, minimumFrames: 0)
                 && metalView.pendingSkiaFrameDelayMs() == UInt64.max
             guard idle else {
                 guard retries > 0 else {
@@ -196,8 +222,7 @@ import Foundation
             let target = targetRevision ?? metalView.interleavedFrameRequestRevisionForSmoke()
             let presented = metalView.presentedFrameSnapshot()
             let rendered =
-                target.map { presented.revision >= $0 } == true
-                && presented.count >= 2
+                framesReachedScreen(target: target, minimumFrames: 2)
                 && metalView.skiaFrames() >= 2
             guard rendered else {
                 guard retries > 0 else {
@@ -206,6 +231,7 @@ import Foundation
                         phase: "interleave",
                         iteration: 0,
                         detail: "revision=\(target.map { String($0) } ?? "none") "
+                            + "visible=\(windowComposited() ? "yes" : "no") "
                             + "frames=\(metalView.skiaFrames())"
                     )
                     return
@@ -238,6 +264,7 @@ import Foundation
                 let result =
                     "ok frame-liveness iterations=\(frameLivenessIterations) "
                     + "race=covered hidden-animation=idle tabs=presented input=presented "
+                    + "window=\(windowComposited() ? "composited" : "occluded") "
                     + "frames=\(presentedFrames) "
                     + metalView.resizeDiagnosticsSummary() + "\n"
                 writeSessionSmokeResult(resultPath, result: result)
@@ -284,8 +311,7 @@ import Foundation
                 core.snapshot()?.active_tab == tabIndex
                 && activePaneId == paneIds[tabIndex]
                 && metalView.skiaFrames() > 0
-                && presented.count > 0
-                && presented.revision >= targetRevision
+                && framesReachedScreen(target: targetRevision, minimumFrames: 1)
             guard switched else {
                 guard retries > 0 else {
                     writeFrameLivenessFailure(
@@ -293,6 +319,7 @@ import Foundation
                         phase: "tab",
                         iteration: iteration,
                         detail: "target=\(tabIndex) active=\(core.snapshot()?.active_tab ?? -1) "
+                            + "visible=\(windowComposited() ? "yes" : "no") "
                             + "frames=\(metalView.skiaFrames()) revision=\(targetRevision)"
                     )
                     return
@@ -345,10 +372,13 @@ import Foundation
             let revisions = metalView.frameRequestRevisionSnapshot()
             let presented = metalView.presentedFrameSnapshot()
             let expectedRevision = targetRevision ?? (markerVisible ? revisions.requested : nil)
-            let newFramePresented = presented.count > baselineFrames
             let rendered =
-                markerVisible && newFramePresented
-                && expectedRevision.map { presented.revision >= $0 } == true
+                markerVisible
+                && framesReachedScreen(
+                    target: expectedRevision,
+                    minimumFrames: 1,
+                    baselineFrames: baselineFrames
+                )
             guard rendered else {
                 guard retries > 0 else {
                     writeFrameLivenessFailure(
