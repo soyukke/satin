@@ -108,21 +108,20 @@ native-ci-build:
         SATIN_USE_PREBUILT_PACKAGE=1 ./scripts/native-release; \
     fi
 
-# Run the production smoke suite without recompiling unchanged native artifacts.
-native-ci-smoke:
+# Run every app-launching smoke. Needs an unlocked Mac with the display awake:
+# a host that does not composite the window renders almost no frames, so these
+# assertions cannot run on a CI runner.
+native-smoke-suite:
     @if [[ -z "${IN_NIX_SHELL:-}" ]]; then \
-        exec nix develop .#ci-native --command just native-ci-smoke; \
+        exec nix develop --command just native-smoke-suite; \
     else \
         export SATIN_ALLOW_SCREEN_CAPTURE=1; \
         test -x spikes/macos-shell/.build/SatinApplication; \
-        test -d "spikes/macos-shell/.build/package/Satin.app"; \
         ./scripts/native-smoke; \
         ./scripts/native-settings-smoke; \
         ./scripts/native-control-smoke; \
         ./scripts/native-artifact-smoke; \
         ./scripts/native-kitty-smoke; \
-        SATIN_USE_PREBUILT_PACKAGE=1 ./scripts/native-package-smoke; \
-        SATIN_USE_PREBUILT_PACKAGE=1 ./scripts/native-finder-editor-smoke; \
         ./scripts/native-nvim-ui-surfaces-smoke; \
         ./scripts/native-resize-smoke; \
         ./scripts/native-nvim-layout-redraw-smoke; \
@@ -136,6 +135,18 @@ native-ci-smoke:
         ./scripts/native-terminal-bottom-input-smoke; \
         ./scripts/native-home-cwd-smoke; \
         ./scripts/native-terminal-exit-closes-tab-smoke; \
+    fi
+
+# Verify the packaged bundle's signature, CLI surface, and Finder editors.
+# Run it after `just native-package`, before cutting a release.
+native-package-verify:
+    @if [[ -z "${IN_NIX_SHELL:-}" ]]; then \
+        exec nix develop --command just native-package-verify; \
+    else \
+        export SATIN_ALLOW_SCREEN_CAPTURE=1; \
+        test -d "spikes/macos-shell/.build/package/Satin.app"; \
+        SATIN_USE_PREBUILT_PACKAGE=1 ./scripts/native-package-smoke; \
+        SATIN_USE_PREBUILT_PACKAGE=1 ./scripts/native-finder-editor-smoke; \
     fi
 
 # Verify update metadata parsing and semantic-version ordering.
@@ -575,14 +586,8 @@ quality:
     @just secrets-worktree
     @just native-build
     @just native-update-test
-    @just native-smoke
-    @just frame-liveness-smoke
-    @just terminal-bottom-input-smoke
-    @just native-tab-bar-actions-smoke
-    @just native-tab-title-cwd-smoke
+    @just native-smoke-suite
     @just terminal-nvim-cwd-smoke
-    @just native-pane-dnd-smoke
-    @just native-tmux-smoke
     @just pane-grid-smoke
 
 # Verify third-party attribution, exact bundled font provenance, and Cargo licenses.
