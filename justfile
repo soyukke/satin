@@ -110,19 +110,16 @@ native-ci-build:
 
 # Run every app-launching smoke. Needs an unlocked Mac with the display awake:
 # a host that does not composite the window renders almost no frames, so these
-# assertions cannot run on a CI runner.
+# assertions cannot run on a CI runner. Smokes that capture the window need
+# screen-recording permission and live in `just native-visual-smoke` instead.
 native-smoke-suite:
     @if [[ -z "${IN_NIX_SHELL:-}" ]]; then \
         exec nix develop --command just native-smoke-suite; \
     else \
-        export SATIN_ALLOW_SCREEN_CAPTURE=1; \
         test -x spikes/macos-shell/.build/SatinApplication; \
         ./scripts/native-smoke; \
-        ./scripts/native-settings-smoke; \
         ./scripts/native-control-smoke; \
         ./scripts/native-artifact-smoke; \
-        ./scripts/native-kitty-smoke; \
-        ./scripts/native-nvim-ui-surfaces-smoke; \
         ./scripts/native-resize-smoke; \
         ./scripts/native-nvim-layout-redraw-smoke; \
         ./scripts/native-tmux-zoom-resize-smoke; \
@@ -143,7 +140,6 @@ native-package-verify:
     @if [[ -z "${IN_NIX_SHELL:-}" ]]; then \
         exec nix develop --command just native-package-verify; \
     else \
-        export SATIN_ALLOW_SCREEN_CAPTURE=1; \
         test -d "spikes/macos-shell/.build/package/Satin.app"; \
         SATIN_USE_PREBUILT_PACKAGE=1 ./scripts/native-package-smoke; \
         SATIN_USE_PREBUILT_PACKAGE=1 ./scripts/native-finder-editor-smoke; \
@@ -186,8 +182,18 @@ native-smoke:
     @if [[ -z "${IN_NIX_SHELL:-}" ]]; then exec nix develop --command just native-smoke; else just native-build && ./scripts/native-smoke; fi
 
 # Explicitly allow the macOS screen-recording API for pixel-level visual verification.
+# Every smoke that captures the window lives here, not in `just native-smoke-suite`.
 native-visual-smoke:
-    @if [[ -z "${IN_NIX_SHELL:-}" ]]; then exec nix develop --command just native-visual-smoke; else just native-build && SATIN_ALLOW_SCREEN_CAPTURE=1 ./scripts/native-smoke; fi
+    @if [[ -z "${IN_NIX_SHELL:-}" ]]; then \
+        exec nix develop --command just native-visual-smoke; \
+    else \
+        just native-build; \
+        export SATIN_ALLOW_SCREEN_CAPTURE=1; \
+        ./scripts/native-smoke; \
+        ./scripts/native-settings-smoke; \
+        ./scripts/native-kitty-smoke; \
+        ./scripts/native-nvim-ui-surfaces-smoke; \
+    fi
 
 # Record and optimize the three README demos from an isolated Satin Dev window.
 readme-demo:

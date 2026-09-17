@@ -60,8 +60,11 @@ adds type checking, tests, and license validation. All four commands are
 non-mutating. `just ci-static` and `just ci-rust` expose the two CI subsets that
 `just verify` composes. `just precommit` adds staged secret scanning. `just
 quality` is the local publication gate and adds worktree secret scanning,
-dependency auditing, native build, updater self-test, and the whole
-app-launching smoke suite. That suite runs only locally: a host that does not
+dependency auditing, native build, updater self-test, and every
+app-launching smoke that does not capture the screen. The smokes that do
+(settings, kitty, Neovim UI surfaces, and pixel native smoke) need
+screen-recording permission, so they live in the explicit `just
+native-visual-smoke`. Both suites run only locally: a host that does not
 composite the application window renders almost no frames, so a CI runner
 cannot judge frame, presentation, or animation assertions. `just quality` is
 therefore required before pushing, and `just native-package-verify` checks the

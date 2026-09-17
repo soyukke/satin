@@ -71,6 +71,9 @@ Neovim pane の描画変更では、通常 smoke に加えて nvim scroll / jump
   リリース成果物(`just native-ci-build`)。
 - ローカル: アプリを起動する smoke 全て。push 前に `just quality` を通す。
   `just quality` は `just native-smoke-suite` と `just pane-grid-smoke` を含む。
+- 画面収録を使う smoke(settings、kitty、Neovim UI surfaces、pixel 版 native smoke)は
+  `just native-visual-smoke` にまとめる。self-host 中は実行せず、該当箇所を変えたときに
+  ユーザーの明示確認を取って Satin 外から実行する。
 - リリース前: `just native-package` の後に `just native-package-verify` を通す。
 
 ローカル実行の条件:
