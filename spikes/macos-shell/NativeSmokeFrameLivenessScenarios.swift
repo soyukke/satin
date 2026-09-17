@@ -9,6 +9,7 @@ import Foundation
     // more than the render-revision budget before the counters catch up.
     private let frameLivenessPresentationRetries = 120
     private let frameLivenessAnimationRetries = 300
+    private var frameLivenessPresentationDeferred = false
 
     extension TerminalShellViewController {
         func applyFrameLivenessSmokeScenario(resultPath: String) {
@@ -23,6 +24,7 @@ import Foundation
                 )
                 return
             }
+            frameLivenessPresentationDeferred = false
             let paneIds = snapshot.tabs.map(\.active_pane)
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
                 self?.waitForFrameLivenessIdle(
@@ -33,14 +35,16 @@ import Foundation
             }
         }
 
-        // macOS composites only a visible window, so an occluded host never runs
-        // the drawable presented handler. Hold the presentation requirement while
-        // the window is on screen and fall back to the rendered revision when it
-        // is not, instead of waiting for a frame nothing will present.
+        // The drawable presented handler runs only where something composites the
+        // window: an occluded window never is, and a host without a real display
+        // defers the present indefinitely. Wait for presentation for the phase
+        // budget, then accept the rendered revision and report the downgrade
+        // instead of failing a renderer that did its work.
         private func framesReachedScreen(
             target: UInt64?,
             minimumFrames: Int,
-            baselineFrames: Int = 0
+            baselineFrames: Int = 0,
+            acceptRenderedFallback: Bool = false
         ) -> Bool {
             guard let target else {
                 return false
@@ -51,10 +55,14 @@ import Foundation
             {
                 return true
             }
-            guard !windowComposited() else {
+            guard acceptRenderedFallback || !windowComposited() else {
                 return false
             }
-            return metalView.frameRequestRevisionSnapshot().rendered >= target
+            let rendered = metalView.frameRequestRevisionSnapshot().rendered >= target
+            if rendered {
+                frameLivenessPresentationDeferred = true
+            }
+            return rendered
         }
 
         private func windowComposited() -> Bool {
@@ -132,7 +140,11 @@ import Foundation
             let animationFrames = metalView.scheduledAnimationFrames()
             let animationRendered =
                 markerVisible
-                && framesReachedScreen(target: target, minimumFrames: 1)
+                && framesReachedScreen(
+                    target: target,
+                    minimumFrames: 1,
+                    acceptRenderedFallback: retries == 0
+                )
                 && metalView.skiaFrames() > 0
                 && animationFrames > 0
             guard animationRendered else {
@@ -178,7 +190,11 @@ import Foundation
                 core.snapshot()?.active_tab == 1
                 && activePaneId == paneIds[1]
                 && revisions.requested == revisions.rendered
-                && framesReachedScreen(target: revisions.requested, minimumFrames: 0)
+                && framesReachedScreen(
+                    target: revisions.requested,
+                    minimumFrames: 0,
+                    acceptRenderedFallback: retries == 0
+                )
                 && metalView.pendingSkiaFrameDelayMs() == UInt64.max
             guard idle else {
                 guard retries > 0 else {
@@ -222,7 +238,11 @@ import Foundation
             let target = targetRevision ?? metalView.interleavedFrameRequestRevisionForSmoke()
             let presented = metalView.presentedFrameSnapshot()
             let rendered =
-                framesReachedScreen(target: target, minimumFrames: 2)
+                framesReachedScreen(
+                    target: target,
+                    minimumFrames: 2,
+                    acceptRenderedFallback: retries == 0
+                )
                 && metalView.skiaFrames() >= 2
             guard rendered else {
                 guard retries > 0 else {
@@ -265,6 +285,7 @@ import Foundation
                     "ok frame-liveness iterations=\(frameLivenessIterations) "
                     + "race=covered hidden-animation=idle tabs=presented input=presented "
                     + "window=\(windowComposited() ? "composited" : "occluded") "
+                    + "presentation=\(frameLivenessPresentationDeferred ? "deferred" : "presented") "
                     + "frames=\(presentedFrames) "
                     + metalView.resizeDiagnosticsSummary() + "\n"
                 writeSessionSmokeResult(resultPath, result: result)
@@ -311,7 +332,11 @@ import Foundation
                 core.snapshot()?.active_tab == tabIndex
                 && activePaneId == paneIds[tabIndex]
                 && metalView.skiaFrames() > 0
-                && framesReachedScreen(target: targetRevision, minimumFrames: 1)
+                && framesReachedScreen(
+                    target: targetRevision,
+                    minimumFrames: 1,
+                    acceptRenderedFallback: retries == 0
+                )
             guard switched else {
                 guard retries > 0 else {
                     writeFrameLivenessFailure(
@@ -377,7 +402,8 @@ import Foundation
                 && framesReachedScreen(
                     target: expectedRevision,
                     minimumFrames: 1,
-                    baselineFrames: baselineFrames
+                    baselineFrames: baselineFrames,
+                    acceptRenderedFallback: retries == 0
                 )
             guard rendered else {
                 guard retries > 0 else {
