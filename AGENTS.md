@@ -61,9 +61,32 @@ Neovim pane の描画品質は Neovide parity を目標にする。
 
 Neovim pane の描画変更では、通常 smoke に加えて nvim scroll / jump smoke も確認する。
 
+## 検証の分担
+
+アプリを起動する smoke は CI では検証しない。CI ランナーはアプリのウィンドウを
+合成しないため、描画がほとんど進まず、frame / present / アニメーションの判定が
+環境依存で落ちる。テスト側を緩める対応はしない。
+
+- CI: `just ci-static`、`just ci-rust`、ネイティブビルドと署名・パッケージ・
+  リリース成果物(`just native-ci-build`)。
+- ローカル: アプリを起動する smoke 全て。push 前に `just quality` を通す。
+  `just quality` は `just native-smoke-suite` と `just pane-grid-smoke` を含む。
+- リリース前: `just native-package` の後に `just native-package-verify` を通す。
+
+ローカル実行の条件:
+
+- Mac のロックを解除し、ディスプレイをスリープさせない。ロック中やスリープ中は
+  ウィンドウが合成されず、描画が進まないまま失敗する。これはテストの不具合ではない。
+- smoke 実行中は他のアプリを最前面にしない。
+- 失敗したら、ロック解除済みの状態で再実行し、環境ではなく変更が原因かを確かめる。
+
+PR の Verification には `just quality` の結果を書く。CI は GUI smoke を実行しないので、
+これが唯一の記録になる。
+
 ## 完了条件
 
 - 関連する `just` コマンドが通っている。
+- push 前に `just quality` が通っている。
 - font、pane frame、grid の変更では `just pane-grid-smoke` が通っている。
 - renderer 変更では、二重表示、statusline/cmdline/side pane の残像、nvim scroll/jump の regressions を確認している。
 - stopgap を増やした場合は、削除条件と移行先が `TODO.md` または ADR にある。

@@ -60,7 +60,12 @@ adds type checking, tests, and license validation. All four commands are
 non-mutating. `just ci-static` and `just ci-rust` expose the two CI subsets that
 `just verify` composes. `just precommit` adds staged secret scanning. `just
 quality` is the local publication gate and adds worktree secret scanning,
-dependency auditing, native build, updater self-test, and native smoke.
+dependency auditing, native build, updater self-test, and the whole
+app-launching smoke suite. That suite runs only locally: a host that does not
+composite the application window renders almost no frames, so a CI runner
+cannot judge frame, presentation, or animation assertions. `just quality` is
+therefore required before pushing, and `just native-package-verify` checks the
+packaged bundle before a release.
 The native portion explicitly includes frame-liveness, repeated bottom-line
 terminal input, stable tab-title ownership, active-pane Command-T cwd
 inheritance, per-pane Finder directory actions, animated pane-header drag/drop,
@@ -75,11 +80,11 @@ by `just terminal`, rather than only the unbundled native build. The full tmux
 boundary drives the real session popover,
 verifies Local and tmux discovery, switches sessions, and creates a visible
 Command-T window in the source pane's cwd; it also exercises `swap-pane` and
-`join-pane` through the same pane-header gesture callback. The macOS CI smoke
-suite runs these same focused input and toolbar checks plus the full tmux
-boundary rather than only its zoom/resize subset.
+`join-pane` through the same pane-header gesture callback. `just
+native-smoke-suite` runs these same focused input and toolbar checks plus the
+full tmux boundary rather than only its zoom/resize subset.
 The title/CWD smoke pins `/bin/zsh` so it exercises Satin's bundled, supported
-shell integration instead of inheriting a CI runner's account shell.
+shell integration instead of inheriting the account shell.
 
 Lint suppressions must be scoped to the smallest affected expression or rule
 site and include a reason. Repository-wide warning suppression is not allowed.
@@ -103,7 +108,9 @@ artificial file splitting, or abstractions without a clear owner and purpose.
 
 - Pull requests run the same checks composed by local `just verify`. CI runs
   the platform-independent `just ci-static` subset on Linux in parallel with
-  `just ci-rust`, the native build, and the smoke suite on macOS. A release PR
+  `just ci-rust` and the native build, signing, and packaging lane on macOS.
+  The app-launching smoke suite is a local gate instead, because a CI runner
+  does not composite the application window. A release PR
   skips the macOS lane only when CI proves that `Cargo.toml` and `Cargo.lock`
   differ exclusively at the root Satin package version; the tag workflow still
   rebuilds and verifies the release from the resulting `main` commit.
