@@ -729,12 +729,12 @@ impl FontLoader {
 fn typeface_from_path(font_mgr: &FontMgr, path: &str) -> Option<Typeface> {
     let bytes = fs::read(path).ok()?;
     let data = Data::new_copy(&bytes);
-    font_mgr.new_from_data(&data, 0)
+    font_mgr.new_from_data(data, 0)
 }
 
 fn typeface_from_bytes(font_mgr: &FontMgr, bytes: &[u8]) -> Option<Typeface> {
     let data = Data::new_copy(bytes);
-    font_mgr.new_from_data(&data, 0)
+    font_mgr.new_from_data(data, 0)
 }
 
 struct FontPair {
@@ -750,8 +750,8 @@ impl FontPair {
         skia_font.set_hinting(SkiaHinting::Full);
         skia_font.set_edging(SkiaEdging::AntiAlias);
         let typeface = skia_font.typeface();
-        let (font_data, index) = typeface.to_font_data()?;
-        let swash_font = SwashFont::from_data(font_data, index & 0xFFFF)?;
+        let (font_data, index) = typeface.to_font_bytes()?;
+        let swash_font = SwashFont::from_data(font_data, (index as usize) & 0xFFFF)?;
         Some(Self {
             key,
             skia_font,
