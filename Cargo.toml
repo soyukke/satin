@@ -28,7 +28,7 @@ unicode-width = "0.2.1"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 lru = "=0.18.2"
-skia-safe = { version = "0.99.0", features = ["metal", "textlayout"] }
+skia-safe = { version = "0.153.3", features = ["ganesh", "metal", "textlayout"] }
 swash = { version = "=0.2.10", default-features = false, features = ["std"] }
 
 [lints.rust]
