@@ -53,9 +53,12 @@ fn claude_pane_status(event: ClaudeHookEvent) -> Result<AgentPaneStatus> {
                 summary: "Claude Code finished",
             }
         }
+        // The turn is over even when background tasks or crons remain listed:
+        // finished subagents stay in `background_tasks`, and no later hook
+        // clears a `running` status set here.
         "Stop" => AgentPaneStatus {
-            status: "running",
-            summary: "Claude Code background work",
+            status: "done",
+            summary: "Claude Code finished; background work listed",
         },
         "StopFailure" => AgentPaneStatus {
             status: "failed",
@@ -115,11 +118,11 @@ mod tests {
         );
         assert_eq!(
             status(r#"{"hook_event_name":"Stop","background_tasks":[{"id":"1"}]}"#).status,
-            "running"
+            "done"
         );
         assert_eq!(
             status(r#"{"hook_event_name":"Stop","session_crons":[{"id":"1"}]}"#).status,
-            "running"
+            "done"
         );
     }
 
