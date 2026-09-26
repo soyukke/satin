@@ -45,6 +45,7 @@ use crate::wakeup::{WakeupReceiver, WakeupSender};
 
 mod selection;
 mod spawn;
+mod url;
 
 use self::selection::TerminalSelectionGesture;
 pub(crate) use self::selection::TerminalSelectionInput;
@@ -491,7 +492,7 @@ impl NativeTerminalRuntime {
                 .with_trim(true)
                 .with_selection(&selection),
         )?;
-        Ok(value.and_then(|value| normalize_terminal_url(&String::from_utf8_lossy(&value))))
+        Ok(value.and_then(|value| url::normalize_terminal_url(&String::from_utf8_lossy(&value))))
     }
 
     pub fn title(&self) -> Option<String> {
@@ -1397,21 +1398,6 @@ fn grid_ref_text(grid_ref: &libghostty_vt::screen::GridRef<'_>) -> Result<String
         Err(error) => return Err(error.into()),
     };
     Ok(buffer[..written].iter().collect())
-}
-
-fn normalize_terminal_url(value: &str) -> Option<String> {
-    let value =
-        value.trim_matches(|value: char| value.is_whitespace() || "\"'()[]{}<>,;".contains(value));
-    if value.starts_with("https://")
-        || value.starts_with("http://")
-        || value.starts_with("file://")
-        || value.starts_with("mailto:")
-    {
-        return Some(value.to_owned());
-    }
-    value
-        .starts_with("www.")
-        .then(|| format!("https://{value}"))
 }
 
 const NATIVE_MOD_SHIFT: u32 = 1 << 0;
