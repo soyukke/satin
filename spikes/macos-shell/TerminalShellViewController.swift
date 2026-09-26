@@ -340,6 +340,7 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
     let sessionControlButton = NSButton(frame: .zero)
     let backdropView = NativeTerminalBackdropView(frame: .zero)
     let partyFramesView = NativePartyFramesView(frame: .zero)
+    let raidWarningView = NativeRaidWarningView(frame: .zero)
     var partyFramesWidthConstraint: NSLayoutConstraint?
     let metalView: TerminalMetalView
     let terminalTextView = TerminalTextView(frame: .zero)
@@ -442,6 +443,9 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
         configureToolbarControls()
         self.partyFramesView.onSelect = { [weak self] member in
             self?.selectPartyMember(member)
+        }
+        self.raidWarningView.onSelect = { [weak self] in
+            self?.jumpToWaitingAgent(nil)
         }
         self.metalView.contextMenuProvider = self
         self.terminalTextView.onPaneSelected = { [weak self] paneId in
@@ -582,6 +586,8 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
         view.addSubview(metalView)
         view.addSubview(partyFramesView)
         metalView.addSubview(terminalTextView)
+        raidWarningView.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(raidWarningView)
         let partyWidth = partyFramesView.widthAnchor.constraint(equalToConstant: 0)
         partyFramesWidthConstraint = partyWidth
 
@@ -598,6 +604,10 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
             partyFramesView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             partyFramesView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
             partyWidth,
+            raidWarningView.topAnchor.constraint(equalTo: metalView.topAnchor, constant: 36),
+            raidWarningView.centerXAnchor.constraint(equalTo: metalView.centerXAnchor),
+            raidWarningView.widthAnchor.constraint(
+                lessThanOrEqualTo: metalView.widthAnchor, constant: -48),
             terminalTextView.topAnchor.constraint(equalTo: metalView.topAnchor),
             terminalTextView.leadingAnchor.constraint(equalTo: metalView.leadingAnchor),
             terminalTextView.trailingAnchor.constraint(equalTo: metalView.trailingAnchor),

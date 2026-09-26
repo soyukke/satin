@@ -53,6 +53,12 @@ extension TerminalShellViewController {
     }
 
     func paneStatusDidChange(paneId: Int, status: NativePaneControlStatus?) {
+        if settings.partyFrames, status?.status == "waiting",
+            !paneIsVisibleForAttention(paneId),
+            let tab = lastSnapshot?.tabs.first(where: { $0.panes.contains(paneId) })
+        {
+            raidWarningView.show(tabTitle: tab.title, summary: status?.summary ?? "")
+        }
         if let status {
             workAttentionStore.observe(
                 paneId: paneId,
@@ -94,6 +100,9 @@ extension TerminalShellViewController {
 
     func setPartyFramesVisible(_ visible: Bool) {
         partyFramesView.isHidden = !visible
+        if !visible {
+            raidWarningView.dismiss()
+        }
         partyFramesWidthConstraint?.constant = visible ? NativePartyFramesView.width : 0
         if visible, let snapshot = lastSnapshot {
             refreshPartyFrames(snapshot)

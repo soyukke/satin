@@ -287,6 +287,7 @@ private final class NativePartyFrameView: NSView {
     private let statusLabel = NSTextField(labelWithString: "")
     private let barView = NSView(frame: .zero)
     private let summaryLabel = NSTextField(labelWithString: "")
+    private let attentionRing = CALayer()
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -295,6 +296,11 @@ private final class NativePartyFrameView: NSView {
 
     required init?(coder: NSCoder) {
         nil
+    }
+
+    override func layout() {
+        super.layout()
+        attentionRing.frame = bounds
     }
 
     override var acceptsFirstResponder: Bool {
@@ -327,6 +333,7 @@ private final class NativePartyFrameView: NSView {
     }
 
     func update(_ member: NativePartyMember, now: Date) {
+        let previous = self.member
         self.member = member
         initialsLabel.stringValue = member.initials
         shortcutLabel.stringValue = member.shortcut ?? ""
@@ -337,6 +344,33 @@ private final class NativePartyFrameView: NSView {
         setAccessibilityLabel("\(member.title), \(member.statusTitle.lowercased())")
         setAccessibilityHelp(member.summary.isEmpty ? nil : member.summary)
         applyColors()
+        applyMotion(previous: previous)
+    }
+
+    private func applyMotion(previous: NativePartyMember?) {
+        guard let member else {
+            return
+        }
+        attentionRing.isHidden = member.badge != .waiting
+        NativePartyEffects.setPulse(
+            attentionRing,
+            active: member.badge == .waiting,
+            minimumOpacity: 0.15,
+            duration: 0.55
+        )
+        NativePartyEffects.setPulse(
+            barView.layer,
+            active: member.badge == .running,
+            minimumOpacity: 0.45,
+            duration: 0.9
+        )
+        // Frames are reused by position, so only a status change on the same tab
+        // counts as that tab clearing its quest.
+        if let previous, previous.tabId == member.tabId,
+            previous.badge != .done, member.badge == .done
+        {
+            NativePartyEffects.flash(layer, color: .systemGreen)
+        }
     }
 
     func refreshElapsed(now: Date) {
@@ -363,6 +397,13 @@ private final class NativePartyFrameView: NSView {
         wantsLayer = true
         layer?.cornerRadius = 7
         layer?.borderWidth = 1.5
+        attentionRing.cornerRadius = 7
+        attentionRing.borderWidth = 2
+        attentionRing.shadowOpacity = 0.9
+        attentionRing.shadowRadius = 6
+        attentionRing.shadowOffset = .zero
+        attentionRing.isHidden = true
+        layer?.addSublayer(attentionRing)
         portraitView.translatesAutoresizingMaskIntoConstraints = false
         portraitView.wantsLayer = true
         portraitView.layer?.cornerRadius = 6
@@ -444,6 +485,8 @@ private final class NativePartyFrameView: NSView {
                 (member.active
                 ? NSColor.labelColor.withAlphaComponent(0.55)
                 : NSColor.clear).cgColor
+            attentionRing.borderColor = NSColor.systemOrange.cgColor
+            attentionRing.shadowColor = NSColor.systemOrange.cgColor
             portraitView.layer?.backgroundColor = statusColor.withAlphaComponent(0.18).cgColor
             portraitView.layer?.borderColor = statusColor.cgColor
             barView.layer?.backgroundColor =

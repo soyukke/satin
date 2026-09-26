@@ -72,6 +72,7 @@ struct SatinApplication {
                 ("agent activity", runNativeAgentActivitySelfTests),
                 ("work switcher", runNativeWorkSwitcherSelfTests),
                 ("party frames", runNativePartyFramesSelfTests),
+                ("party effects", runNativePartyEffectsSelfTests),
             ]
             for test in tests where !test.run() {
                 failDiagnostic("\(test.name) self-test failed")
