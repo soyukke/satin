@@ -495,7 +495,7 @@ pub extern "C" fn satin_runtime_take_tmux_event_json(
 ) -> *mut c_char {
     runtime_mut(handle)
         .and_then(NativeTerminalRuntime::take_tmux_event)
-        .map_or(ptr::null_mut(), |event| json_ptr(&event))
+        .map_or(ptr::null_mut(), string_ptr)
 }
 
 #[unsafe(no_mangle)]

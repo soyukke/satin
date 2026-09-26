@@ -40,7 +40,7 @@ use crate::neovide_render::{
 use crate::terminal_scroll::{
     TerminalScrollSequenceTracker, TerminalScrollUpdate, TerminalVtScrollRegion,
 };
-use crate::tmux_control::{TmuxControl, TmuxControlEvent};
+use crate::tmux_control::TmuxControl;
 use crate::wakeup::{WakeupReceiver, WakeupSender};
 
 mod selection;
@@ -674,7 +674,7 @@ impl NativeTerminalRuntime {
         self.semantic_prompt_tracker = SemanticPromptTracker::default();
     }
 
-    pub fn take_tmux_event(&mut self) -> Option<TmuxControlEvent> {
+    pub fn take_tmux_event(&mut self) -> Option<String> {
         self.tmux_control.take_event()
     }
 
