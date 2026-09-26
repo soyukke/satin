@@ -339,6 +339,8 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
     )
     let sessionControlButton = NSButton(frame: .zero)
     let backdropView = NativeTerminalBackdropView(frame: .zero)
+    let partyFramesView = NativePartyFramesView(frame: .zero)
+    var partyFramesWidthConstraint: NSLayoutConstraint?
     let metalView: TerminalMetalView
     let terminalTextView = TerminalTextView(frame: .zero)
     let defaultPaneMode = NativePaneMode.current()
@@ -438,6 +440,9 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
         }
         configureTabControl()
         configureToolbarControls()
+        self.partyFramesView.onSelect = { [weak self] member in
+            self?.selectPartyMember(member)
+        }
         self.metalView.contextMenuProvider = self
         self.terminalTextView.onPaneSelected = { [weak self] paneId in
             self?.selectPane(paneId)
@@ -571,10 +576,14 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
         view = NSView()
         backdropView.translatesAutoresizingMaskIntoConstraints = false
         metalView.translatesAutoresizingMaskIntoConstraints = false
+        partyFramesView.translatesAutoresizingMaskIntoConstraints = false
         configureTerminalTextView()
         view.addSubview(backdropView)
         view.addSubview(metalView)
+        view.addSubview(partyFramesView)
         metalView.addSubview(terminalTextView)
+        let partyWidth = partyFramesView.widthAnchor.constraint(equalToConstant: 0)
+        partyFramesWidthConstraint = partyWidth
 
         NSLayoutConstraint.activate([
             backdropView.topAnchor.constraint(equalTo: view.topAnchor),
@@ -583,13 +592,18 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
             backdropView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
             metalView.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
             metalView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            metalView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            metalView.trailingAnchor.constraint(equalTo: partyFramesView.leadingAnchor),
             metalView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            partyFramesView.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
+            partyFramesView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            partyFramesView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            partyWidth,
             terminalTextView.topAnchor.constraint(equalTo: metalView.topAnchor),
             terminalTextView.leadingAnchor.constraint(equalTo: metalView.leadingAnchor),
             terminalTextView.trailingAnchor.constraint(equalTo: metalView.trailingAnchor),
             terminalTextView.bottomAnchor.constraint(equalTo: metalView.bottomAnchor),
         ])
+        setPartyFramesVisible(settings.partyFrames)
     }
 
     override func viewDidLayout() {
@@ -704,6 +718,9 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
             )
             metalView.setFontFamily(settings.fontFamily)
             resizeTerminalPanesToGrid()
+        }
+        if previous.partyFrames != settings.partyFrames {
+            setPartyFramesVisible(settings.partyFrames)
         }
         if previous.defaultTheme != settings.defaultTheme {
             if core.applyThemePreference(settings.defaultTheme) {

@@ -18,6 +18,7 @@ native_swift_sources=(
   spikes/macos-shell/PaneDragInteraction.swift
   spikes/macos-shell/PaneChromeView.swift
   spikes/macos-shell/NativePaneRuntime.swift
+  spikes/macos-shell/NativePartyFrames.swift
   spikes/macos-shell/NativeTmuxScrollMetadata.swift
   spikes/macos-shell/NativeTerminalSelection.swift
   spikes/macos-shell/NativePaneStatusStore.swift

@@ -890,7 +890,7 @@ private func nativeWorkSearchTokens(_ value: String) -> [Substring] {
     nativeNormalizedWorkSearch(value).split(whereSeparator: \.isWhitespace)
 }
 
-private func nativeWorkSingleLine(_ value: String, limit: Int) -> String {
+func nativeWorkSingleLine(_ value: String, limit: Int) -> String {
     let collapsed =
         value
         .components(separatedBy: .whitespacesAndNewlines)

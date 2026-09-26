@@ -15,6 +15,7 @@ enum NativePreferenceKey {
     static let confirmBeforeQuit = "confirmBeforeQuit"
     static let sessionState = "sessionState"
     static let defaultTheme = "defaultTheme"
+    static let partyFrames = "partyFrames"
     static let shellPath = "shellPath"
     static let tmuxExecutablePath = "tmuxExecutablePath"
     static let startupDirectory = "startupDirectory"
@@ -53,6 +54,7 @@ struct NativeSettings: Equatable {
     var sessionRestore: Bool
     var confirmBeforeQuit: Bool
     var defaultTheme: String
+    var partyFrames: Bool
     var shellPath: String
     var tmuxExecutablePath: String
     var startupDirectory: String
@@ -119,6 +121,7 @@ final class NativeSettingsStore {
             defaultTheme: validTheme(
                 defaults.string(forKey: NativePreferenceKey.defaultTheme) ?? nativeThemeNames[0]
             ),
+            partyFrames: preferredBool(NativePreferenceKey.partyFrames, defaultValue: false),
             shellPath: validShellPath(
                 defaults.string(forKey: NativePreferenceKey.shellPath) ?? ""
             ),
@@ -154,6 +157,7 @@ final class NativeSettingsStore {
         defaults.set(settings.sessionRestore, forKey: NativePreferenceKey.sessionRestore)
         defaults.set(settings.confirmBeforeQuit, forKey: NativePreferenceKey.confirmBeforeQuit)
         defaults.set(validTheme(settings.defaultTheme), forKey: NativePreferenceKey.defaultTheme)
+        defaults.set(settings.partyFrames, forKey: NativePreferenceKey.partyFrames)
         defaults.set(validShellPath(settings.shellPath), forKey: NativePreferenceKey.shellPath)
         defaults.set(
             validTmuxExecutablePath(settings.tmuxExecutablePath),
@@ -193,6 +197,7 @@ final class NativeSettingsStore {
             NativePreferenceKey.sessionRestore,
             NativePreferenceKey.confirmBeforeQuit,
             NativePreferenceKey.defaultTheme,
+            NativePreferenceKey.partyFrames,
             NativePreferenceKey.shellPath,
             NativePreferenceKey.tmuxExecutablePath,
             NativePreferenceKey.startupDirectory,
@@ -342,6 +347,7 @@ final class NativeSettingsWindowController: NSWindowController, NSTextFieldDeleg
     private var themePopup: NSPopUpButton?
     private var optionAsAltButton: NSButton?
     private var notificationButton: NSButton?
+    private var partyFramesButton: NSButton?
     private var sessionRestoreButton: NSButton?
     private var confirmBeforeQuitButton: NSButton?
     private var shellField: NSTextField?
@@ -406,6 +412,7 @@ final class NativeSettingsWindowController: NSWindowController, NSTextFieldDeleg
     @objc private func booleanChanged(_ sender: NSButton) {
         settings.optionAsAlt = optionAsAltButton?.state == .on
         settings.notifications = notificationButton?.state == .on
+        settings.partyFrames = partyFramesButton?.state == .on
         settings.sessionRestore = sessionRestoreButton?.state == .on
         settings.confirmBeforeQuit = confirmBeforeQuitButton?.state == .on
         settings.automaticUpdateChecks = automaticUpdatesButton?.state == .on
@@ -620,6 +627,10 @@ final class NativeSettingsWindowController: NSWindowController, NSTextFieldDeleg
         themes.target = self
         themes.action = #selector(themeChanged(_:))
         themePopup = themes
+
+        let partyFrames = checkbox(
+            "Show agent status for every tab", action: #selector(booleanChanged(_:)))
+        partyFramesButton = partyFrames
         return formView(
             title: "Appearance",
             description:
@@ -628,6 +639,7 @@ final class NativeSettingsWindowController: NSWindowController, NSTextFieldDeleg
                 ("Font", fonts),
                 ("Font size", sizeRow),
                 ("Theme", themes),
+                ("Party frames", partyFrames),
             ]
         )
     }
@@ -832,6 +844,7 @@ final class NativeSettingsWindowController: NSWindowController, NSTextFieldDeleg
         settings = store.load()
         optionAsAltButton?.state = settings.optionAsAlt ? .on : .off
         notificationButton?.state = settings.notifications ? .on : .off
+        partyFramesButton?.state = settings.partyFrames ? .on : .off
         sessionRestoreButton?.state = settings.sessionRestore ? .on : .off
         confirmBeforeQuitButton?.state = settings.confirmBeforeQuit ? .on : .off
         fontPopup?.selectItem(
