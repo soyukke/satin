@@ -35,6 +35,8 @@ final class NativeRenamePanel {
 
     private let panel: NSPanel
     private let input = RenameTextField(frame: .zero)
+    private let cancelButton = NSButton(title: "Cancel", target: nil, action: nil)
+    private let renameButton = NSButton(title: "Rename", target: nil, action: nil)
 
     init(title: String, value: String) {
         panel = NSPanel(
@@ -63,11 +65,14 @@ final class NativeRenamePanel {
         input.isSelectable = true
         input.setAccessibilityLabel("Tab name")
 
-        let cancelButton = NSButton(title: "Cancel", target: self, action: #selector(cancel))
+        cancelButton.target = self
+        cancelButton.action = #selector(cancel)
         cancelButton.translatesAutoresizingMaskIntoConstraints = false
         cancelButton.keyEquivalent = "\u{1b}"
+        cancelButton.bezelStyle = .rounded
 
-        let renameButton = NSButton(title: "Rename", target: self, action: #selector(accept))
+        renameButton.target = self
+        renameButton.action = #selector(accept)
         renameButton.translatesAutoresizingMaskIntoConstraints = false
         renameButton.keyEquivalent = "\r"
         renameButton.bezelStyle = .rounded
@@ -85,7 +90,9 @@ final class NativeRenamePanel {
                 equalTo: content.trailingAnchor,
                 constant: -Metrics.horizontalInset
             ),
-            cancelButton.topAnchor.constraint(equalTo: input.bottomAnchor, constant: 14),
+            renameButton.topAnchor.constraint(equalTo: input.bottomAnchor, constant: 14),
+            cancelButton.centerYAnchor.constraint(equalTo: renameButton.centerYAnchor),
+            cancelButton.heightAnchor.constraint(equalTo: renameButton.heightAnchor),
             cancelButton.trailingAnchor.constraint(
                 equalTo: renameButton.leadingAnchor, constant: -8),
             cancelButton.widthAnchor.constraint(equalToConstant: Metrics.buttonWidth),
@@ -133,6 +140,14 @@ final class NativeRenamePanel {
         panel.contentLayoutRect.height <= 100
             && panel.frame.width <= 400
             && !containsImageView(panel.contentView)
+            && buttonsAlignedForSmoke()
+    }
+
+    private func buttonsAlignedForSmoke() -> Bool {
+        panel.contentView?.layoutSubtreeIfNeeded()
+        return cancelButton.bezelStyle == renameButton.bezelStyle
+            && cancelButton.frame.minY == renameButton.frame.minY
+            && cancelButton.frame.height == renameButton.frame.height
     }
 
     static func smokeLayoutReady() -> Bool {
