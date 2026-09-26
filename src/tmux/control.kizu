@@ -1,0 +1,1351 @@
+// The tmux control-mode client: finds `ESC P 1000 p` in a PTY's output,
+// reads tmux's notifications and command responses until `ESC \`, keeps the
+// session's panes hydrated, and queues the commands and events the host
+// drains. The Rust `TmuxControl`, state for state.
+import std::array;
+import std::fmt;
+import std::mem;
+import std::string;
+
+fn max_line_bytes() -> i64 {
+    return 8 * 1024 * 1024;
+}
+
+fn max_response_bytes() -> i64 {
+    return 16 * 1024 * 1024;
+}
+
+fn max_rehydration_passthrough_bytes() -> i64 {
+    return 16 * 1024 * 1024;
+}
+
+fn max_pending_captures() -> i64 {
+    return 1;
+}
+
+enum PendingKind {
+    Initial,
+    ControlClientCheck,
+    Ignore,
+    Snapshot,
+    Sessions,
+    Resume,
+    AlternateBacking,
+    Capture,
+}
+
+/// A command whose response has not arrived. AlternateBacking and Capture
+/// carry the pane as it was when they were queued, in `pending_panes`.
+struct Pending {
+    kind: PendingKind,
+    pane_id: i64,
+}
+
+fn carries_pane(kind: PendingKind) -> bool {
+    return kind == PendingKind::AlternateBacking or kind == PendingKind::Capture;
+}
+
+struct Backing {
+    pane_id: i64,
+    lines: array::Array<string::String>,
+}
+
+fn (self: Backing) deinit(allocator: Allocator) -> void {
+    self.lines.deinit(allocator);
+}
+
+struct Buffered {
+    pane_id: i64,
+    data: string::String,
+}
+
+fn (self: Buffered) deinit(allocator: Allocator) -> void {
+    self.data.deinit(allocator);
+}
+
+pub struct Control {
+    active: bool,
+    closing: bool,
+    probe: string::String,
+    line: string::String,
+    events: array::Array<string::String>,
+    outgoing: array::Array<string::String>,
+    pending: array::Array<Pending>,
+    pending_panes: array::Array<Pane>,
+    has_response: bool,
+    response_kind: Pending,
+    response_guard: string::String,
+    response_lines: array::Array<string::String>,
+    response_bytes: i64,
+    response_pane: array::Array<Pane>,
+    sync_pending: bool,
+    sync_requested_while_pending: bool,
+    flow_control_configured: bool,
+    control_client_admitted: bool,
+    control_client_check_pending: bool,
+    hydrated_panes: array::Array<i64>,
+    capture_pending: array::Array<i64>,
+    rehydrating_panes: array::Array<i64>,
+    recapture_panes: array::Array<i64>,
+    latest_panes: array::Array<Pane>,
+    alternate_backings: array::Array<Backing>,
+    passthrough_attempted_panes: array::Array<i64>,
+    decoders: array::Array<DcsDecoder>,
+    trackers: array::Array<ScrollTracker>,
+    rehydration_passthrough: array::Array<Buffered>,
+    dropped_rehydration_passthrough: array::Array<i64>,
+    paste_sequence: i64,
+    terminal_after_control: string::String,
+}
+
+pub fn (self: Control) deinit(allocator: Allocator) -> void {
+    self.probe.deinit(allocator);
+    self.line.deinit(allocator);
+    self.events.deinit(allocator);
+    self.outgoing.deinit(allocator);
+    self.pending.deinit(allocator);
+    self.pending_panes.deinit(allocator);
+    self.response_guard.deinit(allocator);
+    self.response_lines.deinit(allocator);
+    self.response_pane.deinit(allocator);
+    self.hydrated_panes.deinit(allocator);
+    self.capture_pending.deinit(allocator);
+    self.rehydrating_panes.deinit(allocator);
+    self.recapture_panes.deinit(allocator);
+    self.latest_panes.deinit(allocator);
+    self.alternate_backings.deinit(allocator);
+    self.passthrough_attempted_panes.deinit(allocator);
+    self.decoders.deinit(allocator);
+    self.trackers.deinit(allocator);
+    self.rehydration_passthrough.deinit(allocator);
+    self.dropped_rehydration_passthrough.deinit(allocator);
+    self.terminal_after_control.deinit(allocator);
+}
+
+pub fn new_control(allocator: Allocator) -> Control {
+    return Control {
+        active: false,
+        closing: false,
+        probe: string::new(allocator),
+        line: string::new(allocator),
+        events: array::new<string::String>(allocator),
+        outgoing: array::new<string::String>(allocator),
+        pending: array::new<Pending>(allocator),
+        pending_panes: array::new<Pane>(allocator),
+        has_response: false,
+        response_kind: Pending { kind: PendingKind::Initial, pane_id: -1 },
+        response_guard: string::new(allocator),
+        response_lines: array::new<string::String>(allocator),
+        response_bytes: 0,
+        response_pane: array::new<Pane>(allocator),
+        sync_pending: false,
+        sync_requested_while_pending: false,
+        flow_control_configured: false,
+        control_client_admitted: false,
+        control_client_check_pending: false,
+        hydrated_panes: array::new<i64>(allocator),
+        capture_pending: array::new<i64>(allocator),
+        rehydrating_panes: array::new<i64>(allocator),
+        recapture_panes: array::new<i64>(allocator),
+        latest_panes: array::new<Pane>(allocator),
+        alternate_backings: array::new<Backing>(allocator),
+        passthrough_attempted_panes: array::new<i64>(allocator),
+        decoders: array::new<DcsDecoder>(allocator),
+        trackers: array::new<ScrollTracker>(allocator),
+        rehydration_passthrough: array::new<Buffered>(allocator),
+        dropped_rehydration_passthrough: array::new<i64>(allocator),
+        paste_sequence: 0,
+        terminal_after_control: string::new(allocator)
+    };
+}
+
+fn control_start() -> []u8 {
+    return "_P1000p";
+}
+
+/// Byte index of the control-mode introducer `ESC P 1000 p`.
+fn control_start_byte(index: i64) -> u8 {
+    if index == 0 {
+        return cast<u8>(27);
+    }
+    let rest = control_start();
+    return rest[index];
+}
+
+fn control_start_len() -> i64 {
+    return 7;
+}
+
+fn control_end_byte(index: i64) -> u8 {
+    if index == 0 {
+        return cast<u8>(27);
+    }
+    return cast<u8>(92);
+}
+
+fn control_end_len() -> i64 {
+    return 2;
+}
+
+fn session_list_command() -> []u8 {
+    return "list-sessions -F '#{q:session_id}|#{q:session_name}|#{session_windows}|#{q:socket_path}|#{pid}'";
+}
+
+fn control_client_check_command() -> []u8 {
+    return "list-clients -t '' -F '#{client_control_mode}' -f '#{client_control_mode}'";
+}
+
+pub fn (self: &Control) is_active() -> bool {
+    return self.active;
+}
+
+/// Takes the oldest queued event, the JSON the host reads.
+pub fn (self: &var Control) take_event(allocator: Allocator, out: &var string::String) -> mem::Error!bool {
+    if self.events.len() == 0 {
+        return false;
+    }
+    if self.events.remove(0) |event| {
+        defer event.deinit(allocator);
+        out.clear();
+        try out.append_string(allocator, &event);
+        return true;
+    } else |_| {}
+    return false;
+}
+
+/// Takes the oldest command to write to the PTY.
+pub fn (self: &var Control) take_outgoing(allocator: Allocator, out: &var string::String) -> mem::Error!bool {
+    if self.outgoing.len() == 0 {
+        return false;
+    }
+    if self.outgoing.remove(0) |command| {
+        defer command.deinit(allocator);
+        out.clear();
+        try out.append_string(allocator, &command);
+        return true;
+    } else |_| {}
+    return false;
+}
+
+/// Feeds PTY output; appends to passthrough what belongs to the terminal.
+pub fn (self: &var Control) feed(allocator: Allocator, bytes: []u8, passthrough: &var string::String) -> mem::Error!void {
+    var why = string::new(allocator);
+    defer why.deinit(allocator);
+    var index = 0;
+    while index < mem::len(bytes) {
+        let byte = bytes[index];
+        index = index + 1;
+        if self.active {
+            if self.feed_control_byte(allocator, byte, passthrough, &var why) {} else |err| {
+                match err {
+                    OutOfMemory => return mem::Error::OutOfMemory,
+                    Invalid => {
+                        let message = why.as_bytes();
+                        try self.fail_control(allocator, message);
+                    },
+                }
+            }
+        } else {
+            try self.feed_terminal_byte(allocator, byte, passthrough);
+        }
+    }
+    return;
+}
+
+fn (self: &var Control) feed_terminal_byte(allocator: Allocator, byte: u8, passthrough: &var string::String) -> mem::Error!void {
+    if byte == control_start_byte(self.probe.len()) {
+        try self.probe.append_byte(allocator, byte);
+        if self.probe.len() == control_start_len() {
+            self.probe.clear();
+            self.active = true;
+            try self.push_event(try simple_event(allocator, "entered"));
+        }
+        return;
+    }
+    try passthrough.append_string(allocator, &self.probe);
+    self.probe.clear();
+    if byte == control_start_byte(0) {
+        try self.probe.append_byte(allocator, byte);
+    } else {
+        try passthrough.append_byte(allocator, byte);
+    }
+    return;
+}
+
+fn (self: &var Control) push_event(event: string::String) -> mem::Error!void {
+    return self.events.append(mem::page_allocator(), move event);
+}
+
+fn (self: &var Control) feed_control_byte(
+    allocator: Allocator,
+    byte: u8,
+    passthrough: &var string::String,
+    why: &var string::String
+) -> Failure!void {
+    if self.closing {
+        try self.feed_control_end_byte(allocator, byte, passthrough);
+        return;
+    }
+    if byte == cast<u8>(10) {
+        var line = try take_string(allocator, &var self.line);
+        defer line.deinit(allocator);
+        let bytes = line.as_bytes();
+        var end = mem::len(bytes);
+        if end > 0 and bytes[end - 1] == cast<u8>(13) {
+            end = end - 1;
+        }
+        try self.handle_line(allocator, bytes[0..end], why);
+        return;
+    }
+    if self.line.len() >= max_line_bytes() {
+        try set_why(allocator, why, "tmux control line exceeded 8388608 bytes");
+        return ParseError::Invalid;
+    }
+    try self.line.append_byte(allocator, byte);
+    return;
+}
+
+fn (self: &var Control) feed_control_end_byte(allocator: Allocator, byte: u8, passthrough: &var string::String) -> mem::Error!void {
+    if byte == control_end_byte(self.probe.len()) {
+        try self.probe.append_byte(allocator, byte);
+        if self.probe.len() == control_end_len() {
+            try self.finish_control_mode(allocator, passthrough);
+        }
+        return;
+    }
+    self.probe.clear();
+    if byte == control_end_byte(0) {
+        try self.probe.append_byte(allocator, byte);
+    }
+    return;
+}
+
+fn (self: &var Control) finish_control_mode(allocator: Allocator, passthrough: &var string::String) -> mem::Error!void {
+    self.active = false;
+    self.closing = false;
+    self.probe.clear();
+    self.line.clear();
+    self.pending.clear(allocator);
+    self.pending_panes.clear(allocator);
+    self.clear_response(allocator);
+    self.sync_pending = false;
+    self.sync_requested_while_pending = false;
+    self.flow_control_configured = false;
+    self.control_client_admitted = false;
+    self.control_client_check_pending = false;
+    self.hydrated_panes.clear(allocator);
+    self.capture_pending.clear(allocator);
+    self.rehydrating_panes.clear(allocator);
+    self.recapture_panes.clear(allocator);
+    self.latest_panes.clear(allocator);
+    self.alternate_backings.clear(allocator);
+    self.passthrough_attempted_panes.clear(allocator);
+    self.decoders.clear(allocator);
+    self.trackers.clear(allocator);
+    self.rehydration_passthrough.clear(allocator);
+    self.dropped_rehydration_passthrough.clear(allocator);
+    self.paste_sequence = 0;
+    try passthrough.append_string(allocator, &self.terminal_after_control);
+    self.terminal_after_control.clear();
+    return;
+}
+
+fn (self: &var Control) clear_response(allocator: Allocator) -> void {
+    self.has_response = false;
+    self.response_guard.clear();
+    self.response_lines.clear(allocator);
+    self.response_bytes = 0;
+    self.response_pane.clear(allocator);
+}
+
+/// Whether line is `prefix` followed by the guard of the open response.
+fn (self: &Control) closes_response(line: []u8, prefix: []u8) -> bool {
+    if !mem::starts_with(line, prefix) {
+        return false;
+    }
+    let guard = self.response_guard.as_bytes();
+    return mem::equal_bytes(line[mem::len(prefix)..mem::len(line)], guard);
+}
+
+fn rest_after(line: []u8, prefix: []u8) -> []u8 {
+    return line[mem::len(prefix)..mem::len(line)];
+}
+
+fn (self: &var Control) handle_line(allocator: Allocator, line: []u8, why: &var string::String) -> Failure!void {
+    if self.has_response {
+        if self.closes_response(line, "%end ") {
+            try self.finish_response(allocator, true, why);
+            return;
+        }
+        if self.closes_response(line, "%error ") {
+            try self.finish_response(allocator, false, why);
+            return;
+        }
+        try self.push_response_line(allocator, line, why);
+        return;
+    }
+    if mem::starts_with(line, "%begin ") {
+        try self.begin_response(allocator, line[7..mem::len(line)]);
+        return;
+    }
+    if mem::starts_with(line, "%output ") {
+        try self.handle_output(allocator, line[8..mem::len(line)], why);
+        return;
+    }
+    if mem::starts_with(line, "%extended-output ") {
+        try self.handle_extended_output(allocator, line[17..mem::len(line)], why);
+        return;
+    }
+    if mem::starts_with(line, "%exit") {
+        let reason = line[5..mem::len(line)];
+        let start = trim_start(reason);
+        let end = trim_end(reason, start);
+        var text = string::new(allocator);
+        defer text.deinit(allocator);
+        try append_lossy_utf8(allocator, &var text, reason[start..end]);
+        let bytes = text.as_bytes();
+        try self.push_event(try exited_event(allocator, end > start, bytes));
+        self.closing = true;
+        self.probe.clear();
+        return;
+    }
+    if mem::starts_with(line, "%pause ") {
+        let pane_text = line[7..mem::len(line)];
+        let start = trim_start(pane_text);
+        let end = trim_end(pane_text, start);
+        let pane = try parse_prefixed_id_bytes(allocator, pane_text[start..end], cast<u8>(37), why);
+        try self.resume_paused_pane(allocator, pane);
+        return;
+    }
+    if mem::starts_with(line, "%subscription-changed satin-session-clients ") {
+        try self.recheck_control_clients(allocator);
+        return;
+    }
+    if mem::starts_with(line, "%") {
+        if topology_notification(line) {
+            try self.request_sync(allocator);
+        }
+    }
+    return;
+}
+
+fn topology_notification(line: []u8) -> bool {
+    return mem::starts_with(line, "%subscription-changed satin-pane-title ") or
+        mem::starts_with(line, "%session-changed ") or mem::starts_with(line, "%session-renamed ") or
+        mem::starts_with(line, "%session-window-changed ") or mem::starts_with(line, "%sessions-changed") or
+        mem::starts_with(line, "%window-add ") or mem::starts_with(line, "%window-close ") or
+        mem::starts_with(line, "%window-renamed ") or mem::starts_with(line, "%window-pane-changed ") or
+        mem::starts_with(line, "%layout-change ") or mem::starts_with(line, "%pane-exited ") or
+        mem::starts_with(line, "%pane-mode-changed ");
+}
+
+/// `%7` with prefix `%` is 7, read the way the Rust side read an id from
+/// raw bytes.
+fn parse_prefixed_id_bytes(allocator: Allocator, value: []u8, prefix: u8, why: &var string::String) -> Failure!i64 {
+    if mem::len(value) == 0 or value[0] != prefix {
+        try set_why(allocator, why, "tmux id omitted expected prefix");
+        return ParseError::Invalid;
+    }
+    let digits = value[1..mem::len(value)];
+    if !is_valid_utf8(digits) {
+        try set_why(allocator, why, "invalid utf-8 sequence");
+        return ParseError::Invalid;
+    }
+    var id: i64 = 0;
+    try parse_number(allocator, digits, u32_max(), &var id, why);
+    return id;
+}
+
+fn (self: &var Control) begin_response(allocator: Allocator, guard: []u8) -> mem::Error!void {
+    var kind = Pending { kind: PendingKind::Initial, pane_id: -1 };
+    if self.pending.remove(0) |next| {
+        kind = next;
+        if carries_pane(next.kind) {
+            if self.pending_panes.remove(0) |pane| {
+                try self.response_pane.append(allocator, move pane);
+            } else |_| {}
+        }
+    } else |_| {}
+    self.has_response = true;
+    self.response_kind = kind;
+    self.response_guard.clear();
+    try self.response_guard.append_bytes(allocator, guard);
+    self.response_lines.clear(allocator);
+    self.response_bytes = 0;
+    return;
+}
+
+fn (self: &var Control) push_response_line(allocator: Allocator, line: []u8, why: &var string::String) -> Failure!void {
+    let next = self.response_bytes + mem::len(line) + 1;
+    if next > max_response_bytes() {
+        try set_why(allocator, why, "tmux command response exceeded byte limit");
+        return ParseError::Invalid;
+    }
+    self.response_bytes = next;
+    let copy = try string::from_bytes(allocator, line);
+    try self.response_lines.append(allocator, move copy);
+    return;
+}
+
+fn (self: &var Control) handle_output(allocator: Allocator, payload: []u8, why: &var string::String) -> Failure!void {
+    var space = 0;
+    while space < mem::len(payload) and payload[space] != cast<u8>(32) {
+        space = space + 1;
+    }
+    if space == mem::len(payload) {
+        try set_why(allocator, why, "malformed tmux output record");
+        return ParseError::Invalid;
+    }
+    let pane = try parse_prefixed_id_bytes(allocator, payload[0..space], cast<u8>(37), why);
+    var data = string::new(allocator);
+    defer data.deinit(allocator);
+    try decode_escaped(allocator, payload[space + 1..mem::len(payload)], false, &var data, why);
+    let bytes = data.as_bytes();
+    try self.push_output(allocator, pane, bytes);
+    return;
+}
+
+fn (self: &var Control) handle_extended_output(allocator: Allocator, payload: []u8, why: &var string::String) -> Failure!void {
+    let separator = find_bytes(payload, " : ");
+    if separator < 0 {
+        try set_why(allocator, why, "malformed tmux extended-output record");
+        return ParseError::Invalid;
+    }
+    let metadata = payload[0..separator];
+    var space = 0;
+    while space < mem::len(metadata) and !is_ascii_whitespace(metadata[space]) {
+        space = space + 1;
+    }
+    if space == mem::len(metadata) {
+        try set_why(allocator, why, "tmux extended-output record omitted pane id");
+        return ParseError::Invalid;
+    }
+    let pane = try parse_prefixed_id_bytes(allocator, metadata[0..space], cast<u8>(37), why);
+    var data = string::new(allocator);
+    defer data.deinit(allocator);
+    try decode_escaped(allocator, payload[separator + 3..mem::len(payload)], false, &var data, why);
+    let bytes = data.as_bytes();
+    try self.push_output(allocator, pane, bytes);
+    return;
+}
+
+fn (self: &var Control) decoder_index(allocator: Allocator, pane: i64) -> mem::Error!i64 {
+    var index = 0;
+    while self.decoders.get(index) |decoder| {
+        if decoder.pane == pane {
+            return index;
+        }
+        index = index + 1;
+    }
+    try self.decoders.append(allocator, new_decoder(pane));
+    return self.decoders.len() - 1;
+}
+
+fn (self: &var Control) tracker_index(allocator: Allocator, pane: i64) -> mem::Error!i64 {
+    var index = 0;
+    while self.trackers.at(index) |tracker| {
+        if tracker.pane == pane {
+            return index;
+        }
+        index = index + 1;
+    }
+    try self.trackers.append(allocator, new_tracker(allocator, pane));
+    return self.trackers.len() - 1;
+}
+
+/// Routes decoded pane output: a live pane's output is an event; a pane being
+/// rehydrated only reports scroll metadata and buffers its passthrough until
+/// the capture lands.
+fn (self: &var Control) push_output(allocator: Allocator, pane: i64, data: []u8) -> mem::Error!void {
+    var all = string::new(allocator);
+    defer all.deinit(allocator);
+    var passthrough = string::new(allocator);
+    defer passthrough.deinit(allocator);
+    let decoder_at = try self.decoder_index(allocator, pane);
+    var decoder = self.decoders.get_or_panic(decoder_at);
+    try decoder.decode(allocator, data, &var all, &var passthrough);
+    if self.decoders.set(decoder_at, decoder) {} else |_| {}
+    let tracker_at = try self.tracker_index(allocator, pane);
+    var update = ScrollUpdate { rows: 0, has_region: false, region: Region { top: 0, bottom: 0, left: 0, right: 0 } };
+    let all_bytes = all.as_bytes();
+    if self.trackers.at_mut(tracker_at) |tracker| {
+        if tracker.feed(allocator, all_bytes) |fed| {
+            update = fed;
+        } else |_| {}
+    }
+    if set_has(&self.rehydrating_panes, pane) {
+        if update.rows != 0 {
+            try self.push_event(try scroll_event(allocator, pane, &update));
+        }
+        if passthrough.len() == 0 or set_has(&self.dropped_rehydration_passthrough, pane) {
+            return;
+        }
+        let extra = passthrough.as_bytes();
+        try self.buffer_rehydration_passthrough(allocator, pane, extra);
+        return;
+    }
+    if all.len() == 0 {
+        return;
+    }
+    try self.push_event(try bytes_event(allocator, "pane_output", pane, all_bytes));
+    return;
+}
+
+fn (self: &var Control) buffer_rehydration_passthrough(allocator: Allocator, pane: i64, extra: []u8) -> mem::Error!void {
+    var index = 0;
+    var found = -1;
+    while self.rehydration_passthrough.at(index) |buffered| {
+        if buffered.pane_id == pane {
+            found = index;
+        }
+        index = index + 1;
+    }
+    if found < 0 {
+        try self.rehydration_passthrough.append(allocator, Buffered { pane_id: pane, data: string::new(allocator) });
+        found = self.rehydration_passthrough.len() - 1;
+    }
+    var too_large = false;
+    if self.rehydration_passthrough.at(found) |buffered| {
+        too_large = buffered.data.len() + mem::len(extra) > max_rehydration_passthrough_bytes();
+    }
+    if too_large {
+        try self.drop_rehydration_passthrough(allocator, pane);
+        return;
+    }
+    var appended = true;
+    if self.rehydration_passthrough.at_mut(found) |buffered| {
+        if buffered.data.append_bytes(allocator, extra) {} else |_| {
+            appended = false;
+        }
+    }
+    if !appended {
+        return mem::Error::OutOfMemory;
+    }
+    return;
+}
+
+fn (self: &var Control) remove_buffered(allocator: Allocator, pane: i64, out: &var string::String) -> mem::Error!bool {
+    var index = 0;
+    while self.rehydration_passthrough.at(index) |buffered| {
+        if buffered.pane_id == pane {
+            break;
+        }
+        index = index + 1;
+    }
+    if index >= self.rehydration_passthrough.len() {
+        return false;
+    }
+    if self.rehydration_passthrough.remove(index) |buffered| {
+        defer buffered.deinit(allocator);
+        try out.append_string(allocator, &buffered.data);
+        return true;
+    } else |_| {}
+    return false;
+}
+
+fn (self: &var Control) drop_rehydration_passthrough(allocator: Allocator, pane: i64) -> mem::Error!void {
+    var dropped = string::new(allocator);
+    defer dropped.deinit(allocator);
+    try self.remove_buffered(allocator, pane, &var dropped);
+    if try set_add(allocator, &var self.dropped_rehydration_passthrough, pane) {
+        var message = try string::from_bytes(allocator, "tmux pane %");
+        defer message.deinit(allocator);
+        try fmt::append_i64(allocator, &var message, pane);
+        try message.append_bytes(allocator, " buffered more than 16777216 passthrough bytes during hydration");
+        let bytes = message.as_bytes();
+        try self.push_event(try message_event(allocator, "command_error", bytes));
+    }
+    return;
+}
+
+fn (self: &var Control) flush_rehydration_passthrough(allocator: Allocator, pane: i64) -> mem::Error!void {
+    set_drop(&var self.dropped_rehydration_passthrough, pane);
+    var data = string::new(allocator);
+    defer data.deinit(allocator);
+    if !try self.remove_buffered(allocator, pane, &var data) {
+        return;
+    }
+    if data.len() > 0 {
+        let bytes = data.as_bytes();
+        try self.push_event(try bytes_event(allocator, "pane_output", pane, bytes));
+    }
+    return;
+}
+
+fn (self: &var Control) fail_control(allocator: Allocator, message: []u8) -> mem::Error!void {
+    if self.closing {
+        return;
+    }
+    try self.push_event(try message_event(allocator, "protocol_error", message));
+    try append_crlf(allocator, &var self.terminal_after_control);
+    try self.terminal_after_control.append_bytes(allocator, "Satin tmux integration stopped: ");
+    try self.terminal_after_control.append_bytes(allocator, message);
+    try append_crlf(allocator, &var self.terminal_after_control);
+    var detach = try string::from_bytes(allocator, "detach-client");
+    errdefer detach.deinit(allocator);
+    try detach.append_byte(allocator, cast<u8>(10));
+    try self.outgoing.append(allocator, move detach);
+    self.pending.clear(allocator);
+    self.pending_panes.clear(allocator);
+    self.clear_response(allocator);
+    self.line.clear();
+    self.probe.clear();
+    self.sync_pending = false;
+    self.sync_requested_while_pending = false;
+    self.closing = true;
+    return;
+}
+
+/// Queues command with a newline, expecting a response of kind.
+fn (self: &var Control) queue_command(allocator: Allocator, command: string::String, kind: PendingKind, pane_id: i64) -> mem::Error!void {
+    var owned = move command;
+    errdefer owned.deinit(allocator);
+    try owned.append_byte(allocator, cast<u8>(10));
+    try self.pending.append(allocator, Pending { kind: kind, pane_id: pane_id });
+    try self.outgoing.append(allocator, move owned);
+    return;
+}
+
+fn (self: &var Control) queue_bytes(allocator: Allocator, command: []u8, kind: PendingKind) -> mem::Error!void {
+    let owned = try string::from_bytes(allocator, command);
+    return self.queue_command(allocator, move owned, kind, -1);
+}
+
+/// Queues a command for the host; only a control client tmux admitted takes
+/// them.
+pub fn (self: &var Control) command(allocator: Allocator, command: []u8) -> mem::Error!bool {
+    if !self.active or self.closing or !self.control_client_admitted {
+        return false;
+    }
+    var kind = PendingKind::Ignore;
+    if mem::equal_bytes(command, session_list_command()) {
+        kind = PendingKind::Sessions;
+    }
+    try self.queue_bytes(allocator, command, kind);
+    return true;
+}
+
+fn (self: &Control) latest_pane_index(pane: i64) -> i64 {
+    var index = 0;
+    while self.latest_panes.at(index) |latest| {
+        if latest.pane_id == pane {
+            return index;
+        }
+        index = index + 1;
+    }
+    return -1;
+}
+
+pub fn (self: &Control) pane_accepts_input(pane: i64) -> bool {
+    if !self.active or self.closing {
+        return false;
+    }
+    let at = self.latest_pane_index(pane);
+    if self.latest_panes.at(at) |latest| {
+        return !latest.input_off;
+    }
+    return false;
+}
+
+/// Pastes bytes into pane through a private tmux buffer, 1024 bytes of octal
+/// escapes per `set-buffer` so any byte survives.
+pub fn (self: &var Control) paste(allocator: Allocator, pane: i64, bytes: []u8) -> mem::Error!bool {
+    if mem::len(bytes) == 0 or !self.pane_accepts_input(pane) {
+        return false;
+    }
+    self.paste_sequence = self.paste_sequence + 1;
+    var buffer = try string::from_bytes(allocator, "satin-");
+    defer buffer.deinit(allocator);
+    try fmt::append_i64(allocator, &var buffer, pane);
+    try buffer.append_bytes(allocator, "-");
+    try fmt::append_i64(allocator, &var buffer, self.paste_sequence);
+    var start = 0;
+    while start < mem::len(bytes) {
+        var end = start + 1024;
+        if end > mem::len(bytes) {
+            end = mem::len(bytes);
+        }
+        var command = try string::from_bytes(allocator, "set-buffer");
+        errdefer command.deinit(allocator);
+        if start > 0 {
+            try command.append_bytes(allocator, " -a");
+        }
+        try command.append_bytes(allocator, " -b ");
+        try command.append_string(allocator, &buffer);
+        try command.append_bytes(allocator, " ");
+        try command.append_byte(allocator, cast<u8>(34));
+        try append_octal_argument(allocator, &var command, bytes[start..end]);
+        try command.append_byte(allocator, cast<u8>(34));
+        try self.queue_command(allocator, move command, PendingKind::Ignore, -1);
+        start = end;
+    }
+    var paste = try string::from_bytes(allocator, "paste-buffer -dpr -b ");
+    errdefer paste.deinit(allocator);
+    try paste.append_string(allocator, &buffer);
+    try paste.append_bytes(allocator, " -t %");
+    try fmt::append_i64(allocator, &var paste, pane);
+    try self.queue_command(allocator, move paste, PendingKind::Ignore, -1);
+    return true;
+}
+
+fn (self: &var Control) request_sync(allocator: Allocator) -> mem::Error!void {
+    if self.closing {
+        return;
+    }
+    if !self.control_client_admitted or self.sync_pending {
+        // A topology notification can arrive while list-panes is queued or
+        // running. Remember it so the last reported layout is never stale.
+        self.sync_requested_while_pending = true;
+        return;
+    }
+    self.sync_pending = true;
+    var command = try string::from_bytes(allocator, "list-panes -s -F '");
+    errdefer command.deinit(allocator);
+    try append_sync_format(allocator, &var command);
+    try command.append_bytes(allocator, "'");
+    return self.queue_command(allocator, move command, PendingKind::Snapshot, -1);
+}
+
+/// The `list-panes` format: one `#{q:...}` per topology field, tab separated.
+fn append_sync_format(allocator: Allocator, out: &var string::String) -> mem::Error!void {
+    let names =
+        "session_id session_name socket_path window_id window_index window_name window_active window_visible_layout window_zoomed_flag pane_id pane_index pane_active pane_current_path pane_width pane_height cursor_x cursor_y cursor_flag cursor_shape cursor_blinking history_size alternate_on insert_flag keypad_cursor_flag keypad_flag origin_flag wrap_flag mouse_standard_flag mouse_button_flag mouse_any_flag mouse_utf8_flag mouse_sgr_flag pane_input_off scroll_region_upper scroll_region_lower pid pane_private_modes pane_key_mode pane_current_command pane_title allow-passthrough"
+        ;
+    var start = 0;
+    var index = 0;
+    while index <= mem::len(names) {
+        if index == mem::len(names) or names[index] == cast<u8>(32) {
+            if start > 0 {
+                try out.append_byte(allocator, cast<u8>(9));
+            }
+            try out.append_bytes(allocator, "#{q:");
+            try out.append_bytes(allocator, names[start..index]);
+            try out.append_bytes(allocator, "}");
+            start = index + 1;
+        }
+        index = index + 1;
+    }
+    return;
+}
+
+fn (self: &var Control) configure_flow_control(allocator: Allocator) -> mem::Error!void {
+    if self.flow_control_configured or self.closing {
+        return;
+    }
+    self.flow_control_configured = true;
+    return self.queue_bytes(allocator,
+        "refresh-client -f pause-after=5 -B 'satin-pane-title:%*:#{q:pane_title}' -B 'satin-session-clients::#{session_attached_list}'",
+        PendingKind::Ignore
+    );
+}
+
+fn (self: &var Control) resume_paused_pane(allocator: Allocator, pane: i64) -> mem::Error!void {
+    if self.closing {
+        return;
+    }
+    if !try set_add(allocator, &var self.rehydrating_panes, pane) {
+        return;
+    }
+    var command = try string::from_bytes(allocator, "refresh-client -A %");
+    errdefer command.deinit(allocator);
+    try fmt::append_i64(allocator, &var command, pane);
+    try command.append_bytes(allocator, ":continue");
+    return self.queue_command(allocator, move command, PendingKind::Resume, pane);
+}
+
+fn (self: &var Control) queue_control_client_check(allocator: Allocator) -> mem::Error!void {
+    if self.closing or self.control_client_check_pending {
+        return;
+    }
+    self.control_client_check_pending = true;
+    return self.queue_bytes(allocator, control_client_check_command(), PendingKind::ControlClientCheck);
+}
+
+fn (self: &var Control) recheck_control_clients(allocator: Allocator) -> mem::Error!void {
+    if self.control_client_admitted {
+        return self.queue_control_client_check(allocator);
+    }
+    return;
+}
+
+fn (self: &var Control) queue_terminal_error(allocator: Allocator, lines: &array::Array<string::String>) -> mem::Error!void {
+    if lines.len() == 0 {
+        return;
+    }
+    try append_crlf(allocator, &var self.terminal_after_control);
+    var index = 0;
+    while lines.at(index) |line| {
+        try self.terminal_after_control.append_string(allocator, line);
+        try append_crlf(allocator, &var self.terminal_after_control);
+        index = index + 1;
+    }
+    return;
+}
+
+/// The lines joined by newlines, each lossily UTF-8, or fallback for none.
+fn lines_lossy(allocator: Allocator, lines: &array::Array<string::String>, fallback: []u8, out: &var string::String) -> mem::Error!void {
+    if lines.len() == 0 {
+        return out.append_bytes(allocator, fallback);
+    }
+    var index = 0;
+    while lines.at(index) |line| {
+        if index > 0 {
+            try out.append_byte(allocator, cast<u8>(10));
+        }
+        let bytes = line.as_bytes();
+        try append_lossy_utf8(allocator, out, bytes);
+        index = index + 1;
+    }
+    return;
+}
+
+/// Moves every line of from into into, in order.
+fn drain_lines(allocator: Allocator, from: &var array::Array<string::String>, into: &var array::Array<string::String>) -> mem::Error!void {
+    try into.reserve(allocator, from.len());
+    var index = 0;
+    while index < from.len() {
+        var copy = string::new(allocator);
+        if from.at_mut(index) |line| {
+            let bytes = line.as_bytes();
+            if copy.append_bytes(allocator, bytes) {} else |_| {}
+            line.clear();
+        }
+        if into.append(allocator, move copy) {} else |_| {}
+        index = index + 1;
+    }
+    from.clear(allocator);
+    return;
+}
+
+fn (self: &var Control) finish_response(allocator: Allocator, succeeded: bool, why: &var string::String) -> Failure!void {
+    if !self.has_response {
+        return;
+    }
+    let kind = self.response_kind;
+    var lines = array::new<string::String>(allocator);
+    defer lines.deinit(allocator);
+    try drain_lines(allocator, &var self.response_lines, &var lines);
+    var panes = array::new<Pane>(allocator);
+    defer panes.deinit(allocator);
+    while self.response_pane.pop() |pane| {
+        try panes.append(allocator, move pane);
+    }
+    self.clear_response(allocator);
+    if kind.kind == PendingKind::Initial {
+        if succeeded {
+            try self.queue_control_client_check(allocator);
+        } else {
+            try self.queue_terminal_error(allocator, &lines);
+        }
+        return;
+    }
+    if kind.kind == PendingKind::ControlClientCheck {
+        try self.finish_control_client_check(allocator, succeeded, &lines);
+        return;
+    }
+    if kind.kind == PendingKind::Snapshot {
+        try self.finish_snapshot_response(allocator, succeeded, &lines, why);
+        return;
+    }
+    if kind.kind == PendingKind::Sessions {
+        try self.finish_sessions(allocator, succeeded, &lines);
+        return;
+    }
+    if kind.kind == PendingKind::Resume {
+        try self.finish_resume(allocator, succeeded, kind.pane_id);
+        return;
+    }
+    if kind.kind == PendingKind::AlternateBacking {
+        if succeeded {
+            var backing = array::new<string::String>(allocator);
+            errdefer backing.deinit(allocator);
+            try drain_lines(allocator, &var lines, &var backing);
+            self.remove_backing(allocator, kind.pane_id);
+            try self.alternate_backings.append(allocator, Backing { pane_id: kind.pane_id, lines: move backing });
+        }
+        return;
+    }
+    if kind.kind == PendingKind::Capture {
+        if panes.pop() |pane| {
+            defer pane.deinit(allocator);
+            try self.finish_capture_response(allocator, succeeded, &lines, &pane, why);
+        }
+        return;
+    }
+    if !succeeded {
+        var message = string::new(allocator);
+        defer message.deinit(allocator);
+        try lines_lossy(allocator, &lines, "tmux command failed", &var message);
+        let bytes = message.as_bytes();
+        try self.push_event(try message_event(allocator, "command_error", bytes));
+    }
+    return;
+}
+
+fn (self: &var Control) finish_control_client_check(allocator: Allocator, succeeded: bool, lines: &array::Array<string::String>) -> mem::Error!void {
+    self.control_client_check_pending = false;
+    var only_client = false;
+    if succeeded and lines.len() == 1 {
+        if lines.at(0) |line| {
+            let bytes = line.as_bytes();
+            let start = trim_start(bytes);
+            let end = trim_end(bytes, start);
+            only_client = mem::equal_bytes(bytes[start..end], "1");
+        }
+    }
+    if !only_client {
+        return self.fail_control(allocator, "this tmux session already has another control-mode client");
+    }
+    if !self.control_client_admitted {
+        self.control_client_admitted = true;
+        self.sync_requested_while_pending = false;
+        try self.configure_flow_control(allocator);
+        try self.request_sync(allocator);
+    }
+    return;
+}
+
+fn (self: &var Control) finish_sessions(allocator: Allocator, succeeded: bool, lines: &array::Array<string::String>) -> mem::Error!void {
+    var why = string::new(allocator);
+    defer why.deinit(allocator);
+    if !succeeded {
+        var message = string::new(allocator);
+        defer message.deinit(allocator);
+        try lines_lossy(allocator, lines, "tmux session discovery failed", &var message);
+        let none = array::new<Session>(allocator);
+        defer none.deinit(allocator);
+        let bytes = message.as_bytes();
+        try self.push_event(try sessions_event(allocator, &none, true, bytes));
+        return;
+    }
+    if parse_sessions(allocator, lines, &var why) |sessions| {
+        defer sessions.deinit(allocator);
+        try self.push_event(try sessions_event(allocator, &sessions, false, ""));
+    } else |err| {
+        match err {
+            OutOfMemory => return mem::Error::OutOfMemory,
+            Invalid => {
+                let none = array::new<Session>(allocator);
+                defer none.deinit(allocator);
+                let bytes = why.as_bytes();
+                try self.push_event(try sessions_event(allocator, &none, true, bytes));
+            },
+        }
+    }
+    return;
+}
+
+fn (self: &var Control) finish_resume(allocator: Allocator, succeeded: bool, pane: i64) -> mem::Error!void {
+    if !succeeded {
+        set_drop(&var self.rehydrating_panes, pane);
+        return self.flush_rehydration_passthrough(allocator, pane);
+    }
+    let at = self.latest_pane_index(pane);
+    var found = false;
+    var copy = array::new<Pane>(allocator);
+    defer copy.deinit(allocator);
+    if self.latest_panes.at(at) |latest| {
+        let cloned = try latest.clone(allocator);
+        try copy.append(allocator, move cloned);
+        found = true;
+    }
+    if copy.pop() |latest| {
+        return self.queue_pane_capture(allocator, move latest);
+    }
+    if !found {
+        set_drop(&var self.rehydrating_panes, pane);
+        return self.request_sync(allocator);
+    }
+    return;
+}
+
+fn (self: &Control) backing_index(pane: i64) -> i64 {
+    var index = 0;
+    while self.alternate_backings.at(index) |backing| {
+        if backing.pane_id == pane {
+            return index;
+        }
+        index = index + 1;
+    }
+    return -1;
+}
+
+fn (self: &var Control) remove_backing(allocator: Allocator, pane: i64) -> void {
+    let index = self.backing_index(pane);
+    if index < 0 {
+        return;
+    }
+    if self.alternate_backings.remove(index) |removed| {
+        removed.deinit(allocator);
+    } else |_| {}
+}
+
+fn (self: &var Control) finish_snapshot_response(
+    allocator: Allocator,
+    succeeded: bool,
+    lines: &array::Array<string::String>,
+    why: &var string::String
+) -> Failure!void {
+    self.sync_pending = false;
+    let resync_requested = self.sync_requested_while_pending;
+    self.sync_requested_while_pending = false;
+    if !succeeded {
+        if resync_requested {
+            try self.request_sync(allocator);
+        }
+        return;
+    }
+    var snapshot = try parse_snapshot(allocator, lines, why);
+    defer snapshot.deinit(allocator);
+    var window_index = 0;
+    while snapshot.windows.at(window_index) |window| {
+        var pane_index = 0;
+        while window.panes.at(pane_index) |pane| {
+            let at = self.latest_pane_index(pane.pane_id);
+            var changed = false;
+            if self.latest_panes.at(at) |previous| {
+                changed = hydration_state_changed(previous, pane);
+            }
+            // A capture already in flight targets the old pane geometry and
+            // state and must be replaced. An already-hydrated pane is resized
+            // incrementally by its VT runtime.
+            if changed and set_has(&self.capture_pending, pane.pane_id) {
+                set_drop(&var self.hydrated_panes, pane.pane_id);
+                try set_add(allocator, &var self.recapture_panes, pane.pane_id);
+            }
+            pane_index = pane_index + 1;
+        }
+        window_index = window_index + 1;
+    }
+    self.latest_panes.clear(allocator);
+    window_index = 0;
+    while snapshot.windows.at(window_index) |window| {
+        var pane_index = 0;
+        while window.panes.at(pane_index) |pane| {
+            let cloned = try pane.clone(allocator);
+            try self.latest_panes.append(allocator, move cloned);
+            pane_index = pane_index + 1;
+        }
+        window_index = window_index + 1;
+    }
+    try self.queue_pane_hydrations(allocator, &snapshot);
+    try self.push_event(try snapshot_event(allocator, &snapshot));
+    if resync_requested {
+        try self.request_sync(allocator);
+    }
+    return;
+}
+
+fn (self: &var Control) finish_capture_response(
+    allocator: Allocator,
+    succeeded: bool,
+    lines: &array::Array<string::String>,
+    pane: &Pane,
+    why: &var string::String
+) -> Failure!void {
+    let pane_id = pane.pane_id;
+    set_drop(&var self.capture_pending, pane_id);
+    if set_drop(&var self.recapture_panes, pane_id) {
+        self.remove_backing(allocator, pane_id);
+        set_drop(&var self.hydrated_panes, pane_id);
+        set_drop(&var self.rehydrating_panes, pane_id);
+        var copy = array::new<Pane>(allocator);
+        defer copy.deinit(allocator);
+        let at = self.latest_pane_index(pane_id);
+        if self.latest_panes.at(at) |latest| {
+            let cloned = try latest.clone(allocator);
+            try copy.append(allocator, move cloned);
+        }
+        if copy.pop() |latest| {
+            try self.queue_pane_capture(allocator, move latest);
+        }
+        return;
+    }
+    if succeeded {
+        var backing = array::new<string::String>(allocator);
+        defer backing.deinit(allocator);
+        var has_backing = false;
+        var index = 0;
+        while self.alternate_backings.at(index) |entry| {
+            if entry.pane_id == pane_id {
+                has_backing = true;
+                break;
+            }
+            index = index + 1;
+        }
+        if has_backing {
+            if self.alternate_backings.remove(index) |entry| {
+                var owned = move entry;
+                defer owned.deinit(allocator);
+                try drain_lines(allocator, &var owned.lines, &var backing);
+            } else |_| {}
+        }
+        var data = string::new(allocator);
+        defer data.deinit(allocator);
+        try build_hydration(allocator, lines, has_backing, &backing, pane, &var data, why);
+        try set_add(allocator, &var self.hydrated_panes, pane_id);
+        let bytes = data.as_bytes();
+        try self.push_event(try bytes_event(allocator, "pane_hydration", pane_id, bytes));
+    }
+    set_drop(&var self.rehydrating_panes, pane_id);
+    try self.flush_rehydration_passthrough(allocator, pane_id);
+    try self.request_sync(allocator);
+    return;
+}
+
+/// Drops per-pane state of panes the snapshot no longer has, then queues a
+/// capture for the first unhydrated pane, the active window's first: a full
+/// history capture can be several MiB, and one in flight at a time keeps
+/// input from waiting behind every window.
+fn (self: &var Control) queue_pane_hydrations(allocator: Allocator, snapshot: &Snapshot) -> mem::Error!void {
+    var current = array::new<i64>(allocator);
+    defer current.deinit(allocator);
+    var window_index = 0;
+    while snapshot.windows.at(window_index) |window| {
+        var pane_index = 0;
+        while window.panes.at(pane_index) |pane| {
+            try current.append(allocator, pane.pane_id);
+            pane_index = pane_index + 1;
+        }
+        window_index = window_index + 1;
+    }
+    set_keep(&var self.hydrated_panes, &current);
+    set_keep(&var self.capture_pending, &current);
+    set_keep(&var self.rehydrating_panes, &current);
+    set_keep(&var self.recapture_panes, &current);
+    set_keep(&var self.passthrough_attempted_panes, &current);
+    set_keep(&var self.dropped_rehydration_passthrough, &current);
+    self.keep_pane_state(allocator, &current);
+    var pass = 0;
+    while pass < 2 {
+        window_index = 0;
+        while snapshot.windows.at(window_index) |window| {
+            window_index = window_index + 1;
+            let is_active = window.window_id == snapshot.active_window_id;
+            if (pass == 0) != is_active {
+                continue;
+            }
+            var pane_index = 0;
+            while window.panes.at(pane_index) |pane| {
+                pane_index = pane_index + 1;
+                if set_has(&self.hydrated_panes, pane.pane_id) or set_has(&self.capture_pending, pane.pane_id) {
+                    continue;
+                }
+                if self.capture_pending.len() >= max_pending_captures() {
+                    return;
+                }
+                let cloned = try pane.clone(allocator);
+                try self.queue_pane_capture(allocator, move cloned);
+            }
+        }
+        pass = pass + 1;
+    }
+    return;
+}
+
+/// The index of the first entry whose pane current does not hold, or -1.
+fn (self: &Control) stale_backing(current: &array::Array<i64>) -> i64 {
+    var index = 0;
+    while self.alternate_backings.at(index) |entry| {
+        if !set_has(current, entry.pane_id) {
+            return index;
+        }
+        index = index + 1;
+    }
+    return -1;
+}
+
+fn (self: &Control) stale_tracker(current: &array::Array<i64>) -> i64 {
+    var index = 0;
+    while self.trackers.at(index) |entry| {
+        if !set_has(current, entry.pane) {
+            return index;
+        }
+        index = index + 1;
+    }
+    return -1;
+}
+
+fn (self: &Control) stale_buffer(current: &array::Array<i64>) -> i64 {
+    var index = 0;
+    while self.rehydration_passthrough.at(index) |entry| {
+        if !set_has(current, entry.pane_id) {
+            return index;
+        }
+        index = index + 1;
+    }
+    return -1;
+}
+
+fn (self: &var Control) keep_pane_state(allocator: Allocator, current: &array::Array<i64>) -> void {
+    var stale = self.stale_backing(current);
+    while stale >= 0 {
+        if self.alternate_backings.remove(stale) |removed| {
+            removed.deinit(allocator);
+        } else |_| {
+            return;
+        }
+        stale = self.stale_backing(current);
+    }
+    var index = 0;
+    while self.decoders.get(index) |decoder| {
+        if set_has(current, decoder.pane) {
+            index = index + 1;
+        } else {
+            self.decoders.remove(index) catch return;
+        }
+    }
+    stale = self.stale_tracker(current);
+    while stale >= 0 {
+        if self.trackers.remove(stale) |removed| {
+            removed.deinit(allocator);
+        } else |_| {
+            return;
+        }
+        stale = self.stale_tracker(current);
+    }
+    stale = self.stale_buffer(current);
+    while stale >= 0 {
+        if self.rehydration_passthrough.remove(stale) |removed| {
+            removed.deinit(allocator);
+        } else |_| {
+            return;
+        }
+        stale = self.stale_buffer(current);
+    }
+}
+
+fn (self: &var Control) queue_pane_capture(allocator: Allocator, pane: Pane) -> mem::Error!void {
+    let owned = move pane;
+    defer owned.deinit(allocator);
+    let pane_id = owned.pane_id;
+    if !try set_add(allocator, &var self.capture_pending, pane_id) {
+        return;
+    }
+    try set_add(allocator, &var self.rehydrating_panes, pane_id);
+    let allow = owned.allow_passthrough.as_bytes();
+    if mem::equal_bytes(allow, "off") and try set_add(allocator, &var self.passthrough_attempted_panes, pane_id) {
+        var command = try string::from_bytes(allocator, "set-option -p -t %");
+        errdefer command.deinit(allocator);
+        try fmt::append_i64(allocator, &var command, pane_id);
+        try command.append_bytes(allocator, " allow-passthrough on");
+        try self.queue_command(allocator, move command, PendingKind::Ignore, -1);
+    }
+    if owned.alternate_on {
+        var command = try string::from_bytes(allocator, "capture-pane -p -e -C -a -t %");
+        errdefer command.deinit(allocator);
+        try fmt::append_i64(allocator, &var command, pane_id);
+        try self.queue_command(allocator, move command, PendingKind::AlternateBacking, pane_id);
+        let backing_pane = try owned.clone(allocator);
+        try self.pending_panes.append(allocator, move backing_pane);
+    }
+    var command = try string::from_bytes(allocator, "capture-pane -p -e -C -S -");
+    errdefer command.deinit(allocator);
+    try fmt::append_i64(allocator, &var command, history_lines(&owned));
+    try command.append_bytes(allocator, " -t %");
+    try fmt::append_i64(allocator, &var command, pane_id);
+    try self.queue_command(allocator, move command, PendingKind::Capture, pane_id);
+    let capture_pane = try owned.clone(allocator);
+    try self.pending_panes.append(allocator, move capture_pane);
+    return;
+}

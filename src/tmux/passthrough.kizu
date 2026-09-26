@@ -1,0 +1,112 @@
+// Unwrapping tmux's DCS passthrough (`ESC P tmux; ... ESC \`) from pane
+// output, so an inner protocol such as Kitty graphics reaches the pane's
+// terminal while the rest of the output is kept as it was.
+import std::mem;
+import std::string;
+
+enum DcsState {
+    Ground,
+    Escape,
+    Prefix,
+    Body,
+    BodyEscape,
+}
+
+pub struct DcsDecoder {
+    pub pane: i64,
+    state: DcsState,
+    matched: i64,
+}
+
+pub fn new_decoder(pane: i64) -> DcsDecoder {
+    return DcsDecoder { pane: pane, state: DcsState::Ground, matched: 0 };
+}
+
+fn dcs_prefix() -> []u8 {
+    return "tmux;";
+}
+
+/// Decodes bytes into all (everything the pane shows, passthrough unwrapped)
+/// and passthrough (just the unwrapped passthrough bodies).
+pub fn (self: &var DcsDecoder) decode(
+    allocator: Allocator,
+    bytes: []u8,
+    all: &var string::String,
+    passthrough: &var string::String
+) -> mem::Error!void {
+    var index = 0;
+    while index < mem::len(bytes) {
+        let current = bytes[index];
+        if try self.step(allocator, current, all, passthrough) {
+            index = index + 1;
+        }
+    }
+    return;
+}
+
+/// Handles one byte; returns false when the byte must be handled again in the
+/// state this one left.
+fn (self: &var DcsDecoder) step(
+    allocator: Allocator,
+    current: u8,
+    all: &var string::String,
+    passthrough: &var string::String
+) -> mem::Error!bool {
+    let escape = cast<u8>(27);
+    if self.state == DcsState::Ground {
+        if current == escape {
+            self.state = DcsState::Escape;
+        } else {
+            try all.append_byte(allocator, current);
+        }
+        return true;
+    }
+    if self.state == DcsState::Escape {
+        if current == cast<u8>(80) {
+            self.state = DcsState::Prefix;
+            self.matched = 0;
+            return true;
+        }
+        try all.append_byte(allocator, escape);
+        self.state = DcsState::Ground;
+        return false;
+    }
+    if self.state == DcsState::Prefix {
+        let expected = dcs_prefix();
+        if self.matched < mem::len(expected) and expected[self.matched] == current {
+            self.matched = self.matched + 1;
+            if self.matched == mem::len(expected) {
+                self.state = DcsState::Body;
+            }
+            return true;
+        }
+        try all.append_byte(allocator, escape);
+        try all.append_byte(allocator, cast<u8>(80));
+        try all.append_bytes(allocator, expected[0..self.matched]);
+        self.state = DcsState::Ground;
+        return false;
+    }
+    if self.state == DcsState::Body {
+        if current == escape {
+            self.state = DcsState::BodyEscape;
+        } else {
+            try all.append_byte(allocator, current);
+            try passthrough.append_byte(allocator, current);
+        }
+        return true;
+    }
+    if current == escape {
+        try all.append_byte(allocator, escape);
+        try passthrough.append_byte(allocator, escape);
+        self.state = DcsState::Body;
+    } else if current == cast<u8>(92) {
+        self.state = DcsState::Ground;
+    } else {
+        try all.append_byte(allocator, escape);
+        try all.append_byte(allocator, current);
+        try passthrough.append_byte(allocator, escape);
+        try passthrough.append_byte(allocator, current);
+        self.state = DcsState::Body;
+    }
+    return true;
+}

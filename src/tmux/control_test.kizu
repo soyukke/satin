@@ -1,0 +1,967 @@
+import satin::core;
+import std::array;
+import std::fmt;
+import std::mem;
+import std::string;
+import std::testing;
+
+fn hex_value(byte: u8) -> i64 {
+    let value = cast<i64>(byte);
+    if value >= 48 and value <= 57 {
+        return value - 48;
+    }
+    if value >= 97 and value <= 102 {
+        return value - 87;
+    }
+    return value - 55;
+}
+
+/// Test bytes spelled with escapes Kizu literals do not have: `\e` ESC,
+/// `\n`, `\r`, `\t`, `\0`, `\xHH`, and `\\` for one backslash.
+fn b(allocator: Allocator, text: []u8) -> !string::String {
+    var out = string::new(allocator);
+    errdefer out.deinit(allocator);
+    var index = 0;
+    while index < mem::len(text) {
+        let byte = text[index];
+        if byte != cast<u8>(92) or index + 1 >= mem::len(text) {
+            try out.append_byte(allocator, byte);
+            index = index + 1;
+            continue;
+        }
+        let next = text[index + 1];
+        index = index + 2;
+        if next == cast<u8>(101) {
+            try out.append_byte(allocator, cast<u8>(27));
+        } else if next == cast<u8>(110) {
+            try out.append_byte(allocator, cast<u8>(10));
+        } else if next == cast<u8>(114) {
+            try out.append_byte(allocator, cast<u8>(13));
+        } else if next == cast<u8>(116) {
+            try out.append_byte(allocator, cast<u8>(9));
+        } else if next == cast<u8>(48) {
+            try out.append_byte(allocator, cast<u8>(0));
+        } else if next == cast<u8>(120) {
+            try out.append_byte(allocator, cast<u8>(hex_value(text[index]) * 16 + hex_value(text[index + 1])));
+            index = index + 2;
+        } else {
+            try out.append_byte(allocator, next);
+        }
+    }
+    return move out;
+}
+
+fn expect_bytes(allocator: Allocator, got: []u8, want: []u8) -> !void {
+    let expected = try b(allocator, want);
+    defer expected.deinit(allocator);
+    let expected_bytes = expected.as_bytes();
+    if !mem::equal_bytes(got, expected_bytes) {
+        testing::fail(got);
+    }
+    return;
+}
+
+/// Feeds text (escapes as in b) and returns what passed through.
+fn feed(allocator: Allocator, control: &var Control, text: []u8) -> !string::String {
+    let input = try b(allocator, text);
+    defer input.deinit(allocator);
+    var passthrough = string::new(allocator);
+    errdefer passthrough.deinit(allocator);
+    let bytes = input.as_bytes();
+    try control.feed(allocator, bytes, &var passthrough);
+    return move passthrough;
+}
+
+fn feed_quiet(allocator: Allocator, control: &var Control, text: []u8) -> !void {
+    let passthrough = try feed(allocator, control, text);
+    passthrough.deinit(allocator);
+    return;
+}
+
+fn expect_outgoing(allocator: Allocator, control: &var Control, want: []u8) -> !void {
+    var got = string::new(allocator);
+    defer got.deinit(allocator);
+    if !try control.take_outgoing(allocator, &var got) {
+        testing::fail("no outgoing command");
+    }
+    let bytes = got.as_bytes();
+    return expect_bytes(allocator, bytes, want);
+}
+
+fn expect_outgoing_prefix(allocator: Allocator, control: &var Control, prefix: []u8) -> !void {
+    var got = string::new(allocator);
+    defer got.deinit(allocator);
+    if !try control.take_outgoing(allocator, &var got) {
+        testing::fail("no outgoing command");
+    }
+    let bytes = got.as_bytes();
+    if !mem::starts_with(bytes, prefix) {
+        testing::fail(bytes);
+    }
+    return;
+}
+
+fn expect_no_outgoing(allocator: Allocator, control: &var Control) -> !void {
+    var got = string::new(allocator);
+    defer got.deinit(allocator);
+    if try control.take_outgoing(allocator, &var got) {
+        let bytes = got.as_bytes();
+        testing::fail(bytes);
+    }
+    return;
+}
+
+fn expect_event(allocator: Allocator, control: &var Control, want: []u8) -> !void {
+    var got = string::new(allocator);
+    defer got.deinit(allocator);
+    if !try control.take_event(allocator, &var got) {
+        testing::fail("no event");
+    }
+    let bytes = got.as_bytes();
+    if !mem::equal_bytes(bytes, want) {
+        testing::fail(bytes);
+    }
+    return;
+}
+
+/// Takes the next event and checks its kind.
+fn expect_event_kind(allocator: Allocator, control: &var Control, kind: []u8) -> !string::String {
+    var got = string::new(allocator);
+    errdefer got.deinit(allocator);
+    if !try control.take_event(allocator, &var got) {
+        testing::fail("no event");
+    }
+    var prefix = try string::from_bytes(allocator, "{");
+    defer prefix.deinit(allocator);
+    try prefix.append_byte(allocator, cast<u8>(34));
+    try prefix.append_bytes(allocator, "kind");
+    try prefix.append_byte(allocator, cast<u8>(34));
+    try prefix.append_bytes(allocator, ":");
+    try prefix.append_byte(allocator, cast<u8>(34));
+    try prefix.append_bytes(allocator, kind);
+    try prefix.append_byte(allocator, cast<u8>(34));
+    let bytes = got.as_bytes();
+    let prefix_bytes = prefix.as_bytes();
+    if !mem::starts_with(bytes, prefix_bytes) {
+        testing::fail(bytes);
+    }
+    return move got;
+}
+
+fn expect_no_event(allocator: Allocator, control: &var Control) -> !void {
+    var got = string::new(allocator);
+    defer got.deinit(allocator);
+    if try control.take_event(allocator, &var got) {
+        let bytes = got.as_bytes();
+        testing::fail(bytes);
+    }
+    return;
+}
+
+fn contains(haystack: []u8, needle: []u8) -> bool {
+    return find_bytes(haystack, needle) >= 0;
+}
+
+/// One `list-panes` row for pane %7 of window @2 in session $0.
+fn snapshot_row(allocator: Allocator, path: []u8, history: i64, alternate: bool, zoomed: bool) -> !string::String {
+    var alt = "0";
+    if alternate {
+        alt = "1";
+    }
+    var zoom = "0";
+    if zoomed {
+        zoom = "1";
+    }
+    var modes = "7,1004";
+    var key_mode = "VT10x";
+    if alternate {
+        modes = "1,7,1002,1003,1006,2004";
+        key_mode = "Ext 2";
+    }
+    var row = string::new(allocator);
+    defer row.deinit(allocator);
+    try row.append_bytes(allocator, "$0\tsatin\t/tmp/tmux.sock\t@2\t0\tmain\t1\tb25f,80x24,0,0,7\t");
+    try row.append_bytes(allocator, zoom);
+    try row.append_bytes(allocator, "\t%7\t0\t1\t");
+    try row.append_bytes(allocator, path);
+    try row.append_bytes(allocator, "\t80\t24\t18\t4\t1\tblock\t1\t");
+    try fmt::append_i64(allocator, &var row, history);
+    try row.append_bytes(allocator, "\t");
+    try row.append_bytes(allocator, alt);
+    try row.append_bytes(allocator, "\t0\t");
+    try row.append_bytes(allocator, alt);
+    try row.append_bytes(allocator, "\t");
+    try row.append_bytes(allocator, alt);
+    try row.append_bytes(allocator, "\t0\t1\t0\t");
+    try row.append_bytes(allocator, alt);
+    try row.append_bytes(allocator, "\t");
+    try row.append_bytes(allocator, alt);
+    try row.append_bytes(allocator, "\t0\t");
+    try row.append_bytes(allocator, alt);
+    try row.append_bytes(allocator, "\t0\t0\t23\t4242\t");
+    try row.append_bytes(allocator, modes);
+    try row.append_bytes(allocator, "\t");
+    try row.append_bytes(allocator, key_mode);
+    try row.append_bytes(allocator, "\tzsh\t\xe2\xa0\xb9 satin\toff");
+    let text = row.as_bytes();
+    return b(allocator, text);
+}
+
+fn row_lines(allocator: Allocator, row: &string::String) -> !array::Array<string::String> {
+    var lines = array::new<string::String>(allocator);
+    errdefer lines.deinit(allocator);
+    let bytes = row.as_bytes();
+    var start = 0;
+    var index = 0;
+    while index <= mem::len(bytes) {
+        if index == mem::len(bytes) or bytes[index] == cast<u8>(10) {
+            let line = try string::from_bytes(allocator, bytes[start..index]);
+            try lines.append(allocator, move line);
+            start = index + 1;
+        }
+        index = index + 1;
+    }
+    return move lines;
+}
+
+fn feed_response(allocator: Allocator, control: &var Control, guard: []u8, body: &string::String) -> !void {
+    var text = try string::from_bytes(allocator, "%begin ");
+    defer text.deinit(allocator);
+    try text.append_bytes(allocator, guard);
+    try text.append_byte(allocator, cast<u8>(10));
+    try text.append_string(allocator, body);
+    try text.append_byte(allocator, cast<u8>(10));
+    try text.append_bytes(allocator, "%end ");
+    try text.append_bytes(allocator, guard);
+    try text.append_byte(allocator, cast<u8>(10));
+    let bytes = text.as_bytes();
+    var passthrough = string::new(allocator);
+    defer passthrough.deinit(allocator);
+    try control.feed(allocator, bytes, &var passthrough);
+    return;
+}
+
+fn admit_control_client(allocator: Allocator, control: &var Control) -> !void {
+    try feed_quiet(allocator, control, "%begin 9 1 0\n%end 9 1 0\n");
+    try expect_outgoing(allocator, control, "list-clients -t '' -F '#{client_control_mode}' -f '#{client_control_mode}'\n");
+    try feed_quiet(allocator, control, "%begin 9 2 0\n1\n%end 9 2 0\n");
+    try expect_outgoing(allocator, control,
+        "refresh-client -f pause-after=5 -B 'satin-pane-title:%*:#{q:pane_title}' -B 'satin-session-clients::#{session_attached_list}'\n"
+    );
+    return feed_quiet(allocator, control, "%begin 9 3 0\n%end 9 3 0\n");
+}
+
+fn acknowledge_passthrough_setup(allocator: Allocator, control: &var Control, guard: []u8) -> !void {
+    try expect_outgoing(allocator, control, "set-option -p -t %7 allow-passthrough on\n");
+    let empty = string::new(allocator);
+    defer empty.deinit(allocator);
+    var text = try string::from_bytes(allocator, "%begin ");
+    defer text.deinit(allocator);
+    try text.append_bytes(allocator, guard);
+    try text.append_bytes(allocator, "\n%end ");
+    try text.append_bytes(allocator, guard);
+    try text.append_bytes(allocator, "\n");
+    let bytes = text.as_bytes();
+    return feed_quiet(allocator, control, bytes);
+}
+
+test "detects incremental control boundaries and restores passthrough" {
+    let allocator = mem::page_allocator();
+    var control = new_control(allocator);
+    defer control.deinit(allocator);
+    let first = try feed(allocator, &var control, "shell\eP10");
+    defer first.deinit(allocator);
+    let first_bytes = first.as_bytes();
+    try expect_bytes(allocator, first_bytes, "shell");
+    let second = try feed(allocator, &var control, "00p%exit done\n\e\\prompt");
+    defer second.deinit(allocator);
+    let second_bytes = second.as_bytes();
+    try expect_bytes(allocator, second_bytes, "prompt");
+    try expect_event(allocator, &var control,
+        \\{"kind":"entered"}
+    );
+    try expect_event(allocator, &var control,
+        \\{"kind":"exited","reason":"done"}
+    );
+    testing::expect(!control.is_active());
+}
+
+test "returns the initial attach error to the terminal after control mode" {
+    let allocator = mem::page_allocator();
+    var control = new_control(allocator);
+    defer control.deinit(allocator);
+    let out = try feed(allocator, &var control,
+        "\eP1000p%begin 1 2 0\ncan't find session: missing\n%error 1 2 0\n%exit\n\e\\prompt"
+    );
+    defer out.deinit(allocator);
+    let bytes = out.as_bytes();
+    try expect_bytes(allocator, bytes, "\r\ncan't find session: missing\r\nprompt");
+}
+
+test "decodes pane output octal escapes" {
+    let allocator = mem::page_allocator();
+    var why = string::new(allocator);
+    defer why.deinit(allocator);
+    var out = string::new(allocator);
+    defer out.deinit(allocator);
+    let input = try b(allocator, "hello\\015\\012\\033\\134");
+    defer input.deinit(allocator);
+    let input_bytes = input.as_bytes();
+    try decode_escaped(allocator, input_bytes, false, &var out, &var why);
+    let out_bytes = out.as_bytes();
+    try expect_bytes(allocator, out_bytes, "hello\r\n\e\\");
+    out.clear();
+    let second = try b(allocator, "\xff\\000");
+    defer second.deinit(allocator);
+    let second_bytes = second.as_bytes();
+    try decode_escaped(allocator, second_bytes, false, &var out, &var why);
+    let decoded = out.as_bytes();
+    try expect_bytes(allocator, decoded, "\xff\0");
+}
+
+fn decode_with(allocator: Allocator, decoder: &var DcsDecoder, text: []u8, all: &var string::String, passthrough: &var string::String) -> !void {
+    all.clear();
+    passthrough.clear();
+    let input = try b(allocator, text);
+    defer input.deinit(allocator);
+    let bytes = input.as_bytes();
+    return decoder.decode(allocator, bytes, all, passthrough);
+}
+
+test "unwraps fragmented tmux DCS passthrough without losing other output" {
+    let allocator = mem::page_allocator();
+    var decoder = new_decoder(7);
+    var all = string::new(allocator);
+    defer all.deinit(allocator);
+    var passthrough = string::new(allocator);
+    defer passthrough.deinit(allocator);
+    try decode_with(allocator, &var decoder, "before\ePtmu", &var all, &var passthrough);
+    let first = all.as_bytes();
+    try expect_bytes(allocator, first, "before");
+    try decode_with(allocator, &var decoder, "x;\e\e_Ga=T,i=42;AAAA\e", &var all, &var passthrough);
+    let second = all.as_bytes();
+    try expect_bytes(allocator, second, "\e_Ga=T,i=42;AAAA");
+    try decode_with(allocator, &var decoder, "\e\\\e\\after", &var all, &var passthrough);
+    let third = all.as_bytes();
+    try expect_bytes(allocator, third, "\e\\after");
+    let inner = passthrough.as_bytes();
+    try expect_bytes(allocator, inner, "\e\\");
+}
+
+test "preserves non-tmux DCS and reconsiders a mismatched escape" {
+    let allocator = mem::page_allocator();
+    var decoder = new_decoder(7);
+    var all = string::new(allocator);
+    defer all.deinit(allocator);
+    var passthrough = string::new(allocator);
+    defer passthrough.deinit(allocator);
+    try decode_with(allocator, &var decoder, "\eP1;2|payload\e\\plain\e\e[31mred", &var all, &var passthrough);
+    let bytes = all.as_bytes();
+    try expect_bytes(allocator, bytes, "\eP1;2|payload\e\\plain\e\e[31mred");
+}
+
+test "parses nested layout and split ratios" {
+    let allocator = mem::page_allocator();
+    var why = string::new(allocator);
+    defer why.deinit(allocator);
+    var layout = try parse_layout(allocator, "8f06,80x24,0,0{40x24,0,0[40x12,0,0,0,40x11,0,13,2],39x24,41,0,1}", &var why);
+    defer layout.deinit(allocator);
+    let root = layout.node(layout.root);
+    testing::expect(root.axis == core::Axis::Vertical);
+    testing::expect(root.ratio == 40.0 / 79.0);
+    let left = layout.node(root.first);
+    testing::expect(left.axis == core::Axis::Horizontal);
+    testing::expect(left.ratio == 12.0 / 23.0);
+    testing::expect_equal<i64>(0, layout.node(left.first).pane);
+    testing::expect_equal<i64>(2, layout.node(left.second).pane);
+    testing::expect_equal<i64>(1, layout.node(root.second).pane);
+}
+
+test "hydrates initial pane content before following live output" {
+    let allocator = mem::page_allocator();
+    var control = new_control(allocator);
+    defer control.deinit(allocator);
+    try feed_quiet(allocator, &var control, "\eP1000p%session-changed $0 satin\n");
+    try expect_no_outgoing(allocator, &var control);
+    try admit_control_client(allocator, &var control);
+    try expect_outgoing_prefix(allocator, &var control, "list-panes -s");
+    let row = try snapshot_row(allocator, "/tmp", 20, false, false);
+    defer row.deinit(allocator);
+    try feed_response(allocator, &var control, "1 2 0", &row);
+    try acknowledge_passthrough_setup(allocator, &var control, "1 3 0");
+    try expect_outgoing(allocator, &var control, "capture-pane -p -e -C -S -20 -t %7\n");
+    try feed_quiet(allocator, &var control,
+        "%begin 1 3 0\n\\033[31mRESTORED\\\\PATH\\033[39m\n%output %999 remains capture text\n%end fake\n%end 1 3 0\n%output %7 LIVE\n"
+    );
+    let entered = try expect_event_kind(allocator, &var control, "entered");
+    entered.deinit(allocator);
+    let snapshot = try expect_event_kind(allocator, &var control, "snapshot");
+    snapshot.deinit(allocator);
+    let hydration = try expect_event_kind(allocator, &var control, "pane_hydration");
+    defer hydration.deinit(allocator);
+    let hydration_json = hydration.as_bytes();
+    // `\ec\e[?25l\e[31mRESTORED\PATH` as the numbers the event carries.
+    testing::expect(contains(hydration_json,
+        \\"pane_id":7,"data":[27,99,27,91,63,50,53,108,27,91,51,49,109,82,69,83,84,79,82,69,68,92,80,65,84,72,27,91,51,57,109,
+    ));
+    // `\e[1 q\e[?25h` closes it.
+    testing::expect(contains(hydration_json, "27,91,49,32,113,27,91,63,50,53,104]}"));
+    try expect_event(allocator, &var control,
+        \\{"kind":"pane_output","pane_id":7,"data":[76,73,86,69]}
+    );
+}
+
+test "hydration restores the pane's modes and cursor" {
+    let allocator = mem::page_allocator();
+    var why = string::new(allocator);
+    defer why.deinit(allocator);
+    let row = try snapshot_row(allocator, "/tmp", 20, false, false);
+    defer row.deinit(allocator);
+    var lines = try row_lines(allocator, &row);
+    defer lines.deinit(allocator);
+    var snapshot = try parse_snapshot(allocator, &lines, &var why);
+    defer snapshot.deinit(allocator);
+    var capture = array::new<string::String>(allocator);
+    defer capture.deinit(allocator);
+    let text = try b(allocator, "\\033[31mRESTORED\\\\PATH\\033[39m");
+    try capture.append(allocator, move text);
+    let backing = array::new<string::String>(allocator);
+    defer backing.deinit(allocator);
+    var data = string::new(allocator);
+    defer data.deinit(allocator);
+    if snapshot.windows.at(0) |window| {
+        if window.panes.at(0) |pane| {
+            try build_hydration(allocator, &capture, false, &backing, pane, &var data, &var why);
+        }
+    }
+    let bytes = data.as_bytes();
+    let start = try b(allocator, "\ec\e[?25l\e[31mRESTORED\\PATH\e[39m");
+    defer start.deinit(allocator);
+    let start_bytes = start.as_bytes();
+    testing::expect(mem::starts_with(bytes, start_bytes));
+    let cursor = try b(allocator, "\e[1;24r\e[?6l\e[5;19H");
+    defer cursor.deinit(allocator);
+    let cursor_bytes = cursor.as_bytes();
+    testing::expect(contains(bytes, cursor_bytes));
+    let focus = try b(allocator, "\e[?1004h");
+    defer focus.deinit(allocator);
+    let focus_bytes = focus.as_bytes();
+    testing::expect(contains(bytes, focus_bytes));
+    let keys = try b(allocator, "\e[>4;0m");
+    defer keys.deinit(allocator);
+    let keys_bytes = keys.as_bytes();
+    testing::expect(contains(bytes, keys_bytes));
+    let end = try b(allocator, "\e[1 q\e[?25h");
+    defer end.deinit(allocator);
+    let end_bytes = end.as_bytes();
+    testing::expect(mem::len(bytes) >= mem::len(end_bytes));
+    testing::expect(mem::equal_bytes(bytes[mem::len(bytes) - mem::len(end_bytes)..mem::len(bytes)], end_bytes));
+}
+
+test "parses escaped tabs and newlines in topology fields" {
+    let allocator = mem::page_allocator();
+    var why = string::new(allocator);
+    defer why.deinit(allocator);
+    var lines = array::new<string::String>(allocator);
+    defer lines.deinit(allocator);
+    let first = try b(allocator, "one\ttwo\\\tthree\tfour\\");
+    try lines.append(allocator, move first);
+    let second = try string::from_bytes(allocator, "five");
+    try lines.append(allocator, move second);
+    var rows = array::new<array::Array<string::String>>(allocator);
+    defer rows.deinit(allocator);
+    try parse_quoted_rows(allocator, &lines, 3, &var rows, &var why);
+    if rows.at(0) |fields| {
+        if fields.at(1) |field| {
+            let bytes = field.as_bytes();
+            try expect_bytes(allocator, bytes, "two\tthree");
+        }
+        if fields.at(2) |field| {
+            let bytes = field.as_bytes();
+            try expect_bytes(allocator, bytes, "four\nfive");
+        }
+    }
+    let row = try snapshot_row(allocator, "/tmp/tab\\\tline\\\npath", 0, false, true);
+    defer row.deinit(allocator);
+    var row_split = try row_lines(allocator, &row);
+    defer row_split.deinit(allocator);
+    var snapshot = try parse_snapshot(allocator, &row_split, &var why);
+    defer snapshot.deinit(allocator);
+    if snapshot.windows.at(0) |window| {
+        testing::expect(window.zoomed);
+        if window.panes.at(0) |pane| {
+            let path = pane.current_path.as_bytes();
+            try expect_bytes(allocator, path, "/tmp/tab\tline\npath");
+        }
+    }
+}
+
+test "pause continues and forces a fresh capture" {
+    let allocator = mem::page_allocator();
+    var control = new_control(allocator);
+    defer control.deinit(allocator);
+    try feed_quiet(allocator, &var control, "\eP1000p%session-changed $0 satin\n");
+    try expect_no_outgoing(allocator, &var control);
+    try admit_control_client(allocator, &var control);
+    try expect_outgoing_prefix(allocator, &var control, "list-panes -s");
+    let row = try snapshot_row(allocator, "/tmp", 3, false, false);
+    defer row.deinit(allocator);
+    try feed_response(allocator, &var control, "1 2 0", &row);
+    try acknowledge_passthrough_setup(allocator, &var control, "1 3 0");
+    try expect_outgoing_prefix(allocator, &var control, "capture-pane");
+    try feed_quiet(allocator, &var control, "%begin 1 3 0\nready\n%end 1 3 0\n%pause %7\n");
+    try expect_outgoing_prefix(allocator, &var control, "list-panes -s");
+    try expect_outgoing(allocator, &var control, "refresh-client -A %7:continue\n");
+    try feed_response(allocator, &var control, "1 4 0", &row);
+    try feed_quiet(allocator, &var control, "%begin 1 5 0\n%end 1 5 0\n");
+    try expect_outgoing(allocator, &var control, "capture-pane -p -e -C -S -3 -t %7\n");
+}
+
+/// Parses row as a snapshot and returns a copy of its one pane.
+fn row_pane(allocator: Allocator, row: &string::String) -> !Pane {
+    var why = string::new(allocator);
+    defer why.deinit(allocator);
+    var lines = try row_lines(allocator, row);
+    defer lines.deinit(allocator);
+    var snapshot = try parse_snapshot(allocator, &lines, &var why);
+    defer snapshot.deinit(allocator);
+    var copies = array::new<Pane>(allocator);
+    defer copies.deinit(allocator);
+    if snapshot.windows.at(0) |window| {
+        if window.panes.at(0) |pane| {
+            let copy = try pane.clone(allocator);
+            try copies.append(allocator, move copy);
+        }
+    }
+    return copies.pop_or_panic();
+}
+
+/// Opens a response of kind whose lines are row, as if tmux had sent it.
+fn open_response(allocator: Allocator, control: &var Control, kind: PendingKind, pane_id: i64, row: &string::String) -> !void {
+    control.has_response = true;
+    control.response_kind = Pending { kind: kind, pane_id: pane_id };
+    control.response_lines.clear(allocator);
+    let bytes = row.as_bytes();
+    let copy = try string::from_bytes(allocator, bytes);
+    try control.response_lines.append(allocator, move copy);
+    return;
+}
+
+fn replace_first(allocator: Allocator, text: &string::String, from: []u8, to: []u8) -> !string::String {
+    let bytes = text.as_bytes();
+    let from_bytes = try b(allocator, from);
+    defer from_bytes.deinit(allocator);
+    let needle = from_bytes.as_bytes();
+    let to_bytes = try b(allocator, to);
+    defer to_bytes.deinit(allocator);
+    let replacement = to_bytes.as_bytes();
+    let at = find_bytes(bytes, needle);
+    var out = string::new(allocator);
+    errdefer out.deinit(allocator);
+    try out.append_bytes(allocator, bytes[0..at]);
+    try out.append_bytes(allocator, replacement);
+    try out.append_bytes(allocator, bytes[at + mem::len(needle)..mem::len(bytes)]);
+    return move out;
+}
+
+test "topology change during capture discards stale hydration and recaptures" {
+    let allocator = mem::page_allocator();
+    var why = string::new(allocator);
+    defer why.deinit(allocator);
+    let old_row = try snapshot_row(allocator, "/tmp", 0, false, false);
+    defer old_row.deinit(allocator);
+    let changed_row = try replace_first(allocator, &old_row, "\t80\t24\t", "\t120\t40\t");
+    defer changed_row.deinit(allocator);
+    var control = new_control(allocator);
+    defer control.deinit(allocator);
+    control.active = true;
+    let latest = try row_pane(allocator, &old_row);
+    try control.latest_panes.append(allocator, move latest);
+    try control.capture_pending.append(allocator, 7);
+    try control.rehydrating_panes.append(allocator, 7);
+    try open_response(allocator, &var control, PendingKind::Snapshot, -1, &changed_row);
+    try control.finish_response(allocator, true, &var why);
+    testing::expect(set_has(&control.recapture_panes, 7));
+
+    let stale = try string::from_bytes(allocator, "STALE");
+    defer stale.deinit(allocator);
+    try open_response(allocator, &var control, PendingKind::Capture, 7, &stale);
+    let old_pane = try row_pane(allocator, &old_row);
+    try control.response_pane.append(allocator, move old_pane);
+    try control.finish_response(allocator, true, &var why);
+    testing::expect(set_has(&control.capture_pending, 7));
+    var index = 0;
+    while control.events.at(index) |event| {
+        let bytes = event.as_bytes();
+        testing::expect(!contains(bytes, "pane_hydration"));
+        index = index + 1;
+    }
+    if control.outgoing.at(control.outgoing.len() - 1) |last| {
+        let bytes = last.as_bytes();
+        try expect_bytes(allocator, bytes, "capture-pane -p -e -C -S -0 -t %7\n");
+    }
+}
+
+test "live alternate screen transitions do not queue capture" {
+    let allocator = mem::page_allocator();
+    var why = string::new(allocator);
+    defer why.deinit(allocator);
+    let primary_row = try snapshot_row(allocator, "/tmp", 0, false, false);
+    defer primary_row.deinit(allocator);
+    let alternate_row = try snapshot_row(allocator, "/tmp", 0, true, false);
+    defer alternate_row.deinit(allocator);
+    var control = new_control(allocator);
+    defer control.deinit(allocator);
+    control.active = true;
+    try control.hydrated_panes.append(allocator, 7);
+    let primary = try row_pane(allocator, &primary_row);
+    try control.latest_panes.append(allocator, move primary);
+    try open_response(allocator, &var control, PendingKind::Snapshot, -1, &alternate_row);
+    try control.finish_response(allocator, true, &var why);
+    testing::expect(set_has(&control.hydrated_panes, 7));
+    testing::expect(!set_has(&control.capture_pending, 7));
+    testing::expect(!set_has(&control.recapture_panes, 7));
+    testing::expect_equal<i64>(0, control.outgoing.len());
+    control.events.clear(allocator);
+    try control.push_output(allocator, 7, "LIVE_ALT");
+    try expect_event(allocator, &var control,
+        \\{"kind":"pane_output","pane_id":7,"data":[76,73,86,69,95,65,76,84]}
+    );
+    try open_response(allocator, &var control, PendingKind::Snapshot, -1, &primary_row);
+    try control.finish_response(allocator, true, &var why);
+    testing::expect(set_has(&control.hydrated_panes, 7));
+    testing::expect(!set_has(&control.capture_pending, 7));
+    testing::expect_equal<i64>(0, control.outgoing.len());
+}
+
+test "protocol errors are visible and detach the control client" {
+    let allocator = mem::page_allocator();
+    var control = new_control(allocator);
+    defer control.deinit(allocator);
+    try feed_quiet(allocator, &var control, "\eP1000p%output invalid\n");
+    let entered = try expect_event_kind(allocator, &var control, "entered");
+    entered.deinit(allocator);
+    try expect_event(allocator, &var control,
+        \\{"kind":"protocol_error","message":"malformed tmux output record"}
+    );
+    try expect_outgoing(allocator, &var control, "detach-client\n");
+}
+
+fn admitted(allocator: Allocator) -> Control {
+    var control = new_control(allocator);
+    control.active = true;
+    control.control_client_admitted = true;
+    return move control;
+}
+
+test "rejected tmux commands are reported without detaching" {
+    let allocator = mem::page_allocator();
+    var control = admitted(allocator);
+    defer control.deinit(allocator);
+    testing::expect(try control.command(allocator, "not-a-command"));
+    try feed_quiet(allocator, &var control, "%begin 1 2 0\nunknown command: not-a-command\n%error 1 2 0\n");
+    try expect_event(allocator, &var control,
+        \\{"kind":"command_error","message":"unknown command: not-a-command"}
+    );
+    testing::expect(control.is_active());
+}
+
+test "session discovery uses the existing control client" {
+    let allocator = mem::page_allocator();
+    var control = admitted(allocator);
+    defer control.deinit(allocator);
+    testing::expect(try control.command(allocator, session_list_command()));
+    try expect_outgoing(allocator, &var control,
+        "list-sessions -F '#{q:session_id}|#{q:session_name}|#{session_windows}|#{q:socket_path}|#{pid}'\n"
+    );
+    try feed_quiet(allocator, &var control,
+        "%begin 1 2 0\n$1|beta|1|/tmp/tmux.sock|4242\n$0|alpha|2|/tmp/tmux.sock|4242\n%end 1 2 0\n"
+    );
+    try expect_event(allocator, &var control,
+        \\{"kind":"sessions","sessions":[{"session_id":0,"name":"alpha","window_count":2,"socket_path":"/tmp/tmux.sock","server_pid":4242},{"session_id":1,"name":"beta","window_count":1,"socket_path":"/tmp/tmux.sock","server_pid":4242}],"session_error":null}
+    );
+}
+
+test "session fields decode tmux q escapes" {
+    let allocator = mem::page_allocator();
+    var why = string::new(allocator);
+    defer why.deinit(allocator);
+    var lines = array::new<string::String>(allocator);
+    defer lines.deinit(allocator);
+    let line = try b(allocator, "$7|name\\|with\\ space|2|/tmp/tmux\\ socket|4242");
+    try lines.append(allocator, move line);
+    var sessions = try parse_sessions(allocator, &lines, &var why);
+    defer sessions.deinit(allocator);
+    if sessions.at(0) |session| {
+        testing::expect_equal<i64>(7, session.session_id);
+        let name = session.name.as_bytes();
+        try expect_bytes(allocator, name, "name|with space");
+        let socket = session.socket_path.as_bytes();
+        try expect_bytes(allocator, socket, "/tmp/tmux socket");
+        testing::expect_equal<i64>(2, session.window_count);
+        testing::expect_equal<i64>(4242, session.server_pid);
+    }
+    var broken = array::new<string::String>(allocator);
+    defer broken.deinit(allocator);
+    let broken_line = try b(allocator, "$0|broken|1|path\\");
+    try broken.append(allocator, move broken_line);
+    if parse_sessions(allocator, &broken, &var why) |parsed| {
+        parsed.deinit(allocator);
+        testing::fail("a row ending in an escape parsed");
+    } else |_| {}
+}
+
+test "paste uses a binary-safe private tmux buffer" {
+    let allocator = mem::page_allocator();
+    let row = try snapshot_row(allocator, "/tmp", 0, false, false);
+    defer row.deinit(allocator);
+    var control = new_control(allocator);
+    defer control.deinit(allocator);
+    control.active = true;
+    let pane = try row_pane(allocator, &row);
+    try control.latest_panes.append(allocator, move pane);
+    let data = try b(allocator, "a\n'\\\0");
+    defer data.deinit(allocator);
+    let bytes = data.as_bytes();
+    testing::expect(try control.paste(allocator, 7, bytes));
+    try expect_outgoing(allocator, &var control, "set-buffer -b satin-7-1 \x22\\141\\012\\047\\134\\000\x22\n");
+    try expect_outgoing(allocator, &var control, "paste-buffer -dpr -b satin-7-1 -t %7\n");
+}
+
+test "alternate hydration keeps the modes of the alternate screen" {
+    let allocator = mem::page_allocator();
+    var why = string::new(allocator);
+    defer why.deinit(allocator);
+    let row = try snapshot_row(allocator, "/tmp", 0, true, false);
+    defer row.deinit(allocator);
+    let pane = try row_pane(allocator, &row);
+    defer pane.deinit(allocator);
+    var lines = array::new<string::String>(allocator);
+    defer lines.deinit(allocator);
+    let marker = try string::from_bytes(allocator, "ALT_MARKER");
+    try lines.append(allocator, move marker);
+    var backing = array::new<string::String>(allocator);
+    defer backing.deinit(allocator);
+    let primary = try string::from_bytes(allocator, "PRIMARY_MARKER");
+    try backing.append(allocator, move primary);
+    var data = string::new(allocator);
+    defer data.deinit(allocator);
+    try build_hydration(allocator, &lines, true, &backing, &pane, &var data, &var why);
+    let bytes = data.as_bytes();
+    let paste = try b(allocator, "\e[?2004h");
+    defer paste.deinit(allocator);
+    let paste_bytes = paste.as_bytes();
+    testing::expect(contains(bytes, paste_bytes));
+    let keys = try b(allocator, "\e[>4;2m");
+    defer keys.deinit(allocator);
+    let keys_bytes = keys.as_bytes();
+    testing::expect(contains(bytes, keys_bytes));
+    let switch = try b(allocator, "PRIMARY_MARKER\e[0m\e[2J\e[1;1HPRIMARY_MARKER\e[?1049hALT_MARKER");
+    defer switch.deinit(allocator);
+    let switch_bytes = switch.as_bytes();
+    testing::expect(contains(bytes, switch_bytes));
+}
+
+test "resizing a hydrated pane does not enqueue a full capture" {
+    let allocator = mem::page_allocator();
+    var why = string::new(allocator);
+    defer why.deinit(allocator);
+    let old_row = try snapshot_row(allocator, "/tmp", 100000, false, false);
+    defer old_row.deinit(allocator);
+    let resized_row = try replace_first(allocator, &old_row, "\t80\t24\t", "\t120\t40\t");
+    defer resized_row.deinit(allocator);
+    var control = admitted(allocator);
+    defer control.deinit(allocator);
+    try control.hydrated_panes.append(allocator, 7);
+    try control.passthrough_attempted_panes.append(allocator, 7);
+    let old_pane = try row_pane(allocator, &old_row);
+    try control.latest_panes.append(allocator, move old_pane);
+    control.sync_pending = true;
+    try open_response(allocator, &var control, PendingKind::Snapshot, -1, &resized_row);
+    try control.finish_response(allocator, true, &var why);
+    testing::expect(set_has(&control.hydrated_panes, 7));
+    testing::expect_equal<i64>(0, control.outgoing.len());
+    testing::expect(!set_has(&control.capture_pending, 7));
+    testing::expect(!set_has(&control.rehydrating_panes, 7));
+}
+
+test "initial hydration queues one active pane at a time" {
+    let allocator = mem::page_allocator();
+    var why = string::new(allocator);
+    defer why.deinit(allocator);
+    let row = try snapshot_row(allocator, "/tmp", 100000, false, false);
+    defer row.deinit(allocator);
+    // Pane %8 beside %7 in the active window, and pane %9 in window @3.
+    let sibling_row = try replace_first(allocator, &row, "\t%7\t0\t1\t", "\t%8\t1\t0\t");
+    defer sibling_row.deinit(allocator);
+    let hidden_first = try replace_first(allocator, &row, "@2\t0\tmain\t1\t", "@3\t1\tmain\t0\t");
+    defer hidden_first.deinit(allocator);
+    let hidden_row = try replace_first(allocator, &hidden_first, "\t%7\t", "\t%9\t");
+    defer hidden_row.deinit(allocator);
+    var text = string::new(allocator);
+    defer text.deinit(allocator);
+    try text.append_string(allocator, &row);
+    try text.append_byte(allocator, cast<u8>(10));
+    try text.append_string(allocator, &sibling_row);
+    try text.append_byte(allocator, cast<u8>(10));
+    try text.append_string(allocator, &hidden_row);
+    var lines = try row_lines(allocator, &text);
+    defer lines.deinit(allocator);
+    var snapshot = try parse_snapshot(allocator, &lines, &var why);
+    defer snapshot.deinit(allocator);
+    var control = new_control(allocator);
+    defer control.deinit(allocator);
+    try control.passthrough_attempted_panes.append(allocator, 7);
+    try control.passthrough_attempted_panes.append(allocator, 8);
+    try control.passthrough_attempted_panes.append(allocator, 9);
+    try control.queue_pane_hydrations(allocator, &snapshot);
+    testing::expect_equal<i64>(1, control.capture_pending.len());
+    testing::expect(set_has(&control.capture_pending, 7));
+    testing::expect_equal<i64>(1, control.outgoing.len());
+    try expect_outgoing(allocator, &var control, "capture-pane -p -e -C -S -26132 -t %7\n");
+}
+
+test "keeps passthrough protocols while a pane is rehydrating" {
+    let allocator = mem::page_allocator();
+    var control = new_control(allocator);
+    defer control.deinit(allocator);
+    try control.rehydrating_panes.append(allocator, 7);
+    let output = try b(allocator, "duplicate text\ePtmux;\e\e_Ga=T,i=7;AAAA\e\e\\\e\\");
+    defer output.deinit(allocator);
+    let bytes = output.as_bytes();
+    try control.push_output(allocator, 7, bytes);
+    try expect_no_event(allocator, &var control);
+    set_drop(&var control.rehydrating_panes, 7);
+    try control.flush_rehydration_passthrough(allocator, 7);
+    // `\e_Ga=T,i=7;AAAA\e\`
+    try expect_event(allocator, &var control,
+        \\{"kind":"pane_output","pane_id":7,"data":[27,95,71,97,61,84,44,105,61,55,59,65,65,65,65,27,92]}
+    );
+}
+
+test "session notification requests and parses topology" {
+    let allocator = mem::page_allocator();
+    var control = new_control(allocator);
+    defer control.deinit(allocator);
+    try feed_quiet(allocator, &var control, "\eP1000p%session-changed $0 satin\n");
+    try expect_no_outgoing(allocator, &var control);
+    try admit_control_client(allocator, &var control);
+    try expect_outgoing_prefix(allocator, &var control, "list-panes -s");
+    let row = try snapshot_row(allocator, "/tmp", 20, false, false);
+    defer row.deinit(allocator);
+    try feed_response(allocator, &var control, "1 2 0", &row);
+    let entered = try expect_event_kind(allocator, &var control, "entered");
+    entered.deinit(allocator);
+    try expect_event(allocator, &var control,
+        \\{"kind":"snapshot","snapshot":{"session_id":0,"session_name":"satin","socket_path":"/tmp/tmux.sock","server_pid":4242,"active_window_id":2,"windows":[{"window_id":2,"index":0,"name":"main","active_pane_id":7,"zoomed":false,"layout":{"kind":"leaf","pane_id":7},"panes":[{"pane_id":7,"index":0,"active":true,"current_path":"/tmp","cols":80,"rows":24,"cursor_x":18,"cursor_y":4,"cursor_visible":true,"cursor_shape":"block","cursor_blinking":true,"history_size":20,"alternate_on":false,"insert_mode":false,"application_cursor":false,"application_keypad":false,"origin_mode":false,"wrap_mode":true,"mouse_standard":false,"mouse_button":false,"mouse_any":false,"mouse_utf8":false,"mouse_sgr":false,"input_off":false,"scroll_region_upper":0,"scroll_region_lower":23,"private_modes":[7,1004],"key_mode":"VT10x","current_command":"zsh","title":"⠹ satin","allow_passthrough":"off"}]}]}}
+    );
+    try acknowledge_passthrough_setup(allocator, &var control, "1 3 0");
+    try expect_outgoing(allocator, &var control, "capture-pane -p -e -C -S -20 -t %7\n");
+}
+
+test "pane title subscription refreshes topology" {
+    let allocator = mem::page_allocator();
+    var control = admitted(allocator);
+    defer control.deinit(allocator);
+    try feed_quiet(allocator, &var control, "%subscription-changed satin-pane-title $0 @2 0 %7 : \\342\\240\\271 satin\n");
+    try expect_outgoing_prefix(allocator, &var control, "list-panes -s");
+}
+
+test "initial handshake subscribes to pane titles" {
+    let allocator = mem::page_allocator();
+    var control = new_control(allocator);
+    defer control.deinit(allocator);
+    try feed_quiet(allocator, &var control, "\eP1000p%begin 1 1 0\n%end 1 1 0\n");
+    try expect_outgoing(allocator, &var control, "list-clients -t '' -F '#{client_control_mode}' -f '#{client_control_mode}'\n");
+    try feed_quiet(allocator, &var control, "%begin 1 2 0\n1\n%end 1 2 0\n");
+    try expect_outgoing(allocator, &var control,
+        "refresh-client -f pause-after=5 -B 'satin-pane-title:%*:#{q:pane_title}' -B 'satin-session-clients::#{session_attached_list}'\n"
+    );
+    try expect_outgoing_prefix(allocator, &var control, "list-panes -s");
+}
+
+test "the topology sync asks for every field in order" {
+    let allocator = mem::page_allocator();
+    var control = admitted(allocator);
+    defer control.deinit(allocator);
+    try control.request_sync(allocator);
+    try expect_outgoing(allocator, &var control,
+        "list-panes -s -F '#{q:session_id}\t#{q:session_name}\t#{q:socket_path}\t#{q:window_id}\t#{q:window_index}\t#{q:window_name}\t#{q:window_active}\t#{q:window_visible_layout}\t#{q:window_zoomed_flag}\t#{q:pane_id}\t#{q:pane_index}\t#{q:pane_active}\t#{q:pane_current_path}\t#{q:pane_width}\t#{q:pane_height}\t#{q:cursor_x}\t#{q:cursor_y}\t#{q:cursor_flag}\t#{q:cursor_shape}\t#{q:cursor_blinking}\t#{q:history_size}\t#{q:alternate_on}\t#{q:insert_flag}\t#{q:keypad_cursor_flag}\t#{q:keypad_flag}\t#{q:origin_flag}\t#{q:wrap_flag}\t#{q:mouse_standard_flag}\t#{q:mouse_button_flag}\t#{q:mouse_any_flag}\t#{q:mouse_utf8_flag}\t#{q:mouse_sgr_flag}\t#{q:pane_input_off}\t#{q:scroll_region_upper}\t#{q:scroll_region_lower}\t#{q:pid}\t#{q:pane_private_modes}\t#{q:pane_key_mode}\t#{q:pane_current_command}\t#{q:pane_title}\t#{q:allow-passthrough}'\n"
+    );
+}
+
+test "a duplicate control client is rejected without waiting" {
+    let allocator = mem::page_allocator();
+    var control = new_control(allocator);
+    defer control.deinit(allocator);
+    try feed_quiet(allocator, &var control, "\eP1000p%begin 1 1 0\n%end 1 1 0\n");
+    try expect_outgoing_prefix(allocator, &var control, "list-clients");
+    try feed_quiet(allocator, &var control, "%begin 1 2 0\n1\n1\n%end 1 2 0\n");
+    let entered = try expect_event_kind(allocator, &var control, "entered");
+    entered.deinit(allocator);
+    try expect_event(allocator, &var control,
+        \\{"kind":"protocol_error","message":"this tmux session already has another control-mode client"}
+    );
+    try expect_outgoing(allocator, &var control, "detach-client\n");
+}
+
+test "a later control client attachment revokes the projection" {
+    let allocator = mem::page_allocator();
+    var control = admitted(allocator);
+    defer control.deinit(allocator);
+    try feed_quiet(allocator, &var control, "%subscription-changed satin-session-clients $0 : /dev/ttys001\n");
+    try expect_outgoing_prefix(allocator, &var control, "list-clients");
+    try feed_quiet(allocator, &var control, "%begin 1 2 0\n1\n1\n%end 1 2 0\n");
+    let error = try expect_event_kind(allocator, &var control, "protocol_error");
+    error.deinit(allocator);
+    try expect_outgoing(allocator, &var control, "detach-client\n");
+}
+
+test "a topology change while a snapshot is pending queues a trailing sync" {
+    let allocator = mem::page_allocator();
+    var control = admitted(allocator);
+    defer control.deinit(allocator);
+    try control.hydrated_panes.append(allocator, 7);
+    try control.request_sync(allocator);
+    try expect_outgoing_prefix(allocator, &var control, "list-panes -s");
+    try feed_quiet(allocator, &var control, "%layout-change @1 changed\n");
+    try expect_no_outgoing(allocator, &var control);
+    let row = try snapshot_row(allocator, "/tmp", 0, false, false);
+    defer row.deinit(allocator);
+    try feed_response(allocator, &var control, "1 2 0", &row);
+    try expect_outgoing_prefix(allocator, &var control, "list-panes -s");
+    testing::expect(control.sync_pending);
+    testing::expect(!control.sync_requested_while_pending);
+}
+
+test "rehydration forwards live scroll metadata without replaying cells" {
+    let allocator = mem::page_allocator();
+    var control = new_control(allocator);
+    defer control.deinit(allocator);
+    try control.rehydrating_panes.append(allocator, 7);
+    let first = try b(allocator, "updated cells\e[1;22r\e[H\e[");
+    defer first.deinit(allocator);
+    let first_bytes = first.as_bytes();
+    try control.push_output(allocator, 7, first_bytes);
+    try expect_no_event(allocator, &var control);
+    let second = try b(allocator, "11M\e[1;24r");
+    defer second.deinit(allocator);
+    let second_bytes = second.as_bytes();
+    try control.push_output(allocator, 7, second_bytes);
+    try expect_event(allocator, &var control,
+        \\{"kind":"pane_scroll_metadata","pane_id":7,"rows":11,"region_top":1,"region_bottom":22,"region_left":null,"region_right":null}
+    );
+    try expect_no_event(allocator, &var control);
+}
+
+test "an exit without a reason reports null" {
+    let allocator = mem::page_allocator();
+    var control = new_control(allocator);
+    defer control.deinit(allocator);
+    try feed_quiet(allocator, &var control, "\eP1000p%exit\n");
+    let entered = try expect_event_kind(allocator, &var control, "entered");
+    entered.deinit(allocator);
+    try expect_event(allocator, &var control,
+        \\{"kind":"exited","reason":null}
+    );
+}

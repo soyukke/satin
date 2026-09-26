@@ -1,0 +1,191 @@
+// The C boundary the Rust terminal runtime calls for tmux control mode:
+// `satin_tmux_*`. Byte results are malloc storage the caller frees with
+// `free`, with their length written through out_len.
+import satin::tmux;
+import std::mem;
+import std::string;
+
+/// Bytes of malloc storage one tmux Control takes. Kizu has no `sizeof`, so
+/// this is a bound: Control is under forty words of fields.
+fn control_storage_bytes() -> usize {
+    return 4096;
+}
+
+fn null_control() -> ?ptr<tmux::Control> {
+    // SAFETY: address zero is null, which nothing dereferences.
+    return unsafe ptr_from_int<ptr<tmux::Control>>(0);
+}
+
+fn null_bytes() -> ?ptr<u8> {
+    // SAFETY: address zero is null, which nothing dereferences.
+    return unsafe ptr_from_int<ptr<u8>>(0);
+}
+
+export "c" fn satin_tmux_create() -> ?ptr<tmux::Control> {
+    // SAFETY: malloc returns storage for one Control or null.
+    let storage = unsafe malloc(control_storage_bytes());
+    if storage |slot| {
+        let value = tmux::new_control(mem::page_allocator());
+        // SAFETY: slot is fresh storage large enough for one Control.
+        let handle = unsafe cast<ptr<tmux::Control>>(slot);
+        // SAFETY: handle is fresh storage for one Control; the control now lives there.
+        unsafe ptr_write(handle, value);
+        mem::leak<tmux::Control>(move value);
+        return handle;
+    }
+    return null_control();
+}
+
+export "c" fn satin_tmux_destroy(handle: ?ptr<tmux::Control>) -> void {
+    if handle |live| {
+        // SAFETY: live came from satin_tmux_create and is destroyed once.
+        let value = unsafe ptr_read(live);
+        value.deinit(mem::page_allocator());
+        // SAFETY: live is malloc storage nothing reads after this.
+        unsafe free(cast<ptr<u8>>(live));
+    }
+}
+
+/// Copies bytes into malloc storage and writes their length to out_len;
+/// null, with length 0, when there are none or no storage.
+fn bytes_out(bytes: []u8, out_len: ?ptr<usize>) -> ?ptr<u8> {
+    let length = mem::len(bytes);
+    var result = null_bytes();
+    var written: usize = 0;
+    if length > 0 {
+        // SAFETY: malloc returns length bytes of storage or null.
+        let storage = unsafe malloc(cast<usize>(length));
+        if storage |out| {
+            // SAFETY: out holds length writable bytes.
+            let view = unsafe mut_view_from_ptr(out, length);
+            var index = 0;
+            while index < length {
+                view[index] = bytes[index];
+                index = index + 1;
+            }
+            written = cast<usize>(length);
+        }
+        result = storage;
+    }
+    if out_len |target| {
+        // SAFETY: the caller passes out_len pointing at one writable usize.
+        unsafe ptr_write(target, written);
+    }
+    return result;
+}
+
+export "c" fn satin_tmux_feed(
+    handle: ?ptr<tmux::Control>,
+    bytes: ?ptr<const u8>,
+    length: usize,
+    out_len: ?ptr<usize>
+) -> ?ptr<u8> {
+    let live = handle orelse return bytes_out("", out_len);
+    let data = bytes orelse return bytes_out("", out_len);
+    let allocator = mem::page_allocator();
+    // SAFETY: the caller passes length readable bytes at data.
+    let input = unsafe view_from_ptr(data, cast<i64>(length));
+    var passthrough = string::new(allocator);
+    defer passthrough.deinit(allocator);
+    // SAFETY: the runtime holds live from satin_tmux_create and calls from one thread.
+    var value = unsafe ptr_read(live);
+    if value.feed(allocator, input, &var passthrough) {} else |_| {}
+    // SAFETY: live is the storage value was read from.
+    unsafe ptr_write(live, value);
+    let out = passthrough.as_bytes();
+    return bytes_out(out, out_len);
+}
+
+export "c" fn satin_tmux_take_event_json(handle: ?ptr<tmux::Control>) -> ?ptr<u8> {
+    let live = handle orelse return null_bytes();
+    let allocator = mem::page_allocator();
+    var event = string::new(allocator);
+    defer event.deinit(allocator);
+    // SAFETY: the runtime holds live from satin_tmux_create and calls from one thread.
+    var value = unsafe ptr_read(live);
+    var taken = false;
+    if value.take_event(allocator, &var event) |found| {
+        if found {
+            taken = true;
+        }
+    } else |_| {}
+    // SAFETY: live is the storage value was read from.
+    unsafe ptr_write(live, value);
+    if !taken {
+        return null_bytes();
+    }
+    let bytes = event.as_bytes();
+    return c_string_out(bytes);
+}
+
+export "c" fn satin_tmux_take_outgoing(handle: ?ptr<tmux::Control>, out_len: ?ptr<usize>) -> ?ptr<u8> {
+    let live = handle orelse return bytes_out("", out_len);
+    let allocator = mem::page_allocator();
+    var command = string::new(allocator);
+    defer command.deinit(allocator);
+    // SAFETY: the runtime holds live from satin_tmux_create and calls from one thread.
+    var value = unsafe ptr_read(live);
+    if value.take_outgoing(allocator, &var command) |_| {} else |_| {}
+    // SAFETY: live is the storage value was read from.
+    unsafe ptr_write(live, value);
+    let bytes = command.as_bytes();
+    return bytes_out(bytes, out_len);
+}
+
+export "c" fn satin_tmux_command(handle: ?ptr<tmux::Control>, bytes: ?ptr<const u8>, length: usize) -> u8 {
+    let live = handle orelse return 0;
+    let data = bytes orelse return 0;
+    // SAFETY: the caller passes length readable bytes at data.
+    let command = unsafe view_from_ptr(data, cast<i64>(length));
+    // SAFETY: the runtime holds live from satin_tmux_create and calls from one thread.
+    var value = unsafe ptr_read(live);
+    var done = false;
+    if value.command(mem::page_allocator(), command) |queued| {
+        if queued {
+            done = true;
+        }
+    } else |_| {}
+    // SAFETY: live is the storage value was read from.
+    unsafe ptr_write(live, value);
+    return flag(done);
+}
+
+export "c" fn satin_tmux_pane_accepts_input(handle: ?ptr<tmux::Control>, pane_id: u32) -> u8 {
+    let live = handle orelse return 0;
+    // SAFETY: the runtime holds live from satin_tmux_create and calls from one thread.
+    let value = unsafe ptr_read(live);
+    var accepts = false;
+    if value.pane_accepts_input(cast<i64>(pane_id)) {
+        accepts = true;
+    }
+    return flag(accepts);
+}
+
+export "c" fn satin_tmux_paste(handle: ?ptr<tmux::Control>, pane_id: u32, bytes: ?ptr<const u8>, length: usize) -> u8 {
+    let live = handle orelse return 0;
+    let data = bytes orelse return 0;
+    // SAFETY: the caller passes length readable bytes at data.
+    let input = unsafe view_from_ptr(data, cast<i64>(length));
+    // SAFETY: the runtime holds live from satin_tmux_create and calls from one thread.
+    var value = unsafe ptr_read(live);
+    var done = false;
+    if value.paste(mem::page_allocator(), cast<i64>(pane_id), input) |pasted| {
+        if pasted {
+            done = true;
+        }
+    } else |_| {}
+    // SAFETY: live is the storage value was read from.
+    unsafe ptr_write(live, value);
+    return flag(done);
+}
+
+export "c" fn satin_tmux_is_active(handle: ?ptr<tmux::Control>) -> u8 {
+    let live = handle orelse return 0;
+    // SAFETY: the runtime holds live from satin_tmux_create and calls from one thread.
+    let value = unsafe ptr_read(live);
+    var active = false;
+    if value.is_active() {
+        active = true;
+    }
+    return flag(active);
+}

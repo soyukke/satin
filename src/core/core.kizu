@@ -376,7 +376,7 @@ pub fn (self: &Core) snapshot_json(allocator: Allocator, out: &var string::Strin
 }
 
 /// Writes the fields of the layout node at index into the open object.
-fn write_layout(encoder: &var json::Encoder, layout: &Layout, index: i64) -> mem::Error!void {
+pub fn write_layout(encoder: &var json::Encoder, layout: &Layout, index: i64) -> mem::Error!void {
     let current = layout.node(index);
     if current.leaf {
         try encoder.write_bytes_field("kind", "leaf");

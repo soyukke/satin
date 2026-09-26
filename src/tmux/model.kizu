@@ -1,0 +1,285 @@
+// What a tmux topology sync reports, and the JSON the host reads it as: the
+// Rust `TmuxSnapshot` and its parts, field for field in the same order.
+import satin::core;
+import std::array;
+import std::json;
+import std::mem;
+import std::string;
+
+pub struct Pane {
+    pub pane_id: i64,
+    pub index: i64,
+    pub active: bool,
+    pub current_path: string::String,
+    pub cols: i64,
+    pub rows: i64,
+    pub cursor_x: i64,
+    pub cursor_y: i64,
+    pub cursor_visible: bool,
+    pub cursor_shape: string::String,
+    pub cursor_blinking: bool,
+    pub history_size: i64,
+    pub alternate_on: bool,
+    pub insert_mode: bool,
+    pub application_cursor: bool,
+    pub application_keypad: bool,
+    pub origin_mode: bool,
+    pub wrap_mode: bool,
+    pub mouse_standard: bool,
+    pub mouse_button: bool,
+    pub mouse_any: bool,
+    pub mouse_utf8: bool,
+    pub mouse_sgr: bool,
+    pub input_off: bool,
+    pub scroll_region_upper: i64,
+    pub scroll_region_lower: i64,
+    pub private_modes: array::Array<i64>,
+    pub key_mode: string::String,
+    pub current_command: string::String,
+    pub title: string::String,
+    pub allow_passthrough: string::String,
+}
+
+pub fn (self: Pane) deinit(allocator: Allocator) -> void {
+    self.current_path.deinit(allocator);
+    self.cursor_shape.deinit(allocator);
+    self.private_modes.deinit(allocator);
+    self.key_mode.deinit(allocator);
+    self.current_command.deinit(allocator);
+    self.title.deinit(allocator);
+    self.allow_passthrough.deinit(allocator);
+}
+
+fn copy_string(allocator: Allocator, value: &string::String) -> mem::Error!string::String {
+    let bytes = value.as_bytes();
+    return string::from_bytes(allocator, bytes);
+}
+
+pub fn (self: &Pane) clone(allocator: Allocator) -> mem::Error!Pane {
+    var current_path = try copy_string(allocator, &self.current_path);
+    errdefer current_path.deinit(allocator);
+    var cursor_shape = try copy_string(allocator, &self.cursor_shape);
+    errdefer cursor_shape.deinit(allocator);
+    var private_modes = array::new<i64>(allocator);
+    errdefer private_modes.deinit(allocator);
+    var index = 0;
+    while self.private_modes.get(index) |mode| {
+        try private_modes.append(allocator, mode);
+        index = index + 1;
+    }
+    var key_mode = try copy_string(allocator, &self.key_mode);
+    errdefer key_mode.deinit(allocator);
+    var current_command = try copy_string(allocator, &self.current_command);
+    errdefer current_command.deinit(allocator);
+    var title = try copy_string(allocator, &self.title);
+    errdefer title.deinit(allocator);
+    let allow_passthrough = try copy_string(allocator, &self.allow_passthrough);
+    return Pane {
+        pane_id: self.pane_id,
+        index: self.index,
+        active: self.active,
+        current_path: move current_path,
+        cols: self.cols,
+        rows: self.rows,
+        cursor_x: self.cursor_x,
+        cursor_y: self.cursor_y,
+        cursor_visible: self.cursor_visible,
+        cursor_shape: move cursor_shape,
+        cursor_blinking: self.cursor_blinking,
+        history_size: self.history_size,
+        alternate_on: self.alternate_on,
+        insert_mode: self.insert_mode,
+        application_cursor: self.application_cursor,
+        application_keypad: self.application_keypad,
+        origin_mode: self.origin_mode,
+        wrap_mode: self.wrap_mode,
+        mouse_standard: self.mouse_standard,
+        mouse_button: self.mouse_button,
+        mouse_any: self.mouse_any,
+        mouse_utf8: self.mouse_utf8,
+        mouse_sgr: self.mouse_sgr,
+        input_off: self.input_off,
+        scroll_region_upper: self.scroll_region_upper,
+        scroll_region_lower: self.scroll_region_lower,
+        private_modes: move private_modes,
+        key_mode: move key_mode,
+        current_command: move current_command,
+        title: move title,
+        allow_passthrough: move allow_passthrough
+    };
+}
+
+pub fn (self: &Pane) has_private_mode(mode: i64) -> bool {
+    var index = 0;
+    while self.private_modes.get(index) |value| {
+        if value == mode {
+            return true;
+        }
+        index = index + 1;
+    }
+    return false;
+}
+
+fn same_modes(first: &Pane, second: &Pane) -> bool {
+    if first.private_modes.len() != second.private_modes.len() {
+        return false;
+    }
+    var index = 0;
+    while first.private_modes.get(index) |value| {
+        let other = second.private_modes.get(index) orelse return false;
+        if value != other {
+            return false;
+        }
+        index = index + 1;
+    }
+    return true;
+}
+
+/// Whether a capture taken of previous no longer describes current.
+pub fn hydration_state_changed(previous: &Pane, current: &Pane) -> bool {
+    let previous_key = previous.key_mode.as_bytes();
+    let current_key = current.key_mode.as_bytes();
+    return previous.cols != current.cols or previous.rows != current.rows or
+        previous.alternate_on != current.alternate_on or previous.insert_mode != current.insert_mode or
+        previous.application_cursor != current.application_cursor or
+        previous.application_keypad != current.application_keypad or
+        previous.origin_mode != current.origin_mode or previous.wrap_mode != current.wrap_mode or
+        previous.mouse_standard != current.mouse_standard or previous.mouse_button != current.mouse_button or
+        previous.mouse_any != current.mouse_any or previous.mouse_utf8 != current.mouse_utf8 or
+        previous.mouse_sgr != current.mouse_sgr or !same_modes(previous, current) or
+        !mem::equal_bytes(previous_key, current_key) or
+        previous.scroll_region_upper != current.scroll_region_upper or
+        previous.scroll_region_lower != current.scroll_region_lower;
+}
+
+pub struct Window {
+    pub window_id: i64,
+    pub index: i64,
+    pub name: string::String,
+    pub active_pane_id: i64,
+    pub zoomed: bool,
+    pub layout: core::Layout,
+    pub panes: array::Array<Pane>,
+}
+
+pub fn (self: Window) deinit(allocator: Allocator) -> void {
+    self.name.deinit(allocator);
+    self.layout.deinit(allocator);
+    self.panes.deinit(allocator);
+}
+
+pub struct Snapshot {
+    pub session_id: i64,
+    pub session_name: string::String,
+    pub socket_path: string::String,
+    pub server_pid: i64,
+    pub active_window_id: i64,
+    pub windows: array::Array<Window>,
+}
+
+pub fn (self: Snapshot) deinit(allocator: Allocator) -> void {
+    self.session_name.deinit(allocator);
+    self.socket_path.deinit(allocator);
+    self.windows.deinit(allocator);
+}
+
+pub struct Session {
+    pub session_id: i64,
+    pub name: string::String,
+    pub window_count: i64,
+    pub socket_path: string::String,
+    pub server_pid: i64,
+}
+
+pub fn (self: Session) deinit(allocator: Allocator) -> void {
+    self.name.deinit(allocator);
+    self.socket_path.deinit(allocator);
+}
+
+fn write_string_field(encoder: &var json::Encoder, name: []u8, value: &string::String) -> mem::Error!void {
+    let bytes = value.as_bytes();
+    return encoder.write_bytes_field(name, bytes);
+}
+
+pub fn write_pane(encoder: &var json::Encoder, pane: &Pane) -> mem::Error!void {
+    try encoder.begin_object();
+    try encoder.write_i64_field("pane_id", pane.pane_id);
+    try encoder.write_i64_field("index", pane.index);
+    try encoder.write_bool_field("active", pane.active);
+    try write_string_field(encoder, "current_path", &pane.current_path);
+    try encoder.write_i64_field("cols", pane.cols);
+    try encoder.write_i64_field("rows", pane.rows);
+    try encoder.write_i64_field("cursor_x", pane.cursor_x);
+    try encoder.write_i64_field("cursor_y", pane.cursor_y);
+    try encoder.write_bool_field("cursor_visible", pane.cursor_visible);
+    try write_string_field(encoder, "cursor_shape", &pane.cursor_shape);
+    try encoder.write_bool_field("cursor_blinking", pane.cursor_blinking);
+    try encoder.write_i64_field("history_size", pane.history_size);
+    try encoder.write_bool_field("alternate_on", pane.alternate_on);
+    try encoder.write_bool_field("insert_mode", pane.insert_mode);
+    try encoder.write_bool_field("application_cursor", pane.application_cursor);
+    try encoder.write_bool_field("application_keypad", pane.application_keypad);
+    try encoder.write_bool_field("origin_mode", pane.origin_mode);
+    try encoder.write_bool_field("wrap_mode", pane.wrap_mode);
+    try encoder.write_bool_field("mouse_standard", pane.mouse_standard);
+    try encoder.write_bool_field("mouse_button", pane.mouse_button);
+    try encoder.write_bool_field("mouse_any", pane.mouse_any);
+    try encoder.write_bool_field("mouse_utf8", pane.mouse_utf8);
+    try encoder.write_bool_field("mouse_sgr", pane.mouse_sgr);
+    try encoder.write_bool_field("input_off", pane.input_off);
+    try encoder.write_i64_field("scroll_region_upper", pane.scroll_region_upper);
+    try encoder.write_i64_field("scroll_region_lower", pane.scroll_region_lower);
+    try encoder.begin_array_field("private_modes");
+    var index = 0;
+    while pane.private_modes.get(index) |mode| {
+        try encoder.write_i64(mode);
+        index = index + 1;
+    }
+    try encoder.end_array();
+    try write_string_field(encoder, "key_mode", &pane.key_mode);
+    try write_string_field(encoder, "current_command", &pane.current_command);
+    try write_string_field(encoder, "title", &pane.title);
+    try write_string_field(encoder, "allow_passthrough", &pane.allow_passthrough);
+    return encoder.end_object();
+}
+
+pub fn write_snapshot(encoder: &var json::Encoder, snapshot: &Snapshot) -> mem::Error!void {
+    try encoder.write_i64_field("session_id", snapshot.session_id);
+    try write_string_field(encoder, "session_name", &snapshot.session_name);
+    try write_string_field(encoder, "socket_path", &snapshot.socket_path);
+    try encoder.write_i64_field("server_pid", snapshot.server_pid);
+    try encoder.write_i64_field("active_window_id", snapshot.active_window_id);
+    try encoder.begin_array_field("windows");
+    var index = 0;
+    while snapshot.windows.at(index) |window| {
+        try encoder.begin_object();
+        try encoder.write_i64_field("window_id", window.window_id);
+        try encoder.write_i64_field("index", window.index);
+        try write_string_field(encoder, "name", &window.name);
+        try encoder.write_i64_field("active_pane_id", window.active_pane_id);
+        try encoder.write_bool_field("zoomed", window.zoomed);
+        try encoder.begin_object_field("layout");
+        try core::write_layout(encoder, &window.layout, window.layout.root);
+        try encoder.end_object();
+        try encoder.begin_array_field("panes");
+        var pane_index = 0;
+        while window.panes.at(pane_index) |pane| {
+            try write_pane(encoder, pane);
+            pane_index = pane_index + 1;
+        }
+        try encoder.end_array();
+        try encoder.end_object();
+        index = index + 1;
+    }
+    return encoder.end_array();
+}
+
+pub fn write_session(encoder: &var json::Encoder, session: &Session) -> mem::Error!void {
+    try encoder.begin_object();
+    try encoder.write_i64_field("session_id", session.session_id);
+    try write_string_field(encoder, "name", &session.name);
+    try encoder.write_i64_field("window_count", session.window_count);
+    try write_string_field(encoder, "socket_path", &session.socket_path);
+    try encoder.write_i64_field("server_pid", session.server_pid);
+    return encoder.end_object();
+}
