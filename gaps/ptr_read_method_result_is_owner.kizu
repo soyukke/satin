@@ -1,0 +1,34 @@
+struct S {
+    x: i64,
+}
+
+fn (self: &var S) bump() -> bool {
+    self.x = self.x + 1;
+    return true;
+}
+
+fn flag(value: bool) -> u8 {
+    if value {
+        return 1;
+    }
+    return 0;
+}
+
+fn step(p: ptr<S>) -> u8 {
+    // SAFETY: p points at a live S.
+    var value = unsafe ptr_read(p);
+    let done = value.bump();
+    // SAFETY: p points at a live S.
+    unsafe ptr_write(p, value);
+    return flag(done);
+}
+
+fn step_local() -> u8 {
+    var value = S { x: 1 };
+    let done = value.bump();
+    return flag(done);
+}
+
+fn main() -> void {
+    print(step_local());
+}

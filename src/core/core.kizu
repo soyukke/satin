@@ -1,0 +1,398 @@
+// The window's tabs and the pane layout of each: what the host asks to split,
+// close, move and select, and the snapshot it draws from.
+import std::array;
+import std::fmt;
+import std::json;
+import std::mem;
+import std::string;
+
+pub struct Tab {
+    pub id: i64,
+    pub title: string::String,
+    pub active_pane: i64,
+    pub theme: string::String,
+    pub panes: array::Array<i64>,
+    pub layout: Layout,
+}
+
+pub fn (self: Tab) deinit(allocator: Allocator) -> void {
+    self.title.deinit(allocator);
+    self.theme.deinit(allocator);
+    self.panes.deinit(allocator);
+    self.layout.deinit(allocator);
+}
+
+pub struct Core {
+    pub tabs: array::Array<Tab>,
+    pub active_tab: i64,
+    pub next_tab_id: i64,
+    pub next_pane_id: i64,
+    pub default_theme: string::String,
+}
+
+pub fn (self: Core) deinit(allocator: Allocator) -> void {
+    self.tabs.deinit(allocator);
+    self.default_theme.deinit(allocator);
+}
+
+fn default_theme_name() -> []u8 {
+    return "Graphite";
+}
+
+/// Reports whether bytes holds nothing but ASCII whitespace.
+fn is_blank(bytes: []u8) -> bool {
+    var index = 0;
+    while index < mem::len(bytes) {
+        let byte = bytes[index];
+        if byte != cast<u8>(32) and byte != cast<u8>(9) and byte != cast<u8>(10) and
+            byte != cast<u8>(13) and byte != cast<u8>(11) and byte != cast<u8>(12) {
+            return false;
+        }
+        index = index + 1;
+    }
+    return true;
+}
+
+/// The theme a name selects: the name without surrounding whitespace, or the
+/// default theme for a blank one.
+fn normalized_theme(allocator: Allocator, theme: []u8) -> mem::Error!string::String {
+    var out = try string::from_bytes(allocator, theme);
+    errdefer out.deinit(allocator);
+    string::trim_space_in_place(&var out);
+    if out.len() == 0 {
+        try out.append_bytes(allocator, default_theme_name());
+    }
+    return move out;
+}
+
+pub fn new_core(allocator: Allocator, theme: []u8) -> mem::Error!Core {
+    let default_theme = try normalized_theme(allocator, theme);
+    var core = Core {
+        tabs: array::new<Tab>(allocator),
+        active_tab: 0,
+        next_tab_id: 1,
+        next_pane_id: 1,
+        default_theme: move default_theme
+    };
+    errdefer core.deinit(allocator);
+    try core.new_tab(allocator);
+    return move core;
+}
+
+fn new_tab_value(allocator: Allocator, id: i64, pane: i64, theme: &string::String) -> mem::Error!Tab {
+    var title = try string::from_bytes(allocator, "session ");
+    errdefer title.deinit(allocator);
+    try fmt::append_i64(allocator, &var title, id);
+    let theme_bytes = theme.as_bytes();
+    var theme_copy = try string::from_bytes(allocator, theme_bytes);
+    errdefer theme_copy.deinit(allocator);
+    var panes = array::new<i64>(allocator);
+    errdefer panes.deinit(allocator);
+    try panes.append(allocator, pane);
+    let layout = try single(allocator, pane);
+    return Tab {
+        id: id,
+        title: move title,
+        active_pane: pane,
+        theme: move theme_copy,
+        panes: move panes,
+        layout: move layout
+    };
+}
+
+/// Opens a tab with one pane and selects it; returns its index.
+pub fn (self: &var Core) new_tab(allocator: Allocator) -> mem::Error!i64 {
+    let id = self.next_tab_id;
+    self.next_tab_id = self.next_tab_id + 1;
+    let pane = self.alloc_pane_id();
+    let tab = try new_tab_value(allocator, id, pane, &self.default_theme);
+    try self.tabs.append(allocator, move tab);
+    self.active_tab = self.tabs.len() - 1;
+    return self.active_tab;
+}
+
+fn (self: &var Core) alloc_pane_id() -> i64 {
+    let id = self.next_pane_id;
+    self.next_pane_id = self.next_pane_id + 1;
+    return id;
+}
+
+/// Splits the active pane of the active tab and selects the new pane; returns
+/// its id, or -1 when there is no active tab.
+pub fn (self: &var Core) split_active(allocator: Allocator, axis: Axis) -> mem::Error!i64 {
+    let pane = self.alloc_pane_id();
+    if self.tabs.at_mut(self.active_tab) |tab| {
+        if try tab.layout.split_leaf(allocator, tab.active_pane, pane, axis) {
+            try tab.panes.append(allocator, pane);
+            tab.active_pane = pane;
+        }
+        return pane;
+    }
+    return -1;
+}
+
+pub fn (self: &var Core) resize_split(first_pane: i64, second_pane: i64, ratio: f64) -> bool {
+    if first_pane == second_pane or !(ratio >= min_split_ratio() and ratio <= max_split_ratio()) {
+        return false;
+    }
+    if self.tabs.at_mut(self.active_tab) |tab| {
+        return tab.layout.set_split_ratio(first_pane, second_pane, ratio);
+    }
+    return false;
+}
+
+fn contains_pane(panes: &array::Array<i64>, pane: i64) -> bool {
+    var index = 0;
+    while panes.get(index) |value| {
+        if value == pane {
+            return true;
+        }
+        index = index + 1;
+    }
+    return false;
+}
+
+fn (self: &Core) tab_index_for_pane(pane: i64) -> i64 {
+    var index = 0;
+    while self.tabs.at(index) |tab| {
+        if contains_pane(&tab.panes, pane) {
+            return index;
+        }
+        index = index + 1;
+    }
+    return -1;
+}
+
+/// Closes a pane; a tab's last pane closes the tab.
+pub fn (self: &var Core) close_pane(allocator: Allocator, pane: i64) -> mem::Error!bool {
+    let tab_index = self.tab_index_for_pane(pane);
+    if tab_index < 0 {
+        return false;
+    }
+    var last_pane = false;
+    if self.tabs.at(tab_index) |tab| {
+        last_pane = tab.panes.len() == 1;
+    }
+    if last_pane {
+        if self.tabs.remove(tab_index) |closed| {
+            closed.deinit(allocator);
+        } else |_| {
+            return false;
+        }
+        self.select_neighbor_after_tab_close(tab_index);
+        return true;
+    }
+    if self.tabs.at_mut(tab_index) |tab| {
+        if !try tab.layout.remove_leaf(allocator, pane) {
+            return false;
+        }
+        try remove_value(allocator, &var tab.panes, pane);
+        if tab.active_pane == pane {
+            tab.active_pane = tab.layout.first_leaf(tab.layout.root);
+        }
+        return true;
+    }
+    return false;
+}
+
+fn remove_value(allocator: Allocator, values: &var array::Array<i64>, value: i64) -> mem::Error!void {
+    var index = 0;
+    while values.get(index) |current| {
+        if current == value {
+            values.remove(index) catch return;
+        } else {
+            index = index + 1;
+        }
+    }
+    return;
+}
+
+fn (self: &var Core) select_neighbor_after_tab_close(closed_index: i64) -> void {
+    if self.tabs.len() == 0 {
+        self.active_tab = 0;
+    } else if closed_index < self.active_tab {
+        self.active_tab = self.active_tab - 1;
+    } else if self.active_tab >= self.tabs.len() {
+        self.active_tab = self.tabs.len() - 1;
+    }
+}
+
+/// Moves source next to target, both panes of one tab, and selects source.
+pub fn (self: &var Core) move_pane(allocator: Allocator, source: i64, target: i64, position: DropPosition) -> mem::Error!bool {
+    var index = 0;
+    while self.tabs.at_mut(index) |tab| {
+        index = index + 1;
+        if !contains_pane(&tab.panes, source) or !contains_pane(&tab.panes, target) {
+            continue;
+        }
+        if !try tab.layout.move_leaf(allocator, source, target, position) {
+            return false;
+        }
+        tab.panes.clear(allocator);
+        try tab.layout.leaves(allocator, tab.layout.root, &var tab.panes);
+        tab.active_pane = source;
+        return true;
+    }
+    return false;
+}
+
+pub fn (self: &var Core) select_tab(index: i64) -> bool {
+    if index < 0 or index >= self.tabs.len() {
+        return false;
+    }
+    self.active_tab = index;
+    return true;
+}
+
+fn (self: &Core) tab_index_for_id(id: i64) -> i64 {
+    var index = 0;
+    while self.tabs.at(index) |tab| {
+        if tab.id == id {
+            return index;
+        }
+        index = index + 1;
+    }
+    return -1;
+}
+
+/// Moves the tab with id to target_index, keeping the active tab selected.
+pub fn (self: &var Core) move_tab(id: i64, target_index: i64) -> bool {
+    if target_index < 0 or target_index >= self.tabs.len() {
+        return false;
+    }
+    let source_index = self.tab_index_for_id(id);
+    if source_index < 0 {
+        return false;
+    }
+    if source_index == target_index {
+        return true;
+    }
+    var active_id: i64 = -1;
+    if self.tabs.at(self.active_tab) |active| {
+        active_id = active.id;
+    }
+    // Array has no insert: walk the tab to its place one swap at a time.
+    var at = source_index;
+    while at != target_index {
+        var next = at + 1;
+        if target_index < at {
+            next = at - 1;
+        }
+        self.tabs.swap(at, next) catch return false;
+        at = next;
+    }
+    if active_id >= 0 {
+        let active_index = self.tab_index_for_id(active_id);
+        if active_index >= 0 {
+            self.active_tab = active_index;
+        } else {
+            self.active_tab = 0;
+        }
+    }
+    return true;
+}
+
+pub fn (self: &var Core) select_pane(pane: i64) -> bool {
+    if self.tabs.at_mut(self.active_tab) |tab| {
+        if !contains_pane(&tab.panes, pane) {
+            return false;
+        }
+        tab.active_pane = pane;
+        return true;
+    }
+    return false;
+}
+
+pub fn (self: &Core) pane_in_direction(allocator: Allocator, direction: Direction) -> mem::Error!i64 {
+    if self.tabs.at(self.active_tab) |tab| {
+        return tab.layout.pane_in_direction(allocator, tab.active_pane, direction);
+    }
+    return -1;
+}
+
+pub fn (self: &var Core) rename_tab(allocator: Allocator, index: i64, title: []u8) -> mem::Error!bool {
+    if is_blank(title) {
+        return false;
+    }
+    if self.tabs.at_mut(index) |tab| {
+        tab.title.clear();
+        try tab.title.append_bytes(allocator, title);
+        return true;
+    }
+    return false;
+}
+
+pub fn (self: &var Core) set_tab_theme(allocator: Allocator, index: i64, theme: []u8) -> mem::Error!bool {
+    let normalized = try normalized_theme(allocator, theme);
+    defer normalized.deinit(allocator);
+    if self.tabs.at_mut(index) |tab| {
+        tab.theme.clear();
+        try tab.theme.append_string(allocator, &normalized);
+        return true;
+    }
+    return false;
+}
+
+pub fn (self: &var Core) set_default_theme(allocator: Allocator, theme: []u8) -> mem::Error!void {
+    let normalized = try normalized_theme(allocator, theme);
+    defer normalized.deinit(allocator);
+    self.default_theme.clear();
+    return self.default_theme.append_string(allocator, &normalized);
+}
+
+/// Writes the snapshot the host draws from, the JSON the Rust core wrote.
+pub fn (self: &Core) snapshot_json(allocator: Allocator, out: &var string::String) -> mem::Error!void {
+    var encoder = json::encoder(allocator);
+    defer encoder.deinit(allocator);
+    try encoder.begin_object();
+    try encoder.write_i64_field("active_tab", self.active_tab);
+    try encoder.begin_array_field("tabs");
+    var index = 0;
+    while self.tabs.at(index) |tab| {
+        try encoder.begin_object();
+        try encoder.write_i64_field("id", tab.id);
+        try encoder.write_i64_field("index", index);
+        let title = tab.title.as_bytes();
+        try encoder.write_bytes_field("title", title);
+        try encoder.write_i64_field("active_pane", tab.active_pane);
+        let theme = tab.theme.as_bytes();
+        try encoder.write_bytes_field("theme", theme);
+        try encoder.begin_array_field("panes");
+        var pane_index = 0;
+        while tab.panes.get(pane_index) |pane| {
+            try encoder.write_i64(pane);
+            pane_index = pane_index + 1;
+        }
+        try encoder.end_array();
+        try encoder.begin_object_field("layout");
+        try write_layout(&var encoder, &tab.layout, tab.layout.root);
+        try encoder.end_object();
+        try encoder.end_object();
+        index = index + 1;
+    }
+    try encoder.end_array();
+    try encoder.end_object();
+    return encoder.finish_into(allocator, out);
+}
+
+/// Writes the fields of the layout node at index into the open object.
+fn write_layout(encoder: &var json::Encoder, layout: &Layout, index: i64) -> mem::Error!void {
+    let current = layout.node(index);
+    if current.leaf {
+        try encoder.write_bytes_field("kind", "leaf");
+        return encoder.write_i64_field("pane_id", current.pane);
+    }
+    try encoder.write_bytes_field("kind", "split");
+    if current.axis == Axis::Vertical {
+        try encoder.write_bytes_field("axis", "vertical");
+    } else {
+        try encoder.write_bytes_field("axis", "horizontal");
+    }
+    try encoder.write_f64_field("ratio", current.ratio);
+    try encoder.begin_object_field("first");
+    try write_layout(encoder, layout, current.first);
+    try encoder.end_object();
+    try encoder.begin_object_field("second");
+    try write_layout(encoder, layout, current.second);
+    return encoder.end_object();
+}
