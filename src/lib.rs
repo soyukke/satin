@@ -1,7 +1,6 @@
 pub mod agent_status;
 pub mod artifact;
 pub mod control;
-pub mod core;
 pub mod ffi;
 mod logging;
 pub mod neovide_render;

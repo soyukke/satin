@@ -11,8 +11,6 @@ use crate::terminal_runtime::{
     TerminalSelectionInput, TerminalSpawnConfig,
 };
 
-mod core_ffi;
-
 #[unsafe(no_mangle)]
 pub extern "C" fn satin_control_create(path: *const c_char) -> *mut ControlServer {
     crate::logging::init();
@@ -1427,42 +1425,5 @@ fn string_ptr(value: String) -> *mut c_char {
     match CString::new(value) {
         Ok(value) => value.into_raw(),
         Err(_) => ptr::null_mut(),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::core_ffi::{
-        satin_core_create, satin_core_destroy, satin_core_new_tab, satin_core_snapshot_json,
-    };
-    use super::*;
-
-    #[test]
-    fn ffi_snapshot_json_exposes_tabs() {
-        let handle = satin_core_create();
-        assert!(!handle.is_null());
-
-        assert_eq!(satin_core_new_tab(handle), 1);
-        let json = owned_string(satin_core_snapshot_json(handle));
-
-        // SAFETY: `handle` was created by `satin_core_create` in this test.
-        unsafe {
-            satin_core_destroy(handle);
-        }
-        assert!(json.contains("\"active_tab\":1"));
-        assert!(json.contains("\"session 2\""));
-    }
-
-    fn owned_string(value: *mut c_char) -> String {
-        assert!(!value.is_null());
-        // SAFETY: `value` is returned by this module and remains valid until freed below.
-        let string = unsafe { CStr::from_ptr(value) }
-            .to_string_lossy()
-            .into_owned();
-        // SAFETY: `value` was returned by an FFI function in this module.
-        unsafe {
-            satin_string_free(value);
-        }
-        string
     }
 }
