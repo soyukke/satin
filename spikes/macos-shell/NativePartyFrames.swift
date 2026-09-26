@@ -38,6 +38,8 @@ struct NativePartyMember: Equatable {
     let statusSince: Date?
     let targetPaneId: Int
     let active: Bool
+    /// The Command-number shortcut that selects this tab, if one exists.
+    let shortcut: String?
 
     var statusTitle: String {
         switch badge {
@@ -90,9 +92,40 @@ func nativePartyMembers(
             summary: nativeWorkSingleLine(targetStatus?.summary ?? "", limit: 120),
             statusSince: target == nil ? nil : targetStatus?.updatedAt,
             targetPaneId: targetPaneId,
-            active: tab.index == activeTabIndex
+            active: tab.index == activeTabIndex,
+            shortcut: nativeTabShortcut(index: tab.index, count: tabs.count)
         )
     }
+}
+
+/// Mirrors `selectTabFromShortcut`: Command-1…8 select those tabs and
+/// Command-9 selects the last tab.
+func nativeTabShortcut(index: Int, count: Int) -> String? {
+    if index == count - 1, count > 8 {
+        return "⌘9"
+    }
+    return index < 8 ? "⌘\(index + 1)" : nil
+}
+
+struct NativeAttentionPane: Equatable {
+    let tabId: Int
+    let paneId: Int
+    let since: Date
+}
+
+/// Picks the pane Jump to Waiting Agent focuses: the longest-waiting pane, or
+/// the next one after the focused pane so repeated presses visit every pane.
+func nativeNextAttentionPane(
+    _ candidates: [NativeAttentionPane],
+    activePaneId: Int?
+) -> NativeAttentionPane? {
+    let ordered = candidates.sorted {
+        ($0.since, $0.paneId) < ($1.since, $1.paneId)
+    }
+    guard let current = ordered.firstIndex(where: { $0.paneId == activePaneId }) else {
+        return ordered.first
+    }
+    return ordered[(current + 1) % ordered.count]
 }
 
 func nativePartyElapsedText(since: Date, now: Date) -> String {
@@ -249,6 +282,7 @@ private final class NativePartyFrameView: NSView {
 
     private let portraitView = NSView(frame: .zero)
     private let initialsLabel = NSTextField(labelWithString: "")
+    private let shortcutLabel = NSTextField(labelWithString: "")
     private let titleLabel = NSTextField(labelWithString: "")
     private let statusLabel = NSTextField(labelWithString: "")
     private let barView = NSView(frame: .zero)
@@ -295,6 +329,7 @@ private final class NativePartyFrameView: NSView {
     func update(_ member: NativePartyMember, now: Date) {
         self.member = member
         initialsLabel.stringValue = member.initials
+        shortcutLabel.stringValue = member.shortcut ?? ""
         titleLabel.stringValue = member.title
         summaryLabel.stringValue =
             member.summary.isEmpty ? (member.active ? "Current tab" : " ") : member.summary
@@ -335,6 +370,10 @@ private final class NativePartyFrameView: NSView {
         initialsLabel.translatesAutoresizingMaskIntoConstraints = false
         initialsLabel.font = .systemFont(ofSize: 13, weight: .bold)
         initialsLabel.alignment = .center
+        shortcutLabel.translatesAutoresizingMaskIntoConstraints = false
+        shortcutLabel.font = .systemFont(ofSize: 8, weight: .semibold)
+        shortcutLabel.textColor = .secondaryLabelColor
+        shortcutLabel.alignment = .center
         titleLabel.translatesAutoresizingMaskIntoConstraints = false
         titleLabel.font = .systemFont(ofSize: 13, weight: .semibold)
         titleLabel.lineBreakMode = .byTruncatingTail
@@ -355,6 +394,7 @@ private final class NativePartyFrameView: NSView {
         setAccessibilityRole(.button)
 
         portraitView.addSubview(initialsLabel)
+        portraitView.addSubview(shortcutLabel)
         for subview in [portraitView, titleLabel, statusLabel, barView, summaryLabel] {
             addSubview(subview)
         }
@@ -365,7 +405,11 @@ private final class NativePartyFrameView: NSView {
             portraitView.widthAnchor.constraint(equalToConstant: Metrics.portraitSize),
             portraitView.heightAnchor.constraint(equalToConstant: Metrics.portraitSize),
             initialsLabel.centerXAnchor.constraint(equalTo: portraitView.centerXAnchor),
-            initialsLabel.centerYAnchor.constraint(equalTo: portraitView.centerYAnchor),
+            initialsLabel.centerYAnchor.constraint(
+                equalTo: portraitView.centerYAnchor, constant: -4),
+            shortcutLabel.centerXAnchor.constraint(equalTo: portraitView.centerXAnchor),
+            shortcutLabel.bottomAnchor.constraint(
+                equalTo: portraitView.bottomAnchor, constant: -1),
             titleLabel.topAnchor.constraint(equalTo: topAnchor, constant: 8),
             titleLabel.leadingAnchor.constraint(equalTo: textLeading, constant: 9),
             titleLabel.trailingAnchor.constraint(
@@ -452,7 +496,26 @@ func runNativePartyFramesSelfTests() -> Bool {
         members[2].badge == nil,
         members[2].targetPaneId == 31,
         members[2].statusSince == nil,
-        members[2].statusTitle == "IDLE"
+        members[2].statusTitle == "IDLE",
+        members.map(\.shortcut) == ["⌘1", "⌘2", "⌘3"],
+        nativeTabShortcut(index: 7, count: 12) == "⌘8",
+        nativeTabShortcut(index: 8, count: 12) == nil,
+        nativeTabShortcut(index: 11, count: 12) == "⌘9",
+        nativeTabShortcut(index: 8, count: 9) == "⌘9"
+    else {
+        return false
+    }
+    let attention = [
+        NativeAttentionPane(tabId: 2, paneId: 21, since: base.addingTimeInterval(30)),
+        NativeAttentionPane(tabId: 1, paneId: 11, since: base),
+        NativeAttentionPane(tabId: 3, paneId: 31, since: base.addingTimeInterval(60)),
+    ]
+    guard nativeNextAttentionPane(attention, activePaneId: nil)?.paneId == 11,
+        nativeNextAttentionPane(attention, activePaneId: 99)?.paneId == 11,
+        nativeNextAttentionPane(attention, activePaneId: 11)?.paneId == 21,
+        nativeNextAttentionPane(attention, activePaneId: 31)?.paneId == 11,
+        nativeNextAttentionPane(Array(attention.prefix(1)), activePaneId: 21)?.paneId == 21,
+        nativeNextAttentionPane([], activePaneId: 11) == nil
     else {
         return false
     }
@@ -461,7 +524,7 @@ func runNativePartyFramesSelfTests() -> Bool {
         nativePartyElapsedText(since: base, now: base.addingTimeInterval(-5)) == "00:00",
         NativePartyMember(
             tabId: 0, tabIndex: 0, title: "~/", badge: nil, summary: "", statusSince: nil,
-            targetPaneId: 0, active: false
+            targetPaneId: 0, active: false, shortcut: nil
         ).initials == "?"
     else {
         return false

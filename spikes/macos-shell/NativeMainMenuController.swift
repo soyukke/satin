@@ -3,6 +3,7 @@ import AppKit
 enum NativeMainMenuAction: Equatable {
     case showSettings
     case showWorkSwitcher
+    case jumpToWaitingAgent
     case newTab
     case splitVertical
     case splitHorizontal
@@ -139,7 +140,10 @@ final class NativeMainMenuController: NSObject, NSMenuItemValidation {
         let item = NSMenuItem()
         let menu = NSMenu(title: "Session")
         addCommandItems(
-            [(.showWorkSwitcher, .showWorkSwitcher)],
+            [
+                (.showWorkSwitcher, .showWorkSwitcher),
+                (.jumpToWaitingAgent, .jumpToWaitingAgent),
+            ],
             to: menu,
             settings: settings
         )

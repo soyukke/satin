@@ -299,6 +299,8 @@ final class SatinAppDelegate: NSObject, NSApplicationDelegate {
             settingsWindowController?.present()
         case .showWorkSwitcher:
             shellController?.showWorkSwitcher(nil)
+        case .jumpToWaitingAgent:
+            shellController?.jumpToWaitingAgent(nil)
         case .newTab:
             shellController?.newTab(nil)
         case .splitVertical:

@@ -114,6 +114,32 @@ extension TerminalShellViewController {
         )
     }
 
+    /// Focuses the longest-waiting agent pane, cycling on repeated presses.
+    @objc func jumpToWaitingAgent(_ sender: Any?) {
+        let attentionStatuses: Set<String> = ["waiting", "blocked", "failed"]
+        let candidates = (lastSnapshot?.tabs ?? []).flatMap { tab in
+            tab.panes.compactMap { paneId -> NativeAttentionPane? in
+                guard let status = paneStatuses.status(for: paneId),
+                    attentionStatuses.contains(status.status)
+                else {
+                    return nil
+                }
+                return NativeAttentionPane(tabId: tab.id, paneId: paneId, since: status.updatedAt)
+            }
+        }
+        guard let target = nativeNextAttentionPane(candidates, activePaneId: activePaneId)
+        else {
+            NSSound.beep()
+            return
+        }
+        guard focusWorkPane(tabId: target.tabId, paneId: target.paneId) else {
+            return
+        }
+        dismissWorkSwitcher()
+        refreshWorkSwitcherPresentation()
+        focusTerminal()
+    }
+
     func selectPartyMember(_ member: NativePartyMember) {
         guard focusWorkPane(tabId: member.tabId, paneId: member.targetPaneId) else {
             return

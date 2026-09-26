@@ -2,6 +2,7 @@ import AppKit
 
 enum NativeCommandID: String, CaseIterable {
     case showWorkSwitcher
+    case jumpToWaitingAgent
     case newTab
     case splitVertical
     case splitHorizontal
@@ -20,6 +21,7 @@ enum NativeCommandID: String, CaseIterable {
     var title: String {
         switch self {
         case .showWorkSwitcher: "Work Switcher"
+        case .jumpToWaitingAgent: "Jump to Waiting Agent"
         case .newTab: "New Tab"
         case .splitVertical: "Split Vertical"
         case .splitHorizontal: "Split Horizontal"
@@ -40,6 +42,7 @@ enum NativeCommandID: String, CaseIterable {
     var defaultShortcut: String {
         switch self {
         case .showWorkSwitcher: "cmd+p"
+        case .jumpToWaitingAgent: "cmd+j"
         case .newTab: "cmd+t"
         case .splitVertical: "cmd+d"
         case .splitHorizontal: "cmd+shift+d"
