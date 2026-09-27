@@ -29,8 +29,7 @@ export "c" fn satin_tmux_create() -> ?ptr<tmux::Control> {
         // SAFETY: slot is fresh storage large enough for one Control.
         let handle = unsafe cast<ptr<tmux::Control>>(slot);
         // SAFETY: handle is fresh storage for one Control; the control now lives there.
-        unsafe ptr_write(handle, value);
-        mem::leak<tmux::Control>(move value);
+        unsafe ptr_write(handle, move value);
         return handle;
     }
     return null_control();
@@ -88,10 +87,8 @@ export "c" fn satin_tmux_feed(
     var passthrough = string::new(allocator);
     defer passthrough.deinit(allocator);
     // SAFETY: the runtime holds live from satin_tmux_create and calls from one thread.
-    var value = unsafe ptr_read(live);
+    let value = unsafe &var live.*;
     if value.feed(allocator, input, &var passthrough) {} else |_| {}
-    // SAFETY: live is the storage value was read from.
-    unsafe ptr_write(live, value);
     let out = passthrough.as_bytes();
     return bytes_out(out, out_len);
 }
@@ -102,15 +99,13 @@ export "c" fn satin_tmux_take_event_json(handle: ?ptr<tmux::Control>) -> ?ptr<u8
     var event = string::new(allocator);
     defer event.deinit(allocator);
     // SAFETY: the runtime holds live from satin_tmux_create and calls from one thread.
-    var value = unsafe ptr_read(live);
+    let value = unsafe &var live.*;
     var taken = false;
     if value.take_event(allocator, &var event) |found| {
         if found {
             taken = true;
         }
     } else |_| {}
-    // SAFETY: live is the storage value was read from.
-    unsafe ptr_write(live, value);
     if !taken {
         return null_bytes();
     }
@@ -124,10 +119,8 @@ export "c" fn satin_tmux_take_outgoing(handle: ?ptr<tmux::Control>, out_len: ?pt
     var command = string::new(allocator);
     defer command.deinit(allocator);
     // SAFETY: the runtime holds live from satin_tmux_create and calls from one thread.
-    var value = unsafe ptr_read(live);
+    let value = unsafe &var live.*;
     if value.take_outgoing(allocator, &var command) |_| {} else |_| {}
-    // SAFETY: live is the storage value was read from.
-    unsafe ptr_write(live, value);
     let bytes = command.as_bytes();
     return bytes_out(bytes, out_len);
 }
@@ -138,22 +131,20 @@ export "c" fn satin_tmux_command(handle: ?ptr<tmux::Control>, bytes: ?ptr<const 
     // SAFETY: the caller passes length readable bytes at data.
     let command = unsafe view_from_ptr(data, cast<i64>(length));
     // SAFETY: the runtime holds live from satin_tmux_create and calls from one thread.
-    var value = unsafe ptr_read(live);
+    let value = unsafe &var live.*;
     var done = false;
     if value.command(mem::page_allocator(), command) |queued| {
         if queued {
             done = true;
         }
     } else |_| {}
-    // SAFETY: live is the storage value was read from.
-    unsafe ptr_write(live, value);
     return flag(done);
 }
 
 export "c" fn satin_tmux_pane_accepts_input(handle: ?ptr<tmux::Control>, pane_id: u32) -> u8 {
     let live = handle orelse return 0;
     // SAFETY: the runtime holds live from satin_tmux_create and calls from one thread.
-    let value = unsafe ptr_read(live);
+    let value = unsafe &live.*;
     var accepts = false;
     if value.pane_accepts_input(cast<i64>(pane_id)) {
         accepts = true;
@@ -167,22 +158,20 @@ export "c" fn satin_tmux_paste(handle: ?ptr<tmux::Control>, pane_id: u32, bytes:
     // SAFETY: the caller passes length readable bytes at data.
     let input = unsafe view_from_ptr(data, cast<i64>(length));
     // SAFETY: the runtime holds live from satin_tmux_create and calls from one thread.
-    var value = unsafe ptr_read(live);
+    let value = unsafe &var live.*;
     var done = false;
     if value.paste(mem::page_allocator(), cast<i64>(pane_id), input) |pasted| {
         if pasted {
             done = true;
         }
     } else |_| {}
-    // SAFETY: live is the storage value was read from.
-    unsafe ptr_write(live, value);
     return flag(done);
 }
 
 export "c" fn satin_tmux_is_active(handle: ?ptr<tmux::Control>) -> u8 {
     let live = handle orelse return 0;
     // SAFETY: the runtime holds live from satin_tmux_create and calls from one thread.
-    let value = unsafe ptr_read(live);
+    let value = unsafe &live.*;
     var active = false;
     if value.is_active() {
         active = true;

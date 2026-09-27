@@ -4,7 +4,9 @@ Porting `satin_core_*` (tabs, pane layout, snapshot / workspace JSON),
 `satin::tmux` (tmux control mode, scroll tracking) and `satin_vt_*` (the
 libghostty-vt terminal and its callbacks) from Rust.
 
-C callbacks (`extern "c" fn(...)` values) were added to Kizu for `satin_vt_*`.
+Added to Kizu along the way: C callbacks (`extern "c" fn(...)` values) for
+`satin_vt_*`, and `let v = unsafe &var p.*;` with `ptr_write(p, move value)`,
+which replaced the read-work-write round trip every handle function did.
 
 ## Bugs
 
@@ -16,8 +18,6 @@ C callbacks (`extern "c" fn(...)` values) were added to Kizu for `satin_vt_*`.
 
 | Gap | Where it bit | Workaround |
 | --- | --- | --- |
-| No way to lend a raw pointer's target as `&var T` | opaque handle for the host | `ptr_read` → work → `ptr_write` on every call |
-| `ptr_write` of an owner is a copy; the source needs `mem::leak` | handle create | `ptr_write` then `mem::leak<T>(move value)` |
 | No `sizeof<T>()` | malloc for the handle | fixed 256-byte bound (`core_storage_bytes`) |
 | `return null` / `let x: ?ptr<T> = null` rejected | null handle / null string | `unsafe ptr_from_int<ptr<T>>(0)` |
 | No module-level `const` | split ratio bounds, epsilon | functions returning the value |
@@ -44,5 +44,4 @@ C callbacks (`extern "c" fn(...)` values) were added to Kizu for `satin_vt_*`.
 | A `ptr<T>` argument does not fill a `?ptr<T>` parameter (a `return` does) | calling `satin_vt_*` from Kizu tests | a helper that returns the pointer |
 | `p == null` does not compile for `?ptr<T>` | test asserts | `if p \|_\| { return true; }` |
 | `[N]u8` has no mutable view, so a byte buffer cannot be written by index | escape bytes in tests | build a `String` |
-| A view taken from a `ptr_read` owner's field is treated as a hand-off | `sink.replies.as_bytes()` | read it in a helper that takes `&Sink` |
 | `kizu test` links every C export, so a package calling a C library needs that library to test | `satin_vt_*` | `[native] library_search` + a symlink to the archive cargo built (`scripts/link-ghostty`) |

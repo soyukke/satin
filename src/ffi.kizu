@@ -71,8 +71,7 @@ fn create(theme: []u8) -> ?ptr<core::Core> {
             // SAFETY: slot is fresh storage large enough for one Core.
             let handle = unsafe cast<ptr<core::Core>>(slot);
             // SAFETY: handle is fresh storage for one Core; the core now lives there.
-            unsafe ptr_write(handle, value);
-            mem::leak<core::Core>(move value);
+            unsafe ptr_write(handle, move value);
             return handle;
         }
         value.deinit(allocator);
@@ -111,13 +110,11 @@ export "c" fn satin_core_destroy(handle: ?ptr<core::Core>) -> void {
 export "c" fn satin_core_new_tab(handle: ?ptr<core::Core>) -> usize {
     let live = handle orelse return none();
     // SAFETY: the host holds live from satin_core_create and calls from one thread.
-    var value = unsafe ptr_read(live);
+    let value = unsafe &var live.*;
     var result = none();
     if value.new_tab(mem::page_allocator()) |index| {
         result = cast<usize>(index);
     } else |_| {}
-    // SAFETY: live is the storage value was read from.
-    unsafe ptr_write(live, value);
     return result;
 }
 
@@ -140,15 +137,13 @@ export "c" fn satin_core_split_active(handle: ?ptr<core::Core>, axis: u32) -> us
         return none();
     }
     // SAFETY: the host holds live from satin_core_create and calls from one thread.
-    var value = unsafe ptr_read(live);
+    let value = unsafe &var live.*;
     var result = none();
     if value.split_active(mem::page_allocator(), split) |pane| {
         if pane >= 0 {
             result = cast<usize>(pane);
         }
     } else |_| {}
-    // SAFETY: live is the storage value was read from.
-    unsafe ptr_write(live, value);
     return result;
 }
 
@@ -160,30 +155,26 @@ export "c" fn satin_core_resize_split(
 ) -> u8 {
     let live = handle orelse return 0;
     // SAFETY: the host holds live from satin_core_create and calls from one thread.
-    var value = unsafe ptr_read(live);
+    let value = unsafe &var live.*;
     // A bool read back from a method on a ptr_read value is held as an owner
     // (see gaps/ptr_read_method_result_is_owner.kizu), so it is copied out here.
     var done = false;
     if value.resize_split(cast<i64>(first_pane_id), cast<i64>(second_pane_id), ratio) {
         done = true;
     }
-    // SAFETY: live is the storage value was read from.
-    unsafe ptr_write(live, value);
     return flag(done);
 }
 
 export "c" fn satin_core_close_pane(handle: ?ptr<core::Core>, pane_id: usize) -> u8 {
     let live = handle orelse return 0;
     // SAFETY: the host holds live from satin_core_create and calls from one thread.
-    var value = unsafe ptr_read(live);
+    let value = unsafe &var live.*;
     var done = false;
     if value.close_pane(mem::page_allocator(), cast<i64>(pane_id)) |closed| {
         if closed {
             done = true;
         }
     } else |_| {}
-    // SAFETY: live is the storage value was read from.
-    unsafe ptr_write(live, value);
     return flag(done);
 }
 
@@ -216,60 +207,52 @@ export "c" fn satin_core_move_pane(
         return 0;
     }
     // SAFETY: the host holds live from satin_core_create and calls from one thread.
-    var value = unsafe ptr_read(live);
+    let value = unsafe &var live.*;
     var done = false;
     if value.move_pane(mem::page_allocator(), cast<i64>(source_pane_id), cast<i64>(target_pane_id), drop) |moved| {
         if moved {
             done = true;
         }
     } else |_| {}
-    // SAFETY: live is the storage value was read from.
-    unsafe ptr_write(live, value);
     return flag(done);
 }
 
 export "c" fn satin_core_select_tab(handle: ?ptr<core::Core>, index: usize) -> u8 {
     let live = handle orelse return 0;
     // SAFETY: the host holds live from satin_core_create and calls from one thread.
-    var value = unsafe ptr_read(live);
+    let value = unsafe &var live.*;
     // A bool read back from a method on a ptr_read value is held as an owner
     // (see gaps/ptr_read_method_result_is_owner.kizu), so it is copied out here.
     var done = false;
     if value.select_tab(cast<i64>(index)) {
         done = true;
     }
-    // SAFETY: live is the storage value was read from.
-    unsafe ptr_write(live, value);
     return flag(done);
 }
 
 export "c" fn satin_core_move_tab(handle: ?ptr<core::Core>, tab_id: usize, index: usize) -> u8 {
     let live = handle orelse return 0;
     // SAFETY: the host holds live from satin_core_create and calls from one thread.
-    var value = unsafe ptr_read(live);
+    let value = unsafe &var live.*;
     // A bool read back from a method on a ptr_read value is held as an owner
     // (see gaps/ptr_read_method_result_is_owner.kizu), so it is copied out here.
     var done = false;
     if value.move_tab(cast<i64>(tab_id), cast<i64>(index)) {
         done = true;
     }
-    // SAFETY: live is the storage value was read from.
-    unsafe ptr_write(live, value);
     return flag(done);
 }
 
 export "c" fn satin_core_select_pane(handle: ?ptr<core::Core>, pane_id: usize) -> u8 {
     let live = handle orelse return 0;
     // SAFETY: the host holds live from satin_core_create and calls from one thread.
-    var value = unsafe ptr_read(live);
+    let value = unsafe &var live.*;
     // A bool read back from a method on a ptr_read value is held as an owner
     // (see gaps/ptr_read_method_result_is_owner.kizu), so it is copied out here.
     var done = false;
     if value.select_pane(cast<i64>(pane_id)) {
         done = true;
     }
-    // SAFETY: live is the storage value was read from.
-    unsafe ptr_write(live, value);
     return flag(done);
 }
 
@@ -295,7 +278,7 @@ export "c" fn satin_core_pane_in_direction(handle: ?ptr<core::Core>, direction: 
         return none();
     }
     // SAFETY: the host holds live from satin_core_create and calls from one thread.
-    let value = unsafe ptr_read(live);
+    let value = unsafe &live.*;
     if value.pane_in_direction(mem::page_allocator(), toward) |pane| {
         if pane >= 0 {
             return cast<usize>(pane);
@@ -313,14 +296,12 @@ export "c" fn satin_core_rename_tab(handle: ?ptr<core::Core>, index: usize, titl
         defer name.deinit(allocator);
         let bytes = name.as_bytes();
         // SAFETY: the host holds live from satin_core_create and calls from one thread.
-        var value = unsafe ptr_read(live);
+        let value = unsafe &var live.*;
         if value.rename_tab(allocator, cast<i64>(index), bytes) |renamed| {
             if renamed {
                 done = true;
             }
         } else |_| {}
-        // SAFETY: live is the storage value was read from.
-        unsafe ptr_write(live, value);
     } else |_| {}
     return flag(done);
 }
@@ -334,14 +315,12 @@ export "c" fn satin_core_set_tab_theme(handle: ?ptr<core::Core>, index: usize, t
         defer name.deinit(allocator);
         let bytes = name.as_bytes();
         // SAFETY: the host holds live from satin_core_create and calls from one thread.
-        var value = unsafe ptr_read(live);
+        let value = unsafe &var live.*;
         if value.set_tab_theme(allocator, cast<i64>(index), bytes) |set| {
             if set {
                 done = true;
             }
         } else |_| {}
-        // SAFETY: live is the storage value was read from.
-        unsafe ptr_write(live, value);
     } else |_| {}
     return flag(done);
 }
@@ -355,12 +334,10 @@ export "c" fn satin_core_set_default_theme(handle: ?ptr<core::Core>, theme: ?ptr
         defer name.deinit(allocator);
         let bytes = name.as_bytes();
         // SAFETY: the host holds live from satin_core_create and calls from one thread.
-        var value = unsafe ptr_read(live);
+        let value = unsafe &var live.*;
         if value.set_default_theme(allocator, bytes) {
             done = true;
         } else |_| {}
-        // SAFETY: live is the storage value was read from.
-        unsafe ptr_write(live, value);
     } else |_| {}
     return flag(done);
 }
@@ -375,7 +352,7 @@ export "c" fn satin_core_snapshot_json(handle: ?ptr<core::Core>) -> ?ptr<u8> {
     let live = handle orelse return null_string();
     let allocator = mem::page_allocator();
     // SAFETY: the host holds live from satin_core_create and calls from one thread.
-    let value = unsafe ptr_read(live);
+    let value = unsafe &live.*;
     var json = string::new(allocator);
     defer json.deinit(allocator);
     if value.snapshot_json(allocator, &var json) {
@@ -394,12 +371,10 @@ export "c" fn satin_core_apply_workspace_json(handle: ?ptr<core::Core>, workspac
         defer document.deinit(allocator);
         let bytes = document.as_bytes();
         // SAFETY: the host holds live from satin_core_create and calls from one thread.
-        var value = unsafe ptr_read(live);
+        let value = unsafe &var live.*;
         if value.apply_workspace(allocator, bytes) {
             done = true;
         } else |_| {}
-        // SAFETY: live is the storage value was read from.
-        unsafe ptr_write(live, value);
     } else |_| {}
     return flag(done);
 }

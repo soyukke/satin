@@ -87,20 +87,16 @@ export "c" fn satin_vt_on_write_pty(
     // SAFETY: libghostty passes length readable bytes at data for this call.
     let reply = unsafe view_from_ptr(bytes, cast<i64>(length));
     // SAFETY: cell is the Sink storage, which no other code holds during vt_write.
-    var sink = unsafe ptr_read(cell);
+    let sink = unsafe &var cell.*;
     if sink.replies.append_bytes(mem::page_allocator(), reply) {} else |_| {}
-    // SAFETY: cell is the storage sink was read from.
-    unsafe ptr_write(cell, sink);
     return;
 }
 
 export "c" fn satin_vt_on_bell(terminal: ?ptr<u8>, userdata: ?ptr<u8>) -> void {
     let cell = sink_of(userdata) orelse return;
     // SAFETY: cell is the Sink storage, which no other code holds during vt_write.
-    var sink = unsafe ptr_read(cell);
+    let sink = unsafe &var cell.*;
     sink.bells = sink.bells + 1;
-    // SAFETY: cell is the storage sink was read from.
-    unsafe ptr_write(cell, sink);
     return;
 }
 
@@ -162,8 +158,7 @@ export "c" fn satin_vt_create(cols: u16, rows: u16, max_scrollback: usize) -> ?p
             let sink = unsafe cast<ptr<Sink>>(sink_slot);
             let empty = Sink { replies: string::new(allocator), bells: 0 };
             // SAFETY: sink is fresh storage for one Sink; the sink now lives there.
-            unsafe ptr_write(sink, empty);
-            mem::leak<Sink>(move empty);
+            unsafe ptr_write(sink, move empty);
             // SAFETY: the Vt holds the terminal and sink it is built from.
             let value = unsafe Vt {
                 terminal: terminal,
@@ -173,8 +168,7 @@ export "c" fn satin_vt_create(cols: u16, rows: u16, max_scrollback: usize) -> ?p
             // SAFETY: vt_slot is fresh storage large enough for one Vt.
             let handle = unsafe cast<ptr<Vt>>(vt_slot);
             // SAFETY: handle is fresh storage for one Vt; the Vt now lives there.
-            unsafe ptr_write(handle, value);
-            mem::leak<Vt>(move value);
+            unsafe ptr_write(handle, move value);
             if install_callbacks(terminal, sink) {
                 return handle;
             }
@@ -222,7 +216,7 @@ fn destroy(live: ptr<Vt>) -> void {
 export "c" fn satin_vt_terminal(handle: ?ptr<Vt>) -> ?ptr<u8> {
     let live = handle orelse return default_allocator();
     // SAFETY: the runtime holds live from satin_vt_create and calls from one thread.
-    let value = unsafe ptr_read(live);
+    let value = unsafe &live.*;
     let terminal = value.terminal;
     return terminal;
 }
@@ -237,13 +231,11 @@ export "c" fn satin_vt_feed(handle: ?ptr<Vt>, bytes: ?ptr<const u8>, length: usi
     // SAFETY: the caller passes length readable bytes at data.
     let input = unsafe view_from_ptr(data, cast<i64>(length));
     // SAFETY: the runtime holds live from satin_vt_create and calls from one thread.
-    var value = unsafe ptr_read(live);
+    let value = unsafe &var live.*;
     // The callbacks this runs write only the sink, which value does not hold.
     // SAFETY: the terminal is live and data holds length bytes.
     unsafe ghostty_terminal_vt_write(value.terminal, data, length);
     if value.prompt.feed(mem::page_allocator(), input) {} else |_| {}
-    // SAFETY: live is the storage value was read from.
-    unsafe ptr_write(live, value);
     return;
 }
 
@@ -252,41 +244,33 @@ export "c" fn satin_vt_feed(handle: ?ptr<Vt>, bytes: ?ptr<const u8>, length: usi
 export "c" fn satin_vt_take_replies(handle: ?ptr<Vt>, out_len: ?ptr<usize>) -> ?ptr<u8> {
     let live = handle orelse return bytes_out("", out_len);
     // SAFETY: the runtime holds live from satin_vt_create and calls from one thread.
-    let value = unsafe ptr_read(live);
+    let value = unsafe &live.*;
     let cell = value.sink;
     // SAFETY: cell is the Sink storage; no vt_write runs during this call.
-    var sink = unsafe ptr_read(cell);
-    let out = replies_out(&sink, out_len);
+    let sink = unsafe &var cell.*;
+    let replies = sink.replies.as_bytes();
+    let out = bytes_out(replies, out_len);
     sink.replies.clear();
-    // SAFETY: cell is the storage sink was read from.
-    unsafe ptr_write(cell, sink);
     return out;
-}
-
-fn replies_out(sink: &Sink, out_len: ?ptr<usize>) -> ?ptr<u8> {
-    let bytes = sink.replies.as_bytes();
-    return bytes_out(bytes, out_len);
 }
 
 /// The bells rung since the last take.
 export "c" fn satin_vt_take_bell_count(handle: ?ptr<Vt>) -> u64 {
     let live = handle orelse return 0;
     // SAFETY: the runtime holds live from satin_vt_create and calls from one thread.
-    let value = unsafe ptr_read(live);
+    let value = unsafe &live.*;
     let cell = value.sink;
     // SAFETY: cell is the Sink storage; no vt_write runs during this call.
-    var sink = unsafe ptr_read(cell);
+    let sink = unsafe &var cell.*;
     let bells = sink.bells;
     sink.bells = 0;
-    // SAFETY: cell is the storage sink was read from.
-    unsafe ptr_write(cell, sink);
     return bells;
 }
 
 export "c" fn satin_vt_prompt_seen(handle: ?ptr<Vt>) -> u8 {
     let live = handle orelse return 0;
     // SAFETY: the runtime holds live from satin_vt_create and calls from one thread.
-    let value = unsafe ptr_read(live);
+    let value = unsafe &live.*;
     let seen = value.prompt.observed;
     return flag(seen);
 }
@@ -294,7 +278,7 @@ export "c" fn satin_vt_prompt_seen(handle: ?ptr<Vt>) -> u8 {
 export "c" fn satin_vt_prompt_generation(handle: ?ptr<Vt>) -> u64 {
     let live = handle orelse return 0;
     // SAFETY: the runtime holds live from satin_vt_create and calls from one thread.
-    let value = unsafe ptr_read(live);
+    let value = unsafe &live.*;
     let generation = value.prompt.ready_generation;
     return generation;
 }
@@ -302,9 +286,7 @@ export "c" fn satin_vt_prompt_generation(handle: ?ptr<Vt>) -> u64 {
 export "c" fn satin_vt_reset_prompt(handle: ?ptr<Vt>) -> void {
     let live = handle orelse return;
     // SAFETY: the runtime holds live from satin_vt_create and calls from one thread.
-    var value = unsafe ptr_read(live);
+    let value = unsafe &var live.*;
     value.prompt.reset();
-    // SAFETY: live is the storage value was read from.
-    unsafe ptr_write(live, value);
     return;
 }
