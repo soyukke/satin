@@ -10,12 +10,18 @@ import satin::vt;
 import std::mem;
 import std::string;
 
+/// libghostty's `GhosttyTerminalOptions`.
+extern "c" struct TerminalOptions {
+    cols: u16,
+    rows: u16,
+    max_scrollback: usize,
+}
+
 @link_library("ghostty-vt")
 extern "c" fn ghostty_terminal_new(
     allocator: ?ptr<u8>,
     terminal: ptr<usize>,
-    size_word: u64,
-    max_scrollback: usize
+    options: TerminalOptions
 ) -> i32
 @link_library("ghostty-vt")
 extern "c" fn ghostty_terminal_free(terminal: ptr<u8>) -> void
@@ -101,11 +107,6 @@ export "c" fn satin_vt_on_bell(terminal: ?ptr<u8>, userdata: ?ptr<u8>) -> void {
 }
 
 /// Creates a terminal of cols x rows keeping max_scrollback lines of history.
-///
-/// `ghostty_terminal_new` takes its options struct by value, which a Kizu
-/// extern cannot spell. The struct is two words -- cols and rows in the
-/// first, max_scrollback in the second -- and both arm64 and x86-64 pass such
-/// a struct in two integer registers, so the call passes the two words.
 fn new_terminal(cols: u16, rows: u16, max_scrollback: usize) -> ?ptr<u8> {
     // SAFETY: malloc returns storage for one usize or null.
     let storage = unsafe malloc(8) orelse return default_allocator();
@@ -113,9 +114,9 @@ fn new_terminal(cols: u16, rows: u16, max_scrollback: usize) -> ?ptr<u8> {
     let out = unsafe cast<ptr<usize>>(storage);
     // SAFETY: out is fresh storage for one usize.
     unsafe ptr_write(out, 0);
-    let size_word = cast<u64>(cols) + cast<u64>(rows) * 65536;
-    // SAFETY: out holds one writable usize, and the words are the options struct.
-    let result = unsafe ghostty_terminal_new(default_allocator(), out, size_word, max_scrollback);
+    let options = TerminalOptions { cols: cols, rows: rows, max_scrollback: max_scrollback };
+    // SAFETY: out holds one writable usize.
+    let result = unsafe ghostty_terminal_new(default_allocator(), out, options);
     // SAFETY: out still holds the usize libghostty wrote, or the zero above.
     let address = unsafe ptr_read(out);
     // SAFETY: storage came from malloc and nothing reads it after this.
