@@ -4,3 +4,9 @@ version = "0.1.0"
 
 [modules]
 paths = ["src"]
+
+# libghostty-vt, which `kizu test` links. scripts/link-ghostty points this at
+# the archive the Rust app's cargo build made; the app itself links it through
+# cargo.
+[native]
+library_search = ["target/native"]

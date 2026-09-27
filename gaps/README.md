@@ -1,7 +1,10 @@
 # Kizu gaps found while porting satin
 
-Porting `satin_core_*` (tabs, pane layout, snapshot / workspace JSON) and
-`satin::tmux` (tmux control mode, scroll tracking) from Rust.
+Porting `satin_core_*` (tabs, pane layout, snapshot / workspace JSON),
+`satin::tmux` (tmux control mode, scroll tracking) and `satin_vt_*` (the
+libghostty-vt terminal and its callbacks) from Rust.
+
+C callbacks (`extern "c" fn(...)` values) were added to Kizu for `satin_vt_*`.
 
 ## Bugs
 
@@ -37,4 +40,9 @@ Porting `satin_core_*` (tabs, pane layout, snapshot / workspace JSON) and
 | Files of one directory share a namespace | `utf8`, `passthrough` helpers | prefix helper names (`is_valid_utf8`, `dcs_prefix`) |
 | Each native object carries the Kizu runtime, so one link takes one Kizu object | core + tmux | one package, one object, linked by the Rust `build.rs` |
 | `[a, b, c]` is not an array literal | five OSC fields | separate locals |
-
+| An extern struct cannot be passed by value | `ghostty_terminal_new(..., GhosttyTerminalOptions)` | pass the two words of the struct as `u64` + `usize` (arm64 / x86-64 register ABI) |
+| A `ptr<T>` argument does not fill a `?ptr<T>` parameter (a `return` does) | calling `satin_vt_*` from Kizu tests | a helper that returns the pointer |
+| `p == null` does not compile for `?ptr<T>` | test asserts | `if p \|_\| { return true; }` |
+| `[N]u8` has no mutable view, so a byte buffer cannot be written by index | escape bytes in tests | build a `String` |
+| A view taken from a `ptr_read` owner's field is treated as a hand-off | `sink.replies.as_bytes()` | read it in a helper that takes `&Sink` |
+| `kizu test` links every C export, so a package calling a C library needs that library to test | `satin_vt_*` | `[native] library_search` + a symlink to the archive cargo built (`scripts/link-ghostty`) |

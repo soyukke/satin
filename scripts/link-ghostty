@@ -1,0 +1,14 @@
+#!/bin/sh
+# Points target/native/libghostty-vt.a at the archive the satin cargo build
+# made, which `kizu test` links for the `satin_vt_*` tests.
+# Usage: scripts/link-ghostty [path-to-satin-checkout]
+set -eu
+satin=${1:-../satin}
+archive=$(ls -t "$satin"/target/debug/build/libghostty-vt-sys-*/out/ghostty-install/lib/libghostty-vt.a 2>/dev/null | head -n 1)
+if [ -z "$archive" ]; then
+    echo "no libghostty-vt.a under $satin/target; run cargo build there first" >&2
+    exit 1
+fi
+mkdir -p target/native
+ln -sf "$archive" target/native/libghostty-vt.a
+echo "target/native/libghostty-vt.a -> $archive"
