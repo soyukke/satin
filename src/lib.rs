@@ -2,6 +2,7 @@ pub mod agent_status;
 pub mod artifact;
 pub mod control;
 pub mod ffi;
+mod kizu_vt;
 mod logging;
 pub mod neovide_render;
 #[cfg(target_os = "macos")]

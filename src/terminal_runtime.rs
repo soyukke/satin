@@ -1,11 +1,11 @@
 use std::{
-    cell::{Cell, RefCell},
+    cell::RefCell,
     collections::{BTreeMap, HashMap, HashSet},
     env,
     io::{Read, Write},
+    mem::ManuallyDrop,
     path::{Path, PathBuf},
     process::Command,
-    rc::Rc,
     sync::{
         Arc,
         mpsc::{self, Receiver},
@@ -33,6 +33,7 @@ use serde::{Deserialize, Serialize};
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 
+use crate::kizu_vt::KizuVt;
 use crate::neovide_render::{
     NeovideLine, NeovideRenderedWindowCache, NeovideRenderedWindowPlacement,
     NeovideRendererModelSnapshot, NeovideWindowDrawCommand, NeovideWindowKind,
@@ -70,94 +71,6 @@ pub enum TmuxShellPromptState {
     Ready = 2,
 }
 
-const MAX_SEMANTIC_PROMPT_OSC_BYTES: usize = 64;
-
-#[derive(Debug, Default)]
-struct SemanticPromptTracker {
-    state: SemanticPromptParseState,
-    payload: Vec<u8>,
-    observed: bool,
-    ready_generation: u64,
-    ready_reported: bool,
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-enum SemanticPromptParseState {
-    #[default]
-    Ground,
-    Escape,
-    Payload,
-    PayloadEscape,
-}
-
-impl SemanticPromptTracker {
-    fn feed(&mut self, bytes: &[u8]) {
-        for &byte in bytes {
-            self.feed_byte(byte);
-        }
-    }
-
-    fn feed_byte(&mut self, byte: u8) {
-        self.state = match self.state {
-            SemanticPromptParseState::Ground if byte == 0x1b => SemanticPromptParseState::Escape,
-            SemanticPromptParseState::Ground => SemanticPromptParseState::Ground,
-            SemanticPromptParseState::Escape if byte == b']' => {
-                self.payload.clear();
-                SemanticPromptParseState::Payload
-            }
-            SemanticPromptParseState::Escape if byte == 0x1b => SemanticPromptParseState::Escape,
-            SemanticPromptParseState::Escape => SemanticPromptParseState::Ground,
-            SemanticPromptParseState::Payload if byte == 0x07 => {
-                self.finish_payload();
-                SemanticPromptParseState::Ground
-            }
-            SemanticPromptParseState::Payload if byte == 0x1b => {
-                SemanticPromptParseState::PayloadEscape
-            }
-            SemanticPromptParseState::Payload => {
-                self.push_payload_byte(byte);
-                SemanticPromptParseState::Payload
-            }
-            SemanticPromptParseState::PayloadEscape if byte == b'\\' => {
-                self.finish_payload();
-                SemanticPromptParseState::Ground
-            }
-            SemanticPromptParseState::PayloadEscape if byte == 0x1b => {
-                self.push_payload_byte(0x1b);
-                SemanticPromptParseState::PayloadEscape
-            }
-            SemanticPromptParseState::PayloadEscape => {
-                self.push_payload_byte(0x1b);
-                self.push_payload_byte(byte);
-                SemanticPromptParseState::Payload
-            }
-        };
-    }
-
-    fn push_payload_byte(&mut self, byte: u8) {
-        if self.payload.len() < MAX_SEMANTIC_PROMPT_OSC_BYTES {
-            self.payload.push(byte);
-        }
-    }
-
-    fn finish_payload(&mut self) {
-        let Some(command) = self.payload.strip_prefix(b"133;") else {
-            return;
-        };
-        self.observed = true;
-        match command.first() {
-            Some(b'A' | b'C' | b'D') => {
-                self.ready_reported = false;
-            }
-            Some(b'B') if !self.ready_reported => {
-                self.ready_generation = self.ready_generation.wrapping_add(1);
-                self.ready_reported = true;
-            }
-            _ => {}
-        }
-    }
-}
-
 impl TerminalGridSize {
     fn pty_size(self) -> PtySize {
         PtySize {
@@ -190,13 +103,12 @@ pub struct TerminalSpawnConfig {
 
 pub struct NativeTerminalRuntime {
     pty: Option<RuntimePty>,
-    pty_replies: Rc<RefCell<Vec<u8>>>,
-    bell_count: Rc<Cell<u64>>,
-    terminal: Terminal<'static, 'static>,
+    // A view of the terminal `vt` owns. Declared first so it goes before `vt`.
+    terminal: ManuallyDrop<Terminal<'static, 'static>>,
+    vt: KizuVt,
     selection_gesture: TerminalSelectionGesture,
     scroll_sequence_tracker: TerminalScrollSequenceTracker,
     key_encoder: key::Encoder<'static>,
-    semantic_prompt_tracker: SemanticPromptTracker,
     mouse_encoder: mouse::Encoder<'static>,
     mouse_button_pressed: bool,
     option_as_alt: bool,
@@ -243,35 +155,17 @@ impl NativeTerminalRuntime {
         pty: Option<RuntimePty>,
         current_working_directory: Option<PathBuf>,
     ) -> Result<Self> {
-        let pty_replies = Rc::new(RefCell::new(Vec::new()));
-        let bell_count = Rc::new(Cell::new(0_u64));
-        let mut terminal = Terminal::new(TerminalOptions {
-            cols: size.cols,
-            rows: size.rows,
-            max_scrollback: 100_000,
-        })?;
+        // Kizu owns the terminal and its PTY-reply and bell callbacks.
+        let (vt, mut terminal) = KizuVt::new(size.cols, size.rows, 100_000)?;
         configure_kitty_graphics(&mut terminal)?;
-
-        terminal.on_pty_write({
-            let pty_replies = Rc::clone(&pty_replies);
-            move |_term, data| {
-                pty_replies.borrow_mut().extend_from_slice(data);
-            }
-        })?;
-        terminal.on_bell({
-            let bell_count = Rc::clone(&bell_count);
-            move |_term| bell_count.set(bell_count.get().saturating_add(1))
-        })?;
 
         let mut runtime = Self {
             pty,
-            pty_replies,
-            bell_count,
             terminal,
+            vt,
             selection_gesture: TerminalSelectionGesture::new()?,
             scroll_sequence_tracker: TerminalScrollSequenceTracker::default(),
             key_encoder: key::Encoder::new()?,
-            semantic_prompt_tracker: SemanticPromptTracker::default(),
             mouse_encoder: mouse::Encoder::new()?,
             mouse_button_pressed: false,
             option_as_alt: true,
@@ -504,7 +398,7 @@ impl NativeTerminalRuntime {
     }
 
     pub fn take_bell_count(&self) -> u64 {
-        self.bell_count.replace(0)
+        self.vt.take_bell_count()
     }
 
     pub fn set_option_as_alt(&mut self, enabled: bool) {
@@ -590,7 +484,7 @@ impl NativeTerminalRuntime {
             bail!("cannot externally feed a PTY-backed terminal runtime");
         }
         self.feed_terminal(bytes);
-        Ok(std::mem::take(&mut *self.pty_replies.borrow_mut()))
+        Ok(self.vt.take_replies())
     }
 
     pub fn feed_tmux_projection(&mut self, bytes: &[u8]) -> Result<()> {
@@ -602,7 +496,7 @@ impl NativeTerminalRuntime {
         // device reports from applications. Replies generated by Satin's
         // display-only projection would be duplicates; a late duplicate can
         // otherwise arrive at the shell after an alternate-screen app exits.
-        self.pty_replies.borrow_mut().clear();
+        self.vt.clear_replies();
         Ok(())
     }
 
@@ -663,15 +557,15 @@ impl NativeTerminalRuntime {
     }
 
     pub fn tmux_semantic_prompt_seen(&self) -> bool {
-        self.semantic_prompt_tracker.observed
+        self.vt.prompt_seen()
     }
 
     pub fn tmux_prompt_generation(&self) -> u64 {
-        self.semantic_prompt_tracker.ready_generation
+        self.vt.prompt_generation()
     }
 
     pub fn reset_tmux_prompt_tracking(&mut self) {
-        self.semantic_prompt_tracker = SemanticPromptTracker::default();
+        self.vt.reset_prompt();
     }
 
     pub fn take_tmux_event(&mut self) -> Option<String> {
@@ -802,8 +696,7 @@ impl NativeTerminalRuntime {
 
     fn feed_terminal(&mut self, bytes: &[u8]) {
         self.record_terminal_scroll_metadata(bytes);
-        self.terminal.vt_write(bytes);
-        self.semantic_prompt_tracker.feed(bytes);
+        self.vt.feed(bytes);
         self.update_working_directory_from_terminal();
     }
 
@@ -835,10 +728,10 @@ impl NativeTerminalRuntime {
     }
 
     fn flush_terminal_replies(&mut self) -> Result<()> {
-        if self.pty_replies.borrow().is_empty() {
+        let replies = self.vt.take_replies();
+        if replies.is_empty() {
             return Ok(());
         }
-        let replies = std::mem::take(&mut *self.pty_replies.borrow_mut());
         self.pty_mut()?.write_all(&replies)
     }
 
@@ -2393,30 +2286,46 @@ mod tests {
     }
 
     #[test]
-    fn tmux_prompt_tracker_deduplicates_ready_markers_per_prompt() {
-        let mut tracker = SemanticPromptTracker::default();
-        tracker.feed(b"\x1b]133;C\x1b\\");
-        assert!(tracker.observed);
-        assert_eq!(tracker.ready_generation, 0);
+    fn kizu_terminal_callbacks_carry_replies_and_bells() {
+        let mut runtime = NativeTerminalRuntime::external(TerminalGridSize {
+            rows: 24,
+            cols: 80,
+            pixel_width: 800,
+            pixel_height: 480,
+        })
+        .unwrap();
 
-        tracker.feed(b"\x1b]133;B");
-        assert_eq!(tracker.ready_generation, 0);
-        tracker.feed(b"\x1b\\");
-        assert_eq!(tracker.ready_generation, 1);
+        let reply = runtime.feed_external(b"\x1b[c").unwrap();
+        assert!(reply.starts_with(b"\x1b[?"), "{reply:?}");
+        assert!(runtime.feed_external(b"").unwrap().is_empty());
 
-        tracker.feed(b"\x1b]0;133;B\x07");
-        assert_eq!(tracker.ready_generation, 1);
-        tracker.feed(b"\x1b]133;B;fresh\x07");
-        assert_eq!(tracker.ready_generation, 1);
+        runtime.feed_external(b"\x07ding\x07").unwrap();
+        assert_eq!(runtime.take_bell_count(), 2);
+        assert_eq!(runtime.take_bell_count(), 0);
+        assert_eq!(runtime.screen_text().unwrap().trim(), "ding");
+    }
 
-        tracker.feed(b"\x1b]133;A\x1b\\prompt> \x1b]133;B\x07");
-        assert_eq!(tracker.ready_generation, 2);
-        tracker.feed(b"\x1b]133;B");
-        tracker.feed(b";duplicate\x1b\\");
-        assert_eq!(tracker.ready_generation, 2);
+    #[test]
+    fn kizu_terminal_keeps_the_kitty_graphics_configured_through_the_borrow() {
+        let mut runtime = NativeTerminalRuntime::external(TerminalGridSize {
+            rows: 4,
+            cols: 8,
+            pixel_width: 64,
+            pixel_height: 64,
+        })
+        .unwrap();
 
-        tracker.feed(b"\x1b]133;D;0\x1b\\\x1b]133;B\x1b\\");
-        assert_eq!(tracker.ready_generation, 3);
+        runtime
+            .feed_external(
+                b"\x1b_Ga=T,f=100,q=0;\
+                  iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAA\
+                  DUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==\
+                  \x1b\\",
+            )
+            .unwrap();
+
+        let placements = runtime.kitty_placements().unwrap();
+        assert_eq!(placements.len(), 1);
     }
 
     #[test]
