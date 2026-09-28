@@ -156,13 +156,7 @@ export "c" fn satin_core_resize_split(
     let live = handle orelse return 0;
     // SAFETY: the host holds live from satin_core_create and calls from one thread.
     let value = unsafe &var live.*;
-    // A bool read back from a method on a ptr_read value is held as an owner
-    // (see gaps/ptr_read_method_result_is_owner.kizu), so it is copied out here.
-    var done = false;
-    if value.resize_split(cast<i64>(first_pane_id), cast<i64>(second_pane_id), ratio) {
-        done = true;
-    }
-    return flag(done);
+    return flag(value.resize_split(cast<i64>(first_pane_id), cast<i64>(second_pane_id), ratio));
 }
 
 export "c" fn satin_core_close_pane(handle: ?ptr<core::Core>, pane_id: usize) -> u8 {
@@ -221,39 +215,21 @@ export "c" fn satin_core_select_tab(handle: ?ptr<core::Core>, index: usize) -> u
     let live = handle orelse return 0;
     // SAFETY: the host holds live from satin_core_create and calls from one thread.
     let value = unsafe &var live.*;
-    // A bool read back from a method on a ptr_read value is held as an owner
-    // (see gaps/ptr_read_method_result_is_owner.kizu), so it is copied out here.
-    var done = false;
-    if value.select_tab(cast<i64>(index)) {
-        done = true;
-    }
-    return flag(done);
+    return flag(value.select_tab(cast<i64>(index)));
 }
 
 export "c" fn satin_core_move_tab(handle: ?ptr<core::Core>, tab_id: usize, index: usize) -> u8 {
     let live = handle orelse return 0;
     // SAFETY: the host holds live from satin_core_create and calls from one thread.
     let value = unsafe &var live.*;
-    // A bool read back from a method on a ptr_read value is held as an owner
-    // (see gaps/ptr_read_method_result_is_owner.kizu), so it is copied out here.
-    var done = false;
-    if value.move_tab(cast<i64>(tab_id), cast<i64>(index)) {
-        done = true;
-    }
-    return flag(done);
+    return flag(value.move_tab(cast<i64>(tab_id), cast<i64>(index)));
 }
 
 export "c" fn satin_core_select_pane(handle: ?ptr<core::Core>, pane_id: usize) -> u8 {
     let live = handle orelse return 0;
     // SAFETY: the host holds live from satin_core_create and calls from one thread.
     let value = unsafe &var live.*;
-    // A bool read back from a method on a ptr_read value is held as an owner
-    // (see gaps/ptr_read_method_result_is_owner.kizu), so it is copied out here.
-    var done = false;
-    if value.select_pane(cast<i64>(pane_id)) {
-        done = true;
-    }
-    return flag(done);
+    return flag(value.select_pane(cast<i64>(pane_id)));
 }
 
 fn direction_of(value: u32, out: &var core::Direction) -> bool {

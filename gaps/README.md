@@ -10,12 +10,6 @@ which replaced the read-work-write round trip every handle function did; and
 extern structs passed by value, for `ghostty_terminal_new`'s options; and a
 `ptr<T>` filling any `?ptr<T>` position, not only a return.
 
-## Bugs
-
-| Gap | Repro | Workaround in this port |
-| --- | --- | --- |
-| A `bool` returned by a method on a `ptr_read` value is treated as an owner (`write move done`) | `ptr_read_method_result_is_owner.kizu` | copy it out with `if value.f() { done = true; }` |
-
 ## Missing features
 
 | Gap | Where it bit | Workaround |
