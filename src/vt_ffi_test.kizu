@@ -46,8 +46,8 @@ fn is_live_bytes(address: ?ptr<u8>) -> bool {
 /// Takes the pending replies and reports how many bytes there were.
 fn take_reply_length(handle: ?ptr<Vt>) -> usize {
     // SAFETY: malloc returns storage for one usize or null.
-    let storage = unsafe malloc(8) orelse return 0;
-    // SAFETY: storage holds 8 bytes, one usize.
+    let storage = unsafe malloc(mem::size_of<usize>()) orelse return 0;
+    // SAFETY: storage holds one usize.
     let length_cell = unsafe cast<ptr<usize>>(storage);
     let replies = satin_vt_take_replies(handle, length_cell);
     // SAFETY: take_replies wrote the length through length_cell.

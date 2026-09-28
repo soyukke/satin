@@ -54,12 +54,6 @@ unsafe struct Vt {
     prompt: vt::PromptTracker,
 }
 
-/// Bytes of malloc storage one Vt or Sink takes. Kizu has no `sizeof`, so
-/// this is a bound: each is under a dozen words of fields.
-fn vt_storage_bytes() -> usize {
-    return 256;
-}
-
 fn null_vt() -> ?ptr<Vt> {
     // SAFETY: address zero is null, which nothing dereferences.
     return unsafe ptr_from_int<ptr<Vt>>(0);
@@ -109,8 +103,8 @@ export "c" fn satin_vt_on_bell(terminal: ?ptr<u8>, userdata: ?ptr<u8>) -> void {
 /// Creates a terminal of cols x rows keeping max_scrollback lines of history.
 fn new_terminal(cols: u16, rows: u16, max_scrollback: usize) -> ?ptr<u8> {
     // SAFETY: malloc returns storage for one usize or null.
-    let storage = unsafe malloc(8) orelse return default_allocator();
-    // SAFETY: storage holds 8 bytes, the one usize written below.
+    let storage = unsafe malloc(mem::size_of<usize>()) orelse return default_allocator();
+    // SAFETY: storage holds one usize, written below.
     let out = unsafe cast<ptr<usize>>(storage);
     // SAFETY: out is fresh storage for one usize.
     unsafe ptr_write(out, 0);
@@ -149,13 +143,13 @@ fn install_callbacks(terminal: ptr<u8>, sink: ptr<Sink>) -> bool {
 export "c" fn satin_vt_create(cols: u16, rows: u16, max_scrollback: usize) -> ?ptr<Vt> {
     let terminal = new_terminal(cols, rows, max_scrollback) orelse return null_vt();
     // SAFETY: malloc returns storage for one Sink or null.
-    let sink_storage = unsafe malloc(vt_storage_bytes());
+    let sink_storage = unsafe malloc(mem::size_of<Sink>());
     // SAFETY: malloc returns storage for one Vt or null.
-    let vt_storage = unsafe malloc(vt_storage_bytes());
+    let vt_storage = unsafe malloc(mem::size_of<Vt>());
     if sink_storage |sink_slot| {
         if vt_storage |vt_slot| {
             let allocator = mem::page_allocator();
-            // SAFETY: sink_slot is fresh storage large enough for one Sink.
+            // SAFETY: sink_slot is fresh storage for one Sink.
             let sink = unsafe cast<ptr<Sink>>(sink_slot);
             let empty = Sink { replies: string::new(allocator), bells: 0 };
             // SAFETY: sink is fresh storage for one Sink; the sink now lives there.
@@ -166,7 +160,7 @@ export "c" fn satin_vt_create(cols: u16, rows: u16, max_scrollback: usize) -> ?p
                 sink: sink,
                 prompt: vt::new_prompt_tracker(allocator)
             };
-            // SAFETY: vt_slot is fresh storage large enough for one Vt.
+            // SAFETY: vt_slot is fresh storage for one Vt.
             let handle = unsafe cast<ptr<Vt>>(vt_slot);
             // SAFETY: handle is fresh storage for one Vt; the Vt now lives there.
             unsafe ptr_write(handle, move value);

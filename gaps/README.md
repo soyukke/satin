@@ -8,13 +8,13 @@ Added to Kizu along the way: C callbacks (`extern "c" fn(...)` values) for
 `satin_vt_*`; `let v = unsafe &var p.*;` with `ptr_write(p, move value)`,
 which replaced the read-work-write round trip every handle function did; and
 extern structs passed by value, for `ghostty_terminal_new`'s options; and a
-`ptr<T>` filling any `?ptr<T>` position, not only a return.
+`ptr<T>` filling any `?ptr<T>` position, not only a return; and
+`mem::size_of<T>()`, which sizes each handle's malloc.
 
 ## Missing features
 
 | Gap | Where it bit | Workaround |
 | --- | --- | --- |
-| No `sizeof<T>()` | malloc for the handle | fixed 256-byte bound (`core_storage_bytes`) |
 | `return null` / `let x: ?ptr<T> = null` rejected | null handle / null string | `unsafe ptr_from_int<ptr<T>>(0)` |
 | No module-level `const` | split ratio bounds, epsilon | functions returning the value |
 | No closures | every export repeats read/work/write | written out per function |

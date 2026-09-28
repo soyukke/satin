@@ -12,12 +12,6 @@ extern "c" fn malloc(size: usize) -> ?ptr<u8>
 extern "c" fn free(p: ptr<u8>) -> void
 extern "c" fn strlen(s: ptr<const u8>) -> usize
 
-/// Bytes of malloc storage one Core takes. Kizu has no `sizeof`, so this is
-/// a bound: Core is five words of fields and three arrays of three words.
-fn core_storage_bytes() -> usize {
-    return 256;
-}
-
 fn none() -> usize {
     return cast<usize>(-1);
 }
@@ -66,9 +60,9 @@ fn create(theme: []u8) -> ?ptr<core::Core> {
     let allocator = mem::page_allocator();
     if core::new_core(allocator, theme) |value| {
         // SAFETY: malloc returns storage for one Core or null.
-        let storage = unsafe malloc(core_storage_bytes());
+        let storage = unsafe malloc(mem::size_of<core::Core>());
         if storage |slot| {
-            // SAFETY: slot is fresh storage large enough for one Core.
+            // SAFETY: slot is fresh storage for one Core.
             let handle = unsafe cast<ptr<core::Core>>(slot);
             // SAFETY: handle is fresh storage for one Core; the core now lives there.
             unsafe ptr_write(handle, move value);
