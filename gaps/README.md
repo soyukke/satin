@@ -7,7 +7,8 @@ libghostty-vt terminal and its callbacks) from Rust.
 Added to Kizu along the way: C callbacks (`extern "c" fn(...)` values) for
 `satin_vt_*`; `let v = unsafe &var p.*;` with `ptr_write(p, move value)`,
 which replaced the read-work-write round trip every handle function did; and
-extern structs passed by value, for `ghostty_terminal_new`'s options.
+extern structs passed by value, for `ghostty_terminal_new`'s options; and a
+`ptr<T>` filling any `?ptr<T>` position, not only a return.
 
 ## Bugs
 
@@ -41,7 +42,6 @@ extern structs passed by value, for `ghostty_terminal_new`'s options.
 | Files of one directory share a namespace | `utf8`, `passthrough` helpers | prefix helper names (`is_valid_utf8`, `dcs_prefix`) |
 | Each native object carries the Kizu runtime, so one link takes one Kizu object | core + tmux | one package, one object, linked by the Rust `build.rs` |
 | `[a, b, c]` is not an array literal | five OSC fields | separate locals |
-| A `ptr<T>` argument does not fill a `?ptr<T>` parameter (a `return` does) | calling `satin_vt_*` from Kizu tests | a helper that returns the pointer |
 | `p == null` does not compile for `?ptr<T>` | test asserts | `if p \|_\| { return true; }` |
 | `[N]u8` has no mutable view, so a byte buffer cannot be written by index | escape bytes in tests | build a `String` |
 | `kizu test` links every C export, so a package calling a C library needs that library to test | `satin_vt_*` | `[native] library_search` + a symlink to the archive cargo built (`scripts/link-ghostty`) |
