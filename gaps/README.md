@@ -9,7 +9,8 @@ Added to Kizu along the way: C callbacks (`extern "c" fn(...)` values) for
 which replaced the read-work-write round trip every handle function did; and
 extern structs passed by value, for `ghostty_terminal_new`'s options; and a
 `ptr<T>` filling any `?ptr<T>` position, not only a return; and
-`mem::size_of<T>()`, which sizes each handle's malloc.
+`mem::size_of<T>()`, which sizes each handle's malloc; and `return f()`
+widening a narrower error union into the declared set.
 
 ## Missing features
 
@@ -27,7 +28,6 @@ extern structs passed by value, for `ghostty_terminal_new`'s options; and a
 | `at` / `at_mut` / `Box.borrow` / `as_bytes` must be bound by capture or `let` | everywhere | capture forms |
 | No C string API, no UTF-8 validation | `c_string` | `strlen` + `view_from_ptr`; invalid UTF-8 is accepted |
 | No Unicode-aware trim | `rename_tab` blank check | ASCII whitespace only |
-| `return f()` does not widen a narrower error union into the declared one | tmux parsers returning `Failure!T` | `try f(); return;` |
 | No `catch { ... }` block for a discarded error | ignoring allocation failures | `if f() {} else \|_\| {}` |
 | An error value cannot be built as a composed set's value in a helper | `fail(...) -> Failure` | set the message, then `return ParseError::Invalid;` at the call site |
 | `at` / `at_mut` borrows block `remove` in the same loop body | pruning per-pane state | find the index first, remove outside the borrow |

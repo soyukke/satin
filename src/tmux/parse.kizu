@@ -683,8 +683,7 @@ fn parse_session_fields(allocator: Allocator, line: []u8, fields: &var array::Ar
         return ParseError::Invalid;
     }
     let done = try take_string(allocator, &var field);
-    try fields.append(allocator, move done);
-    return;
+    return fields.append(allocator, move done);
 }
 
 fn session_name_before(sessions: &array::Array<Session>, left: i64, right: i64) -> bool {

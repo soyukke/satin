@@ -301,8 +301,7 @@ fn (self: &var Control) feed_control_byte(
         try set_why(allocator, why, "tmux control line exceeded 8388608 bytes");
         return ParseError::Invalid;
     }
-    try self.line.append_byte(allocator, byte);
-    return;
+    return self.line.append_byte(allocator, byte);
 }
 
 fn (self: &var Control) feed_control_end_byte(allocator: Allocator, byte: u8, passthrough: &var string::String) -> mem::Error!void {
@@ -483,8 +482,7 @@ fn (self: &var Control) push_response_line(allocator: Allocator, line: []u8, why
     }
     self.response_bytes = next;
     let copy = try string::from_bytes(allocator, line);
-    try self.response_lines.append(allocator, move copy);
-    return;
+    return self.response_lines.append(allocator, move copy);
 }
 
 fn (self: &var Control) handle_output(allocator: Allocator, payload: []u8, why: &var string::String) -> Failure!void {
@@ -501,8 +499,7 @@ fn (self: &var Control) handle_output(allocator: Allocator, payload: []u8, why: 
     defer data.deinit(allocator);
     try decode_escaped(allocator, payload[space + 1..mem::len(payload)], false, &var data, why);
     let bytes = data.as_bytes();
-    try self.push_output(allocator, pane, bytes);
-    return;
+    return self.push_output(allocator, pane, bytes);
 }
 
 fn (self: &var Control) handle_extended_output(allocator: Allocator, payload: []u8, why: &var string::String) -> Failure!void {
@@ -525,8 +522,7 @@ fn (self: &var Control) handle_extended_output(allocator: Allocator, payload: []
     defer data.deinit(allocator);
     try decode_escaped(allocator, payload[separator + 3..mem::len(payload)], false, &var data, why);
     let bytes = data.as_bytes();
-    try self.push_output(allocator, pane, bytes);
-    return;
+    return self.push_output(allocator, pane, bytes);
 }
 
 fn (self: &var Control) decoder_index(allocator: Allocator, pane: i64) -> mem::Error!i64 {
@@ -587,8 +583,7 @@ fn (self: &var Control) push_output(allocator: Allocator, pane: i64, data: []u8)
     if all.len() == 0 {
         return;
     }
-    try self.push_event(try bytes_event(allocator, "pane_output", pane, all_bytes));
-    return;
+    return self.push_event(try bytes_event(allocator, "pane_output", pane, all_bytes));
 }
 
 fn (self: &var Control) buffer_rehydration_passthrough(allocator: Allocator, pane: i64, extra: []u8) -> mem::Error!void {
@@ -702,8 +697,7 @@ fn (self: &var Control) queue_command(allocator: Allocator, command: string::Str
     errdefer owned.deinit(allocator);
     try owned.append_byte(allocator, cast<u8>(10));
     try self.pending.append(allocator, Pending { kind: kind, pane_id: pane_id });
-    try self.outgoing.append(allocator, move owned);
-    return;
+    return self.outgoing.append(allocator, move owned);
 }
 
 fn (self: &var Control) queue_bytes(allocator: Allocator, command: []u8, kind: PendingKind) -> mem::Error!void {
@@ -1189,8 +1183,7 @@ fn (self: &var Control) finish_capture_response(
     }
     set_drop(&var self.rehydrating_panes, pane_id);
     try self.flush_rehydration_passthrough(allocator, pane_id);
-    try self.request_sync(allocator);
-    return;
+    return self.request_sync(allocator);
 }
 
 /// Drops per-pane state of panes the snapshot no longer has, then queues a
@@ -1346,6 +1339,5 @@ fn (self: &var Control) queue_pane_capture(allocator: Allocator, pane: Pane) -> 
     try fmt::append_i64(allocator, &var command, pane_id);
     try self.queue_command(allocator, move command, PendingKind::Capture, pane_id);
     let capture_pane = try owned.clone(allocator);
-    try self.pending_panes.append(allocator, move capture_pane);
-    return;
+    return self.pending_panes.append(allocator, move capture_pane);
 }
