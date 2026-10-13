@@ -1,0 +1,2032 @@
+// The CoreGraphics and CoreText backend: executes a display list into a
+// bitmap. It takes the place of the Rust renderer's Skia canvas and of its
+// shaper, font loader and image cache.
+//
+// Text is shaped by CoreText a run at a time, in the fonts and the order
+// the Rust shaper tried them, and every cell's glyphs are put back on the
+// cell's own column: see place_glyphs.
+//
+// What is not as Skia drew it:
+// - Glyphs are rasterized by CoreGraphics with font smoothing off. Skia
+//   asked for full hinting, which no macOS rasterizer does, and ran its
+//   masks through its own contrast and gamma tables, which CoreGraphics
+//   has no setting for: a glyph's edge pixels are not Skia's values.
+// - A glyph's x is quantized as CoreGraphics does it, not to Skia's four
+//   positions a pixel, and its y is not snapped to a whole pixel when a
+//   mark is raised by a fraction.
+// - Shaping is CoreText's, not swash's: both apply the font's ligatures,
+//   contextual alternates and mark positioning, but a font's rarer
+//   features need not come out the same.
+// - A named family without a bold or an italic is drawn regular; Skia
+//   took the family's nearest style.
+// - The caches start over when they are full; the Rust ones dropped the
+//   run used longest ago.
+import std::array;
+import std::map;
+import std::math;
+import std::mem;
+import std::process;
+import std::string;
+
+extern "c" struct CGPoint {
+    x: f64,
+    y: f64,
+}
+
+extern "c" struct CGSize {
+    width: f64,
+    height: f64,
+}
+
+extern "c" struct CGRect {
+    origin: CGPoint,
+    size: CGSize,
+}
+
+extern "c" struct CGAffineTransform {
+    a: f64,
+    b: f64,
+    c: f64,
+    d: f64,
+    tx: f64,
+    ty: f64,
+}
+
+extern "c" struct CFRange {
+    location: i64,
+    length: i64,
+}
+
+extern "c" fn malloc(size: usize) -> ?ptr<u8>
+extern "c" fn free(p: ptr<u8>) -> void
+@link_framework("CoreFoundation")
+extern "c" fn CFRelease(object: ptr<u8>) -> void
+@link_framework("CoreFoundation")
+extern "c" fn CFEqual(first: ptr<u8>, second: ptr<u8>) -> bool
+@link_framework("CoreFoundation")
+extern "c" fn CFStringCreateWithBytes(
+    allocator: ?ptr<u8>,
+    bytes: ptr<const u8>,
+    count: i64,
+    encoding: u32,
+    external: bool
+) -> ?ptr<u8>
+@link_framework("CoreFoundation")
+extern "c" fn CFStringCompare(first: ptr<u8>, second: ptr<u8>, options: usize) -> i64
+@link_framework("CoreFoundation")
+extern "c" fn CFRetain(object: ptr<u8>) -> ptr<u8>
+@link_framework("CoreFoundation")
+extern "c" fn CFStringGetLength(text: ptr<u8>) -> i64
+@link_framework("CoreFoundation")
+extern "c" fn CFNumberCreate(allocator: ?ptr<u8>, kind: i64, value: ptr<u8>) -> ?ptr<u8>
+@link_framework("CoreFoundation")
+extern "c" fn CFDictionaryCreateMutable(
+    allocator: ?ptr<u8>,
+    capacity: i64,
+    key_callbacks: ptr<u8>,
+    value_callbacks: ptr<u8>
+) -> ?ptr<u8>
+@link_framework("CoreFoundation")
+extern "c" fn CFDictionarySetValue(dictionary: ptr<u8>, key: ptr<u8>, value: ptr<u8>) -> void
+@link_framework("CoreFoundation")
+extern "c" fn CFDictionaryGetValue(dictionary: ptr<u8>, key: ptr<u8>) -> ?ptr<u8>
+@link_framework("CoreFoundation")
+extern "c" fn CFAttributedStringCreate(allocator: ?ptr<u8>, text: ptr<u8>, attributes: ptr<u8>) -> ?ptr<u8>
+@link_framework("CoreFoundation")
+extern "c" fn CFArrayGetCount(array: ptr<u8>) -> i64
+@link_framework("CoreFoundation")
+extern "c" fn CFArrayGetValueAtIndex(array: ptr<u8>, index: i64) -> ?ptr<u8>
+@link_framework("CoreFoundation")
+extern "c" fn CFURLCreateFromFileSystemRepresentation(
+    allocator: ?ptr<u8>,
+    bytes: ptr<const u8>,
+    length: i64,
+    directory: bool
+) -> ?ptr<u8>
+@link_framework("CoreFoundation")
+extern "c" fn CFDataCreate(allocator: ?ptr<u8>, bytes: ptr<const u8>, length: i64) -> ?ptr<u8>
+@link_framework("CoreGraphics")
+extern "c" fn CGColorSpaceCreateDeviceRGB() -> ?ptr<u8>
+@link_framework("CoreGraphics")
+extern "c" fn CGBitmapContextCreate(
+    data: ptr<u8>,
+    width: usize,
+    height: usize,
+    bits: usize,
+    row_bytes: usize,
+    space: ptr<u8>,
+    info: u32
+) -> ?ptr<u8>
+@link_framework("CoreGraphics")
+extern "c" fn CGContextSaveGState(context: ptr<u8>) -> void
+@link_framework("CoreGraphics")
+extern "c" fn CGContextRestoreGState(context: ptr<u8>) -> void
+@link_framework("CoreGraphics")
+extern "c" fn CGContextTranslateCTM(context: ptr<u8>, x: f64, y: f64) -> void
+@link_framework("CoreGraphics")
+extern "c" fn CGContextScaleCTM(context: ptr<u8>, x: f64, y: f64) -> void
+@link_framework("CoreGraphics")
+extern "c" fn CGContextSetTextMatrix(context: ptr<u8>, transform: CGAffineTransform) -> void
+@link_framework("CoreGraphics")
+extern "c" fn CGContextSetShouldAntialias(context: ptr<u8>, enabled: bool) -> void
+@link_framework("CoreGraphics")
+extern "c" fn CGContextSetShouldSmoothFonts(context: ptr<u8>, enabled: bool) -> void
+@link_framework("CoreGraphics")
+extern "c" fn CGContextSetShouldSubpixelPositionFonts(context: ptr<u8>, enabled: bool) -> void
+@link_framework("CoreGraphics")
+extern "c" fn CGContextSetShouldSubpixelQuantizeFonts(context: ptr<u8>, enabled: bool) -> void
+@link_framework("CoreGraphics")
+extern "c" fn CGContextSetInterpolationQuality(context: ptr<u8>, quality: i32) -> void
+@link_framework("CoreGraphics")
+extern "c" fn CGContextSetRGBFillColor(context: ptr<u8>, red: f64, green: f64, blue: f64, alpha: f64) -> void
+@link_framework("CoreGraphics")
+extern "c" fn CGContextSetRGBStrokeColor(context: ptr<u8>, red: f64, green: f64, blue: f64, alpha: f64) -> void
+@link_framework("CoreGraphics")
+extern "c" fn CGContextSetLineWidth(context: ptr<u8>, width: f64) -> void
+@link_framework("CoreGraphics")
+extern "c" fn CGContextFillRect(context: ptr<u8>, rect: CGRect) -> void
+@link_framework("CoreGraphics")
+extern "c" fn CGContextClipToRect(context: ptr<u8>, rect: CGRect) -> void
+@link_framework("CoreGraphics")
+extern "c" fn CGContextBeginPath(context: ptr<u8>) -> void
+@link_framework("CoreGraphics")
+extern "c" fn CGContextMoveToPoint(context: ptr<u8>, x: f64, y: f64) -> void
+@link_framework("CoreGraphics")
+extern "c" fn CGContextAddLineToPoint(context: ptr<u8>, x: f64, y: f64) -> void
+@link_framework("CoreGraphics")
+extern "c" fn CGContextClosePath(context: ptr<u8>) -> void
+@link_framework("CoreGraphics")
+extern "c" fn CGContextFillPath(context: ptr<u8>) -> void
+@link_framework("CoreGraphics")
+extern "c" fn CGContextStrokePath(context: ptr<u8>) -> void
+@link_framework("CoreGraphics")
+extern "c" fn CGContextDrawImage(context: ptr<u8>, rect: CGRect, image: ptr<u8>) -> void
+@link_framework("CoreGraphics")
+extern "c" fn CGDataProviderCreateWithCFData(data: ptr<u8>) -> ?ptr<u8>
+@link_framework("CoreGraphics")
+extern "c" fn CGImageCreate(
+    width: usize,
+    height: usize,
+    component_bits: usize,
+    pixel_bits: usize,
+    row_bytes: usize,
+    space: ptr<u8>,
+    info: u32,
+    provider: ptr<u8>,
+    decode: ?ptr<u8>,
+    interpolate: bool,
+    intent: i32
+) -> ?ptr<u8>
+@link_framework("CoreGraphics")
+extern "c" fn CGImageCreateWithImageInRect(image: ptr<u8>, rect: CGRect) -> ?ptr<u8>
+extern "c" fn dlsym(handle: i64, name: ptr<const u8>) -> ?ptr<u8>
+@link_framework("CoreText")
+extern "c" fn CTFontManagerCreateFontDescriptorsFromURL(url: ptr<u8>) -> ?ptr<u8>
+@link_framework("CoreText")
+extern "c" fn CTFontCreateWithFontDescriptor(descriptor: ptr<u8>, size: f64, matrix: ?ptr<u8>) -> ?ptr<u8>
+@link_framework("CoreText")
+extern "c" fn CTLineCreateWithAttributedString(text: ptr<u8>) -> ?ptr<u8>
+@link_framework("CoreText")
+extern "c" fn CTLineGetGlyphRuns(line: ptr<u8>) -> ?ptr<u8>
+@link_framework("CoreText")
+extern "c" fn CTRunGetGlyphCount(run: ptr<u8>) -> i64
+@link_framework("CoreText")
+extern "c" fn CTRunGetAttributes(run: ptr<u8>) -> ?ptr<u8>
+@link_framework("CoreText")
+extern "c" fn CTRunGetGlyphs(run: ptr<u8>, range: CFRange, glyphs: ptr<u8>) -> void
+@link_framework("CoreText")
+extern "c" fn CTRunGetPositions(run: ptr<u8>, range: CFRange, positions: ptr<u8>) -> void
+@link_framework("CoreText")
+extern "c" fn CTRunGetAdvances(run: ptr<u8>, range: CFRange, advances: ptr<u8>) -> void
+@link_framework("CoreText")
+extern "c" fn CTRunGetStringIndices(run: ptr<u8>, range: CFRange, indices: ptr<u8>) -> void
+@link_framework("CoreText")
+extern "c" fn CTFontCreateWithName(name: ptr<u8>, size: f64, matrix: ?ptr<u8>) -> ?ptr<u8>
+@link_framework("CoreText")
+extern "c" fn CTFontCreateCopyWithSymbolicTraits(
+    font: ptr<u8>,
+    size: f64,
+    matrix: ?ptr<u8>,
+    traits: u32,
+    mask: u32
+) -> ?ptr<u8>
+@link_framework("CoreText")
+extern "c" fn CTFontCreateForString(font: ptr<u8>, text: ptr<u8>, range: CFRange) -> ?ptr<u8>
+@link_framework("CoreText")
+extern "c" fn CTFontCopyFamilyName(font: ptr<u8>) -> ?ptr<u8>
+@link_framework("CoreText")
+extern "c" fn CTFontCopyPostScriptName(font: ptr<u8>) -> ?ptr<u8>
+@link_framework("CoreText")
+extern "c" fn CTFontGetAscent(font: ptr<u8>) -> f64
+@link_framework("CoreText")
+extern "c" fn CTFontGetDescent(font: ptr<u8>) -> f64
+@link_framework("CoreText")
+extern "c" fn CTFontGetLeading(font: ptr<u8>) -> f64
+@link_framework("CoreText")
+extern "c" fn CTFontGetUnderlinePosition(font: ptr<u8>) -> f64
+@link_framework("CoreText")
+extern "c" fn CTFontGetUnderlineThickness(font: ptr<u8>) -> f64
+@link_framework("CoreText")
+extern "c" fn CTFontGetGlyphsForCharacters(font: ptr<u8>, units: ptr<u8>, glyphs: ptr<u8>, count: i64) -> bool
+@link_framework("CoreText")
+extern "c" fn CTFontGetAdvancesForGlyphs(
+    font: ptr<u8>,
+    orientation: u32,
+    glyphs: ptr<u8>,
+    advances: ?ptr<u8>,
+    count: i64
+) -> f64
+@link_framework("CoreText")
+extern "c" fn CTFontDrawGlyphs(
+    font: ptr<u8>,
+    glyphs: ptr<u8>,
+    positions: ptr<u8>,
+    count: usize,
+    context: ptr<u8>
+) -> void
+/// kCFStringEncodingUTF8.
+fn utf8_encoding() -> u32 {
+    return 134217984;
+}
+
+/// kCGImageAlphaPremultipliedFirst | kCGBitmapByteOrder32Little: a pixel is
+/// its blue, green, red and alpha bytes, in that order.
+fn bgra_premultiplied() -> u32 {
+    return 8194;
+}
+
+/// kCGImageAlphaLast: red, green, blue, then an alpha they are not
+/// multiplied by.
+fn rgba_straight() -> u32 {
+    return 3;
+}
+
+fn italic_trait() -> u32 {
+    return 1;
+}
+
+fn bold_trait() -> u32 {
+    return 2;
+}
+
+/// The family the monochrome symbols come from, and the one that stands in
+/// for the bundled font when its file is not found.
+fn default_family() -> []u8 {
+    return "Menlo";
+}
+
+/// The file of the font text is drawn in unless a family or SATIN_FONT
+/// has the character first: the Rust renderer's `DEFAULT_FONT`.
+fn bundled_font_file() -> []u8 {
+    return "FiraCodeNerdFont-Regular.ttf";
+}
+
+/// The file of the font that draws a character no other font has.
+fn last_resort_font_file() -> []u8 {
+    return "LastResort-Regular.ttf";
+}
+
+/// The places of fonts that are not the named family's four: see Painter.
+fn path_slot() -> i64 {
+    return 4;
+}
+
+fn bundled_slot() -> i64 {
+    return 5;
+}
+
+fn default_slot() -> i64 {
+    return 6;
+}
+
+fn last_resort_slot() -> i64 {
+    return 10;
+}
+
+fn fixed_slots() -> i64 {
+    return 11;
+}
+
+/// How many UTF-16 units of one cell's text a font is asked for when the
+/// cell's font is chosen; the whole text is shaped whatever its length.
+fn max_units() -> i64 {
+    return 32;
+}
+
+/// How many shaped runs are kept before the caches start over: the Rust
+/// `SHAPE_CACHE_ENTRIES`.
+fn max_cached_runs() -> i64 {
+    return 10000;
+}
+
+/// Whether a font draws a text without a glyph for scalar: the joiners
+/// and the variation selectors, which only say how their neighbors look.
+fn is_ignorable(scalar: i64) -> bool {
+    return scalar == 8204 or scalar == 8205 or (scalar >= 65024 and scalar <= 65039) or
+        (scalar >= 917760 and scalar <= 917999);
+}
+
+/// How many glyphs one CTFontDrawGlyphs call takes.
+fn batch_glyphs() -> i64 {
+    return 256;
+}
+
+/// How many shaped glyphs are kept before the caches start over.
+fn max_cached_glyphs() -> i64 {
+    return 65536;
+}
+
+/// The symbols command line tools mark their status with, which the system
+/// would draw as color emoji: they come from the default family instead.
+fn is_monochrome_symbol(scalar: i64) -> bool {
+    return scalar == 9888 or scalar == 10018 or scalar == 10035 or scalar == 10038 or scalar == 10043 or
+        scalar == 10045;
+}
+
+fn cg_rect(rect: Rect) -> CGRect {
+    return CGRect {
+        origin: CGPoint { x: cast<f64>(rect.x), y: cast<f64>(rect.y) },
+        size: CGSize { width: cast<f64>(rect.width), height: cast<f64>(rect.height) }
+    };
+}
+
+/// rect with each edge on the nearest pixel boundary: the pixels whose
+/// centers are in rect, which is what Skia fills and clips to without
+/// antialiasing. CoreGraphics left to itself clips out to whole pixels.
+fn snapped_rect(rect: Rect) -> CGRect {
+    let left = math::round<f32>(rect.x);
+    let top = math::round<f32>(rect.y);
+    let right = math::round<f32>(rect.x + rect.width);
+    let bottom = math::round<f32>(rect.y + rect.height);
+    return CGRect {
+        origin: CGPoint { x: cast<f64>(left), y: cast<f64>(top) },
+        size: CGSize { width: cast<f64>(right - left), height: cast<f64>(bottom - top) }
+    };
+}
+
+fn channel(value: u8) -> f64 {
+    return cast<f64>(value) / 255.0;
+}
+
+/// A width x height bitmap of BGRA pixels, premultiplied, the first row at
+/// the top, and the CoreGraphics context that draws into it with y down.
+///
+/// pixels is malloc storage of width * height * 4 bytes, space a color
+/// space and context a bitmap context over pixels; deinit releases all
+/// three, once.
+pub unsafe struct Bitmap {
+    pixels: ptr<u8>,
+    space: ptr<u8>,
+    context: ptr<u8>,
+    width: i64,
+    height: i64,
+}
+
+/// A bitmap of width x height pixels, all clear; null when either is not
+/// positive or the system has no storage for it.
+pub fn new_bitmap(width: i64, height: i64) -> ?Bitmap {
+    if width <= 0 or height <= 0 or width > 32768 or height > 32768 {
+        return null;
+    }
+    let length = width * height * 4;
+    // SAFETY: malloc returns length bytes of storage or null.
+    let pixels = unsafe malloc(cast<usize>(length)) orelse return null;
+    // SAFETY: pixels holds length writable bytes.
+    let bytes = unsafe mut_view_from_ptr(pixels, length);
+    for 0..length |index| {
+        bytes[index] = 0;
+    }
+    // SAFETY: no preconditions.
+    let made_space = unsafe CGColorSpaceCreateDeviceRGB();
+    if made_space |space| {
+        // SAFETY: pixels is width x height pixels of four bytes, which outlive the context.
+        let made = unsafe CGBitmapContextCreate(
+            pixels,
+            cast<usize>(width),
+            cast<usize>(height),
+            8,
+            cast<usize>(width * 4),
+            space,
+            bgra_premultiplied()
+        );
+        if made |context| {
+            // CoreGraphics counts y up from the bottom left: flip it once.
+            // SAFETY: context is live.
+            unsafe CGContextTranslateCTM(context, 0.0, cast<f64>(height));
+            // SAFETY: context is live.
+            unsafe CGContextScaleCTM(context, 1.0, -1.0);
+            // SAFETY: context is live.
+            unsafe CGContextSetShouldSmoothFonts(context, false);
+            // SAFETY: context is live.
+            unsafe CGContextSetShouldSubpixelPositionFonts(context, true);
+            // SAFETY: context is live.
+            unsafe CGContextSetShouldSubpixelQuantizeFonts(context, true);
+            // Nearest neighbor, as Skia's default sampling scaled images.
+            // SAFETY: context is live; 1 is kCGInterpolationNone.
+            unsafe CGContextSetInterpolationQuality(context, 1);
+            // SAFETY: the three are live and owned by the bitmap from here.
+            return unsafe Bitmap { pixels: pixels, space: space, context: context, width: width, height: height };
+        }
+        // SAFETY: space is live and released once.
+        unsafe CFRelease(space);
+    }
+    // SAFETY: pixels came from malloc and nothing reads it after this.
+    unsafe free(pixels);
+    return null;
+}
+
+pub fn (self: Bitmap) deinit() -> void {
+    // SAFETY: the context is live and released once, before its pixels.
+    unsafe CFRelease(self.context);
+    // SAFETY: the color space is live and released once.
+    unsafe CFRelease(self.space);
+    // SAFETY: the pixels came from malloc and nothing reads them after this.
+    unsafe free(self.pixels);
+}
+
+/// Makes the bitmap width x height pixels, all clear, when it is not that
+/// size already. False, with the bitmap as it was, when new_bitmap has none
+/// of that size.
+pub fn (self: &var Bitmap) resize(width: i64, height: i64) -> bool {
+    if self.width == width and self.height == height {
+        return true;
+    }
+    var other = new_bitmap(width, height) orelse return false;
+    let pixels = self.pixels;
+    let space = self.space;
+    let context = self.context;
+    // SAFETY: the two bitmaps trade what they own, whole; each still owns three live parts.
+    unsafe self.pixels = other.pixels;
+    // SAFETY: as above.
+    unsafe self.space = other.space;
+    // SAFETY: as above.
+    unsafe self.context = other.context;
+    // SAFETY: as above.
+    unsafe other.pixels = pixels;
+    // SAFETY: as above.
+    unsafe other.space = space;
+    // SAFETY: as above.
+    unsafe other.context = context;
+    // SAFETY: the sizes follow the pixels they describe.
+    unsafe other.width = self.width;
+    // SAFETY: as above.
+    unsafe other.height = self.height;
+    // SAFETY: as above.
+    unsafe self.width = width;
+    // SAFETY: as above.
+    unsafe self.height = height;
+    other.deinit();
+    return true;
+}
+
+pub fn (self: &Bitmap) width() -> i64 {
+    return self.width;
+}
+
+pub fn (self: &Bitmap) height() -> i64 {
+    return self.height;
+}
+
+/// The bytes of one row.
+pub fn (self: &Bitmap) row_bytes() -> i64 {
+    return self.width * 4;
+}
+
+/// The first byte of the pixel at (x, y), which must be in the bitmap; the
+/// rows after it follow row_bytes apart.
+pub fn (self: &Bitmap) pixels_at(x: i64, y: i64) -> ptr<u8> {
+    // SAFETY: the caller names a pixel of the bitmap, which is inside its storage.
+    return unsafe ptr_offset(self.pixels, (y * self.width + x) * 4);
+}
+
+/// The pixel at (x, y) as it is stored, its color multiplied by its alpha;
+/// clear outside the bitmap.
+pub fn (self: &Bitmap) pixel(x: i64, y: i64) -> Rgba {
+    if x < 0 or y < 0 or x >= self.width or y >= self.height {
+        return Rgba { r: 0, g: 0, b: 0, a: 0 };
+    }
+    // SAFETY: the pixels are width * height * 4 readable bytes.
+    let bytes = unsafe view_from_ptr(cast<ptr<const u8>>(self.pixels), self.width * self.height * 4);
+    let at = (y * self.width + x) * 4;
+    return Rgba { r: bytes[at + 2], g: bytes[at + 1], b: bytes[at], a: bytes[at + 3] };
+}
+
+/// One glyph of a shaped run: the glyph of the font at font of fonts, dx
+/// right of the left edge of the cell of the run's cluster at at and dy
+/// over the baseline.
+struct Shaped {
+    glyph: u16,
+    font: i64,
+    at: i64,
+    dx: f32,
+    dy: f32,
+}
+
+/// What a run is drawn with: count glyphs from first of shaped. clusters
+/// and bytes are the run's cells and the length of their texts, which a
+/// run that hashes to the same key by chance does not share.
+struct RunHit {
+    first: i64,
+    count: i64,
+    clusters: i64,
+    bytes: i64,
+}
+
+/// Where CoreText's pen is on a line as its glyphs are read in order: x,
+/// and where it was at the first glyph of the cluster being read.
+struct Pen {
+    x: f64,
+    cluster: i64,
+    origin: f64,
+}
+
+/// The addresses of what CoreText and CoreFoundation export as data, which
+/// no declaration reaches: the attribute names of a string's font and its
+/// ligatures, and the callbacks of a dictionary of objects. Zero for one
+/// the process does not have.
+struct AttributeKeys {
+    font: usize,
+    ligature: usize,
+    key_callbacks: usize,
+    value_callbacks: usize,
+}
+
+/// The address of the exported data named name; zero without it.
+fn symbol_address(name: ptr<const u8>) -> usize {
+    // SAFETY: -2 is RTLD_DEFAULT and name is a NUL-terminated symbol name.
+    let found = unsafe dlsym(-2, name) orelse return 0;
+    // SAFETY: reading a pointer's address touches nothing it points at.
+    return unsafe int_from_ptr<usize>(found);
+}
+
+/// The object the exported constant named name holds; zero without it.
+fn constant_object(name: ptr<const u8>) -> usize {
+    // SAFETY: -2 is RTLD_DEFAULT and name is a NUL-terminated symbol name.
+    let found = unsafe dlsym(-2, name) orelse return 0;
+    // SAFETY: the symbol is a constant holding one object reference.
+    return unsafe ptr_read(cast<ptr<usize>>(found));
+}
+
+fn attribute_keys() -> AttributeKeys {
+    return AttributeKeys {
+        font: constant_object(c"kCTFontAttributeName"),
+        ligature: constant_object(c"kCTLigatureAttributeName"),
+        key_callbacks: symbol_address(c"kCFTypeDictionaryKeyCallBacks"),
+        value_callbacks: symbol_address(c"kCFTypeDictionaryValueCallBacks")
+    };
+}
+
+/// An image's pixels as CoreGraphics holds them. image is the address of a
+/// CGImage this entry owns.
+struct CachedPicture {
+    owner: usize,
+    image_id: u32,
+    image_number: u32,
+    width: u32,
+    height: u32,
+    image: usize,
+}
+
+/// The buffers glyphs go to CoreText in.
+///
+/// units and glyphs are malloc storage for max_units() UTF-16 units and as
+/// many glyphs, run_glyphs and run_positions for batch_glyphs() glyphs and
+/// a CGPoint each; deinit frees the four, once.
+unsafe struct Scratch {
+    units: ptr<u8>,
+    glyphs: ptr<u8>,
+    run_glyphs: ptr<u8>,
+    run_positions: ptr<u8>,
+}
+
+fn new_scratch() -> ?Scratch {
+    // SAFETY: malloc returns the bytes asked for or null.
+    let units = unsafe malloc(cast<usize>(max_units() * 2));
+    // SAFETY: malloc returns the bytes asked for or null.
+    let glyphs = unsafe malloc(cast<usize>(max_units() * 2));
+    // SAFETY: malloc returns the bytes asked for or null.
+    let run_glyphs = unsafe malloc(cast<usize>(batch_glyphs() * 2));
+    // SAFETY: malloc returns the bytes asked for or null.
+    let run_positions = unsafe malloc(cast<usize>(batch_glyphs() * 16));
+    if units |unit_storage| {
+        if glyphs |glyph_storage| {
+            if run_glyphs |run_glyph_storage| {
+                if run_positions |position_storage| {
+                    // SAFETY: the four are fresh malloc storage of the sizes the fields name.
+                    return unsafe Scratch {
+                        units: unit_storage,
+                        glyphs: glyph_storage,
+                        run_glyphs: run_glyph_storage,
+                        run_positions: position_storage
+                    };
+                }
+            }
+        }
+    }
+    free_storage(units);
+    free_storage(glyphs);
+    free_storage(run_glyphs);
+    free_storage(run_positions);
+    return null;
+}
+
+fn (self: Scratch) deinit() -> void {
+    free_storage(self.units);
+    free_storage(self.glyphs);
+    free_storage(self.run_glyphs);
+    free_storage(self.run_positions);
+}
+
+/// The fonts, the runs shaped with them and the images, which outlive a
+/// frame, and the glyphs of the frame being drawn that wait for CoreText.
+///
+/// fonts holds the addresses of CTFonts the painter owns, zero for a place
+/// that holds none: the named family's regular, bold, italic and bold
+/// italic, the font of the file SATIN_FONT names, the bundled font, the
+/// default family's four, the bundled last resort, and after those
+/// fixed_slots() the fonts the system fell back to. A bit of tried says the
+/// place of that number was asked for at this size. The three faces are the
+/// addresses of the font descriptors of the files, which every size is made
+/// from; a bit of faces_tried says that file was looked for. ligature is
+/// the address of the number a string's ligature attribute is set to.
+/// run_count glyphs of the font at run_font wait in the scratch buffers.
+pub struct Painter {
+    family: string::String,
+    font_dir: string::String,
+    size: f32,
+    face_path: usize,
+    face_bundled: usize,
+    face_last_resort: usize,
+    faces_tried: i64,
+    fonts: array::Array<usize>,
+    tried: i64,
+    keys: AttributeKeys,
+    ligature: usize,
+    cell_fonts: map::Map<u64, i64>,
+    runs: map::Map<u64, RunHit>,
+    shaped: array::Array<Shaped>,
+    cluster_fonts: array::Array<i64>,
+    unit_clusters: array::Array<i64>,
+    pictures: array::Array<CachedPicture>,
+    scratch: Scratch,
+    run_count: i64,
+    run_font: i64,
+}
+
+/// A painter that draws with the bundled font; null without storage.
+pub fn new_painter(allocator: Allocator) -> ?Painter {
+    let scratch = new_scratch() orelse return null;
+    // Standard ligatures, which is also what CoreText does unasked.
+    // SAFETY: units holds room for one 32-bit integer.
+    unsafe ptr_write(cast<ptr<i32>>(scratch.units), 1);
+    var ligature: usize = 0;
+    // SAFETY: 3 is kCFNumberSInt32Type and units holds one such integer.
+    let number = unsafe CFNumberCreate(null, 3, scratch.units);
+    if number |made| {
+        // SAFETY: reading a pointer's address touches nothing it points at.
+        ligature = unsafe int_from_ptr<usize>(made);
+    }
+    return Painter {
+        family: string::new(allocator),
+        font_dir: string::new(allocator),
+        size: lit(0.0),
+        face_path: 0,
+        face_bundled: 0,
+        face_last_resort: 0,
+        faces_tried: 0,
+        fonts: array::new<usize>(allocator),
+        tried: 0,
+        keys: attribute_keys(),
+        ligature: ligature,
+        cell_fonts: map::new<u64, i64>(allocator),
+        runs: map::new<u64, RunHit>(allocator),
+        shaped: array::new<Shaped>(allocator),
+        cluster_fonts: array::new<i64>(allocator),
+        unit_clusters: array::new<i64>(allocator),
+        pictures: array::new<CachedPicture>(allocator),
+        scratch: move scratch,
+        run_count: 0,
+        run_font: -1
+    };
+}
+
+fn free_storage(storage: ?ptr<u8>) -> void {
+    if storage |live| {
+        // SAFETY: live came from malloc and nothing reads it after this.
+        unsafe free(live);
+    }
+    return;
+}
+
+/// Releases the CoreFoundation object at address; zero is none.
+fn release_address(address: usize) -> void {
+    if address != 0 {
+        // SAFETY: the address is an object its holder owned and releases once.
+        unsafe CFRelease(ptr_from_int<ptr<u8>>(address));
+    }
+    return;
+}
+
+pub fn (self: Painter) deinit(allocator: Allocator) -> void {
+    for 0..self.fonts.len() |index| {
+        release_address(self.fonts.get(index) orelse 0);
+    }
+    for 0..self.pictures.len() |index| {
+        if self.pictures.get(index) |picture| {
+            release_address(picture.image);
+        }
+    }
+    release_address(self.face_path);
+    release_address(self.face_bundled);
+    release_address(self.face_last_resort);
+    release_address(self.ligature);
+    self.scratch.deinit();
+    self.family.deinit(allocator);
+    self.font_dir.deinit(allocator);
+    self.fonts.deinit(allocator);
+    self.cell_fonts.deinit(allocator);
+    self.runs.deinit(allocator);
+    self.shaped.deinit(allocator);
+    self.cluster_fonts.deinit(allocator);
+    self.unit_clusters.deinit(allocator);
+    self.pictures.deinit(allocator);
+}
+
+/// Forgets every run shaped and every cell's choice of font.
+fn (self: &var Painter) forget_glyphs(allocator: Allocator) -> void {
+    while self.cell_fonts.len() > 0 {
+        let key = self.cell_fonts.key_at(self.cell_fonts.len() - 1) orelse break;
+        if self.cell_fonts.remove(allocator, key) |_| {}
+    }
+    while self.runs.len() > 0 {
+        let key = self.runs.key_at(self.runs.len() - 1) orelse break;
+        if self.runs.remove(allocator, key) |_| {}
+    }
+    self.shaped.clear(allocator);
+    return;
+}
+
+/// Releases every font, and with them the runs shaped with them.
+fn (self: &var Painter) forget_fonts(allocator: Allocator) -> void {
+    for 0..self.fonts.len() |index| {
+        release_address(self.fonts.get(index) orelse 0);
+    }
+    self.fonts.clear(allocator);
+    self.tried = 0;
+    self.forget_glyphs(allocator);
+    return;
+}
+
+/// Names the family text is drawn in before the bundled font; an empty or
+/// blank name is none. Whether that changed anything.
+pub fn (self: &var Painter) set_font_family(allocator: Allocator, family: []u8) -> mem::Error!bool {
+    let name = mem::trim_ascii(family);
+    let held = self.family.as_bytes();
+    if mem::equal_bytes(held, name) {
+        return false;
+    }
+    self.family.clear();
+    try self.family.append_bytes(allocator, name);
+    self.forget_fonts(allocator);
+    return true;
+}
+
+/// Names the directory the bundled fonts are looked for in first, before
+/// the one SATIN_FONT_DIR names and the ones beside the executable.
+pub fn (self: &var Painter) set_font_dir(allocator: Allocator, dir: []u8) -> mem::Error!void {
+    self.font_dir.clear();
+    try self.font_dir.append_bytes(allocator, dir);
+    release_address(self.face_bundled);
+    release_address(self.face_last_resort);
+    self.face_bundled = 0;
+    self.face_last_resort = 0;
+    self.faces_tried = self.faces_tried & 1;
+    self.forget_fonts(allocator);
+    return;
+}
+
+/// A CFString of bytes; null when they are not UTF-8.
+fn cf_string(bytes: []u8) -> ?ptr<u8> {
+    // SAFETY: bytes are mem::len(bytes) readable bytes, which the string copies.
+    return unsafe CFStringCreateWithBytes(null, ptr_of(bytes), mem::len(bytes), utf8_encoding(), false);
+}
+
+/// Whether the font's family or PostScript name is name, whatever its case.
+fn font_is_named(font: ptr<u8>, name: ptr<u8>) -> bool {
+    var named = false;
+    // SAFETY: font is a live CTFont; the copy is released below.
+    let family = unsafe CTFontCopyFamilyName(font);
+    if family |text| {
+        // SAFETY: both are live CFStrings; 1 is kCFCompareCaseInsensitive.
+        named = unsafe CFStringCompare(text, name, 1) == 0;
+        // SAFETY: text is live and released once.
+        unsafe CFRelease(text);
+    }
+    // SAFETY: font is a live CTFont; the copy is released below.
+    let postscript = unsafe CTFontCopyPostScriptName(font);
+    if postscript |text| {
+        // SAFETY: both are live CFStrings; 1 is kCFCompareCaseInsensitive.
+        if unsafe CFStringCompare(text, name, 1) == 0 {
+            named = true;
+        }
+        // SAFETY: text is live and released once.
+        unsafe CFRelease(text);
+    }
+    return named;
+}
+
+/// Whether font is the system's own last resort, the boxes CoreText draws
+/// when no font has a character.
+fn is_system_last_resort(font: ptr<u8>) -> bool {
+    let name = cf_string("LastResort") orelse return false;
+    let named = font_is_named(font, name);
+    // SAFETY: name is live and released once.
+    unsafe CFRelease(name);
+    return named;
+}
+
+/// The address of a CTFont of family at size, which the caller owns; zero
+/// when the system has no font of that name.
+fn create_font(family: []u8, size: f32) -> usize {
+    let name = cf_string(family) orelse return 0;
+    var address: usize = 0;
+    // SAFETY: name is a live CFString; a null matrix is the identity.
+    let made = unsafe CTFontCreateWithName(name, cast<f64>(size), null);
+    if made |font| {
+        // CoreText answers an unknown name with a font of its own choice.
+        if font_is_named(font, name) {
+            // SAFETY: reading a pointer's address touches nothing it points at.
+            address = unsafe int_from_ptr<usize>(font);
+        } else {
+            // SAFETY: font is live and released once.
+            unsafe CFRelease(font);
+        }
+    }
+    // SAFETY: name is live and released once.
+    unsafe CFRelease(name);
+    return address;
+}
+
+/// The address of the descriptor of the first font in the file at path,
+/// which the caller owns; zero when the file is not there or holds none.
+/// The font is not registered: only this descriptor names it.
+fn load_face(path: []u8) -> usize {
+    if mem::len(path) == 0 {
+        return 0;
+    }
+    // SAFETY: path is mem::len(path) readable bytes, which the URL copies.
+    let made = unsafe CFURLCreateFromFileSystemRepresentation(null, ptr_of(path), mem::len(path), false);
+    let url = made orelse return 0;
+    var address: usize = 0;
+    // SAFETY: url is a live CFURL; the array is released below.
+    let found = unsafe CTFontManagerCreateFontDescriptorsFromURL(url);
+    if found |descriptors| {
+        // SAFETY: descriptors is a live CFArray.
+        if unsafe CFArrayGetCount(descriptors) > 0 {
+            // SAFETY: the array holds a first element.
+            let first = unsafe CFArrayGetValueAtIndex(descriptors, 0);
+            if first |descriptor| {
+                // SAFETY: descriptor is live; the retain is the caller's to release.
+                address = unsafe int_from_ptr<usize>(CFRetain(descriptor));
+            }
+        }
+        // SAFETY: descriptors is live and released once.
+        unsafe CFRelease(descriptors);
+    }
+    // SAFETY: url is live and released once.
+    unsafe CFRelease(url);
+    return address;
+}
+
+/// load_face of the file name in the directory dir; zero for no directory.
+fn load_face_in(allocator: Allocator, dir: []u8, name: []u8) -> mem::Error!usize {
+    if mem::len(dir) == 0 {
+        return 0;
+    }
+    var file = string::new(allocator);
+    defer file.deinit(allocator);
+    try file.append_bytes(allocator, dir);
+    try file.append_bytes(allocator, "/");
+    try file.append_bytes(allocator, name);
+    let held = file.as_bytes();
+    return load_face(held);
+}
+
+/// Writes the directory the executable is in to out, which stays empty
+/// when storage runs out.
+fn executable_dir_into(allocator: Allocator, out: &var string::String) -> process::Error!void {
+    let executable = try process::executable_path(allocator);
+    defer executable.deinit(allocator);
+    let whole = executable.as_bytes();
+    var end = mem::len(whole);
+    while end > 0 and cast<i64>(whole[end - 1]) != 47 {
+        end = end - 1;
+    }
+    if end <= 1 {
+        return;
+    }
+    if out.append_bytes(allocator, whole[0..end - 1]) {} else |_| {
+        out.clear();
+    }
+    return;
+}
+
+/// load_face of the file name in the directory that is below from the one
+/// the executable is in: `/../Resources/fonts` in an app bundle, `/fonts`
+/// beside a bare executable.
+fn load_face_beside_executable(allocator: Allocator, below: []u8, name: []u8) -> mem::Error!usize {
+    var dir = string::new(allocator);
+    defer dir.deinit(allocator);
+    if executable_dir_into(allocator, &var dir) {} else |_| {
+        return 0;
+    }
+    if dir.len() == 0 {
+        return 0;
+    }
+    try dir.append_bytes(allocator, below);
+    let held = dir.as_bytes();
+    return try load_face_in(allocator, held, name);
+}
+
+/// The address of a CTFont of the face at size, which the caller owns.
+fn font_of_face(face: usize, size: f32) -> usize {
+    if face == 0 {
+        return 0;
+    }
+    // SAFETY: the address is a font descriptor its painter owns; a null matrix is the identity.
+    let made = unsafe CTFontCreateWithFontDescriptor(ptr_from_int<ptr<u8>>(face), cast<f64>(size), null);
+    if made |font| {
+        // SAFETY: reading a pointer's address touches nothing it points at.
+        return unsafe int_from_ptr<usize>(font);
+    }
+    return 0;
+}
+
+/// The descriptor of a bundled font's file, looked for in the directory
+/// set_font_dir named, the one SATIN_FONT_DIR names, `../Resources/fonts`
+/// from the executable and `fonts` beside it; zero when none has it.
+fn (self: &Painter) find_bundled(allocator: Allocator, name: []u8) -> mem::Error!usize {
+    let own = self.font_dir.as_bytes();
+    var face = try load_face_in(allocator, own, name);
+    if face == 0 {
+        if process::env("SATIN_FONT_DIR") |dir| {
+            face = try load_face_in(allocator, dir, name);
+        }
+    }
+    if face == 0 {
+        face = try load_face_beside_executable(allocator, "/../Resources/fonts", name);
+    }
+    if face == 0 {
+        face = try load_face_beside_executable(allocator, "/fonts", name);
+    }
+    return face;
+}
+
+/// The descriptor of the font file SATIN_FONT names, NVTERM_FONT when that
+/// is not set, as the Rust shaper read it; zero without one.
+fn (self: &var Painter) path_face() -> usize {
+    if (self.faces_tried & 1) == 0 {
+        self.faces_tried = self.faces_tried | 1;
+        if process::env("SATIN_FONT") |file| {
+            self.face_path = load_face(file);
+        } else if process::env("NVTERM_FONT") |file| {
+            self.face_path = load_face(file);
+        }
+    }
+    return self.face_path;
+}
+
+/// The descriptor of the bundled font; zero when its file was not found.
+fn (self: &var Painter) bundled_face(allocator: Allocator) -> mem::Error!usize {
+    if (self.faces_tried & 2) == 0 {
+        self.faces_tried = self.faces_tried | 2;
+        self.face_bundled = try self.find_bundled(allocator, bundled_font_file());
+    }
+    return self.face_bundled;
+}
+
+/// The descriptor of the bundled last resort; zero when its file was not
+/// found.
+fn (self: &var Painter) last_resort_face(allocator: Allocator) -> mem::Error!usize {
+    if (self.faces_tried & 4) == 0 {
+        self.faces_tried = self.faces_tried | 4;
+        self.face_last_resort = try self.find_bundled(allocator, last_resort_font_file());
+    }
+    return self.face_last_resort;
+}
+
+/// Whether the bundled font's file was found.
+pub fn (self: &var Painter) has_bundled_font(allocator: Allocator) -> mem::Error!bool {
+    return (try self.bundled_face(allocator)) != 0;
+}
+
+/// The font at index of fonts; null for an index that holds none.
+fn (self: &Painter) font(index: i64) -> ?ptr<u8> {
+    let address = self.fonts.get(index) orelse 0;
+    if address == 0 {
+        return null;
+    }
+    // SAFETY: the address is a CTFont this painter owns.
+    return unsafe ptr_from_int<ptr<u8>>(address);
+}
+
+/// The address of a CTFont that is the one at base of fonts in a style: 1
+/// for bold, 2 for italic, 3 for both. Zero for a family without the style.
+fn (self: &Painter) styled_copy(base: i64, style: i64) -> usize {
+    let regular = self.font(base) orelse return 0;
+    var traits: u32 = 0;
+    if style == 1 or style == 3 {
+        traits = bold_trait();
+    }
+    if style >= 2 {
+        traits = traits | italic_trait();
+    }
+    // SAFETY: regular is a live CTFont; a size of zero keeps its own.
+    let made = unsafe CTFontCreateCopyWithSymbolicTraits(regular, 0.0, null, traits, bold_trait() | italic_trait());
+    if made |font| {
+        // SAFETY: reading a pointer's address touches nothing it points at.
+        return unsafe int_from_ptr<usize>(font);
+    }
+    return 0;
+}
+
+/// Makes the font of one of the fixed places of fonts.
+fn (self: &var Painter) load_slot(allocator: Allocator, slot: i64) -> mem::Error!usize {
+    if slot == 0 {
+        let family = self.family.as_bytes();
+        if mem::len(family) == 0 {
+            return 0;
+        }
+        return create_font(family, self.size);
+    }
+    if slot < path_slot() {
+        if try self.ensure(allocator, 0) {
+            return self.styled_copy(0, slot);
+        }
+        return 0;
+    }
+    if slot == path_slot() {
+        return font_of_face(self.path_face(), self.size);
+    }
+    if slot == bundled_slot() {
+        return font_of_face(try self.bundled_face(allocator), self.size);
+    }
+    if slot == default_slot() {
+        return create_font(default_family(), self.size);
+    }
+    if slot < last_resort_slot() {
+        if try self.ensure(allocator, default_slot()) {
+            return self.styled_copy(default_slot(), slot - default_slot());
+        }
+        return 0;
+    }
+    return font_of_face(try self.last_resort_face(allocator), self.size);
+}
+
+/// Whether the fixed place slot of fonts holds its font, which is made the
+/// first time it is asked for.
+fn (self: &var Painter) ensure(allocator: Allocator, slot: i64) -> mem::Error!bool {
+    while self.fonts.len() < fixed_slots() {
+        try self.fonts.append(allocator, 0);
+    }
+    let bit = 1 << slot;
+    if (self.tried & bit) == 0 {
+        self.tried = self.tried | bit;
+        let address = try self.load_slot(allocator, slot);
+        if self.fonts.set(slot, address) {} else |_| {}
+    }
+    return (self.fonts.get(slot) orelse 0) != 0;
+}
+
+/// The place in fonts of the font at base in a style, base itself for a
+/// family without the style; -1 when base holds no font.
+fn (self: &var Painter) styled_slot(allocator: Allocator, base: i64, style: i64) -> mem::Error!i64 {
+    if !(try self.ensure(allocator, base)) {
+        return -1;
+    }
+    if style > 0 {
+        if try self.ensure(allocator, base + style) {
+            return base + style;
+        }
+    }
+    return base;
+}
+
+/// The place in fonts of the font tried at order for a style's text, in
+/// the Rust shaper's order: the named family in that style, the file
+/// SATIN_FONT names, then the bundled font, which has one weight and no
+/// slant. Without the bundled font's file the default family stands in for
+/// it. -1 for an order that has no font.
+fn (self: &var Painter) primary_slot(allocator: Allocator, order: i64, style: i64) -> mem::Error!i64 {
+    if order == 0 {
+        return try self.styled_slot(allocator, 0, style);
+    }
+    if order == 1 {
+        if try self.ensure(allocator, path_slot()) {
+            return path_slot();
+        }
+        return -1;
+    }
+    if try self.ensure(allocator, bundled_slot()) {
+        return bundled_slot();
+    }
+    return try self.styled_slot(allocator, default_slot(), style);
+}
+
+/// The place in fonts of the font cells are measured with: the first of
+/// the fonts regular text is tried in; -1 without any.
+fn (self: &var Painter) base_slot(allocator: Allocator) -> mem::Error!i64 {
+    for 0..3 |order| {
+        let slot = try self.primary_slot(allocator, order, 0);
+        if slot >= 0 {
+            return slot;
+        }
+    }
+    return -1;
+}
+
+/// The index in fonts of font, which fonts takes over: the place of the
+/// font it equals, or a new one.
+fn (self: &var Painter) intern_font(allocator: Allocator, font: ptr<u8>) -> mem::Error!i64 {
+    for 0..self.fonts.len() |index| {
+        if self.font(index) |held| {
+            // SAFETY: both are live CTFonts.
+            if unsafe CFEqual(held, font) {
+                // SAFETY: font is live and released once; held stays.
+                unsafe CFRelease(font);
+                return index;
+            }
+        }
+    }
+    // SAFETY: reading a pointer's address touches nothing it points at.
+    let address = unsafe int_from_ptr<usize>(font);
+    if self.fonts.append(allocator, address) {} else |_| {
+        // SAFETY: font is live and released once.
+        unsafe CFRelease(font);
+        return mem::Error::OutOfMemory;
+    }
+    return self.fonts.len() - 1;
+}
+
+/// Sets the size text is drawn at to the one that fills a cell cell_height
+/// high, and returns what the first font text is tried in measures at it.
+pub fn (self: &var Painter) metrics(allocator: Allocator, geometry: Geometry) -> mem::Error!FontMetrics {
+    let size = font_size(geometry.cell_height);
+    if math::abs<f32>(size - self.size) >= lit(0.01) {
+        self.size = size;
+        self.forget_fonts(allocator);
+    }
+    let font = self.font(try self.base_slot(allocator)) orelse return fallback_metrics(geometry);
+    // SAFETY: font is a live CTFont.
+    let ascent = unsafe CTFontGetAscent(font);
+    // SAFETY: font is a live CTFont.
+    let descent = unsafe CTFontGetDescent(font);
+    // SAFETY: font is a live CTFont.
+    let leading = unsafe CTFontGetLeading(font);
+    // SAFETY: font is a live CTFont.
+    let underline_position = unsafe CTFontGetUnderlinePosition(font);
+    // SAFETY: font is a live CTFont.
+    let underline_thickness = unsafe CTFontGetUnderlineThickness(font);
+    var cell_width = geometry.cell_width;
+    self.write_unit(0, 77);
+    // SAFETY: font is live; units holds one unit and glyphs room for one glyph.
+    if unsafe CTFontGetGlyphsForCharacters(font, self.scratch.units, self.scratch.glyphs, 1) {
+        // SAFETY: font is live; glyphs holds one glyph; no advance is written.
+        cell_width = cast<f32>(unsafe CTFontGetAdvancesForGlyphs(font, 0, self.scratch.glyphs, null, 1));
+    }
+    return FontMetrics {
+        cell_width: cell_width,
+        cell_height: cast<f32>(ascent + descent + leading),
+        ascent: cast<f32>(ascent),
+        descent: cast<f32>(descent),
+        leading: cast<f32>(leading),
+        underline_position: cast<f32>(0.0 - underline_position),
+        underline_thickness: cast<f32>(underline_thickness)
+    };
+}
+
+fn (self: &Painter) write_unit(index: i64, unit: i64) -> void {
+    // SAFETY: units holds max_units() units and index is under that.
+    unsafe ptr_write(cast<ptr<u16>>(ptr_offset(self.scratch.units, index * 2)), cast<u16>(unit));
+}
+
+fn (self: &Painter) unit_at(index: i64) -> i64 {
+    // SAFETY: units holds max_units() units and index is under that.
+    return cast<i64>(unsafe ptr_read(cast<ptr<u16>>(ptr_offset(self.scratch.units, index * 2))));
+}
+
+/// The scalar whose first unit is at index of the count units written.
+fn (self: &Painter) scalar_at(index: i64, count: i64) -> i64 {
+    let unit = self.unit_at(index);
+    if unit >= 55296 and unit < 56320 and index + 1 < count {
+        return 65536 + ((unit - 55296) << 10) + (self.unit_at(index + 1) - 56320);
+    }
+    return unit;
+}
+
+fn (self: &Painter) glyph_at(index: i64) -> u16 {
+    // SAFETY: glyphs holds max_units() glyphs and index is under that.
+    return unsafe ptr_read(cast<ptr<u16>>(ptr_offset(self.scratch.glyphs, index * 2)));
+}
+
+/// Writes bytes as UTF-16 to units, a pair of surrogates for a scalar past
+/// U+FFFF, and returns how many units that took, max_units() at most.
+fn (self: &Painter) write_units(bytes: []u8) -> i64 {
+    var count: i64 = 0;
+    var index: i64 = 0;
+    while index < mem::len(bytes) {
+        var scalar: i64 = 0;
+        index = index + read_scalar(bytes, index, &var scalar);
+        if scalar >= 65536 {
+            if count + 2 > max_units() {
+                break;
+            }
+            let rest = scalar - 65536;
+            self.write_unit(count, 55296 + (rest >> 10));
+            self.write_unit(count + 1, 56320 + (rest & 1023));
+            count = count + 2;
+        } else {
+            if count + 1 > max_units() {
+                break;
+            }
+            self.write_unit(count, scalar);
+            count = count + 1;
+        }
+    }
+    return count;
+}
+
+/// How many of the characters in the count units written a font has to
+/// have for it to draw them: all but the joiners and the selectors.
+fn (self: &Painter) wanted_scalars(count: i64) -> i64 {
+    var wanted = 0;
+    var index = 0;
+    while index < count {
+        let scalar = self.scalar_at(index, count);
+        if !is_ignorable(scalar) {
+            wanted = wanted + 1;
+        }
+        if scalar >= 65536 {
+            index = index + 1;
+        }
+        index = index + 1;
+    }
+    return wanted;
+}
+
+/// How many of those characters font has a glyph for; the glyphs are left
+/// in glyphs, zero for the ones it lacks.
+fn (self: &Painter) mapped_scalars(font: ptr<u8>, count: i64) -> i64 {
+    // SAFETY: font is live; units and glyphs hold count of each.
+    if unsafe CTFontGetGlyphsForCharacters(font, self.scratch.units, self.scratch.glyphs, count) {}
+    var mapped = 0;
+    var index = 0;
+    while index < count {
+        let scalar = self.scalar_at(index, count);
+        if !is_ignorable(scalar) and cast<i64>(self.glyph_at(index)) != 0 {
+            mapped = mapped + 1;
+        }
+        if scalar >= 65536 {
+            index = index + 1;
+        }
+        index = index + 1;
+    }
+    return mapped;
+}
+
+/// The place in fonts of the font the system falls back to for bytes, of
+/// which count units are written: the bundled last resort when the system
+/// has none of its own, as the Rust shaper ended its search.
+fn (self: &var Painter) system_fallback(allocator: Allocator, bytes: []u8, count: i64) -> mem::Error!i64 {
+    let base_index = try self.base_slot(allocator);
+    var slot: i64 = -1;
+    if self.font(base_index) |base| {
+        if cf_string(bytes) |text| {
+            // SAFETY: base and text are live; the range is within the string's units.
+            let fallback = unsafe CTFontCreateForString(base, text, CFRange { location: 0, length: count });
+            // SAFETY: text is live and released once.
+            unsafe CFRelease(text);
+            if fallback |font| {
+                if is_system_last_resort(font) and try self.ensure(allocator, last_resort_slot()) {
+                    // SAFETY: font is live and released once.
+                    unsafe CFRelease(font);
+                    slot = last_resort_slot();
+                } else {
+                    slot = try self.intern_font(allocator, font);
+                }
+            }
+        }
+    }
+    if slot < 0 {
+        if try self.ensure(allocator, last_resort_slot()) {
+            return last_resort_slot();
+        }
+        return base_index;
+    }
+    return slot;
+}
+
+/// Chooses the font of bytes, one cell's text, for a style, as the Rust
+/// shaper chose a cluster's: the first of the style's fonts that has every
+/// character, or else the one of them that has the most; the default
+/// family for a monochrome symbol; a font already fallen back to that has
+/// them; and at last the font the system falls back to. A symbol's choice
+/// is -1 minus its place, which says its glyph is drawn as the font's
+/// character map has it.
+fn (self: &var Painter) choose_font(allocator: Allocator, bytes: []u8, scalar: i64, style: i64) -> mem::Error!i64 {
+    let count = self.write_units(bytes);
+    let wanted = self.wanted_scalars(count);
+    var best: i64 = -1;
+    var most = 0;
+    for 0..3 |order| {
+        let slot = try self.primary_slot(allocator, order, style);
+        if self.font(slot) |font| {
+            let mapped = self.mapped_scalars(font, count);
+            if mapped >= wanted {
+                return slot;
+            }
+            if mapped > most {
+                best = slot;
+                most = mapped;
+            }
+        }
+    }
+    if best >= 0 {
+        return best;
+    }
+    if is_monochrome_symbol(scalar) {
+        let slot = try self.styled_slot(allocator, default_slot(), style);
+        if self.font(slot) |font| {
+            if self.mapped_scalars(font, count) >= wanted {
+                return -1 - slot;
+            }
+        }
+    }
+    var index = self.fonts.len() - 1;
+    while index >= default_slot() {
+        if index != last_resort_slot() {
+            if self.font(index) |font| {
+                let mapped = self.mapped_scalars(font, count);
+                if mapped >= wanted {
+                    return index;
+                }
+                if mapped > most {
+                    best = index;
+                    most = mapped;
+                }
+            }
+        }
+        index = index - 1;
+    }
+    if best >= 0 {
+        return best;
+    }
+    return try self.system_fallback(allocator, bytes, count);
+}
+
+/// choose_font, remembered for a cell of one character.
+fn (self: &var Painter) cell_font(allocator: Allocator, bytes: []u8, style: i64) -> mem::Error!i64 {
+    var scalar: i64 = 0;
+    if read_scalar(bytes, 0, &var scalar) != mem::len(bytes) {
+        return try self.choose_font(allocator, bytes, scalar, style);
+    }
+    let key = cast<u64>(scalar * 4 + style);
+    if self.cell_fonts.get(key) |chosen| {
+        return chosen;
+    }
+    let chosen = try self.choose_font(allocator, bytes, scalar, style);
+    try self.cell_fonts.insert(allocator, key, chosen);
+    return chosen;
+}
+
+/// A CTLine of bytes shaped in font with its ligatures, which the caller
+/// owns; null when the text is not units UTF-16 units of UTF-8 or the
+/// process lacks an attribute's name.
+fn (self: &Painter) shaped_line(bytes: []u8, font: ptr<u8>, units: i64) -> ?ptr<u8> {
+    let keys = self.keys;
+    if keys.font == 0 or keys.ligature == 0 or keys.key_callbacks == 0 or keys.value_callbacks == 0 or
+        self.ligature == 0 {
+        return null;
+    }
+    let text = cf_string(bytes) orelse return null;
+    var line: ?ptr<u8> = null;
+    // SAFETY: text is a live CFString.
+    if unsafe CFStringGetLength(text) == units {
+        // SAFETY: the two addresses are the callbacks of a dictionary of objects.
+        let made = unsafe CFDictionaryCreateMutable(
+            null,
+            2,
+            ptr_from_int<ptr<u8>>(keys.key_callbacks),
+            ptr_from_int<ptr<u8>>(keys.value_callbacks)
+        );
+        if made |attributes| {
+            // SAFETY: attributes is live; the key is a constant string and font a live CTFont, both retained.
+            unsafe CFDictionarySetValue(attributes, ptr_from_int<ptr<u8>>(keys.font), font);
+            // SAFETY: attributes is live; the key is a constant string and the number the painter's, both retained.
+            unsafe CFDictionarySetValue(
+                attributes,
+                ptr_from_int<ptr<u8>>(keys.ligature),
+                ptr_from_int<ptr<u8>>(self.ligature)
+            );
+            // SAFETY: text and attributes are live; the string copies both.
+            let attributed = unsafe CFAttributedStringCreate(null, text, attributes);
+            if attributed |string| {
+                // SAFETY: string is a live CFAttributedString.
+                line = unsafe CTLineCreateWithAttributedString(string);
+                // SAFETY: string is live and released once.
+                unsafe CFRelease(string);
+            }
+            // SAFETY: attributes is live and released once.
+            unsafe CFRelease(attributes);
+        }
+    }
+    // SAFETY: text is live and released once.
+    unsafe CFRelease(text);
+    return line;
+}
+
+/// The place in fonts of the font CoreText drew glyph_run with: the one
+/// asked for at slot, or the one it fell back to for a character that font
+/// lacks.
+fn (self: &var Painter) run_font_slot(allocator: Allocator, glyph_run: ptr<u8>, slot: i64) -> mem::Error!i64 {
+    // SAFETY: glyph_run is a live CTRun, which keeps its attributes.
+    let attributes = unsafe CTRunGetAttributes(glyph_run) orelse return slot;
+    // SAFETY: attributes is a live CFDictionary and the key a constant string.
+    let found = unsafe CFDictionaryGetValue(attributes, ptr_from_int<ptr<u8>>(self.keys.font));
+    let actual = found orelse return slot;
+    if self.font(slot) |asked| {
+        // SAFETY: both are live CTFonts.
+        if unsafe CFEqual(asked, actual) {
+            return slot;
+        }
+    }
+    // SAFETY: actual is live; the retain is the one fonts takes over.
+    let kept = unsafe CFRetain(actual);
+    return try self.intern_font(allocator, kept);
+}
+
+/// Adds the glyphs of glyph_run, of which it has count, to shaped. storage
+/// holds 42 bytes a glyph: a position, an advance, a string index and a
+/// glyph of each, in that order.
+///
+/// A glyph is placed by the cell its character is in, which unit_clusters
+/// has for the character's index in the string: the cell's first glyph
+/// starts at the cell's left edge whatever the glyphs before it advanced,
+/// and the others of the cell follow as CoreText set them after it. That
+/// is where the Rust shaper put a cluster: `cell_width * cell` plus the
+/// glyph's own offset, the advances summed only inside the cluster.
+fn (self: &var Painter) place_glyphs(
+    allocator: Allocator,
+    list: &DisplayList,
+    first: i64,
+    glyph_run: ptr<u8>,
+    count: i64,
+    storage: ptr<u8>,
+    slot: i64,
+    pen: &var Pen
+) -> mem::Error!void {
+    let font = try self.run_font_slot(allocator, glyph_run, slot);
+    let all = CFRange { location: 0, length: 0 };
+    // SAFETY: storage holds count of each; the offsets keep every kind aligned.
+    let advances = unsafe ptr_offset(storage, count * 16);
+    // SAFETY: as above.
+    let indices = unsafe ptr_offset(storage, count * 32);
+    // SAFETY: as above.
+    let glyphs = unsafe ptr_offset(storage, count * 40);
+    // SAFETY: glyph_run is live and storage has room for count points; an empty range is the whole run.
+    unsafe CTRunGetPositions(glyph_run, all, storage);
+    // SAFETY: as above, count sizes.
+    unsafe CTRunGetAdvances(glyph_run, all, advances);
+    // SAFETY: as above, count indices.
+    unsafe CTRunGetStringIndices(glyph_run, all, indices);
+    // SAFETY: as above, count glyphs.
+    unsafe CTRunGetGlyphs(glyph_run, all, glyphs);
+    let clusters = list.clusters.as_slice();
+    let text = list.text.as_bytes();
+    for 0..count |index| {
+        // SAFETY: storage holds count points of two f64.
+        let x = unsafe ptr_read(cast<ptr<f64>>(ptr_offset(storage, index * 16)));
+        // SAFETY: as above, the point's second f64.
+        let y = unsafe ptr_read(cast<ptr<f64>>(ptr_offset(storage, index * 16 + 8)));
+        // SAFETY: advances holds count sizes of two f64.
+        let advance = unsafe ptr_read(cast<ptr<f64>>(ptr_offset(advances, index * 16)));
+        // SAFETY: indices holds count 64-bit indices.
+        let unit = unsafe ptr_read(cast<ptr<i64>>(ptr_offset(indices, index * 8)));
+        // SAFETY: glyphs holds count glyphs.
+        let glyph = unsafe ptr_read(cast<ptr<u16>>(ptr_offset(glyphs, index * 2)));
+        let at = self.unit_clusters.get(unit) orelse -1;
+        if at != pen.cluster {
+            pen.cluster = at;
+            pen.origin = pen.x;
+        }
+        pen.x = pen.x + advance;
+        // 65535 is what CoreText leaves of a glyph that joined another.
+        if at < 0 or cast<i64>(glyph) == 65535 {
+            continue;
+        }
+        let cluster = clusters[first + at];
+        if cluster.text_len == 1 and cast<i64>(text[cluster.text_start]) == 32 {
+            continue;
+        }
+        try self.shaped.append(
+            allocator,
+            Shaped { glyph: glyph, font: font, at: at, dx: cast<f32>(x - pen.origin), dy: cast<f32>(y) }
+        );
+    }
+    return;
+}
+
+/// Adds the glyphs of every run of line to shaped; see place_glyphs.
+fn (self: &var Painter) place_line(
+    allocator: Allocator,
+    list: &DisplayList,
+    first: i64,
+    line: ptr<u8>,
+    slot: i64
+) -> mem::Error!void {
+    // SAFETY: line is a live CTLine, which keeps its runs.
+    let glyph_runs = unsafe CTLineGetGlyphRuns(line) orelse return;
+    var pen = Pen { x: 0.0, cluster: -1, origin: 0.0 };
+    // SAFETY: glyph_runs is a live CFArray.
+    let count = unsafe CFArrayGetCount(glyph_runs);
+    for 0..count |index| {
+        // SAFETY: index is under the array's count.
+        let glyph_run = unsafe CFArrayGetValueAtIndex(glyph_runs, index) orelse continue;
+        // SAFETY: glyph_run is a live CTRun.
+        let glyphs = unsafe CTRunGetGlyphCount(glyph_run);
+        if glyphs <= 0 {
+            continue;
+        }
+        // SAFETY: malloc returns the bytes asked for or null.
+        let storage = unsafe malloc(cast<usize>(glyphs * 42)) orelse return mem::Error::OutOfMemory;
+        var failed = false;
+        if self.place_glyphs(allocator, list, first, glyph_run, glyphs, storage, slot, &var pen) {} else |_| {
+            failed = true;
+        }
+        // SAFETY: storage came from malloc and nothing reads it after this.
+        unsafe free(storage);
+        if failed {
+            return mem::Error::OutOfMemory;
+        }
+    }
+    return;
+}
+
+/// Shapes the clusters from start up to end of the run that begins at
+/// first of the list's clusters as one string in the font at slot, and
+/// adds their glyphs to shaped.
+fn (self: &var Painter) shape_group(
+    allocator: Allocator,
+    list: &DisplayList,
+    first: i64,
+    start: i64,
+    end: i64,
+    slot: i64
+) -> mem::Error!void {
+    let font = self.font(slot) orelse return;
+    let clusters = list.clusters.as_slice();
+    let text = list.text.as_bytes();
+    // Which cluster each UTF-16 unit of the string belongs to.
+    self.unit_clusters.clear(allocator);
+    for start..end |at| {
+        let cluster = clusters[first + at];
+        var index = cluster.text_start;
+        while index < cluster.text_start + cluster.text_len {
+            var scalar: i64 = 0;
+            index = index + read_scalar(text, index, &var scalar);
+            try self.unit_clusters.append(allocator, at);
+            if scalar >= 65536 {
+                try self.unit_clusters.append(allocator, at);
+            }
+        }
+    }
+    let from = clusters[first + start];
+    let last = clusters[first + end - 1];
+    let bytes = text[from.text_start..last.text_start + last.text_len];
+    let line = self.shaped_line(bytes, font, self.unit_clusters.len()) orelse return;
+    var failed = false;
+    if self.place_line(allocator, list, first, line, slot) {} else |_| {
+        failed = true;
+    }
+    // SAFETY: line is live and released once.
+    unsafe CFRelease(line);
+    if failed {
+        return mem::Error::OutOfMemory;
+    }
+    return;
+}
+
+/// Adds a monochrome symbol's glyph to shaped: the one the font at slot
+/// has for the first character of the cluster at at of the run, a
+/// selector after it left out, at the cell's left edge.
+fn (self: &var Painter) shape_symbol(allocator: Allocator, bytes: []u8, at: i64, slot: i64) -> mem::Error!void {
+    let font = self.font(slot) orelse return;
+    let count = self.write_units(bytes);
+    if self.mapped_scalars(font, count) > 0 {
+        try self.shaped.append(
+            allocator,
+            Shaped { glyph: self.glyph_at(0), font: slot, at: at, dx: lit(0.0), dy: lit(0.0) }
+        );
+    }
+    return;
+}
+
+/// Shapes a run: every cell's font is chosen, and the neighboring cells
+/// of one font, whose texts follow each other in the list, are shaped
+/// together, so a ligature forms across them.
+fn (self: &var Painter) shape_run(
+    allocator: Allocator,
+    list: &DisplayList,
+    run: TextRun,
+    style: i64
+) -> mem::Error!RunHit {
+    let clusters = list.clusters.as_slice();
+    let text = list.text.as_bytes();
+    let first = self.shaped.len();
+    self.cluster_fonts.clear(allocator);
+    for run.first..run.first + run.count |index| {
+        let cluster = clusters[index];
+        let bytes = text[cluster.text_start..cluster.text_start + cluster.text_len];
+        let chosen = try self.cell_font(allocator, bytes, style);
+        try self.cluster_fonts.append(allocator, chosen);
+    }
+    var start = 0;
+    while start < run.count {
+        let chosen = self.cluster_fonts.get(start) orelse break;
+        var end = start + 1;
+        if chosen < 0 {
+            let cluster = clusters[run.first + start];
+            let bytes = text[cluster.text_start..cluster.text_start + cluster.text_len];
+            try self.shape_symbol(allocator, bytes, start, -1 - chosen);
+        } else {
+            while end < run.count and (self.cluster_fonts.get(end) orelse -1) == chosen {
+                let before = clusters[run.first + end - 1];
+                if clusters[run.first + end].text_start != before.text_start + before.text_len {
+                    break;
+                }
+                end = end + 1;
+            }
+            try self.shape_group(allocator, list, run.first, start, end, chosen);
+        }
+        start = end;
+    }
+    return RunHit {
+        first: first,
+        count: self.shaped.len() - first,
+        clusters: run.count,
+        bytes: run_bytes(list, run)
+    };
+}
+
+/// How many bytes the texts of run's cells are.
+fn run_bytes(list: &DisplayList, run: TextRun) -> i64 {
+    let clusters = list.clusters.as_slice();
+    var bytes = 0;
+    for run.first..run.first + run.count |index| {
+        bytes = bytes + clusters[index].text_len;
+    }
+    return bytes;
+}
+
+/// The glyphs of run for a style, shaped once for its key and kept. A run
+/// whose key is zero has none and is shaped every time.
+fn (self: &var Painter) run_hit(allocator: Allocator, list: &DisplayList, run: TextRun, style: i64) -> mem::Error!RunHit {
+    if cast<i64>(run.key) != 0 {
+        if self.runs.get(run.key) |hit| {
+            if hit.clusters == run.count and hit.bytes == run_bytes(list, run) {
+                return hit;
+            }
+        }
+    }
+    let hit = try self.shape_run(allocator, list, run, style);
+    if cast<i64>(run.key) != 0 {
+        try self.runs.insert(allocator, run.key, hit);
+    }
+    return hit;
+}
+
+/// How many runs are kept shaped.
+pub fn (self: &Painter) cached_runs() -> i64 {
+    return self.runs.len();
+}
+
+/// Draws the glyphs waiting in the run buffers.
+fn (self: &var Painter) flush_glyphs(context: ptr<u8>) -> void {
+    if self.run_count > 0 {
+        if self.font(self.run_font) |font| {
+            // SAFETY: font and context are live; the buffers hold run_count glyphs and points.
+            unsafe CTFontDrawGlyphs(font, self.scratch.run_glyphs, self.scratch.run_positions, cast<usize>(self.run_count), context);
+        }
+    }
+    self.run_count = 0;
+    return;
+}
+
+/// Adds a glyph of the font at font of fonts, to be drawn at (x, y).
+fn (self: &var Painter) add_glyph(context: ptr<u8>, font: i64, glyph: u16, x: f64, y: f64) -> void {
+    if font != self.run_font or self.run_count >= batch_glyphs() {
+        self.flush_glyphs(context);
+        self.run_font = font;
+    }
+    // SAFETY: run_glyphs holds batch_glyphs() glyphs and run_count is under that.
+    unsafe ptr_write(cast<ptr<u16>>(ptr_offset(self.scratch.run_glyphs, self.run_count * 2)), glyph);
+    // SAFETY: run_positions holds batch_glyphs() points of two f64 and run_count is under that.
+    unsafe ptr_write(cast<ptr<f64>>(ptr_offset(self.scratch.run_positions, self.run_count * 16)), x);
+    // SAFETY: as above, the point's second f64.
+    unsafe ptr_write(cast<ptr<f64>>(ptr_offset(self.scratch.run_positions, self.run_count * 16 + 8)), y);
+    self.run_count = self.run_count + 1;
+    return;
+}
+
+fn set_fill(context: ptr<u8>, color: Rgba) -> void {
+    // SAFETY: context is live.
+    unsafe CGContextSetRGBFillColor(context, channel(color.r), channel(color.g), channel(color.b), channel(color.a));
+}
+
+fn set_antialias(context: ptr<u8>, enabled: bool) -> void {
+    // SAFETY: context is live.
+    unsafe CGContextSetShouldAntialias(context, enabled);
+}
+
+/// Draws a text run: its shaped glyphs, each at its cell's place on the
+/// grid.
+fn (self: &var Painter) draw_run(
+    allocator: Allocator,
+    context: ptr<u8>,
+    list: &DisplayList,
+    run: TextRun,
+    color: Rgba
+) -> mem::Error!void {
+    if self.shaped.len() > max_cached_glyphs() or self.runs.len() > max_cached_runs() {
+        self.forget_glyphs(allocator);
+    }
+    var style: i64 = 0;
+    if run.bold {
+        style = 1;
+    }
+    if run.italic {
+        style = style + 2;
+    }
+    let hit = try self.run_hit(allocator, list, run, style);
+    set_antialias(context, true);
+    set_fill(context, color);
+    // The context counts y down, so glyphs are turned back upright.
+    // SAFETY: context is live; the transform is passed by value.
+    unsafe CGContextSetTextMatrix(context, CGAffineTransform { a: 1.0, b: 0.0, c: 0.0, d: -1.0, tx: 0.0, ty: 0.0 });
+    let clusters = list.clusters.as_slice();
+    // CoreText reads a glyph's position in text space, which the matrix
+    // above turns over with the glyph: the baseline goes in negated.
+    let baseline = 0.0 - cast<f64>(run.baseline);
+    for hit.first..hit.first + hit.count |at| {
+        if self.shaped.get(at) |shaped| {
+            let x = cast<f64>(run.x + span(clusters[run.first + shaped.at].cell) * run.advance);
+            self.add_glyph(context, shaped.font, shaped.glyph, x + cast<f64>(shaped.dx), baseline + cast<f64>(shaped.dy));
+        }
+    }
+    self.flush_glyphs(context);
+    return;
+}
+
+/// The index in pictures of owner's image image_id; -1 without it.
+fn (self: &Painter) picture_index(owner: usize, image_id: u32) -> i64 {
+    let pictures = self.pictures.as_slice();
+    for 0..mem::count<CachedPicture>(pictures) |index| {
+        if pictures[index].owner == owner and pictures[index].image_id == image_id {
+            return index;
+        }
+    }
+    return -1;
+}
+
+/// Whether the painter holds the pixels image draws from, as its number
+/// and size have them.
+pub fn (self: &Painter) has_image(image: ImageDraw) -> bool {
+    let held = self.pictures.get(self.picture_index(image.owner, image.image_id)) orelse return false;
+    return held.image_number == image.image_number and held.width == image.width and held.height == image.height;
+}
+
+/// Gives the painter the pixels image draws from: rgba is its width x
+/// height pixels of red, green, blue and an alpha they are not multiplied
+/// by. False when rgba is not that many bytes or CoreGraphics takes none.
+pub fn (self: &var Painter) put_image(allocator: Allocator, image: ImageDraw, rgba: []u8) -> mem::Error!bool {
+    let width = cast<i64>(image.width);
+    let height = cast<i64>(image.height);
+    if width <= 0 or height <= 0 or mem::len(rgba) != width * height * 4 {
+        return false;
+    }
+    var address: usize = 0;
+    // SAFETY: no preconditions.
+    let made_space = unsafe CGColorSpaceCreateDeviceRGB();
+    if made_space |space| {
+        // SAFETY: rgba is mem::len(rgba) readable bytes, which the data copies.
+        let made_data = unsafe CFDataCreate(null, ptr_of(rgba), mem::len(rgba));
+        if made_data |data| {
+            // SAFETY: data is a live CFData, which the provider retains.
+            let made_provider = unsafe CGDataProviderCreateWithCFData(data);
+            if made_provider |provider| {
+                // SAFETY: the provider holds width x height pixels of four bytes; 0 is the default intent.
+                let made = unsafe CGImageCreate(
+                    cast<usize>(width),
+                    cast<usize>(height),
+                    8,
+                    32,
+                    cast<usize>(width * 4),
+                    space,
+                    rgba_straight(),
+                    provider,
+                    null,
+                    false,
+                    0
+                );
+                if made |picture| {
+                    // SAFETY: reading a pointer's address touches nothing it points at.
+                    address = unsafe int_from_ptr<usize>(picture);
+                }
+                // SAFETY: provider is live and released once; the image retains it.
+                unsafe CFRelease(provider);
+            }
+            // SAFETY: data is live and released once; the provider retains it.
+            unsafe CFRelease(data);
+        }
+        // SAFETY: space is live and released once; the image retains it.
+        unsafe CFRelease(space);
+    }
+    if address == 0 {
+        return false;
+    }
+    let entry = CachedPicture {
+        owner: image.owner,
+        image_id: image.image_id,
+        image_number: image.image_number,
+        width: image.width,
+        height: image.height,
+        image: address
+    };
+    let index = self.picture_index(image.owner, image.image_id);
+    if self.pictures.get(index) |old| {
+        release_address(old.image);
+        if self.pictures.set(index, entry) {} else |_| {}
+        return true;
+    }
+    if self.pictures.append(allocator, entry) {} else |_| {
+        release_address(address);
+        return mem::Error::OutOfMemory;
+    }
+    return true;
+}
+
+/// Drops owner's images that list does not draw, as the Rust renderer kept
+/// only the images a runtime's placements showed.
+pub fn (self: &var Painter) retain_images(owner: usize, list: &DisplayList) -> void {
+    let drawn = list.images.as_slice();
+    var index = self.pictures.len() - 1;
+    while index >= 0 {
+        let held = self.pictures.get(index) orelse break;
+        var shown = held.owner != owner;
+        for 0..mem::count<ImageDraw>(drawn) |at| {
+            if drawn[at].owner == owner and drawn[at].image_id == held.image_id {
+                shown = true;
+            }
+        }
+        if !shown {
+            release_address(held.image);
+            if self.pictures.remove(index) |_| {} else |_| {}
+        }
+        index = index - 1;
+    }
+    return;
+}
+
+/// Drops every image of owner.
+pub fn (self: &var Painter) forget_images(owner: usize) -> void {
+    var index = self.pictures.len() - 1;
+    while index >= 0 {
+        let held = self.pictures.get(index) orelse break;
+        if held.owner == owner {
+            release_address(held.image);
+            if self.pictures.remove(index) |_| {} else |_| {}
+        }
+        index = index - 1;
+    }
+    return;
+}
+
+pub fn (self: &Painter) image_count() -> i64 {
+    return self.pictures.len();
+}
+
+/// Draws the part image names of its picture into destination.
+fn (self: &Painter) draw_image(context: ptr<u8>, image: ImageDraw, destination: Rect) -> void {
+    if !self.has_image(image) {
+        return;
+    }
+    let held = self.pictures.get(self.picture_index(image.owner, image.image_id)) orelse return;
+    // SAFETY: the address is a CGImage this painter owns.
+    let whole = unsafe ptr_from_int<ptr<u8>>(held.image);
+    // SAFETY: whole is a live CGImage; the part is released below.
+    let part = unsafe CGImageCreateWithImageInRect(whole, cg_rect(image.source)) orelse return;
+    // An image's first row is its top, which a context counting y down
+    // would draw at the bottom: turn the image's own rectangle over.
+    // SAFETY: context is live.
+    unsafe CGContextSaveGState(context);
+    // SAFETY: context is live.
+    unsafe CGContextTranslateCTM(context, cast<f64>(destination.x), cast<f64>(destination.y + destination.height));
+    // SAFETY: context is live.
+    unsafe CGContextScaleCTM(context, 1.0, -1.0);
+    let place = CGRect {
+        origin: CGPoint { x: 0.0, y: 0.0 },
+        size: CGSize { width: cast<f64>(destination.width), height: cast<f64>(destination.height) }
+    };
+    // SAFETY: context and part are live.
+    unsafe CGContextDrawImage(context, place, part);
+    // SAFETY: context is live and its state was saved above.
+    unsafe CGContextRestoreGState(context);
+    // SAFETY: part is live and released once.
+    unsafe CFRelease(part);
+    return;
+}
+
+/// Adds the count points from first of the list's points to the context's
+/// path, joined in order.
+fn trace_points(context: ptr<u8>, list: &DisplayList, first: i64, count: i64) -> void {
+    let points = list.points.as_slice();
+    // SAFETY: context is live.
+    unsafe CGContextBeginPath(context);
+    for first..first + count |index| {
+        let x = cast<f64>(points[index].x);
+        let y = cast<f64>(points[index].y);
+        if index == first {
+            // SAFETY: context is live.
+            unsafe CGContextMoveToPoint(context, x, y);
+        } else {
+            // SAFETY: context is live.
+            unsafe CGContextAddLineToPoint(context, x, y);
+        }
+    }
+    return;
+}
+
+/// Executes list into bitmap, over what the bitmap holds.
+pub fn (self: &var Painter) execute(allocator: Allocator, list: &DisplayList, bitmap: &Bitmap) -> mem::Error!void {
+    let context = bitmap.context;
+    let commands = list.commands.as_slice();
+    let runs = list.runs.as_slice();
+    let images = list.images.as_slice();
+    var clips = 0;
+    for 0..mem::count<Command>(commands) |index| {
+        let command = commands[index];
+        if command.kind == CommandKind::FillRect {
+            set_antialias(context, false);
+            set_fill(context, command.color);
+            // SAFETY: context is live; the rect is passed by value.
+            unsafe CGContextFillRect(context, snapped_rect(command.rect));
+        } else if command.kind == CommandKind::Text {
+            try self.draw_run(allocator, context, list, runs[command.first], command.color);
+        } else if command.kind == CommandKind::PushClip {
+            set_antialias(context, false);
+            // SAFETY: context is live.
+            unsafe CGContextSaveGState(context);
+            // SAFETY: context is live; the rect is passed by value.
+            unsafe CGContextClipToRect(context, snapped_rect(command.rect));
+            clips = clips + 1;
+        } else if command.kind == CommandKind::PopClip {
+            if clips > 0 {
+                // SAFETY: context is live and a PushClip saved its state.
+                unsafe CGContextRestoreGState(context);
+                clips = clips - 1;
+            }
+        } else if command.kind == CommandKind::Clear {
+            set_antialias(context, false);
+            set_fill(context, command.color);
+            let all = Rect { x: lit(0.0), y: lit(0.0), width: span(bitmap.width), height: span(bitmap.height) };
+            // SAFETY: context is live; the rect is passed by value.
+            unsafe CGContextFillRect(context, cg_rect(all));
+        } else if command.kind == CommandKind::Polyline {
+            set_antialias(context, false);
+            let color = command.color;
+            // SAFETY: context is live.
+            unsafe CGContextSetRGBStrokeColor(context, channel(color.r), channel(color.g), channel(color.b), channel(color.a));
+            // SAFETY: context is live.
+            unsafe CGContextSetLineWidth(context, cast<f64>(command.width));
+            trace_points(context, list, command.first, command.count);
+            // SAFETY: context is live and holds the path traced above.
+            unsafe CGContextStrokePath(context);
+        } else if command.kind == CommandKind::Quad {
+            set_antialias(context, true);
+            set_fill(context, command.color);
+            trace_points(context, list, command.first, command.count);
+            // SAFETY: context is live and holds the path traced above.
+            unsafe CGContextClosePath(context);
+            // SAFETY: context is live and holds the path traced above.
+            unsafe CGContextFillPath(context);
+        } else if command.kind == CommandKind::Image {
+            self.draw_image(context, images[command.first], command.rect);
+        }
+    }
+    // A list that pushed more clips than it popped leaves none behind.
+    for 0..clips |_| {
+        // SAFETY: context is live and a PushClip saved its state.
+        unsafe CGContextRestoreGState(context);
+    }
+    return;
+}

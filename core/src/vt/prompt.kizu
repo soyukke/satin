@@ -1,0 +1,125 @@
+// Shell prompt tracking over terminal output: the OSC 133 semantic prompt
+// marks a shell writes, read far enough to know when a fresh prompt is ready
+// for input. The Rust `SemanticPromptTracker`.
+import std::mem;
+import std::string;
+
+fn max_payload_bytes() -> i64 {
+    return 64;
+}
+
+enum PromptState {
+    Ground,
+    Escape,
+    Payload,
+    PayloadEscape,
+}
+
+pub struct PromptTracker {
+    state: PromptState,
+    payload: string::String,
+    /// Whether the output carried any OSC 133 mark.
+    pub observed: bool,
+    /// Counts the prompts that became ready for input, once per prompt.
+    pub ready_generation: u64,
+    ready_reported: bool,
+}
+
+pub fn (self: PromptTracker) deinit(allocator: Allocator) -> void {
+    self.payload.deinit(allocator);
+}
+
+pub fn new_prompt_tracker(allocator: Allocator) -> PromptTracker {
+    return PromptTracker {
+        state: PromptState::Ground,
+        payload: string::new(allocator),
+        observed: false,
+        ready_generation: 0,
+        ready_reported: false
+    };
+}
+
+/// Forgets every mark seen so far, as a fresh tracker would.
+pub fn (self: &var PromptTracker) reset() -> void {
+    self.payload.clear();
+    self.state = PromptState::Ground;
+    self.observed = false;
+    self.ready_generation = 0;
+    self.ready_reported = false;
+}
+
+pub fn (self: &var PromptTracker) feed(allocator: Allocator, bytes: []u8) -> mem::Error!void {
+    var index = 0;
+    while index < mem::len(bytes) {
+        try self.feed_byte(allocator, bytes[index]);
+        index = index + 1;
+    }
+    return;
+}
+
+fn (self: &var PromptTracker) feed_byte(allocator: Allocator, byte: u8) -> mem::Error!void {
+    let escape = cast<u8>(27);
+    if self.state == PromptState::Ground {
+        if byte == escape {
+            self.state = PromptState::Escape;
+        }
+        return;
+    }
+    if self.state == PromptState::Escape {
+        if byte == cast<u8>(93) {
+            self.payload.clear();
+            self.state = PromptState::Payload;
+        } else if byte != escape {
+            self.state = PromptState::Ground;
+        }
+        return;
+    }
+    if self.state == PromptState::Payload {
+        if byte == cast<u8>(7) {
+            self.finish_payload();
+            self.state = PromptState::Ground;
+        } else if byte == escape {
+            self.state = PromptState::PayloadEscape;
+        } else {
+            try self.push_payload_byte(allocator, byte);
+        }
+        return;
+    }
+    if byte == cast<u8>(92) {
+        self.finish_payload();
+        self.state = PromptState::Ground;
+    } else if byte == escape {
+        try self.push_payload_byte(allocator, escape);
+    } else {
+        try self.push_payload_byte(allocator, escape);
+        try self.push_payload_byte(allocator, byte);
+        self.state = PromptState::Payload;
+    }
+    return;
+}
+
+fn (self: &var PromptTracker) push_payload_byte(allocator: Allocator, byte: u8) -> mem::Error!void {
+    if self.payload.len() < max_payload_bytes() {
+        try self.payload.append_byte(allocator, byte);
+    }
+    return;
+}
+
+fn (self: &var PromptTracker) finish_payload() -> void {
+    let bytes = self.payload.as_bytes();
+    if !mem::starts_with(bytes, "133;") {
+        return;
+    }
+    self.observed = true;
+    if mem::len(bytes) == 4 {
+        return;
+    }
+    let command = bytes[4];
+    if command == cast<u8>(65) or command == cast<u8>(67) or command == cast<u8>(68) {
+        self.ready_reported = false;
+    } else if command == cast<u8>(66) and !self.ready_reported {
+        self.ready_generation = self.ready_generation + 1;
+        self.ready_reported = true;
+    }
+    return;
+}

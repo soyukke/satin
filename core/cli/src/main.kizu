@@ -1,0 +1,7 @@
+// The entry point of the `satin` command; satin::cli holds what it does.
+import satin::cli;
+import std::process;
+
+fn main() -> !process::ExitStatus {
+    return cli::run_main();
+}

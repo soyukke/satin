@@ -1,0 +1,68 @@
+import std::mem;
+import std::string;
+import std::testing;
+
+fn pointer(row: i64, col: i64) -> SelectionInput {
+    return SelectionInput {
+        row: row,
+        col: col,
+        x: cast<f32>(col * 10 + 5),
+        y: cast<f32>(row * 20 + 10),
+        cell_width: 10,
+        cell_height: 20
+    };
+}
+
+test "a press and a drag select the cells between them" {
+    let allocator = mem::page_allocator();
+    let terminal = try query_terminal(allocator, 20, 4, "alpha beta$gamma");
+    var queries = try new_queries(allocator);
+    defer queries.deinit(allocator);
+    var gesture = try new_selection_gesture();
+    defer gesture.deinit();
+    var out = string::new(allocator);
+    defer out.deinit(allocator);
+    // SAFETY: terminal is live until free_terminal below.
+    try unsafe gesture.press(terminal, 20, 4, pointer(0, 6));
+    // The drag ends in the right half of the cell, which is what takes the cell in.
+    var end = pointer(0, 9);
+    end.x = cast<f32>(99.0);
+    // SAFETY: as above.
+    try unsafe gesture.drag(terminal, 20, 4, end, false);
+    // SAFETY: as above.
+    try unsafe gesture.release(terminal, 20, 4, true, 0, 9);
+    // SAFETY: as above.
+    testing::expect(try unsafe queries.selected_text(allocator, terminal, &var out));
+    testing::expect(text_is(&out, "beta"));
+    out.clear();
+    // SAFETY: as above.
+    try unsafe gesture.press(terminal, 20, 4, pointer(1, 2));
+    // SAFETY: as above.
+    try unsafe gesture.release(terminal, 20, 4, false, 0, 0);
+    // SAFETY: as above.
+    testing::expect(!try unsafe queries.selected_text(allocator, terminal, &var out));
+    // SAFETY: as above.
+    unsafe gesture.reset(terminal);
+    // SAFETY: terminal came from new_terminal and nothing uses it after this.
+    unsafe free_terminal(terminal);
+}
+
+test "autoscroll past the top edge scrolls into the scrollback" {
+    let allocator = mem::page_allocator();
+    let terminal = try query_terminal(allocator, 20, 3, "1$2$3$4$5$6");
+    var gesture = try new_selection_gesture();
+    defer gesture.deinit();
+    // SAFETY: terminal is live until free_terminal below.
+    try unsafe gesture.press(terminal, 20, 3, pointer(2, 0));
+    var above = pointer(0, 0);
+    above.y = cast<f32>(-30.0);
+    // SAFETY: as above.
+    try unsafe gesture.drag(terminal, 20, 3, above, false);
+    // SAFETY: as above.
+    let moved = try unsafe gesture.autoscroll(terminal, 20, 3, above, false);
+    testing::expect(moved < 0);
+    // SAFETY: as above.
+    unsafe gesture.reset(terminal);
+    // SAFETY: terminal came from new_terminal and nothing uses it after this.
+    unsafe free_terminal(terminal);
+}

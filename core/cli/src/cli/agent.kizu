@@ -1,0 +1,134 @@
+// What an agent's hook event means for the pane it runs in. The Rust
+// `agent_status`.
+import std::json;
+import std::map;
+import std::mem;
+
+fn max_agent_event_bytes() -> i64 {
+    return 1048576;
+}
+
+/// How many elements the array member name holds: 0 when it is left out,
+/// -1 when it is no array.
+fn listed(entries: &map::Map<[]u8, json::Value>, name: []u8) -> i64 {
+    if entries.at(name) |value| {
+        match value {
+            Arr(items) => return items.len(),
+            _ => return -1,
+        }
+    }
+    return 0;
+}
+
+/// The number of the pane status a Claude Code event stands for; 0 for an
+/// event with none.
+fn claude_status(event: []u8, background_work: bool) -> i64 {
+    if mem::equal_bytes(event, "SessionStart") {
+        return 1;
+    }
+    if mem::equal_bytes(event, "UserPromptSubmit") {
+        return 2;
+    }
+    if mem::equal_bytes(event, "PermissionRequest") {
+        return 3;
+    }
+    if mem::equal_bytes(event, "Elicitation") {
+        return 4;
+    }
+    if mem::equal_bytes(event, "Stop") {
+        // The turn is over even when background tasks or crons remain
+        // listed: finished subagents stay in `background_tasks`, and no
+        // later hook clears a `running` status set here.
+        if background_work {
+            return 6;
+        }
+        return 5;
+    }
+    if mem::equal_bytes(event, "StopFailure") {
+        return 7;
+    }
+    if mem::equal_bytes(event, "SessionEnd") {
+        return 8;
+    }
+    return 0;
+}
+
+/// The status word of a pane status number.
+fn status_word(number: i64) -> []u8 {
+    if number == 1 or number == 8 {
+        return "idle";
+    }
+    if number == 2 {
+        return "running";
+    }
+    if number == 3 or number == 4 {
+        return "waiting";
+    }
+    if number == 5 or number == 6 {
+        return "done";
+    }
+    if number == 7 {
+        return "failed";
+    }
+    return "";
+}
+
+/// The summary of a pane status number.
+fn status_summary(number: i64) -> []u8 {
+    if number == 1 {
+        return "Claude Code ready";
+    }
+    if number == 2 {
+        return "Claude Code working";
+    }
+    if number == 3 {
+        return "Claude Code needs approval";
+    }
+    if number == 4 {
+        return "Claude Code needs input";
+    }
+    if number == 5 {
+        return "Claude Code finished";
+    }
+    if number == 6 {
+        return "Claude Code finished; background work listed";
+    }
+    if number == 7 {
+        return "Claude Code failed";
+    }
+    if number == 8 {
+        return "Claude Code exited";
+    }
+    return "";
+}
+
+/// The number of the pane status a Claude Code hook event stands for; 0
+/// when input is no event, or one with no status.
+fn claude_pane_status(allocator: Allocator, input: []u8) -> mem::Error!i64 {
+    if mem::len(input) > max_agent_event_bytes() {
+        return 0;
+    }
+    if json::decode<json::Value>(allocator, input) |document| {
+        defer document.deinit(allocator);
+        match &document {
+            Obj(entries) => {
+                let tasks = listed(entries, "background_tasks");
+                let crons = listed(entries, "session_crons");
+                if tasks < 0 or crons < 0 {
+                    return 0;
+                }
+                if entries.at("hook_event_name") |name| {
+                    match name {
+                        Str(text) => {
+                            let event = text.as_bytes();
+                            return claude_status(event, tasks + crons > 0);
+                        },
+                        _ => {},
+                    }
+                }
+            },
+            _ => {},
+        }
+    } else |_| {}
+    return 0;
+}

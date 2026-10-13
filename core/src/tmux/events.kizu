@@ -1,0 +1,141 @@
+// The events the host drains, written as the JSON serde wrote for the Rust
+// `TmuxControlEvent`: internally tagged by `kind`, bytes as arrays of numbers,
+// and a missing optional as `null`.
+import std::array;
+import std::json;
+import std::mem;
+import std::string;
+
+pub fn simple_event(allocator: Allocator, kind: []u8) -> mem::Error!string::String {
+    var encoder = json::encoder(allocator);
+    defer encoder.deinit(allocator);
+    try encoder.begin_object();
+    try encoder.write_bytes_field("kind", kind);
+    try encoder.end_object();
+    var out = string::new(allocator);
+    errdefer out.deinit(allocator);
+    try encoder.finish_into(allocator, &var out);
+    return move out;
+}
+
+/// `pane_output` or `pane_hydration`.
+pub fn bytes_event(allocator: Allocator, kind: []u8, pane: i64, data: []u8) -> mem::Error!string::String {
+    var encoder = json::encoder(allocator);
+    defer encoder.deinit(allocator);
+    try encoder.begin_object();
+    try encoder.write_bytes_field("kind", kind);
+    try encoder.write_i64_field("pane_id", pane);
+    try encoder.begin_array_field("data");
+    var index = 0;
+    while index < mem::len(data) {
+        try encoder.write_i64(cast<i64>(data[index]));
+        index = index + 1;
+    }
+    try encoder.end_array();
+    try encoder.end_object();
+    var out = string::new(allocator);
+    errdefer out.deinit(allocator);
+    try encoder.finish_into(allocator, &var out);
+    return move out;
+}
+
+/// `command_error` or `protocol_error`.
+pub fn message_event(allocator: Allocator, kind: []u8, message: []u8) -> mem::Error!string::String {
+    var encoder = json::encoder(allocator);
+    defer encoder.deinit(allocator);
+    try encoder.begin_object();
+    try encoder.write_bytes_field("kind", kind);
+    try encoder.write_bytes_field("message", message);
+    try encoder.end_object();
+    var out = string::new(allocator);
+    errdefer out.deinit(allocator);
+    try encoder.finish_into(allocator, &var out);
+    return move out;
+}
+
+pub fn exited_event(allocator: Allocator, has_reason: bool, reason: []u8) -> mem::Error!string::String {
+    var encoder = json::encoder(allocator);
+    defer encoder.deinit(allocator);
+    try encoder.begin_object();
+    try encoder.write_bytes_field("kind", "exited");
+    if has_reason {
+        try encoder.write_bytes_field("reason", reason);
+    } else {
+        try encoder.write_null_field("reason");
+    }
+    try encoder.end_object();
+    var out = string::new(allocator);
+    errdefer out.deinit(allocator);
+    try encoder.finish_into(allocator, &var out);
+    return move out;
+}
+
+fn write_optional(encoder: &var json::Encoder, name: []u8, present: bool, value: i64) -> mem::Error!void {
+    if present {
+        return encoder.write_i64_field(name, value);
+    }
+    return encoder.write_null_field(name);
+}
+
+pub fn scroll_event(allocator: Allocator, pane: i64, update: &ScrollUpdate) -> mem::Error!string::String {
+    var encoder = json::encoder(allocator);
+    defer encoder.deinit(allocator);
+    try encoder.begin_object();
+    try encoder.write_bytes_field("kind", "pane_scroll_metadata");
+    try encoder.write_i64_field("pane_id", pane);
+    try encoder.write_i64_field("rows", update.rows);
+    let region = update.region;
+    try write_optional(&var encoder, "region_top", update.has_region, region.top);
+    try write_optional(&var encoder, "region_bottom", update.has_region, region.bottom);
+    try write_optional(&var encoder, "region_left", update.has_region and region.left > 0, region.left);
+    try write_optional(&var encoder, "region_right", update.has_region and region.right > 0, region.right);
+    try encoder.end_object();
+    var out = string::new(allocator);
+    errdefer out.deinit(allocator);
+    try encoder.finish_into(allocator, &var out);
+    return move out;
+}
+
+pub fn snapshot_event(allocator: Allocator, snapshot: &Snapshot) -> mem::Error!string::String {
+    var encoder = json::encoder(allocator);
+    defer encoder.deinit(allocator);
+    try encoder.begin_object();
+    try encoder.write_bytes_field("kind", "snapshot");
+    try encoder.begin_object_field("snapshot");
+    try write_snapshot(&var encoder, snapshot);
+    try encoder.end_object();
+    try encoder.end_object();
+    var out = string::new(allocator);
+    errdefer out.deinit(allocator);
+    try encoder.finish_into(allocator, &var out);
+    return move out;
+}
+
+pub fn sessions_event(
+    allocator: Allocator,
+    sessions: &array::Array<Session>,
+    has_error: bool,
+    session_error: []u8
+) -> mem::Error!string::String {
+    var encoder = json::encoder(allocator);
+    defer encoder.deinit(allocator);
+    try encoder.begin_object();
+    try encoder.write_bytes_field("kind", "sessions");
+    try encoder.begin_array_field("sessions");
+    var index = 0;
+    while sessions.at(index) |session| {
+        try write_session(&var encoder, session);
+        index = index + 1;
+    }
+    try encoder.end_array();
+    if has_error {
+        try encoder.write_bytes_field("session_error", session_error);
+    } else {
+        try encoder.write_null_field("session_error");
+    }
+    try encoder.end_object();
+    var out = string::new(allocator);
+    errdefer out.deinit(allocator);
+    try encoder.finish_into(allocator, &var out);
+    return move out;
+}

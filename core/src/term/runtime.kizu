@@ -1,0 +1,790 @@
+// One terminal as the host drives it: a child on a PTY (or bytes the host
+// feeds), the libghostty terminal that reads its output, tmux control mode
+// in that output, and what the host draws and sends back. The Rust
+// `NativeTerminalRuntime`.
+import satin::tmux;
+import std::fmt;
+import std::mem;
+import std::string;
+
+pub error RuntimeError {
+    /// The call needs a child, and this terminal is fed by the host.
+    NoPty,
+    /// The call feeds the terminal, and this terminal reads a child.
+    HasPty,
+    InvalidRegion,
+}
+
+pub error RuntimeFailure = RuntimeError or SpawnError or GhosttyError or mem::Error;
+
+pub struct GridSize {
+    pub rows: u16,
+    pub cols: u16,
+    pub pixel_width: u16,
+    pub pixel_height: u16,
+}
+
+fn same_size(first: GridSize, second: GridSize) -> bool {
+    return first.rows == second.rows and first.cols == second.cols and first.pixel_width == second.pixel_width and
+        first.pixel_height == second.pixel_height;
+}
+
+/// What a tmux pane's shell shows of its prompt: Unavailable on the
+/// alternate screen, Ready once the cursor left the first column.
+pub enum ShellPromptState {
+    Unavailable,
+    Waiting,
+    Ready,
+}
+
+fn max_scrollback() -> usize {
+    return 100000;
+}
+
+/// One terminal. pty is read only when has_pty is set, and directory when
+/// has_directory is; frame is what collect_frame last read.
+pub struct Runtime {
+    has_pty: bool,
+    pty: Pty,
+    screen: Screen,
+    gesture: SelectionGesture,
+    tracker: tmux::ScrollTracker,
+    encoder: InputEncoder,
+    frames: FrameRenderer,
+    pub frame: Frame,
+    pub model: RenderModel,
+    queries: Queries,
+    pub kitty: KittyImages,
+    size: GridSize,
+    has_directory: bool,
+    directory: string::String,
+    control: tmux::Control,
+    exited: bool,
+    incoming: string::String,
+    passthrough: string::String,
+    outgoing: string::String,
+}
+
+/// Resizes terminal to size, with the pixels of one cell.
+///
+/// terminal must be a live libghostty terminal.
+unsafe fn resize_cells(terminal: ptr<u8>, size: GridSize) -> GhosttyError!void {
+    var cols: u32 = cast<u32>(size.cols);
+    var rows: u32 = cast<u32>(size.rows);
+    if cols == 0 {
+        cols = 1;
+    }
+    if rows == 0 {
+        rows = 1;
+    }
+    // SAFETY: the caller passes a live terminal.
+    try unsafe resize_terminal(
+        terminal,
+        size.cols,
+        size.rows,
+        cast<u32>(size.pixel_width) / cols,
+        cast<u32>(size.pixel_height) / rows
+    );
+    return;
+}
+
+fn new_runtime(
+    allocator: Allocator,
+    size: GridSize,
+    has_pty: bool,
+    pty: Pty,
+    has_directory: bool,
+    directory: string::String
+) -> RuntimeFailure!Runtime {
+    errdefer pty.deinit(allocator);
+    errdefer directory.deinit(allocator);
+    let screen = try new_screen(allocator, size.cols, size.rows, max_scrollback());
+    errdefer screen.deinit(allocator);
+    // SAFETY: the screen's terminal is live.
+    try unsafe configure_kitty_graphics(screen.handle());
+    // SAFETY: as above.
+    try unsafe resize_cells(screen.handle(), size);
+    let gesture = try new_selection_gesture();
+    errdefer gesture.deinit();
+    var encoder = try new_input_encoder(allocator);
+    errdefer encoder.deinit(allocator);
+    encoder.option_as_alt = true;
+    let frames = try new_frame_renderer();
+    errdefer frames.deinit();
+    let model = try new_render_model(allocator, cast<i64>(size.cols), cast<i64>(size.rows));
+    errdefer model.deinit(allocator);
+    let queries = try new_queries(allocator);
+    errdefer queries.deinit(allocator);
+    let kitty = try new_kitty_images(allocator);
+    return Runtime {
+        has_pty: has_pty,
+        pty: move pty,
+        screen: move screen,
+        gesture: move gesture,
+        tracker: tmux::new_tracker(allocator, 0),
+        encoder: move encoder,
+        frames: move frames,
+        frame: new_frame(allocator),
+        model: move model,
+        queries: move queries,
+        kitty: move kitty,
+        size: size,
+        has_directory: has_directory,
+        directory: move directory,
+        control: tmux::new_control(allocator),
+        exited: false,
+        incoming: string::new(allocator),
+        passthrough: string::new(allocator),
+        outgoing: string::new(allocator)
+    };
+}
+
+/// Starts config's child on a PTY and a terminal reading it.
+pub fn spawn_runtime(allocator: Allocator, size: GridSize, config: &SpawnConfig) -> RuntimeFailure!Runtime {
+    var directory = string::new(allocator);
+    errdefer directory.deinit(allocator);
+    let pty = try spawn_pty(
+        allocator,
+        size.cols,
+        size.rows,
+        size.pixel_width,
+        size.pixel_height,
+        config,
+        &var directory
+    );
+    let has_directory = directory.len() > 0;
+    return try new_runtime(allocator, size, true, move pty, has_directory, move directory);
+}
+
+/// A terminal with no child, which the host feeds.
+pub fn external_runtime(allocator: Allocator, size: GridSize) -> RuntimeFailure!Runtime {
+    return try new_runtime(allocator, size, false, no_pty(allocator), false, string::new(allocator));
+}
+
+pub fn (self: Runtime) deinit(allocator: Allocator) -> void {
+    // SAFETY: the screen's terminal is live until screen.deinit below.
+    unsafe self.gesture.reset(self.screen.handle());
+    self.pty.deinit(allocator);
+    self.gesture.deinit();
+    self.tracker.deinit(allocator);
+    self.encoder.deinit(allocator);
+    self.frames.deinit();
+    self.frame.deinit(allocator);
+    self.model.deinit(allocator);
+    self.queries.deinit(allocator);
+    self.kitty.deinit(allocator);
+    self.screen.deinit(allocator);
+    self.directory.deinit(allocator);
+    self.control.deinit(allocator);
+    self.incoming.deinit(allocator);
+    self.passthrough.deinit(allocator);
+    self.outgoing.deinit(allocator);
+}
+
+pub fn (self: &Runtime) grid_size() -> GridSize {
+    return self.size;
+}
+
+fn (self: &Runtime) cols() -> i64 {
+    return cast<i64>(self.size.cols);
+}
+
+fn (self: &Runtime) rows() -> i64 {
+    return cast<i64>(self.size.rows);
+}
+
+/// Writes bytes to the child.
+pub fn (self: &var Runtime) write_all(bytes: []u8) -> RuntimeFailure!void {
+    if !self.has_pty {
+        return RuntimeError::NoPty;
+    }
+    try self.pty.write_all(bytes);
+    return;
+}
+
+fn (self: &var Runtime) write_outgoing() -> RuntimeFailure!void {
+    if !self.has_pty {
+        return RuntimeError::NoPty;
+    }
+    let bytes = self.outgoing.as_bytes();
+    try self.pty.write_all(bytes);
+    return;
+}
+
+fn (self: &var Runtime) scroll_to_bottom() -> void {
+    // SAFETY: the screen's terminal is live.
+    unsafe scroll_viewport_to_bottom(self.screen.handle());
+    return;
+}
+
+/// Appends the bytes a key sends to out; false when it sends none.
+pub fn (self: &var Runtime) encode_key(
+    allocator: Allocator,
+    input: KeyInput,
+    out: &var string::String
+) -> Failure!bool {
+    // SAFETY: the screen's terminal is live.
+    return try unsafe self.encoder.encode_key(allocator, self.screen.handle(), move input, out);
+}
+
+/// Sends a key to the child; false when it sends nothing.
+pub fn (self: &var Runtime) write_key(allocator: Allocator, input: KeyInput) -> RuntimeFailure!bool {
+    self.outgoing.clear();
+    // SAFETY: the screen's terminal is live.
+    if !try unsafe self.encoder.encode_key(allocator, self.screen.handle(), move input, &var self.outgoing) {
+        return false;
+    }
+    try self.write_outgoing();
+    self.scroll_to_bottom();
+    return true;
+}
+
+/// write_key of a key given as its parts, for a caller whose text views
+/// cannot ride in a KeyInput.
+pub fn (self: &var Runtime) write_key_of(
+    allocator: Allocator,
+    key_code: i64,
+    modifiers: u32,
+    has_text: bool,
+    text: []u8,
+    unshifted: []u8,
+    repeat: bool,
+    released: bool
+) -> RuntimeFailure!bool {
+    return try self.write_key(
+        allocator,
+        KeyInput {
+        key_code: key_code,
+        modifiers: modifiers,
+        has_text: has_text,
+        text: text,
+        unshifted: unshifted,
+        repeat: repeat,
+        released: released
+    }
+    );
+}
+
+/// encode_key of a key given as its parts.
+pub fn (self: &var Runtime) encode_key_of(
+    allocator: Allocator,
+    key_code: i64,
+    modifiers: u32,
+    has_text: bool,
+    text: []u8,
+    unshifted: []u8,
+    repeat: bool,
+    released: bool,
+    out: &var string::String
+) -> Failure!bool {
+    return try self.encode_key(
+        allocator,
+        KeyInput {
+        key_code: key_code,
+        modifiers: modifiers,
+        has_text: has_text,
+        text: text,
+        unshifted: unshifted,
+        repeat: repeat,
+        released: released
+    },
+        out
+    );
+}
+
+pub fn (self: &var Runtime) write_text(text: []u8) -> RuntimeFailure!void {
+    try self.write_all(text);
+    self.scroll_to_bottom();
+    return;
+}
+
+/// Appends text as the terminal wants a paste to out: bracketed when it
+/// asked for that, and without the bytes that could end one.
+pub fn (self: &var Runtime) encode_paste(
+    allocator: Allocator,
+    text: []u8,
+    out: &var string::String
+) -> Failure!void {
+    // SAFETY: the screen's terminal is live.
+    try unsafe self.encoder.encode_paste(allocator, self.screen.handle(), text, out);
+    return;
+}
+
+pub fn (self: &var Runtime) write_paste(allocator: Allocator, text: []u8) -> RuntimeFailure!void {
+    self.outgoing.clear();
+    // SAFETY: the screen's terminal is live.
+    try unsafe self.encoder.encode_paste(allocator, self.screen.handle(), text, &var self.outgoing);
+    try self.write_outgoing();
+    self.scroll_to_bottom();
+    return;
+}
+
+/// Appends the report of a mouse event to out; false when the terminal
+/// tracks no mouse or reports nothing for it.
+pub fn (self: &var Runtime) encode_mouse(
+    allocator: Allocator,
+    input: MouseInput,
+    out: &var string::String
+) -> Failure!bool {
+    let cols = self.cols();
+    let rows = self.rows();
+    // SAFETY: the screen's terminal is live.
+    return try unsafe self.encoder.encode_mouse(allocator, self.screen.handle(), cols, rows, input, out);
+}
+
+pub fn (self: &var Runtime) write_mouse(allocator: Allocator, input: MouseInput) -> RuntimeFailure!bool {
+    self.outgoing.clear();
+    let cols = self.cols();
+    let rows = self.rows();
+    // SAFETY: the screen's terminal is live.
+    if !try unsafe self.encoder.encode_mouse(allocator, self.screen.handle(), cols, rows, input, &var self.outgoing) {
+        return false;
+    }
+    try self.write_outgoing();
+    return true;
+}
+
+pub fn (self: &Runtime) is_mouse_tracking() -> bool {
+    // SAFETY: the screen's terminal is live.
+    return unsafe self.encoder.is_mouse_tracking(self.screen.handle());
+}
+
+/// Appends the focus report to out; false when the terminal asked for none.
+pub fn (self: &Runtime) encode_focus(
+    allocator: Allocator,
+    focused: bool,
+    out: &var string::String
+) -> mem::Error!bool {
+    // SAFETY: the screen's terminal is live.
+    return try unsafe self.encoder.encode_focus(allocator, self.screen.handle(), focused, out);
+}
+
+pub fn (self: &var Runtime) write_focus(allocator: Allocator, focused: bool) -> RuntimeFailure!bool {
+    self.outgoing.clear();
+    // SAFETY: the screen's terminal is live.
+    if !try unsafe self.encoder.encode_focus(allocator, self.screen.handle(), focused, &var self.outgoing) {
+        return false;
+    }
+    try self.write_outgoing();
+    return true;
+}
+
+pub fn (self: &Runtime) select_all() -> GhosttyError!void {
+    // SAFETY: the screen's terminal is live.
+    try unsafe self.queries.select_all(self.screen.handle());
+    return;
+}
+
+pub fn (self: &Runtime) clear_selection() -> GhosttyError!void {
+    // SAFETY: the screen's terminal is live.
+    try unsafe clear_selection(self.screen.handle());
+    return;
+}
+
+/// Appends the selected text to out; false when nothing is selected.
+pub fn (self: &var Runtime) selected_text(allocator: Allocator, out: &var string::String) -> Failure!bool {
+    // SAFETY: the screen's terminal is live.
+    return try unsafe self.queries.selected_text(allocator, self.screen.handle(), out);
+}
+
+/// Appends the link at the viewport cell to out: its hyperlink, or the URL
+/// its word is. False when it has neither.
+pub fn (self: &var Runtime) hyperlink_at(
+    allocator: Allocator,
+    row: i64,
+    col: i64,
+    out: &var string::String
+) -> Failure!bool {
+    let cols = self.cols();
+    let rows = self.rows();
+    // SAFETY: the screen's terminal is live.
+    return try unsafe self.queries.hyperlink_at(allocator, self.screen.handle(), cols, rows, row, col, out);
+}
+
+/// Appends the terminal's title to out; false when it has none.
+pub fn (self: &Runtime) title(allocator: Allocator, out: &var string::String) -> mem::Error!bool {
+    // SAFETY: the screen's terminal is live.
+    return try unsafe self.queries.title(allocator, self.screen.handle(), out);
+}
+
+pub fn (self: &Runtime) take_bell_count() -> u64 {
+    return self.screen.take_bells();
+}
+
+pub fn (self: &var Runtime) set_option_as_alt(enabled: bool) -> void {
+    self.encoder.option_as_alt = enabled;
+}
+
+/// Selects and reveals the next row holding query, searching on from the
+/// last match; false when no row does.
+pub fn (self: &var Runtime) find(allocator: Allocator, query: []u8, backwards: bool) -> Failure!bool {
+    let cols = self.cols();
+    let rows = self.rows();
+    // SAFETY: the screen's terminal is live.
+    return try unsafe self.queries.find(allocator, self.screen.handle(), cols, rows, query, backwards);
+}
+
+/// Reads the terminal's image placements into kitty.
+pub fn (self: &var Runtime) collect_kitty(allocator: Allocator) -> Failure!void {
+    // SAFETY: the screen's terminal is live.
+    try unsafe self.kitty.collect(allocator, self.screen.handle());
+    return;
+}
+
+pub fn (self: &var Runtime) resize(allocator: Allocator, size: GridSize) -> RuntimeFailure!void {
+    if same_size(self.size, size) {
+        return;
+    }
+    // SAFETY: the screen's terminal is live.
+    try unsafe resize_cells(self.screen.handle(), size);
+    if self.has_pty {
+        try self.pty.resize(size.cols, size.rows, size.pixel_width, size.pixel_height);
+    }
+    try self.model.resize(allocator, cast<i64>(size.cols), cast<i64>(size.rows));
+    self.size = size;
+    return;
+}
+
+/// Reads what the child wrote since the last drain into the terminal, and
+/// writes back what tmux control mode and the terminal answer. Whether
+/// anything the host shows changed.
+pub fn (self: &var Runtime) drain(allocator: Allocator) -> RuntimeFailure!bool {
+    if !self.has_pty {
+        return false;
+    }
+    var changed = false;
+    self.incoming.clear();
+    if try self.pty.read_available(allocator, &var self.incoming) {
+        self.passthrough.clear();
+        let bytes = self.incoming.as_bytes();
+        try self.control.feed(allocator, bytes, &var self.passthrough);
+        if self.passthrough.len() > 0 {
+            try self.feed_passthrough(allocator);
+            changed = true;
+        }
+        try self.flush_tmux_outgoing(allocator);
+        self.outgoing.clear();
+        try self.screen.take_replies(allocator, &var self.outgoing);
+        if self.outgoing.len() > 0 {
+            try self.write_outgoing();
+        }
+    }
+    let was_exited = self.exited;
+    if self.is_exited() and !was_exited {
+        changed = true;
+    }
+    return changed;
+}
+
+/// The descriptor that is readable when drain has something to read; -1
+/// without a child.
+pub fn (self: &Runtime) wakeup_fd() -> i32 {
+    return self.pty.wakeup_fd();
+}
+
+/// Feeds bytes to a terminal without a child, and appends its replies to
+/// replies.
+pub fn (self: &var Runtime) feed_external(
+    allocator: Allocator,
+    bytes: []u8,
+    replies: &var string::String
+) -> RuntimeFailure!void {
+    if self.has_pty {
+        return RuntimeError::HasPty;
+    }
+    self.passthrough.clear();
+    try self.passthrough.append_bytes(allocator, bytes);
+    try self.feed_passthrough(allocator);
+    try self.screen.take_replies(allocator, replies);
+    return;
+}
+
+/// Feeds a tmux pane's output to the terminal that shows it.
+pub fn (self: &var Runtime) feed_tmux_projection(allocator: Allocator, bytes: []u8) -> RuntimeFailure!void {
+    if self.has_pty {
+        return RuntimeError::HasPty;
+    }
+    self.passthrough.clear();
+    try self.passthrough.append_bytes(allocator, bytes);
+    try self.feed_passthrough(allocator);
+    // tmux is the terminal emulator for the pane PTY and already answers
+    // device reports from applications. Replies generated by Satin's
+    // display-only projection would be duplicates; a late duplicate can
+    // otherwise arrive at the shell after an alternate-screen app exits.
+    self.screen.clear_replies();
+    return;
+}
+
+/// Records a scroll tmux reported for the pane this terminal shows; the
+/// region is read when has_region is set.
+pub fn (self: &var Runtime) record_tmux_scroll(
+    rows: i64,
+    has_region: bool,
+    region: tmux::Region
+) -> RuntimeError!void {
+    if self.has_pty {
+        return RuntimeError::HasPty;
+    }
+    if has_region {
+        if region.top == 0 or region.bottom < region.top or (region.left == 0) != (region.right == 0) or
+            (region.left > 0 and region.right < region.left) {
+            return RuntimeError::InvalidRegion;
+        }
+    }
+    self.model.record_scroll_update(tmux::ScrollUpdate { rows: rows, has_region: has_region, region: region });
+    return;
+}
+
+pub fn (self: &var Runtime) prepare_tmux_hydration() -> RuntimeError!void {
+    if self.has_pty {
+        return RuntimeError::HasPty;
+    }
+    self.tracker.reset();
+    return;
+}
+
+pub fn (self: &Runtime) tmux_shell_prompt_state() -> GhosttyError!ShellPromptState {
+    // SAFETY: the screen's terminal is live.
+    if try unsafe self.queries.is_alternate(self.screen.handle()) {
+        return ShellPromptState::Unavailable;
+    }
+    var x: i64 = 0;
+    var y: i64 = 0;
+    // SAFETY: as above.
+    try unsafe self.queries.cursor_position(self.screen.handle(), &var x, &var y);
+    if x > 0 {
+        return ShellPromptState::Ready;
+    }
+    return ShellPromptState::Waiting;
+}
+
+pub fn (self: &Runtime) interactive_shell_owns_foreground() -> bool {
+    return self.has_pty and self.pty.interactive_shell_owns_foreground();
+}
+
+pub fn (self: &Runtime) tmux_semantic_prompt_seen() -> bool {
+    return self.screen.prompt_seen();
+}
+
+pub fn (self: &Runtime) tmux_prompt_generation() -> u64 {
+    return self.screen.prompt_generation();
+}
+
+pub fn (self: &var Runtime) reset_tmux_prompt_tracking() -> void {
+    self.screen.reset_prompt();
+}
+
+/// Takes the oldest tmux event into out, as the JSON the host reads.
+pub fn (self: &var Runtime) take_tmux_event(allocator: Allocator, out: &var string::String) -> mem::Error!bool {
+    return try self.control.take_event(allocator, out);
+}
+
+/// Sends a tmux command; false when no control client is there to take it.
+pub fn (self: &var Runtime) tmux_command(allocator: Allocator, command: []u8) -> RuntimeFailure!bool {
+    if !try self.control.command(allocator, command) {
+        return false;
+    }
+    try self.flush_tmux_outgoing(allocator);
+    return true;
+}
+
+fn append_hex_byte(allocator: Allocator, out: &var string::String, byte: u8) -> mem::Error!void {
+    let digits = "0123456789abcdef";
+    try out.append_byte(allocator, 32);
+    try out.append_byte(allocator, digits[cast<i64>(byte) / 16]);
+    try out.append_byte(allocator, digits[cast<i64>(byte) % 16]);
+    return;
+}
+
+/// Types bytes into a tmux pane, 256 a `send-keys`; false when the pane
+/// takes no input.
+pub fn (self: &var Runtime) tmux_send_bytes(allocator: Allocator, pane: i64, bytes: []u8) -> RuntimeFailure!bool {
+    if mem::len(bytes) == 0 or !self.control.pane_accepts_input(pane) {
+        return false;
+    }
+    var command = string::new(allocator);
+    defer command.deinit(allocator);
+    var start = 0;
+    while start < mem::len(bytes) {
+        var end = start + 256;
+        if end > mem::len(bytes) {
+            end = mem::len(bytes);
+        }
+        command.clear();
+        try command.append_bytes(allocator, "send-keys -t %");
+        try fmt::append_i64(allocator, &var command, pane);
+        try command.append_bytes(allocator, " -H");
+        for start..end |index| {
+            try append_hex_byte(allocator, &var command, bytes[index]);
+        }
+        let text = command.as_bytes();
+        if !try self.control.command(allocator, text) {
+            return false;
+        }
+        start = end;
+    }
+    try self.flush_tmux_outgoing(allocator);
+    return true;
+}
+
+/// Pastes bytes into a tmux pane; false when the pane takes no input.
+pub fn (self: &var Runtime) tmux_paste(allocator: Allocator, pane: i64, bytes: []u8) -> RuntimeFailure!bool {
+    if !try self.control.paste(allocator, pane, bytes) {
+        return false;
+    }
+    try self.flush_tmux_outgoing(allocator);
+    return true;
+}
+
+/// The host sent input for a terminal without a child: shows the newest
+/// output again.
+pub fn (self: &var Runtime) finish_external_input() -> void {
+    if !self.has_pty {
+        self.scroll_to_bottom();
+    }
+    return;
+}
+
+/// Whether the child has exited. A terminal without a child never has.
+pub fn (self: &var Runtime) is_exited() -> bool {
+    if !self.exited and self.has_pty and self.pty.poll_exited() {
+        self.exited = true;
+    }
+    return self.exited;
+}
+
+/// Scrolls the viewport by up to requested rows and returns the rows it
+/// moved.
+pub fn (self: &var Runtime) scroll_delta(requested: i64) -> i64 {
+    // SAFETY: the screen's terminal is live.
+    let rows = unsafe self.queries.scroll_delta(self.screen.handle(), requested);
+    if rows != 0 {
+        self.model.record_scroll_delta(rows);
+    }
+    return rows;
+}
+
+/// Reads the viewport into frame.
+pub fn (self: &var Runtime) collect_frame(allocator: Allocator) -> Failure!void {
+    // SAFETY: the screen's terminal is live.
+    try unsafe self.frames.collect(allocator, self.screen.handle(), &var self.frame);
+    return;
+}
+
+/// Appends the viewport's text to out, one line a row.
+pub fn (self: &var Runtime) screen_text(allocator: Allocator, out: &var string::String) -> Failure!void {
+    try self.collect_frame(allocator);
+    try self.frame.screen_text(allocator, out);
+    return;
+}
+
+/// Reads the viewport into frame and draws it into model.
+pub fn (self: &var Runtime) update_model(allocator: Allocator) -> Failure!void {
+    try self.collect_frame(allocator);
+    try self.model.update(allocator, &self.frame);
+    return;
+}
+
+/// Where the cursor is in the active area, as (x, y) through the outs.
+pub fn (self: &Runtime) cursor_position(x: &var i64, y: &var i64) -> GhosttyError!void {
+    // SAFETY: the screen's terminal is live.
+    try unsafe self.queries.cursor_position(self.screen.handle(), x, y);
+    return;
+}
+
+/// Appends the directory the terminal's shell is in to out; false when
+/// nothing told it.
+pub fn (self: &Runtime) working_directory(allocator: Allocator, out: &var string::String) -> mem::Error!bool {
+    if !self.has_directory {
+        return false;
+    }
+    try out.append_string(allocator, &self.directory);
+    return true;
+}
+
+/// Feeds passthrough to the terminal, recording the scrolls it carries and
+/// the directory it reports.
+fn (self: &var Runtime) feed_passthrough(allocator: Allocator) -> RuntimeFailure!void {
+    let bytes = self.passthrough.as_bytes();
+    let update = try self.tracker.feed(allocator, bytes);
+    var full_viewport = true;
+    if update.has_region {
+        full_viewport = update.region.top == 1 and update.region.bottom == self.rows() and update.region.left == 0 and
+            update.region.right == 0;
+    }
+    var primary = false;
+    // SAFETY: the screen's terminal is live.
+    if unsafe self.queries.is_alternate(self.screen.handle()) |alternate| {
+        primary = !alternate;
+    } else |_| {}
+    // Primary-screen history growth is measured from libghostty's scrollbar
+    // in the model. Recording the same line-feed scroll here would
+    // double-count it and let rapid prompt output build an animation
+    // backlog.
+    if !(full_viewport and primary) {
+        self.model.record_scroll_update(update);
+    }
+    try self.screen.feed(allocator, bytes);
+    try self.update_working_directory(allocator);
+    return;
+}
+
+fn (self: &var Runtime) update_working_directory(allocator: Allocator) -> mem::Error!void {
+    var reported = string::new(allocator);
+    defer reported.deinit(allocator);
+    // SAFETY: the screen's terminal is live.
+    if !try unsafe self.queries.working_directory(allocator, self.screen.handle(), &var reported) {
+        return;
+    }
+    if reported.len() == 0 {
+        return;
+    }
+    self.directory.clear();
+    try self.directory.append_string(allocator, &reported);
+    self.has_directory = true;
+    return;
+}
+
+fn (self: &var Runtime) flush_tmux_outgoing(allocator: Allocator) -> RuntimeFailure!void {
+    while try self.control.take_outgoing(allocator, &var self.outgoing) {
+        try self.write_outgoing();
+    }
+    return;
+}
+
+pub fn (self: &Runtime) selection_press(input: SelectionInput) -> GhosttyError!void {
+    // SAFETY: the screen's terminal is live.
+    try unsafe self.gesture.press(self.screen.handle(), self.cols(), self.rows(), input);
+    return;
+}
+
+pub fn (self: &Runtime) selection_drag(input: SelectionInput, rectangular: bool) -> GhosttyError!void {
+    // SAFETY: the screen's terminal is live.
+    try unsafe self.gesture.drag(self.screen.handle(), self.cols(), self.rows(), input, rectangular);
+    return;
+}
+
+/// A tick while the pointer is held past an edge. Returns the rows the
+/// viewport moved.
+pub fn (self: &var Runtime) selection_autoscroll(input: SelectionInput, rectangular: bool) -> GhosttyError!i64 {
+    let cols = self.cols();
+    let rows = self.rows();
+    // SAFETY: the screen's terminal is live.
+    let moved = try unsafe self.gesture.autoscroll(self.screen.handle(), cols, rows, input, rectangular);
+    if moved != 0 {
+        self.model.record_scroll_delta(moved);
+    }
+    return moved;
+}
+
+pub fn (self: &Runtime) selection_release(has_point: bool, row: i64, col: i64) -> GhosttyError!void {
+    // SAFETY: the screen's terminal is live.
+    try unsafe self.gesture.release(self.screen.handle(), self.cols(), self.rows(), has_point, row, col);
+    return;
+}
+
+pub fn (self: &Runtime) cancel_selection() -> void {
+    // SAFETY: the screen's terminal is live.
+    unsafe self.gesture.reset(self.screen.handle());
+    return;
+}

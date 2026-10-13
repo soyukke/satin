@@ -1,0 +1,502 @@
+// The images a terminal's output places with the Kitty graphics protocol:
+// where each is on the viewport, and its pixels as RGBA. The Rust
+// `kitty_placements`, `configure_kitty_graphics` and `NativePngDecoder`.
+import std::array;
+import std::mem;
+import std::string;
+
+/// libghostty's `GhosttySysImage`: a decoded image in storage of the
+/// allocator the decoder was handed.
+extern "c" struct SysImage {
+    width: u32,
+    height: u32,
+    data: ?ptr<u8>,
+    data_len: usize,
+}
+
+/// libghostty's `GhosttyKittyGraphicsPlacementRenderInfo`.
+extern "c" struct RenderInfo {
+    size: usize,
+    pixel_width: u32,
+    pixel_height: u32,
+    grid_cols: u32,
+    grid_rows: u32,
+    viewport_col: i32,
+    viewport_row: i32,
+    viewport_visible: bool,
+    source_x: u32,
+    source_y: u32,
+    source_width: u32,
+    source_height: u32,
+}
+
+@link_library("ghostty-vt")
+extern "c" fn ghostty_alloc(allocator: ?ptr<u8>, length: usize) -> ?ptr<u8>
+@link_library("ghostty-vt")
+extern "c" fn ghostty_sys_set(option: i32, value: ?ptr<const u8>) -> i32
+@link_library("ghostty-vt")
+extern "c" fn ghostty_kitty_graphics_get(graphics: ptr<u8>, data: i32, out: ptr<u8>) -> i32
+@link_library("ghostty-vt")
+extern "c" fn ghostty_kitty_graphics_image(graphics: ptr<u8>, image_id: u32) -> ?ptr<u8>
+@link_library("ghostty-vt")
+extern "c" fn ghostty_kitty_graphics_image_get(image: ptr<u8>, data: i32, out: ptr<u8>) -> i32
+@link_library("ghostty-vt")
+extern "c" fn ghostty_kitty_graphics_placement_iterator_new(allocator: ?ptr<u8>, out: ptr<u8>) -> i32
+@link_library("ghostty-vt")
+extern "c" fn ghostty_kitty_graphics_placement_iterator_free(iterator: ptr<u8>) -> void
+@link_library("ghostty-vt")
+extern "c" fn ghostty_kitty_graphics_placement_next(iterator: ptr<u8>) -> bool
+@link_library("ghostty-vt")
+extern "c" fn ghostty_kitty_graphics_placement_get(iterator: ptr<u8>, data: i32, out: ptr<u8>) -> i32
+@link_library("ghostty-vt")
+extern "c" fn ghostty_kitty_graphics_placement_render_info(
+    iterator: ptr<u8>,
+    image: ptr<u8>,
+    terminal: ptr<u8>,
+    out: &var RenderInfo
+) -> i32
+fn terminal_data_kitty_graphics() -> i32 {
+    return 30;
+}
+
+/// A copy of bytes in storage of a libghostty allocator; null when it has
+/// none. A null allocator is libghostty's default.
+fn copy_for_ghostty(allocator: ?ptr<u8>, bytes: &string::String) -> ?ptr<u8> {
+    let source = bytes.as_bytes();
+    // SAFETY: the allocator is one libghostty handed out, or null for its default.
+    let storage = unsafe ghostty_alloc(allocator, cast<usize>(mem::len(source))) orelse return null;
+    // SAFETY: ghostty_alloc returned as many writable bytes as source holds.
+    let copy = unsafe mut_view_from_ptr(storage, mem::len(source));
+    for 0..mem::len(source) |index| {
+        copy[index] = source[index];
+    }
+    return storage;
+}
+
+/// Decodes a PNG for libghostty, which calls this for every PNG a terminal's
+/// output transmits. The pixels go in storage of the allocator it passes,
+/// which it frees.
+export "c" fn satin_term_decode_png(
+    userdata: ?ptr<u8>,
+    allocator: ?ptr<u8>,
+    data: ?ptr<const u8>,
+    length: usize,
+    out: ?ptr<SysImage>
+) -> bool {
+    let source = data orelse return false;
+    let target = out orelse return false;
+    // SAFETY: libghostty passes length readable bytes at data for this call.
+    let bytes = unsafe view_from_ptr(source, cast<i64>(length));
+    let scratch = mem::page_allocator();
+    var pixels = string::new(scratch);
+    defer pixels.deinit(scratch);
+    var width: i64 = 0;
+    var height: i64 = 0;
+    if decode_png(scratch, bytes, &var width, &var height, &var pixels) {} else |_| {
+        return false;
+    }
+    let size = cast<usize>(pixels.len());
+    let copied = copy_for_ghostty(allocator, &pixels);
+    let storage = copied orelse return false;
+    let image = SysImage { width: cast<u32>(width), height: cast<u32>(height), data: storage, data_len: size };
+    // SAFETY: libghostty passes writable storage for one SysImage.
+    unsafe ptr_write(target, move image);
+    return true;
+}
+
+/// Lets terminal keep images: a storage limit, and transfers by temporary
+/// file and shared memory but not by an arbitrary file path. Also gives
+/// libghostty its PNG decoder, which every terminal shares.
+///
+/// terminal must be a live libghostty terminal.
+pub unsafe fn configure_kitty_graphics(terminal: ptr<u8>) -> GhosttyError!void {
+    // SAFETY: the address is a function of the DecodePngFn signature, which lives as long as the program.
+    let decoder = unsafe cast<ptr<const u8>>(satin_term_decode_png);
+    // SAFETY: option 1 takes a DecodePngFn.
+    if unsafe ghostty_sys_set(1, decoder) != success() {
+        return GhosttyError::Refused;
+    }
+    let slot = new_slot() orelse return GhosttyError::Refused;
+    var accepted = true;
+    set_slot_usize(slot, 67108864);
+    // SAFETY: the caller passes a live terminal; the slot holds the storage limit, a u64.
+    accepted = accepted and unsafe ghostty_terminal_set(terminal, 15, slot) == success();
+    set_slot_usize(slot, 16777216);
+    // SAFETY: as above; the slot holds the APC byte limit, a size_t.
+    accepted = accepted and unsafe ghostty_terminal_set(terminal, 20, slot) == success();
+    set_slot_usize(slot, 0);
+    // SAFETY: as above; the slot holds false, for transfers by file path.
+    accepted = accepted and unsafe ghostty_terminal_set(terminal, 16, slot) == success();
+    set_slot_usize(slot, 1);
+    // SAFETY: as above; the slot holds true, for transfers by temporary file.
+    accepted = accepted and unsafe ghostty_terminal_set(terminal, 17, slot) == success();
+    // SAFETY: as above; the slot holds true, for transfers by shared memory.
+    accepted = accepted and unsafe ghostty_terminal_set(terminal, 18, slot) == success();
+    // SAFETY: the slot came from malloc and nothing reads it after this.
+    unsafe free(slot);
+    if !accepted {
+        return GhosttyError::Refused;
+    }
+    return;
+}
+
+/// One image on the viewport. viewport_col and viewport_row are the cell its
+/// top left is in, which may be off the viewport; the offsets are pixels
+/// into that cell; the source rectangle is the part of the image drawn.
+pub struct Placement {
+    pub image_id: u32,
+    pub image_number: u32,
+    pub z: i32,
+    pub viewport_col: i32,
+    pub viewport_row: i32,
+    pub x_offset: u32,
+    pub y_offset: u32,
+    pub pixel_width: u32,
+    pub pixel_height: u32,
+    pub source_x: u32,
+    pub source_y: u32,
+    pub source_width: u32,
+    pub source_height: u32,
+    pub image_width: u32,
+    pub image_height: u32,
+}
+
+/// An image's pixels as RGBA, kept while a placement shows the image and
+/// its number says it has not been replaced.
+struct CachedImage {
+    image_id: u32,
+    image_number: u32,
+    rgba: string::String,
+}
+
+fn (self: CachedImage) deinit(allocator: Allocator) -> void {
+    self.rgba.deinit(allocator);
+}
+
+/// The iterator placements are read through, and a Slot.
+///
+/// iterator is a live libghostty placement iterator and slot a Slot; deinit
+/// frees both, once.
+unsafe struct KittyHandles {
+    iterator: ptr<u8>,
+    slot: ptr<u8>,
+}
+
+/// The placements of one terminal, as the last collect found them, and the
+/// pixels of the images they show.
+pub struct KittyImages {
+    handles: KittyHandles,
+    pub placements: array::Array<Placement>,
+    images: array::Array<CachedImage>,
+}
+
+pub fn new_kitty_images(allocator: Allocator) -> GhosttyError!KittyImages {
+    let slot = new_slot() orelse return GhosttyError::Refused;
+    // SAFETY: the slot holds one writable handle; a null allocator is libghostty's own.
+    let result = unsafe ghostty_kitty_graphics_placement_iterator_new(null, slot);
+    var iterator: ?ptr<u8> = null;
+    if result == success() {
+        iterator = slot_handle(slot);
+    }
+    if iterator |live| {
+        // SAFETY: live is the iterator libghostty made and slot is a Slot.
+        let handles = unsafe KittyHandles { iterator: live, slot: slot };
+        return KittyImages {
+            handles: move handles,
+            placements: array::new<Placement>(allocator),
+            images: array::new<CachedImage>(allocator)
+        };
+    }
+    // SAFETY: the slot came from malloc and nothing reads it after this.
+    unsafe free(slot);
+    return GhosttyError::Refused;
+}
+
+pub fn (self: KittyImages) deinit(allocator: Allocator) -> void {
+    // SAFETY: the iterator is live and freed once, here.
+    unsafe ghostty_kitty_graphics_placement_iterator_free(self.handles.iterator);
+    // SAFETY: the slot came from malloc and nothing reads it after this.
+    unsafe free(self.handles.slot);
+    self.placements.deinit(allocator);
+    self.images.deinit(allocator);
+}
+
+/// A u32 value of the placement the iterator is on.
+fn (self: &KittyImages) placement_value(data: i32) -> GhosttyError!u32 {
+    let slot = self.handles.slot;
+    // SAFETY: the iterator is on a placement; the slot holds the 32-bit value.
+    let result = unsafe ghostty_kitty_graphics_placement_get(self.handles.iterator, data, slot);
+    if result != success() {
+        return GhosttyError::Refused;
+    }
+    return cast<u32>(slot_i32(slot));
+}
+
+/// A value of image, written to the slot.
+///
+/// image must be a live image of the terminal being read.
+unsafe fn(self: &KittyImages) read_image(image: ptr<u8>, data: i32) -> GhosttyError!void {
+    set_slot_usize(self.handles.slot, 0);
+    // SAFETY: the caller passes a live image; the slot holds any value this reads.
+    let result = unsafe ghostty_kitty_graphics_image_get(image, data, self.handles.slot);
+    if result != success() {
+        return GhosttyError::Refused;
+    }
+    return;
+}
+
+fn (self: &KittyImages) cached_index(image_id: u32) -> i64 {
+    var found: i64 = -1;
+    for 0..self.images.len() |index| {
+        if self.images.at(index) |image| {
+            if image.image_id == image_id {
+                found = index;
+            }
+        }
+    }
+    return found;
+}
+
+/// Appends pixels in one of libghostty's image formats to out as RGBA.
+/// False when the format is not one of pixels, or data is not width x
+/// height of them.
+fn append_rgba(
+    allocator: Allocator,
+    out: &var string::String,
+    data: []u8,
+    width: i64,
+    height: i64,
+    format: i32
+) -> mem::Error!bool {
+    let pixels = width * height;
+    if format == 1 {
+        if mem::len(data) != pixels * 4 {
+            return false;
+        }
+        try out.append_bytes(allocator, data);
+        return true;
+    }
+    var sample_bytes: i64 = 0;
+    if format == 0 {
+        sample_bytes = 3;
+    } else if format == 3 {
+        sample_bytes = 2;
+    } else if format == 4 {
+        sample_bytes = 1;
+    } else {
+        return false;
+    }
+    if mem::len(data) / sample_bytes < pixels {
+        return false;
+    }
+    for 0..pixels |pixel| {
+        let at = pixel * sample_bytes;
+        if format == 0 {
+            try out.append_bytes(allocator, data[at..at + 3]);
+            try out.append_byte(allocator, 255);
+        } else {
+            try out.append_byte(allocator, data[at]);
+            try out.append_byte(allocator, data[at]);
+            try out.append_byte(allocator, data[at]);
+            if format == 3 {
+                try out.append_byte(allocator, data[at + 1]);
+            } else {
+                try out.append_byte(allocator, 255);
+            }
+        }
+    }
+    return true;
+}
+
+/// Makes sure the cache holds image's pixels as its current number has them.
+///
+/// image must be a live image of the terminal being read, of the given size.
+unsafe fn(self: &var KittyImages) cache_image(
+    allocator: Allocator,
+    image: ptr<u8>,
+    image_id: u32,
+    image_number: u32,
+    width: u32,
+    height: u32
+) -> Failure!void {
+    let existing = self.cached_index(image_id);
+    if existing >= 0 {
+        var current = false;
+        if self.images.at(existing) |cached| {
+            current = cached.image_number == image_number;
+        }
+        if current {
+            return;
+        }
+        if self.images.remove(existing) |stale| {
+            stale.deinit(allocator);
+        } else |_| {}
+    }
+    // SAFETY: the caller passes a live image; 5 is its format.
+    try unsafe self.read_image(image, 5);
+    let format = slot_i32(self.handles.slot);
+    // SAFETY: as above; 8 is its data length.
+    try unsafe self.read_image(image, 8);
+    let length = slot_usize(self.handles.slot);
+    // SAFETY: as above; 7 is its data pointer.
+    try unsafe self.read_image(image, 7);
+    let address = slot_usize(self.handles.slot);
+    var rgba = string::new(allocator);
+    errdefer rgba.deinit(allocator);
+    if address != 0 and length > 0 {
+        // SAFETY: the image owns length bytes at address until the terminal next changes.
+        let data = unsafe view_from_ptr(ptr_from_int<ptr<const u8>>(address), cast<i64>(length));
+        if !try append_rgba(allocator, &var rgba, data, cast<i64>(width), cast<i64>(height), format) {
+            return GhosttyError::Refused;
+        }
+    } else if width != 0 and height != 0 {
+        return GhosttyError::Refused;
+    }
+    try self.images.append(allocator, CachedImage { image_id: image_id, image_number: image_number, rgba: move rgba });
+    return;
+}
+
+/// Drops the cached pixels of every image no placement shows.
+fn (self: &var KittyImages) drop_hidden_images(allocator: Allocator, visible: &array::Array<u32>) -> void {
+    var index = self.images.len() - 1;
+    while index >= 0 {
+        var image_id: u32 = 0;
+        if self.images.at(index) |image| {
+            image_id = image.image_id;
+        }
+        var shown = false;
+        for 0..visible.len() |position| {
+            if (visible.get(position) orelse 0) == image_id {
+                shown = true;
+            }
+        }
+        if !shown {
+            if self.images.remove(index) |hidden| {
+                hidden.deinit(allocator);
+            } else |_| {}
+        }
+        index = index - 1;
+    }
+    return;
+}
+
+/// Orders the placements from the lowest z to the highest, keeping the
+/// order of equals.
+fn (self: &var KittyImages) sort_by_z() -> void {
+    let placements = self.placements.as_mut_slice();
+    for 1..mem::count<Placement>(placements) |index| {
+        let moving = placements[index];
+        var position = index;
+        while position > 0 and placements[position - 1].z > moving.z {
+            placements[position] = placements[position - 1];
+            position = position - 1;
+        }
+        placements[position] = moving;
+    }
+    return;
+}
+
+/// Reads terminal's placements into placements, lowest z first, and brings
+/// the pixel cache up to date with them.
+///
+/// terminal must be a live libghostty terminal.
+pub unsafe fn(self: &var KittyImages) collect(allocator: Allocator, terminal: ptr<u8>) -> Failure!void {
+    self.placements.clear(allocator);
+    let slot = self.handles.slot;
+    let iterator = self.handles.iterator;
+    set_slot_usize(slot, 0);
+    // SAFETY: the caller passes a live terminal; the slot holds the graphics handle.
+    let graphics_result = unsafe ghostty_terminal_get(terminal, terminal_data_kitty_graphics(), slot);
+    if graphics_result != success() {
+        return GhosttyError::Refused;
+    }
+    let graphics = slot_handle(slot) orelse return GhosttyError::Refused;
+    set_slot_handle(slot, iterator);
+    // SAFETY: graphics is the terminal's live image storage; the slot holds the iterator to fill.
+    if unsafe ghostty_kitty_graphics_get(graphics, 1, slot) != success() {
+        return GhosttyError::Refused;
+    }
+    var visible = array::new<u32>(allocator);
+    defer visible.deinit(allocator);
+    // SAFETY: the iterator is live and was filled from the storage above.
+    while unsafe ghostty_kitty_graphics_placement_next(iterator) {
+        let image_id = try self.placement_value(1);
+        try visible.append(allocator, image_id);
+        // SAFETY: graphics is the terminal's live image storage.
+        let image = unsafe ghostty_kitty_graphics_image(graphics, image_id) orelse continue;
+        var info = RenderInfo {
+            size: mem::size_of<RenderInfo>(),
+            pixel_width: 0,
+            pixel_height: 0,
+            grid_cols: 0,
+            grid_rows: 0,
+            viewport_col: 0,
+            viewport_row: 0,
+            viewport_visible: false,
+            source_x: 0,
+            source_y: 0,
+            source_width: 0,
+            source_height: 0
+        };
+        // SAFETY: iterator, image and the caller's terminal are live; info is a sized RenderInfo.
+        if unsafe ghostty_kitty_graphics_placement_render_info(iterator, image, terminal, &var info) != success() {
+            return GhosttyError::Refused;
+        }
+        if !info.viewport_visible {
+            continue;
+        }
+        // SAFETY: image is a live image of the caller's terminal; 2 is its number.
+        try unsafe self.read_image(image, 2);
+        let image_number = cast<u32>(slot_i32(slot));
+        // SAFETY: as above; 3 is its width.
+        try unsafe self.read_image(image, 3);
+        let image_width = cast<u32>(slot_i32(slot));
+        // SAFETY: as above; 4 is its height.
+        try unsafe self.read_image(image, 4);
+        let image_height = cast<u32>(slot_i32(slot));
+        // SAFETY: image is a live image of the caller's terminal, of that size.
+        try unsafe self.cache_image(allocator, image, image_id, image_number, image_width, image_height);
+        let z = cast<i32>(try self.placement_value(12));
+        let x_offset = try self.placement_value(4);
+        let y_offset = try self.placement_value(5);
+        try self.placements.append(allocator, Placement {
+            image_id: image_id,
+            image_number: image_number,
+            z: z,
+            viewport_col: info.viewport_col,
+            viewport_row: info.viewport_row,
+            x_offset: x_offset,
+            y_offset: y_offset,
+            pixel_width: info.pixel_width,
+            pixel_height: info.pixel_height,
+            source_x: info.source_x,
+            source_y: info.source_y,
+            source_width: info.source_width,
+            source_height: info.source_height,
+            image_width: image_width,
+            image_height: image_height
+        });
+    }
+    self.drop_hidden_images(allocator, &visible);
+    self.sort_by_z();
+    return;
+}
+
+/// Appends the RGBA pixels of the image a placement shows to out; false
+/// when no placement of the last collect showed image_id.
+pub fn (self: &KittyImages) append_pixels(
+    allocator: Allocator,
+    image_id: u32,
+    out: &var string::String
+) -> mem::Error!bool {
+    let index = self.cached_index(image_id);
+    if index < 0 {
+        return false;
+    }
+    if self.images.at(index) |image| {
+        let pixels = image.rgba.as_bytes();
+        try out.append_bytes(allocator, pixels);
+        return true;
+    }
+    return false;
+}

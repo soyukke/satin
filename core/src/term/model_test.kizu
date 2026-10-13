@@ -1,0 +1,253 @@
+import satin::tmux;
+import std::mem;
+import std::testing;
+
+/// Appends a row of one cell a byte of text; status gives it a background.
+fn add_row(allocator: Allocator, frame: &var Frame, text: []u8, status: bool) -> mem::Error!void {
+    for 0..mem::len(text) |index| {
+        let start = frame.text.len();
+        try frame.text.append_byte(allocator, text[index]);
+        try frame.cells.append(
+            allocator,
+            Cell {
+            text_start: start,
+            text_len: 1,
+            fg: Color { r: 220, g: 220, b: 210 },
+            has_bg: status,
+            bg: Color { r: 80, g: 96, b: 112 },
+            blend: 0,
+            style: CellStyle {
+                bold: false,
+                italic: false,
+                underline: Underline::None,
+                has_underline_color: false,
+                underline_color: Color { r: 0, g: 0, b: 0 },
+                faint: false,
+                blink: false,
+                strikethrough: false,
+                overline: false
+            }
+        }
+        );
+    }
+    try frame.row_ends.append(allocator, frame.cells.len());
+    return;
+}
+
+/// A frame of the rows in text, which `/` ends; a row starting with `#` has
+/// a background.
+fn frame_of(allocator: Allocator, text: []u8, alternate: bool, top: u64, total: u64) -> mem::Error!Frame {
+    var frame = new_frame(allocator);
+    errdefer frame.deinit(allocator);
+    var start = 0;
+    for 0..mem::len(text) + 1 |index| {
+        if index < mem::len(text) and text[index] != cast<u8>(47) {
+            continue;
+        }
+        var row = text[start..index];
+        var status = false;
+        if mem::len(row) > 0 and row[0] == cast<u8>(35) {
+            status = true;
+            row = row[1..mem::len(row)];
+        }
+        try add_row(allocator, &var frame, row, status);
+        start = index + 1;
+    }
+    let visible = cast<u64>(frame.row_count());
+    frame.has_cursor = true;
+    frame.cursor = Cursor { x: 1, y: 0, shape: CursorShape::Block };
+    frame.alternate = alternate;
+    frame.scrollbar = Scrollbar { top: top, visible: visible, total: total };
+    if alternate {
+        frame.scrollbar.total = visible;
+    }
+    return move frame;
+}
+
+fn show(allocator: Allocator, model: &var RenderModel, text: []u8) -> mem::Error!void {
+    let frame = try frame_of(allocator, text, true, 0, 0);
+    defer frame.deinit(allocator);
+    try model.update(allocator, &frame);
+    return;
+}
+
+fn show_primary(allocator: Allocator, model: &var RenderModel, text: []u8, top: u64, total: u64) -> mem::Error!void {
+    let frame = try frame_of(allocator, text, false, top, total);
+    defer frame.deinit(allocator);
+    try model.update(allocator, &frame);
+    return;
+}
+
+fn line_is(model: &RenderModel, row: i64, expected: []u8) -> bool {
+    if model.window.line(model.window.line_id(row)) |line| {
+        let text = line.text.as_bytes();
+        return mem::equal_bytes(text, expected);
+    }
+    return false;
+}
+
+fn position_is(model: &RenderModel, expected: f64) -> bool {
+    return model.scroll_position() == cast<f32>(expected);
+}
+
+fn region_scroll(rows: i64, top: i64, bottom: i64, left: i64, right: i64) -> tmux::ScrollUpdate {
+    return tmux::ScrollUpdate {
+        rows: rows,
+        has_region: true,
+        region: tmux::Region { top: top, bottom: bottom, left: left, right: right }
+    };
+}
+
+test "draws a frame into one window" {
+    let allocator = mem::page_allocator();
+    var model = try new_render_model(allocator, 3, 2);
+    defer model.deinit(allocator);
+    try show(allocator, &var model, "abc/def");
+    testing::expect(model.window.width == 3);
+    testing::expect(model.window.height == 2);
+    testing::expect(line_is(&model, 0, "abc"));
+    testing::expect(line_is(&model, 1, "def"));
+}
+
+test "a recorded scroll starts the spring and settles" {
+    let allocator = mem::page_allocator();
+    var model = try new_render_model(allocator, 3, 3);
+    defer model.deinit(allocator);
+    try show(allocator, &var model, "111/222/333");
+    model.record_scroll_delta(2);
+    try show(allocator, &var model, "333/444/555");
+    testing::expect(position_is(&model, -2.0));
+    testing::expect(model.has_active_animation());
+    testing::expect(model.window.scrollback_id(-2) >= 0);
+    testing::expect(!model.advance_animations(cast<f32>(0.3)));
+    testing::expect(!model.has_active_animation());
+}
+
+test "the spring decays towards rest" {
+    let allocator = mem::page_allocator();
+    var model = try new_render_model(allocator, 3, 3);
+    defer model.deinit(allocator);
+    try show(allocator, &var model, "111/222/333");
+    model.record_scroll_delta(2);
+    try show(allocator, &var model, "333/444/555");
+    testing::expect(model.advance_animations(cast<f32>(0.016)));
+    testing::expect(model.scroll_position() > cast<f32>(-2.0));
+    testing::expect(model.scroll_position() < cast<f32>(0.0));
+    var steps = 0;
+    while model.advance_animations(cast<f32>(0.016)) {
+        steps = steps + 1;
+    }
+    testing::expect(steps > 5 and steps < 60);
+}
+
+test "a width change keeps the scroll free of gaps" {
+    let allocator = mem::page_allocator();
+    var model = try new_render_model(allocator, 3, 3);
+    defer model.deinit(allocator);
+    try show_primary(allocator, &var model, "111/222/333", 0, 3);
+    try show_primary(allocator, &var model, "222/333/444", 1, 4);
+    try show_primary(allocator, &var model, "3333/4444/5555", 2, 5);
+    testing::expect(position_is(&model, -1.0));
+    testing::expect(model.window.scrollback_id(-1) >= 0);
+    testing::expect(model.window.scrollback_id(0) >= 0);
+}
+
+test "a region scroll keeps the rows outside it" {
+    let allocator = mem::page_allocator();
+    var model = try new_render_model(allocator, 16, 8);
+    defer model.deinit(allocator);
+    try show(allocator, &var model, "1 alpha/2 beta/3 gamma/4 delta/5 epsilon/6 zeta/7 eta/#vim status");
+    model.record_scroll_update(region_scroll(1, 1, 7, 0, 0));
+    try show(allocator, &var model, "2 beta/3 gamma/4 delta/5 epsilon/6 zeta/7 eta/8 theta/vim status");
+    testing::expect(position_is(&model, -1.0));
+    testing::expect(model.window.margins.bottom == 1);
+    testing::expect(model.window.margins.left == 0);
+    testing::expect(model.window.margins.right == 0);
+    testing::expect(line_is(&model, 7, "vim status"));
+}
+
+test "a rectangular region scroll keeps its columns" {
+    let allocator = mem::page_allocator();
+    var model = try new_render_model(allocator, 16, 4);
+    defer model.deinit(allocator);
+    try show(allocator, &var model, "TREE001|MAIN001 /TREE002|MAIN002 /TREE003|MAIN003 /tree st|main sts");
+    model.record_scroll_update(region_scroll(1, 1, 3, 9, 16));
+    try show(allocator, &var model, "TREE001|MAIN002 /TREE002|MAIN003 /TREE003|MAIN004 /tree st|main sts");
+    testing::expect(position_is(&model, -1.0));
+    testing::expect(model.window.margins.top == 0);
+    testing::expect(model.window.margins.bottom == 1);
+    testing::expect(model.window.margins.left == 8);
+    testing::expect(model.window.margins.right == 0);
+}
+
+test "a redraw without a scroll does not animate" {
+    let allocator = mem::page_allocator();
+    var model = try new_render_model(allocator, 16, 4);
+    defer model.deinit(allocator);
+    try show(allocator, &var model, "1 alpha/2 beta/3 gamma/#vim status");
+    try show(allocator, &var model, "2 alpha/1 beta/2 gamma/#vim status");
+    testing::expect(position_is(&model, 0.0));
+    testing::expect(!model.has_active_animation());
+}
+
+test "a prompt redraw on the primary screen does not animate" {
+    let allocator = mem::page_allocator();
+    var model = try new_render_model(allocator, 16, 4);
+    defer model.deinit(allocator);
+    try show_primary(allocator, &var model, "1 alpha/2 beta/3 gamma/prompt>", 4, 4);
+    try show_primary(allocator, &var model, "2 beta/3 gamma/prompt> a/", 4, 4);
+    testing::expect(position_is(&model, 0.0));
+}
+
+test "scrollback growth animates only the newest row" {
+    let allocator = mem::page_allocator();
+    var model = try new_render_model(allocator, 16, 4);
+    defer model.deinit(allocator);
+    try show_primary(allocator, &var model, "one/two/three/prompt>", 0, 4);
+    try show_primary(allocator, &var model, "three/four/five/prompt>", 2, 6);
+    testing::expect(position_is(&model, -1.0));
+}
+
+test "primary output does not build an animation backlog" {
+    let allocator = mem::page_allocator();
+    var model = try new_render_model(allocator, 16, 4);
+    defer model.deinit(allocator);
+    try show_primary(allocator, &var model, "one/two/three/prompt>", 0, 4);
+    try show_primary(allocator, &var model, "two/three/prompt>/prompt>", 1, 5);
+    testing::expect(position_is(&model, -1.0));
+    model.record_scroll_delta(24);
+    try show_primary(allocator, &var model, "three/prompt>/prompt>/prompt>", 2, 6);
+    testing::expect(position_is(&model, -1.0));
+}
+
+test "a line records the runs of its backgrounds" {
+    let allocator = mem::page_allocator();
+    var model = try new_render_model(allocator, 4, 2);
+    defer model.deinit(allocator);
+    try show(allocator, &var model, "abcd/#wxyz");
+    var plain_runs: i64 = -1;
+    var status_runs: i64 = -1;
+    var status_end: i64 = -1;
+    if model.window.line(model.window.line_id(0)) |line| {
+        plain_runs = line.runs.len();
+    }
+    if model.window.line(model.window.line_id(1)) |line| {
+        status_runs = line.runs.len();
+        if line.runs.get(0) |run| {
+            status_end = run.end_col;
+        }
+    }
+    testing::expect(plain_runs == 0);
+    testing::expect(status_runs == 1);
+    testing::expect(status_end == 4);
+}
+
+test "redrawing reuses the pooled lines" {
+    let allocator = mem::page_allocator();
+    var model = try new_render_model(allocator, 3, 2);
+    defer model.deinit(allocator);
+    for 0..50 |_| {
+        try show(allocator, &var model, "abc/def");
+    }
+    testing::expect(model.window.pool.len() <= 8);
+}

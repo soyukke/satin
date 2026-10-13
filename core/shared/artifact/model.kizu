@@ -1,0 +1,566 @@
+// What an artifact is: its kind, the policy its preview is cut to, and the
+// manifest a registered version answers with. The Rust `artifact` types.
+import std::array;
+import std::fmt;
+import std::mem;
+import std::process;
+import std::string;
+
+pub fn default_max_columns() -> i64 {
+    return 80;
+}
+
+pub fn default_max_rows() -> i64 {
+    return 32;
+}
+
+fn min_max_columns() -> i64 {
+    return 40;
+}
+
+fn min_max_rows() -> i64 {
+    return 12;
+}
+
+fn max_max_columns() -> i64 {
+    return 240;
+}
+
+fn max_max_rows() -> i64 {
+    return 120;
+}
+
+/// The widest pane a viewer renders for.
+fn max_view_columns() -> i64 {
+    return 512;
+}
+
+fn max_view_rows() -> i64 {
+    return 240;
+}
+
+fn store_version() -> i64 {
+    return 1;
+}
+
+fn max_text_bytes() -> i64 {
+    return 8388608;
+}
+
+fn max_image_bytes() -> i64 {
+    return 16777216;
+}
+
+pub error ArtifactError {
+    /// The operation failed; the message it was given says why.
+    Failed,
+}
+
+pub error ArtifactFailure = ArtifactError or mem::Error;
+
+/// Sets the message of a failure, from parts written one after another.
+fn explain(allocator: Allocator, message: &var string::String, first: []u8, second: []u8, third: []u8) -> void {
+    message.clear();
+    if message.append_bytes(allocator, first) {} else |_| {}
+    if message.append_bytes(allocator, second) {} else |_| {}
+    if message.append_bytes(allocator, third) {} else |_| {}
+    return;
+}
+
+/// Sets the message of a failure that names a number between two texts.
+fn explain_number(allocator: Allocator, message: &var string::String, first: []u8, number: i64, last: []u8) -> void {
+    message.clear();
+    if message.append_bytes(allocator, first) {} else |_| {}
+    if fmt::append_i64(allocator, message, number) {} else |_| {}
+    if message.append_bytes(allocator, last) {} else |_| {}
+    return;
+}
+
+pub enum ArtifactKind {
+    Text,
+    Markdown,
+    Table,
+    Tree,
+    Timeline,
+    Diff,
+    Image,
+}
+
+/// The name a kind has on the command line and in the store.
+pub fn kind_name(kind: ArtifactKind) -> []u8 {
+    return match kind {
+        Text => "text",
+        Markdown => "markdown",
+        Table => "table",
+        Tree => "tree",
+        Timeline => "timeline",
+        Diff => "diff",
+        Image => "image",
+    };
+}
+
+/// The kind the store calls name; null for any other text.
+fn kind_from_name(name: []u8) -> ?ArtifactKind {
+    if mem::equal_bytes(name, "text") {
+        return ArtifactKind::Text;
+    }
+    if mem::equal_bytes(name, "markdown") {
+        return ArtifactKind::Markdown;
+    }
+    if mem::equal_bytes(name, "table") {
+        return ArtifactKind::Table;
+    }
+    if mem::equal_bytes(name, "tree") {
+        return ArtifactKind::Tree;
+    }
+    if mem::equal_bytes(name, "timeline") {
+        return ArtifactKind::Timeline;
+    }
+    if mem::equal_bytes(name, "diff") {
+        return ArtifactKind::Diff;
+    }
+    if mem::equal_bytes(name, "image") {
+        return ArtifactKind::Image;
+    }
+    return null;
+}
+
+fn lowered(byte: u8) -> u8 {
+    if byte >= cast<u8>(65) and byte <= cast<u8>(90) {
+        return byte + 32;
+    }
+    return byte;
+}
+
+fn raised(byte: u8) -> u8 {
+    if byte >= cast<u8>(97) and byte <= cast<u8>(122) {
+        return byte - 32;
+    }
+    return byte;
+}
+
+/// Whether text is expected once its ASCII letters are lowered.
+fn equal_lowered(text: []u8, expected: []u8) -> bool {
+    if mem::len(text) != mem::len(expected) {
+        return false;
+    }
+    for 0..mem::len(text) |index| {
+        if lowered(text[index]) != expected[index] {
+            return false;
+        }
+    }
+    return true;
+}
+
+/// The kind a command-line word names, in any case: a kind's name, or
+/// `md`, `patch` or `png`. Null for any other word.
+pub fn parse_kind(word: []u8) -> ?ArtifactKind {
+    if equal_lowered(word, "md") {
+        return ArtifactKind::Markdown;
+    }
+    if equal_lowered(word, "patch") {
+        return ArtifactKind::Diff;
+    }
+    if equal_lowered(word, "png") {
+        return ArtifactKind::Image;
+    }
+    if equal_lowered(word, "text") {
+        return ArtifactKind::Text;
+    }
+    if equal_lowered(word, "markdown") {
+        return ArtifactKind::Markdown;
+    }
+    if equal_lowered(word, "table") {
+        return ArtifactKind::Table;
+    }
+    if equal_lowered(word, "tree") {
+        return ArtifactKind::Tree;
+    }
+    if equal_lowered(word, "timeline") {
+        return ArtifactKind::Timeline;
+    }
+    if equal_lowered(word, "diff") {
+        return ArtifactKind::Diff;
+    }
+    if equal_lowered(word, "image") {
+        return ArtifactKind::Image;
+    }
+    return null;
+}
+
+/// What happens to a preview that does not fit the policy's bounds.
+pub enum ArtifactOverflow {
+    Compact,
+    Defer,
+    Reject,
+}
+
+pub fn overflow_name(overflow: ArtifactOverflow) -> []u8 {
+    return match overflow {
+        Compact => "compact",
+        Defer => "defer",
+        Reject => "reject",
+    };
+}
+
+/// The overflow a command-line word names, in any case; null for any
+/// other word.
+pub fn parse_overflow(word: []u8) -> ?ArtifactOverflow {
+    if equal_lowered(word, "compact") {
+        return ArtifactOverflow::Compact;
+    }
+    if equal_lowered(word, "defer") {
+        return ArtifactOverflow::Defer;
+    }
+    if equal_lowered(word, "reject") {
+        return ArtifactOverflow::Reject;
+    }
+    return null;
+}
+
+/// The bounds a preview is rendered within when no pane gives its own,
+/// and the language an artifact is in when none is given.
+pub struct ArtifactPolicy {
+    pub max_columns: i64,
+    pub max_rows: i64,
+    pub language: string::String,
+    pub overflow: ArtifactOverflow,
+}
+
+pub fn (self: ArtifactPolicy) deinit(allocator: Allocator) -> void {
+    self.language.deinit(allocator);
+    return;
+}
+
+pub fn default_policy(allocator: Allocator) -> mem::Error!ArtifactPolicy {
+    return ArtifactPolicy {
+        max_columns: default_max_columns(),
+        max_rows: default_max_rows(),
+        language: try string::from_bytes(allocator, "auto"),
+        overflow: ArtifactOverflow::Compact
+    };
+}
+
+fn validate_language(allocator: Allocator, message: &var string::String, language: []u8) -> ArtifactFailure!void {
+    var valid = mem::len(language) > 0 and mem::len(language) <= 32;
+    for 0..mem::len(language) |index| {
+        let byte = cast<i64>(lowered(language[index]));
+        if !(byte >= 97 and byte <= 122) and !(byte >= 48 and byte <= 57) and byte != 45 {
+            valid = false;
+        }
+    }
+    if !valid {
+        explain(allocator, message, "language must be auto or a BCP 47-style language tag", "", "");
+        return ArtifactError::Failed;
+    }
+    return;
+}
+
+pub fn (self: &ArtifactPolicy) validate(allocator: Allocator, message: &var string::String) -> ArtifactFailure!void {
+    if self.max_columns < min_max_columns() or self.max_columns > max_max_columns() {
+        explain(allocator, message, "max columns must be between 40 and 240", "", "");
+        return ArtifactError::Failed;
+    }
+    if self.max_rows < min_max_rows() or self.max_rows > max_max_rows() {
+        explain(allocator, message, "max rows must be between 12 and 120", "", "");
+        return ArtifactError::Failed;
+    }
+    let language = self.language.as_bytes();
+    try validate_language(allocator, message, language);
+    return;
+}
+
+/// Appends the language tag a locale such as `ja_JP.UTF-8` names to out;
+/// false for `C`, `POSIX` and the empty locale, which name none.
+fn append_locale_language(allocator: Allocator, out: &var string::String, locale: []u8) -> mem::Error!bool {
+    var end: i64 = 0;
+    while end < mem::len(locale) and locale[end] != cast<u8>(46) and locale[end] != cast<u8>(64) {
+        end = end + 1;
+    }
+    let value = locale[0..end];
+    if end == 0 or mem::equal_bytes(value, "C") or mem::equal_bytes(value, "POSIX") {
+        return false;
+    }
+    var part: i64 = 0;
+    for 0..end |index| {
+        let byte = value[index];
+        if byte == cast<u8>(45) or byte == cast<u8>(95) {
+            part = part + 1;
+            if part == 1 {
+                try out.append_byte(allocator, 45);
+            }
+        } else if part == 0 {
+            try out.append_byte(allocator, lowered(byte));
+        } else if part == 1 {
+            try out.append_byte(allocator, raised(byte));
+        }
+    }
+    return true;
+}
+
+/// Appends the policy's language to out; `auto` is the language of the
+/// first of LC_ALL, LC_MESSAGES and LANG that is set, and `en-US` when
+/// that names none.
+pub fn (self: &ArtifactPolicy) append_resolved_language(
+    allocator: Allocator,
+    out: &var string::String
+) -> mem::Error!void {
+    let language = self.language.as_bytes();
+    if !mem::equal_bytes(language, "auto") {
+        try out.append_bytes(allocator, language);
+        return;
+    }
+    var found = false;
+    if process::env("LC_ALL") |locale| {
+        found = try append_locale_language(allocator, out, locale);
+    } else if process::env("LC_MESSAGES") |locale| {
+        found = try append_locale_language(allocator, out, locale);
+    } else if process::env("LANG") |locale| {
+        found = try append_locale_language(allocator, out, locale);
+    }
+    if !found {
+        try out.append_bytes(allocator, "en-US");
+    }
+    return;
+}
+
+pub enum ArtifactPreviewStatus {
+    Ready,
+    Compacted,
+    Deferred,
+}
+
+pub fn preview_status_name(status: ArtifactPreviewStatus) -> []u8 {
+    return match status {
+        Ready => "ready",
+        Compacted => "compacted",
+        Deferred => "deferred",
+    };
+}
+
+fn preview_status_from_name(name: []u8) -> ?ArtifactPreviewStatus {
+    if mem::equal_bytes(name, "ready") {
+        return ArtifactPreviewStatus::Ready;
+    }
+    if mem::equal_bytes(name, "compacted") {
+        return ArtifactPreviewStatus::Compacted;
+    }
+    if mem::equal_bytes(name, "deferred") {
+        return ArtifactPreviewStatus::Deferred;
+    }
+    return null;
+}
+
+/// How a version's preview came out at the bounds it was registered with.
+pub struct ArtifactPreviewSummary {
+    pub status: ArtifactPreviewStatus,
+    pub source_lines: i64,
+    pub omitted_items: i64,
+}
+
+/// One version of an artifact, with the absolute paths of its files.
+pub struct ArtifactManifest {
+    pub format_version: i64,
+    pub id: string::String,
+    pub version: i64,
+    pub kind: ArtifactKind,
+    pub title: string::String,
+    pub language: string::String,
+    pub document: string::String,
+    pub source: string::String,
+    pub assets: array::Array<string::String>,
+    pub origin: string::String,
+    pub source_bytes: i64,
+    pub created_at_ms: i64,
+    pub created_at: string::String,
+    pub owner_tab: ?i64,
+    pub owner_pane: ?i64,
+    pub preview: ArtifactPreviewSummary,
+}
+
+pub fn (self: ArtifactManifest) deinit(allocator: Allocator) -> void {
+    self.id.deinit(allocator);
+    self.title.deinit(allocator);
+    self.language.deinit(allocator);
+    self.document.deinit(allocator);
+    self.source.deinit(allocator);
+    self.assets.deinit(allocator);
+    self.origin.deinit(allocator);
+    self.created_at.deinit(allocator);
+    return;
+}
+
+/// What `register_artifact` is asked to store. Without an id it makes a
+/// new artifact, and with one a new version of that artifact; without a
+/// language the policy's is used.
+pub struct RegisterArtifact {
+    pub has_id: bool,
+    pub id: string::String,
+    pub kind: ArtifactKind,
+    pub title: string::String,
+    pub has_language: bool,
+    pub language: string::String,
+    pub source: string::String,
+    pub owner_tab: ?i64,
+    pub owner_pane: ?i64,
+}
+
+pub fn (self: RegisterArtifact) deinit(allocator: Allocator) -> void {
+    self.id.deinit(allocator);
+    self.title.deinit(allocator);
+    self.language.deinit(allocator);
+    self.source.deinit(allocator);
+    return;
+}
+
+/// A request for kind that names nothing yet.
+pub fn new_register_artifact(allocator: Allocator, kind: ArtifactKind) -> RegisterArtifact {
+    return RegisterArtifact {
+        has_id: false,
+        id: string::new(allocator),
+        kind: kind,
+        title: string::new(allocator),
+        has_language: false,
+        language: string::new(allocator),
+        source: string::new(allocator),
+        owner_tab: null,
+        owner_pane: null
+    };
+}
+
+/// One artifact as `list_artifacts` reports it: its latest version.
+pub struct ArtifactListItem {
+    pub id: string::String,
+    pub title: string::String,
+    pub kind: ArtifactKind,
+    pub language: string::String,
+    pub version: i64,
+    pub version_count: i64,
+    pub updated_at_ms: i64,
+    pub updated_at: string::String,
+    pub preview: string::String,
+    pub directory: string::String,
+}
+
+pub fn (self: ArtifactListItem) deinit(allocator: Allocator) -> void {
+    self.id.deinit(allocator);
+    self.title.deinit(allocator);
+    self.language.deinit(allocator);
+    self.updated_at.deinit(allocator);
+    self.preview.deinit(allocator);
+    self.directory.deinit(allocator);
+    return;
+}
+
+fn validate_title(allocator: Allocator, message: &var string::String, title: []u8) -> ArtifactFailure!void {
+    var blank = true;
+    var controls = false;
+    var index: i64 = 0;
+    while index < mem::len(title) {
+        var scalar: i64 = 0;
+        index = index + decode_scalar(title, index, &var scalar);
+        if is_control(scalar) {
+            controls = true;
+        }
+        if !is_white_space(scalar) {
+            blank = false;
+        }
+    }
+    if blank or controls {
+        explain(allocator, message, "artifact title must be non-empty and contain no control characters", "", "");
+        return ArtifactError::Failed;
+    }
+    if mem::len(title) > 512 {
+        explain(allocator, message, "artifact title is too long", "", "");
+        return ArtifactError::Failed;
+    }
+    return;
+}
+
+fn validate_artifact_id(allocator: Allocator, message: &var string::String, id: []u8) -> ArtifactFailure!void {
+    var valid = mem::len(id) > 0 and mem::len(id) <= 64;
+    for 0..mem::len(id) |index| {
+        let byte = cast<i64>(id[index]);
+        if !(byte >= 97 and byte <= 122) and !(byte >= 48 and byte <= 57) and byte != 45 {
+            valid = false;
+        }
+    }
+    if !valid {
+        explain(allocator, message, "invalid artifact ID", "", "");
+        return ArtifactError::Failed;
+    }
+    return;
+}
+
+fn append_padded_number(allocator: Allocator, out: &var string::String, value: i64, digits: i64) -> mem::Error!void {
+    var text = string::new(allocator);
+    defer text.deinit(allocator);
+    try fmt::append_i64(allocator, &var text, value);
+    for text.len()..digits |_| {
+        try out.append_byte(allocator, 48);
+    }
+    try out.append_string(allocator, &text);
+    return;
+}
+
+/// Appends milliseconds since the Unix epoch to out as
+/// `2026-01-31 09:05 UTC`.
+fn append_timestamp(allocator: Allocator, out: &var string::String, milliseconds: i64) -> mem::Error!void {
+    let seconds = milliseconds / 1000;
+    let days = seconds / 86400;
+    let seconds_of_day = seconds % 86400;
+    let z = days + 719468;
+    let era = z / 146097;
+    let day_of_era = z - era * 146097;
+    let year_of_era = (day_of_era - day_of_era / 1460 + day_of_era / 36524 - day_of_era / 146096) / 365;
+    var year = year_of_era + era * 400;
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let month_prime = (5 * day_of_year + 2) / 153;
+    let day = day_of_year - (153 * month_prime + 2) / 5 + 1;
+    var month = month_prime + 3;
+    if month_prime >= 10 {
+        month = month_prime - 9;
+    }
+    if month <= 2 {
+        year = year + 1;
+    }
+    try append_padded_number(allocator, out, year, 4);
+    try out.append_byte(allocator, 45);
+    try append_padded_number(allocator, out, month, 2);
+    try out.append_byte(allocator, 45);
+    try append_padded_number(allocator, out, day, 2);
+    try out.append_byte(allocator, 32);
+    try append_padded_number(allocator, out, seconds_of_day / 3600, 2);
+    try out.append_byte(allocator, 58);
+    try append_padded_number(allocator, out, seconds_of_day % 3600 / 60, 2);
+    try out.append_bytes(allocator, " UTC");
+    return;
+}
+
+/// Appends a byte count to out as `12 B`, `1.5 KiB` or `2.0 MiB`.
+fn append_byte_count(allocator: Allocator, out: &var string::String, bytes: i64) -> mem::Error!void {
+    if bytes < 1024 {
+        try fmt::append_i64(allocator, out, bytes);
+        try out.append_bytes(allocator, " B");
+        return;
+    }
+    var unit: i64 = 1024;
+    if bytes >= 1048576 {
+        unit = 1048576;
+    }
+    // One decimal place, a half rounding to the even digit.
+    var tenths = bytes * 10 / unit;
+    let rest = bytes * 10 % unit;
+    if rest * 2 > unit or rest * 2 == unit and tenths % 2 == 1 {
+        tenths = tenths + 1;
+    }
+    try fmt::append_i64(allocator, out, tenths / 10);
+    try out.append_byte(allocator, 46);
+    try fmt::append_i64(allocator, out, tenths % 10);
+    if unit == 1024 {
+        try out.append_bytes(allocator, " KiB");
+    } else {
+        try out.append_bytes(allocator, " MiB");
+    }
+    return;
+}

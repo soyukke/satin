@@ -1,0 +1,228 @@
+// libghostty-vt's C API as the terminal runtime calls it. Handles are opaque
+// pointers; every out value goes through a Slot, malloc storage the callee
+// writes and a typed read takes back.
+import std::mem;
+
+pub error GhosttyError {
+    /// libghostty refused a call, or had no storage for it.
+    Refused,
+}
+
+pub error Failure = GhosttyError or mem::Error;
+
+extern "c" fn malloc(size: usize) -> ?ptr<u8>
+extern "c" fn free(p: ptr<u8>) -> void
+
+/// libghostty's `GhosttyTerminalOptions`.
+extern "c" struct TerminalOptions {
+    cols: u16,
+    rows: u16,
+    max_scrollback: usize,
+}
+
+/// libghostty's `GhosttyBuffer`: storage the callee fills, and how much.
+extern "c" struct Buffer {
+    data: ?ptr<u8>,
+    cap: usize,
+    len: usize,
+}
+
+/// libghostty's `GhosttyStyleColor`; value holds the union, RGB in its low
+/// three bytes.
+extern "c" struct StyleColor {
+    tag: i32,
+    value: u64,
+}
+
+/// libghostty's `GhosttyStyle`.
+extern "c" struct Style {
+    size: usize,
+    fg_color: StyleColor,
+    bg_color: StyleColor,
+    underline_color: StyleColor,
+    bold: bool,
+    italic: bool,
+    faint: bool,
+    blink: bool,
+    inverse: bool,
+    invisible: bool,
+    strikethrough: bool,
+    overline: bool,
+    underline: i32,
+}
+
+/// libghostty's `GhosttyRenderStateRowSelection`.
+extern "c" struct RowSelection {
+    size: usize,
+    start_x: u16,
+    end_x: u16,
+}
+
+/// libghostty's `GhosttyTerminalScrollbar`.
+extern "c" struct TerminalScrollbar {
+    total: u64,
+    offset: u64,
+    len: u64,
+}
+
+/// libghostty's `GhosttyColorRgb`.
+extern "c" struct Rgb {
+    r: u8,
+    g: u8,
+    b: u8,
+}
+
+@link_library("ghostty-vt")
+extern "c" fn ghostty_terminal_new(
+    allocator: ?ptr<u8>,
+    terminal: ptr<usize>,
+    options: TerminalOptions
+) -> i32
+@link_library("ghostty-vt")
+extern "c" fn ghostty_terminal_free(terminal: ptr<u8>) -> void
+@link_library("ghostty-vt")
+extern "c" fn ghostty_terminal_vt_write(terminal: ptr<u8>, data: ptr<const u8>, length: usize) -> void
+@link_library("ghostty-vt")
+extern "c" fn ghostty_terminal_get(terminal: ptr<u8>, data: i32, out: ptr<u8>) -> i32
+@link_library("ghostty-vt")
+extern "c" fn ghostty_render_state_new(allocator: ?ptr<u8>, out: ptr<u8>) -> i32
+@link_library("ghostty-vt")
+extern "c" fn ghostty_render_state_free(state: ptr<u8>) -> void
+@link_library("ghostty-vt")
+extern "c" fn ghostty_render_state_update(state: ptr<u8>, terminal: ptr<u8>) -> i32
+@link_library("ghostty-vt")
+extern "c" fn ghostty_render_state_get(state: ptr<u8>, data: i32, out: ptr<u8>) -> i32
+@link_library("ghostty-vt")
+extern "c" fn ghostty_render_state_set(state: ptr<u8>, option: i32, value: ptr<u8>) -> i32
+@link_library("ghostty-vt")
+extern "c" fn ghostty_render_state_row_iterator_new(allocator: ?ptr<u8>, out: ptr<u8>) -> i32
+@link_library("ghostty-vt")
+extern "c" fn ghostty_render_state_row_iterator_free(iterator: ptr<u8>) -> void
+@link_library("ghostty-vt")
+extern "c" fn ghostty_render_state_row_iterator_next(iterator: ptr<u8>) -> bool
+@link_library("ghostty-vt")
+extern "c" fn ghostty_render_state_row_get(iterator: ptr<u8>, data: i32, out: ptr<u8>) -> i32
+@link_library("ghostty-vt")
+extern "c" fn ghostty_render_state_row_set(iterator: ptr<u8>, option: i32, value: ptr<u8>) -> i32
+@link_library("ghostty-vt")
+extern "c" fn ghostty_render_state_row_cells_new(allocator: ?ptr<u8>, out: ptr<u8>) -> i32
+@link_library("ghostty-vt")
+extern "c" fn ghostty_render_state_row_cells_free(cells: ptr<u8>) -> void
+@link_library("ghostty-vt")
+extern "c" fn ghostty_render_state_row_cells_next(cells: ptr<u8>) -> bool
+@link_library("ghostty-vt")
+extern "c" fn ghostty_render_state_row_cells_get(cells: ptr<u8>, data: i32, out: ptr<u8>) -> i32
+
+/// `GHOSTTY_SUCCESS`.
+fn success() -> i32 {
+    return 0;
+}
+
+/// The bytes of a Slot: room for the largest out value, a Style.
+fn slot_bytes() -> usize {
+    return 128;
+}
+
+/// Malloc storage for one out value, zeroed; null when there is none.
+fn new_slot() -> ?ptr<u8> {
+    // SAFETY: malloc returns slot_bytes() of storage or null.
+    let slot = unsafe malloc(slot_bytes()) orelse return null;
+    clear_slot(slot);
+    return slot;
+}
+
+fn clear_slot(slot: ptr<u8>) -> void {
+    // SAFETY: a Slot is slot_bytes() of writable malloc storage.
+    let bytes = unsafe mut_view_from_ptr(slot, cast<i64>(slot_bytes()));
+    for 0..mem::len(bytes) |index| {
+        bytes[index] = 0;
+    }
+    return;
+}
+
+fn slot_bool(slot: ptr<u8>) -> bool {
+    // SAFETY: a Slot is readable malloc storage; C's bool is one byte.
+    let value = unsafe ptr_read(slot);
+    return value != 0;
+}
+
+fn slot_u16(slot: ptr<u8>) -> u16 {
+    // SAFETY: a Slot is readable malloc storage, aligned for any scalar.
+    return unsafe ptr_read(cast<ptr<u16>>(slot));
+}
+
+fn slot_i32(slot: ptr<u8>) -> i32 {
+    // SAFETY: a Slot is readable malloc storage, aligned for any scalar.
+    return unsafe ptr_read(cast<ptr<i32>>(slot));
+}
+
+fn slot_usize(slot: ptr<u8>) -> usize {
+    // SAFETY: a Slot is readable malloc storage, aligned for any scalar.
+    return unsafe ptr_read(cast<ptr<usize>>(slot));
+}
+
+fn set_slot_usize(slot: ptr<u8>, value: usize) -> void {
+    // SAFETY: a Slot is writable malloc storage, aligned for any scalar.
+    unsafe ptr_write(cast<ptr<usize>>(slot), value);
+    return;
+}
+
+fn slot_rgb(slot: ptr<u8>) -> Rgb {
+    // SAFETY: a Slot is readable malloc storage larger than an Rgb.
+    return unsafe ptr_read(cast<ptr<Rgb>>(slot));
+}
+
+/// The handle a `*_new` call wrote to the slot; null when it wrote none.
+fn slot_handle(slot: ptr<u8>) -> ?ptr<u8> {
+    let address = slot_usize(slot);
+    if address == 0 {
+        return null;
+    }
+    // SAFETY: the address is a handle libghostty wrote to the slot.
+    return unsafe ptr_from_int<ptr<u8>>(address);
+}
+
+/// Stores a handle in the slot for a call that fills the handle it is given.
+fn set_slot_handle(slot: ptr<u8>, handle: ptr<u8>) -> void {
+    // SAFETY: reading a handle's address touches nothing it points at.
+    let address = unsafe int_from_ptr<usize>(handle);
+    set_slot_usize(slot, address);
+    return;
+}
+
+/// A terminal of cols x rows keeping max_scrollback lines of history; null
+/// when libghostty made none.
+pub fn new_terminal(cols: u16, rows: u16, max_scrollback: usize) -> ?ptr<u8> {
+    let slot = new_slot() orelse return null;
+    let options = TerminalOptions { cols: cols, rows: rows, max_scrollback: max_scrollback };
+    // SAFETY: the slot holds one writable usize; a null allocator is libghostty's own.
+    let result = unsafe ghostty_terminal_new(null, cast<ptr<usize>>(slot), options);
+    let terminal = slot_handle(slot);
+    // SAFETY: the slot came from malloc and nothing reads it after this.
+    unsafe free(slot);
+    if result != success() {
+        return null;
+    }
+    return terminal;
+}
+
+/// Frees a terminal from new_terminal.
+///
+/// terminal must be live and is not used after this.
+pub unsafe fn free_terminal(terminal: ptr<u8>) -> void {
+    // SAFETY: the caller passes a live terminal it gives up.
+    unsafe ghostty_terminal_free(terminal);
+    return;
+}
+
+/// Feeds output to a terminal.
+///
+/// terminal must be live.
+pub unsafe fn write_terminal(terminal: ptr<u8>, bytes: []u8) -> void {
+    if mem::len(bytes) == 0 {
+        return;
+    }
+    // SAFETY: the caller passes a live terminal; the view holds its length in bytes.
+    unsafe ghostty_terminal_vt_write(terminal, ptr_of(bytes), cast<usize>(mem::len(bytes)));
+    return;
+}

@@ -1,0 +1,615 @@
+// A scene: what one pane shows, whatever it came from, and the order its
+// windows are drawn in. The Rust `draw_model` and what it called, with the
+// Skia canvas replaced by a display list.
+//
+// A scene names its windows but does not hold their lines. The caller
+// walks the steps and hands each step the window's retained lines, so a
+// terminal's one window, an editor's map of them and a test's array all
+// draw through the same code.
+import satin::term;
+import std::array;
+import std::math;
+import std::mem;
+
+pub enum WindowKind {
+    Normal,
+    Float,
+    Message,
+}
+
+/// Where a window is drawn, in screen cells, and over what: windows are
+/// drawn in the order of zindex, then compindex, then grid. scroll_position
+/// is how many rows the cells inside margins are still short of their place.
+pub struct WindowView {
+    pub grid: i64,
+    pub top: i64,
+    pub left: i64,
+    pub width: i64,
+    pub height: i64,
+    pub kind: WindowKind,
+    pub zindex: i64,
+    pub compindex: i64,
+    pub hidden: bool,
+    pub scroll_position: f32,
+    pub margins: term::Margins,
+}
+
+/// The view of a window that fills a pane of width x height cells, as a
+/// terminal's does.
+pub fn main_view(grid: i64, width: i64, height: i64) -> WindowView {
+    return WindowView {
+        grid: grid,
+        top: 0,
+        left: 0,
+        width: width,
+        height: height,
+        kind: WindowKind::Normal,
+        zindex: 0,
+        compindex: 0,
+        hidden: false,
+        scroll_position: lit(0.0),
+        margins: term::Margins { top: 0, bottom: 0, left: 0, right: 0 }
+    };
+}
+
+/// The first row inside the margins.
+pub fn (self: &WindowView) inner_top() -> i64 {
+    return math::min<i64>(self.margins.top, self.height);
+}
+
+/// One past the last row inside the margins.
+pub fn (self: &WindowView) inner_bottom() -> i64 {
+    return self.height - math::min<i64>(self.margins.bottom, self.height - self.inner_top());
+}
+
+/// The first column inside the margins.
+pub fn (self: &WindowView) inner_left() -> i64 {
+    return math::min<i64>(self.margins.left, self.width);
+}
+
+/// One past the last column inside the margins.
+pub fn (self: &WindowView) inner_right() -> i64 {
+    return self.width - math::min<i64>(self.margins.right, self.width - self.inner_left());
+}
+
+/// The cells of a message window the mouse dragged over, both ends included.
+pub struct Selection {
+    pub grid: i64,
+    pub start_row: i64,
+    pub start_col: i64,
+    pub end_row: i64,
+    pub end_col: i64,
+}
+
+/// A place on the screen in cells, which a scroll may put between rows.
+pub struct GridPoint {
+    pub x: f32,
+    pub y: f32,
+}
+
+/// One step of drawing a scene's windows: fill the background of the window
+/// at window of windows, draw its lines, or both.
+pub struct Step {
+    pub window: i64,
+    pub fill: bool,
+    pub draw: bool,
+}
+
+/// cursor is read while has_cursor is set, cursor_parent, the grid whose
+/// window the cursor scrolls with, while has_cursor_parent is, and
+/// selection while has_selection is. plan orders windows and lists steps.
+pub struct Scene {
+    pub background: term::Color,
+    pub cursor_color: term::Color,
+    pub has_cursor: bool,
+    pub cursor: SceneCursor,
+    pub has_cursor_parent: bool,
+    pub cursor_parent: i64,
+    pub has_selection: bool,
+    pub selection: Selection,
+    pub windows: array::Array<WindowView>,
+    pub steps: array::Array<Step>,
+}
+
+pub fn new_scene(allocator: Allocator) -> Scene {
+    return Scene {
+        background: term::Color { r: 0, g: 0, b: 0 },
+        cursor_color: term::Color { r: 0, g: 0, b: 0 },
+        has_cursor: false,
+        cursor: no_cursor(),
+        has_cursor_parent: false,
+        cursor_parent: 0,
+        has_selection: false,
+        selection: Selection { grid: 0, start_row: 0, start_col: 0, end_row: 0, end_col: 0 },
+        windows: array::new<WindowView>(allocator),
+        steps: array::new<Step>(allocator)
+    };
+}
+
+pub fn (self: Scene) deinit(allocator: Allocator) -> void {
+    self.windows.deinit(allocator);
+    self.steps.deinit(allocator);
+}
+
+pub fn (self: &var Scene) add_window(allocator: Allocator, view: WindowView) -> mem::Error!void {
+    try self.windows.append(allocator, view);
+    return;
+}
+
+/// Whether first is drawn before second.
+fn drawn_before(first: WindowView, second: WindowView) -> bool {
+    if first.zindex != second.zindex {
+        return first.zindex < second.zindex;
+    }
+    if first.compindex != second.compindex {
+        return first.compindex < second.compindex;
+    }
+    return first.grid < second.grid;
+}
+
+/// The steps that fill the windows from first up to end of windows, the
+/// ones shown, and then draw them.
+fn (self: &var Scene) plan_floating_layer(allocator: Allocator, first: i64, end: i64) -> mem::Error!void {
+    for 0..2 |pass| {
+        for first..end |index| {
+            let view = self.windows.get(index) orelse continue;
+            if !view.hidden {
+                try self.steps.append(allocator, Step { window: index, fill: pass == 0, draw: pass == 1 });
+            }
+        }
+    }
+    return;
+}
+
+/// Puts windows in draw order and lists the steps that draw the shown ones.
+///
+/// Neovide composites overlapping floating grids on one layer: the floats
+/// between two other windows all have their footprints cleared before any
+/// of them is drawn, so a later border grid cannot erase text already drawn
+/// by an overlapping content grid (Telescope uses this topology for
+/// results, prompt, and preview). A normal or a message window clears its
+/// own, which lets a resized foreground window cover root-grid separators
+/// that Neovim does not resend.
+pub fn (self: &var Scene) plan(allocator: Allocator) -> mem::Error!void {
+    let count = self.windows.len();
+    for 1..count |index| {
+        var at = index;
+        while at > 0 {
+            let above = self.windows.get(at) orelse break;
+            let below = self.windows.get(at - 1) orelse break;
+            if !drawn_before(above, below) {
+                break;
+            }
+            if self.windows.swap(at, at - 1) {} else |_| {}
+            at = at - 1;
+        }
+    }
+    self.steps.clear(allocator);
+    var layer_start: i64 = -1;
+    for 0..count |index| {
+        let view = self.windows.get(index) orelse continue;
+        if view.hidden {
+            continue;
+        }
+        if view.kind == WindowKind::Float {
+            if layer_start < 0 {
+                layer_start = index;
+            }
+            continue;
+        }
+        if layer_start >= 0 {
+            try self.plan_floating_layer(allocator, layer_start, index);
+            layer_start = -1;
+        }
+        try self.steps.append(allocator, Step { window: index, fill: true, draw: true });
+    }
+    if layer_start >= 0 {
+        try self.plan_floating_layer(allocator, layer_start, count);
+    }
+    return;
+}
+
+pub fn (self: &Scene) step_count() -> i64 {
+    return self.steps.len();
+}
+
+/// The grid of the window step index is about; zero past the last step.
+pub fn (self: &Scene) step_grid(index: i64) -> i64 {
+    let step = self.steps.get(index) orelse return 0;
+    let view = self.windows.get(step.window) orelse return 0;
+    return view.grid;
+}
+
+/// The index in windows of the shown window of grid; -1 without one.
+fn (self: &Scene) shown_window(grid: i64) -> i64 {
+    let views = self.windows.as_slice();
+    for 0..mem::count<WindowView>(views) |index| {
+        if views[index].grid == grid and !views[index].hidden {
+            return index;
+        }
+    }
+    return -1;
+}
+
+/// Where a cursor at point is drawn: moved with the scroll of the window it
+/// is in, when it is inside that window's margins, and never out of them.
+pub fn (self: &Scene) scrolled_point(at: GridPoint) -> GridPoint {
+    if !self.has_cursor_parent {
+        return at;
+    }
+    let index = self.shown_window(self.cursor_parent);
+    let view = self.windows.get(index) orelse return at;
+    let local_y = at.y - span(view.top);
+    let local_x = at.x - span(view.left);
+    let top = view.inner_top();
+    let bottom = view.inner_bottom();
+    if local_y < span(top) or local_y >= span(bottom) or local_x < span(view.inner_left()) or
+        local_x >= span(view.inner_right()) {
+        return at;
+    }
+    let minimum = span(view.top + top);
+    let maximum = span(view.top + math::max<i64>(bottom - 1, 0));
+    return GridPoint { x: at.x, y: math::clamp<f32>(at.y - view.scroll_position, minimum, maximum) };
+}
+
+/// Where the scene's cursor is drawn.
+pub fn (self: &Scene) cursor_render_point() -> GridPoint {
+    return self.scrolled_point(GridPoint { x: span(self.cursor.x), y: span(self.cursor.y) });
+}
+
+/// The row an image whose top left is in the viewport cell is drawn at: it
+/// slides with the main window's scroll when the cell is inside its margins.
+pub fn (self: &Scene) animated_kitty_row(viewport_row: i64, viewport_col: i64) -> f32 {
+    let row = span(viewport_row);
+    let views = self.windows.as_slice();
+    for 0..mem::count<WindowView>(views) |index| {
+        let view = views[index];
+        if view.grid != 1 or view.kind != WindowKind::Normal {
+            continue;
+        }
+        if viewport_row >= view.inner_top() and viewport_row < view.inner_bottom() and
+            viewport_col >= view.inner_left() and
+            viewport_col < view.inner_right() {
+            return row - view.scroll_position;
+        }
+        return row;
+    }
+    return row;
+}
+
+/// How many cells there are from the cursor to the pane's right edge, for
+/// text typed through an input method to be drawn in.
+pub fn (self: &Scene) preedit_available_columns(geometry: Geometry) -> i64 {
+    if !self.has_cursor {
+        return 0;
+    }
+    let at = self.cursor_render_point();
+    let column = cast<i64>(math::floor<f32>(math::max<f32>(at.x, lit(0.0))));
+    let cell_width = math::max<f32>(geometry.cell_width, lit(1.0));
+    let grid_width = cast<i64>(math::floor<f32>(geometry.content_width / cell_width));
+    return math::max<i64>(grid_width - column, 0);
+}
+
+/// The pixels of the cells from (top, left) of view, rows x cols of them.
+fn cells_rect(view: WindowView, top: i64, left: i64, rows: i64, cols: i64, layout: &Layout) -> Rect {
+    return Rect {
+        x: layout.column_x(view.left + left),
+        y: layout.row_y(span(view.top + top)),
+        width: span(cols) * layout.geometry.cell_width,
+        height: span(rows) * layout.geometry.cell_height
+    };
+}
+
+/// The pixels the rows from top up to bottom of view scroll inside: its
+/// columns inside the margins, so a split's neighbors stay still.
+pub fn scroll_clip_rect(view: WindowView, top: i64, bottom: i64, layout: &Layout) -> Rect {
+    let left = view.inner_left();
+    return cells_rect(view, top, left, bottom - top, view.inner_right() - left, layout);
+}
+
+/// Starts a scene's commands: the clear when the pane is the frame's
+/// first, then the clip to its content and its background.
+pub fn begin_scene(
+    allocator: Allocator,
+    list: &var DisplayList,
+    scene: &Scene,
+    layout: &Layout,
+    clear: bool
+) -> mem::Error!void {
+    if clear {
+        try list.clear_target(allocator, opaque(scene.background));
+    }
+    let content = content_rect(layout.geometry);
+    try list.push_clip(allocator, content);
+    try list.fill_rect(allocator, content, opaque(scene.background));
+    return;
+}
+
+/// Draws the images of placements that are under the text, or with above
+/// the ones over it. owner names whose images they are.
+pub fn draw_kitty_images(
+    allocator: Allocator,
+    list: &var DisplayList,
+    scene: &Scene,
+    layout: &Layout,
+    placements: []term::Placement,
+    owner: usize,
+    above: bool
+) -> mem::Error!void {
+    let geometry = layout.geometry;
+    for 0..mem::count<term::Placement>(placements) |index| {
+        let placement = placements[index];
+        if (placement.z >= 0) != above {
+            continue;
+        }
+        if cast<i64>(placement.image_width) > 2147483647 or cast<i64>(placement.image_height) > 2147483647 {
+            continue;
+        }
+        let row = scene.animated_kitty_row(cast<i64>(placement.viewport_row), cast<i64>(placement.viewport_col));
+        try list.image(
+            allocator,
+            ImageDraw {
+            owner: owner,
+            image_id: placement.image_id,
+            image_number: placement.image_number,
+            width: placement.image_width,
+            height: placement.image_height,
+            source: Rect {
+                x: cast<f32>(placement.source_x),
+                y: cast<f32>(placement.source_y),
+                width: cast<f32>(placement.source_width),
+                height: cast<f32>(placement.source_height)
+            }
+        },
+            Rect {
+            x: geometry.origin_x + cast<f32>(placement.viewport_col) * geometry.cell_width +
+                cast<f32>(placement.x_offset),
+            y: geometry.origin_y + row * geometry.cell_height + cast<f32>(placement.y_offset),
+            width: cast<f32>(placement.pixel_width),
+            height: cast<f32>(placement.pixel_height)
+        }
+        );
+    }
+    return;
+}
+
+/// Draws the rows from first up to end of view where they are.
+fn draw_fixed_lines(
+    allocator: Allocator,
+    list: &var DisplayList,
+    cache: &term::WindowCache,
+    view: WindowView,
+    first: i64,
+    end: i64,
+    layout: &Layout
+) -> mem::Error!void {
+    for first..end |row| {
+        if cache.line(cache.line_id(row)) |line| {
+            let spot = LineSpot { row: span(view.top + row), left: view.left, width: view.width, y_offset: lit(0.0) };
+            try draw_line(allocator, list, line, spot, layout);
+        }
+    }
+    return;
+}
+
+/// Draws the columns outside the margins of the rows from top up to bottom,
+/// which a scroll leaves in place.
+fn draw_fixed_columns(
+    allocator: Allocator,
+    list: &var DisplayList,
+    cache: &term::WindowCache,
+    view: WindowView,
+    top: i64,
+    bottom: i64,
+    layout: &Layout
+) -> mem::Error!void {
+    for 0..2 |side| {
+        var left: i64 = 0;
+        var right = view.inner_left();
+        if side == 1 {
+            left = view.inner_right();
+            right = view.width;
+        }
+        if left >= right {
+            continue;
+        }
+        try list.push_clip(allocator, cells_rect(view, top, left, bottom - top, right - left, layout));
+        try draw_fixed_lines(allocator, list, cache, view, top, bottom, layout);
+        try list.pop_clip(allocator);
+    }
+    return;
+}
+
+/// Draws the rows from top up to bottom from the scrollback, slid by what
+/// is left of the window's scroll, with one more row for the gap that opens.
+fn draw_scrollable_lines(
+    allocator: Allocator,
+    list: &var DisplayList,
+    cache: &term::WindowCache,
+    view: WindowView,
+    top: i64,
+    bottom: i64,
+    layout: &Layout
+) -> mem::Error!void {
+    if top >= bottom {
+        return;
+    }
+    try list.push_clip(allocator, scroll_clip_rect(view, top, bottom, layout));
+    let whole = math::floor<f32>(view.scroll_position);
+    let y_offset = scroll_offset_pixels(view.scroll_position, layout.geometry.cell_height);
+    let first = cast<i64>(whole);
+    for 0..bottom - top + 1 |inner_row| {
+        if cache.line(cache.scrollback_id(first + inner_row)) |line| {
+            let spot = LineSpot {
+                row: span(view.top + top + inner_row),
+                left: view.left,
+                width: view.width,
+                y_offset: y_offset
+            };
+            try draw_line(allocator, list, line, spot, layout);
+        }
+    }
+    try list.pop_clip(allocator);
+    return;
+}
+
+/// Draws view's lines from cache: the rows above the margins, the columns
+/// beside them, the rows inside scrolling, and the rows below.
+fn draw_window(
+    allocator: Allocator,
+    list: &var DisplayList,
+    cache: &term::WindowCache,
+    view: WindowView,
+    layout: &Layout
+) -> mem::Error!void {
+    let top = view.inner_top();
+    let bottom = view.inner_bottom();
+    try draw_fixed_lines(allocator, list, cache, view, 0, top, layout);
+    try draw_fixed_columns(allocator, list, cache, view, top, bottom, layout);
+    try draw_scrollable_lines(allocator, list, cache, view, top, bottom, layout);
+    try draw_fixed_lines(allocator, list, cache, view, bottom, view.height, layout);
+    return;
+}
+
+/// Does step index of scene, with cache the retained lines of the window
+/// step_grid names.
+pub fn draw_step(
+    allocator: Allocator,
+    list: &var DisplayList,
+    scene: &Scene,
+    index: i64,
+    cache: &term::WindowCache,
+    layout: &Layout
+) -> mem::Error!void {
+    let step = scene.steps.get(index) orelse return;
+    let view = scene.windows.get(step.window) orelse return;
+    if step.fill {
+        try list.fill_rect(allocator, cells_rect(view, 0, 0, view.height, view.width, layout), opaque(scene.background));
+    }
+    if step.draw {
+        try draw_window(allocator, list, cache, view, layout);
+    }
+    return;
+}
+
+/// Tints the cells of the message window the scene's selection covers.
+fn draw_message_selection(
+    allocator: Allocator,
+    list: &var DisplayList,
+    scene: &Scene,
+    layout: &Layout
+) -> mem::Error!void {
+    if !scene.has_selection {
+        return;
+    }
+    let selection = scene.selection;
+    let view = scene.windows.get(scene.shown_window(selection.grid)) orelse return;
+    if view.kind != WindowKind::Message or view.width <= 0 or view.height <= 0 {
+        return;
+    }
+    let first_row = math::min<i64>(selection.start_row, view.height - 1);
+    let second_row = math::min<i64>(selection.end_row, view.height - 1);
+    let first_col = math::min<i64>(selection.start_col, view.width - 1);
+    let second_col = math::min<i64>(selection.end_col, view.width - 1);
+    let row_start = math::min<i64>(first_row, second_row);
+    let row_end = math::max<i64>(first_row, second_row);
+    let col_start = math::min<i64>(first_col, second_col);
+    let col_end = math::max<i64>(first_col, second_col);
+    let color = with_alpha(scene.cursor_color, message_selection_alpha());
+    try list.push_clip(allocator, cells_rect(view, 0, 0, view.height, view.width, layout));
+    for row_start..row_end + 1 |row| {
+        var start_col: i64 = 0;
+        var end_col = view.width - 1;
+        if row == row_start {
+            start_col = col_start;
+        }
+        if row == row_end {
+            end_col = col_end;
+        }
+        try list.fill_rect(allocator, cells_rect(view, row, start_col, 1, end_col - start_col + 1, layout), color);
+    }
+    try list.pop_clip(allocator);
+    return;
+}
+
+/// Fills the cursor's four corners, when the scene has a cursor and visible
+/// says its blink shows it.
+fn draw_cursor(
+    allocator: Allocator,
+    list: &var DisplayList,
+    scene: &Scene,
+    animation: &CursorAnimation,
+    visible: bool
+) -> mem::Error!void {
+    if !scene.has_cursor or !visible or !animation.is_placed() {
+        return;
+    }
+    try list.quad(
+        allocator,
+        animation.corner_pixel(0),
+        animation.corner_pixel(1),
+        animation.corner_pixel(2),
+        animation.corner_pixel(3),
+        with_alpha(scene.cursor_color, cursor_body_alpha())
+    );
+    return;
+}
+
+/// Draws the text an input method is composing, from the cursor on.
+fn draw_preedit(
+    allocator: Allocator,
+    list: &var DisplayList,
+    scene: &Scene,
+    preedit: &PreeditLine,
+    layout: &Layout
+) -> mem::Error!void {
+    if !scene.has_cursor or preedit.cells.len() == 0 {
+        return;
+    }
+    let at = scene.cursor_render_point();
+    let spot = LineSpot {
+        row: at.y,
+        left: cast<i64>(math::floor<f32>(math::max<f32>(at.x, lit(0.0)))),
+        width: preedit.cells.len(),
+        y_offset: lit(0.0)
+    };
+    let cells = preedit.cells.as_slice();
+    let text = preedit.text.as_bytes();
+    let runs = preedit.runs.as_slice();
+    try draw_cells(allocator, list, cells, text, runs, spot, layout);
+    return;
+}
+
+/// Ends a scene's commands with what is drawn over its windows: the message
+/// selection, the cursor when cursor_visible, and the composed text when
+/// has_preedit is set.
+pub fn finish_scene(
+    allocator: Allocator,
+    list: &var DisplayList,
+    scene: &Scene,
+    layout: &Layout,
+    animation: &CursorAnimation,
+    cursor_visible: bool,
+    has_preedit: bool,
+    preedit: &PreeditLine
+) -> mem::Error!void {
+    try draw_message_selection(allocator, list, scene, layout);
+    try draw_cursor(allocator, list, scene, animation, cursor_visible);
+    if has_preedit {
+        try draw_preedit(allocator, list, scene, preedit, layout);
+    }
+    try list.pop_clip(allocator);
+    return;
+}
+
+/// Whether any row of a window blinks.
+pub fn cache_has_blink(cache: &term::WindowCache) -> bool {
+    for 0..cache.height |row| {
+        if cache.line(cache.line_id(row)) |line| {
+            if line.has_blink {
+                return true;
+            }
+        }
+    }
+    return false;
+}

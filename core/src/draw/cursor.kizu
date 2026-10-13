@@ -1,0 +1,457 @@
+// The cursor: when it blinks, and the four corners that stretch after it
+// when it moves. The Rust `CursorBlinkState` and `CursorAnimationState`.
+//
+// The corner animation follows Neovide's MIT-licensed cursor renderer.
+// Copyright (c) 2023 Neovide Contributors.
+import satin::term;
+import std::math;
+
+/// How long the corners take to reach a cursor that jumped, in seconds.
+pub fn cursor_animation_seconds() -> f32 {
+    return lit(0.15);
+}
+
+/// How long they take when it moved two cells or less along its row.
+pub fn cursor_short_animation_seconds() -> f32 {
+    return lit(0.04);
+}
+
+/// The longest step one frame moves an animation by, in seconds.
+pub fn max_animation_dt() -> f32 {
+    return lit(1.0) / lit(30.0);
+}
+
+/// The smallest step between two f32 near one, under which a length is zero.
+fn f32_epsilon() -> f32 {
+    return lit(0.00000011920929);
+}
+
+/// The cursor as a scene has it, in screen cells. cell_percentage is how
+/// much of the cell a bar or an underline covers, and the blink times are
+/// zero for a steady cursor.
+pub struct SceneCursor {
+    pub x: i64,
+    pub y: i64,
+    pub shape: term::CursorShape,
+    pub cell_percentage: u8,
+    pub blinkwait_ms: u64,
+    pub blinkon_ms: u64,
+    pub blinkoff_ms: u64,
+}
+
+fn same_cursor(first: SceneCursor, second: SceneCursor) -> bool {
+    return first.x == second.x and first.y == second.y and first.shape == second.shape and
+        first.cell_percentage == second.cell_percentage and
+        first.blinkwait_ms == second.blinkwait_ms and
+        first.blinkon_ms == second.blinkon_ms and
+        first.blinkoff_ms == second.blinkoff_ms;
+}
+
+/// Whether the cursor never blinks.
+fn is_steady(cursor: SceneCursor) -> bool {
+    return cursor.blinkon_ms == 0 or cursor.blinkoff_ms == 0;
+}
+
+pub enum BlinkPhase {
+    Waiting,
+    On,
+    Off,
+}
+
+fn phase_millis(cursor: SceneCursor, phase: BlinkPhase) -> i64 {
+    if phase == BlinkPhase::Waiting {
+        return cast<i64>(cursor.blinkwait_ms);
+    }
+    if phase == BlinkPhase::On {
+        return cast<i64>(cursor.blinkon_ms);
+    }
+    return cast<i64>(cursor.blinkoff_ms);
+}
+
+/// Where a cursor is in its blink. phase is read while has_phase is set,
+/// deadline_ms, when the phase ends, while has_deadline is, and cursor,
+/// the cursor the blink is of, while has_cursor is.
+pub struct CursorBlink {
+    has_phase: bool,
+    phase: BlinkPhase,
+    has_deadline: bool,
+    deadline_ms: i64,
+    has_cursor: bool,
+    cursor: SceneCursor,
+}
+
+fn no_cursor() -> SceneCursor {
+    return SceneCursor {
+        x: 0,
+        y: 0,
+        shape: term::CursorShape::Block,
+        cell_percentage: 100,
+        blinkwait_ms: 0,
+        blinkon_ms: 0,
+        blinkoff_ms: 0
+    };
+}
+
+pub fn new_cursor_blink() -> CursorBlink {
+    return CursorBlink {
+        has_phase: false,
+        phase: BlinkPhase::Waiting,
+        has_deadline: false,
+        deadline_ms: 0,
+        has_cursor: false,
+        cursor: no_cursor()
+    };
+}
+
+fn (self: &var CursorBlink) clear() -> void {
+    self.has_phase = false;
+    self.has_deadline = false;
+    self.has_cursor = false;
+}
+
+fn (self: &var CursorBlink) start(now_ms: i64, cursor: SceneCursor) -> void {
+    self.has_cursor = true;
+    self.cursor = cursor;
+    self.has_phase = true;
+    self.phase = BlinkPhase::On;
+    if cursor.blinkwait_ms > 0 {
+        self.phase = BlinkPhase::Waiting;
+    }
+    self.has_deadline = !is_steady(cursor);
+    self.deadline_ms = now_ms + phase_millis(cursor, self.phase);
+}
+
+fn (self: &var CursorBlink) advance(now_ms: i64, cursor: SceneCursor) -> void {
+    if !self.has_phase or !self.has_deadline or self.deadline_ms > now_ms {
+        return;
+    }
+    if self.phase == BlinkPhase::On {
+        self.phase = BlinkPhase::Off;
+    } else {
+        self.phase = BlinkPhase::On;
+    }
+    self.deadline_ms = self.deadline_ms + phase_millis(cursor, self.phase);
+    if self.deadline_ms <= now_ms {
+        self.deadline_ms = now_ms + phase_millis(cursor, self.phase);
+    }
+    return;
+}
+
+/// Brings the blink to now_ms for the cursor a scene has, when has_cursor
+/// is set. A cursor that moved or changed starts over, showing.
+pub fn (self: &var CursorBlink) update_at(now_ms: i64, has_cursor: bool, cursor: SceneCursor) -> void {
+    if !has_cursor {
+        self.clear();
+        return;
+    }
+    if !self.has_cursor or !same_cursor(self.cursor, cursor) {
+        self.start(now_ms, cursor);
+    }
+    if is_steady(cursor) {
+        self.has_phase = true;
+        self.phase = BlinkPhase::Waiting;
+        self.has_deadline = false;
+        return;
+    }
+    self.advance(now_ms, cursor);
+    return;
+}
+
+pub fn (self: &CursorBlink) should_render() -> bool {
+    return !(self.has_phase and self.phase == BlinkPhase::Off);
+}
+
+/// The milliseconds from now_ms until the cursor next shows or hides; null
+/// for one that does neither.
+pub fn (self: &CursorBlink) next_frame_delay_ms(now_ms: i64) -> ?i64 {
+    if !self.has_deadline {
+        return null;
+    }
+    return math::max<i64>(self.deadline_ms - now_ms, 0);
+}
+
+/// A critically damped spring pulling position back to zero, as the
+/// terminal's scroll has one.
+struct Damped {
+    position: f32,
+    velocity: f32,
+}
+
+fn (self: &var Damped) reset() -> void {
+    self.position = lit(0.0);
+    self.velocity = lit(0.0);
+}
+
+/// Moves the spring dt seconds on. Whether it is still moving.
+fn (self: &var Damped) update(dt: f32, animation_length: f32) -> bool {
+    if animation_length <= dt {
+        self.reset();
+        return false;
+    }
+    if self.position == lit(0.0) {
+        return false;
+    }
+    let omega = lit(4.0) / animation_length;
+    let start = self.position;
+    let velocity = self.position * omega + self.velocity;
+    let decay = math::exp<f32>(lit(0.0) - omega * dt);
+    self.position = (start + velocity * dt) * decay;
+    self.velocity = decay * (velocity - start * omega - velocity * dt * omega);
+    if math::abs<f32>(self.position) < lit(0.01) {
+        self.reset();
+        return false;
+    }
+    return true;
+}
+
+fn point(x: f32, y: f32) -> Point {
+    return Point { x: x, y: y };
+}
+
+fn same_point(first: Point, second: Point) -> bool {
+    return first.x == second.x and first.y == second.y;
+}
+
+/// The direction of a point from the origin; zero for the origin itself.
+fn normalized(value: Point) -> Point {
+    let length = math::hypot<f32>(value.x, value.y);
+    if length <= f32_epsilon() {
+        return point(lit(0.0), lit(0.0));
+    }
+    return point(value.x / length, value.y / length);
+}
+
+/// One corner of the cursor: where it is drawn now, where it sits on the
+/// cursor in cells from the cursor's center, and the springs that carry it
+/// to previous, the place it was last sent to while has_previous is set.
+pub struct Corner {
+    pub current: Point,
+    relative: Point,
+    has_previous: bool,
+    previous: Point,
+    spring_x: Damped,
+    spring_y: Damped,
+    length: f32,
+}
+
+fn new_corner() -> Corner {
+    return Corner {
+        current: point(lit(0.0), lit(0.0)),
+        relative: point(lit(0.0), lit(0.0)),
+        has_previous: false,
+        previous: point(lit(0.0), lit(0.0)),
+        spring_x: Damped { position: lit(0.0), velocity: lit(0.0) },
+        spring_y: Damped { position: lit(0.0), velocity: lit(0.0) },
+        length: lit(0.0)
+    };
+}
+
+/// Where the corner belongs for a cursor of size centered at center.
+fn (self: &Corner) destination(center: Point, size: Point) -> Point {
+    return point(center.x + self.relative.x * size.x, center.y + self.relative.y * size.y);
+}
+
+/// How much the corner leads the move to center: one when it is at the
+/// front of the cursor's path, minus one at the back.
+fn (self: &Corner) direction_alignment(center: Point, size: Point) -> f32 {
+    let target = self.destination(center, size);
+    let travel = normalized(point(target.x - self.current.x, target.y - self.current.y));
+    let outward = normalized(self.relative);
+    return travel.x * outward.x + travel.y * outward.y;
+}
+
+/// Sets how long the corner takes to a cursor that jumped to center: the
+/// corners ranked at the front arrive at once and the ones behind trail.
+fn (self: &var Corner) jump(center: Point, size: Point, rank: i64) -> void {
+    let target = self.destination(center, size);
+    var from = target;
+    if self.has_previous {
+        from = self.previous;
+    }
+    let cells_x = (target.x - from.x) / size.x;
+    let cells_y = (target.y - from.y) / size.y;
+    if math::abs<f32>(cells_x) <= lit(2.001) and math::abs<f32>(cells_y) <= lit(0.001) {
+        self.length = cursor_short_animation_seconds();
+    } else if rank >= 2 {
+        self.length = lit(0.0);
+    } else if rank == 1 {
+        self.length = cursor_animation_seconds() / lit(2.0);
+    } else {
+        self.length = cursor_animation_seconds();
+    }
+    return;
+}
+
+/// Moves the corner dt seconds towards its place. Whether it is still moving.
+fn (self: &var Corner) update(center: Point, size: Point, dt: f32) -> bool {
+    let target = self.destination(center, size);
+    if !self.has_previous or !same_point(self.previous, target) {
+        self.spring_x.position = target.x - self.current.x;
+        self.spring_y.position = target.y - self.current.y;
+        self.has_previous = true;
+        self.previous = target;
+    }
+    let moving_x = self.spring_x.update(dt, self.length);
+    let moving_y = self.spring_y.update(dt, self.length);
+    self.current = point(target.x - self.spring_x.position, target.y - self.spring_y.position);
+    return moving_x or moving_y;
+}
+
+fn (self: &var Corner) snap(center: Point, size: Point) -> void {
+    let target = self.destination(center, size);
+    self.current = target;
+    self.has_previous = true;
+    self.previous = target;
+    self.spring_x.reset();
+    self.spring_y.reset();
+}
+
+/// The cursor's corners, clockwise from the top left, and the cursor they
+/// were last sent to: its grid while has_parent is set, its cell, and its
+/// shape while has_shape is.
+pub struct CursorAnimation {
+    pub corners: [4]Corner,
+    has_position: bool,
+    has_parent: bool,
+    parent: i64,
+    x: i64,
+    y: i64,
+    has_shape: bool,
+    shape: term::CursorShape,
+    cell_percentage: u8,
+    initialized: bool,
+    animating: bool,
+}
+
+pub fn new_cursor_animation() -> CursorAnimation {
+    return CursorAnimation {
+        corners: [4]Corner{ new_corner(), new_corner(), new_corner(), new_corner() },
+        has_position: false,
+        has_parent: false,
+        parent: 0,
+        x: 0,
+        y: 0,
+        has_shape: false,
+        shape: term::CursorShape::Block,
+        cell_percentage: 100,
+        initialized: false,
+        animating: false
+    };
+}
+
+fn (self: &var CursorAnimation) clear() -> void {
+    self.has_position = false;
+    self.has_shape = false;
+    self.initialized = false;
+    self.animating = false;
+}
+
+/// Puts the corners where a cursor of shape has them: a bar keeps the
+/// cell's left cell_percentage, an underline its bottom.
+fn (self: &var CursorAnimation) set_shape(shape: term::CursorShape, cell_percentage: u8) -> void {
+    let percentage = span(math::clamp<i64>(cast<i64>(cell_percentage), 1, 100)) / lit(100.0);
+    let half = lit(0.5);
+    for 0..4 |index| {
+        var x = lit(0.0) - half;
+        var y = lit(0.0) - half;
+        if index == 1 or index == 2 {
+            x = half;
+        }
+        if index >= 2 {
+            y = half;
+        }
+        if shape == term::CursorShape::Bar {
+            x = (x + half) * percentage - half;
+        } else if shape == term::CursorShape::Underline {
+            y = lit(0.0) - ((half - y) * percentage - half);
+        }
+        self.corners[index].relative = point(x, y);
+    }
+    return;
+}
+
+/// Sends the corners after scene's cursor and moves them dt seconds on.
+pub fn (self: &var CursorAnimation) update(scene: &Scene, geometry: Geometry, dt: f32) -> void {
+    if !scene.has_cursor {
+        self.clear();
+        return;
+    }
+    let cursor = scene.cursor;
+    if !self.has_shape or self.shape != cursor.shape or self.cell_percentage != cursor.cell_percentage {
+        self.set_shape(cursor.shape, cursor.cell_percentage);
+        self.has_shape = true;
+        self.shape = cursor.shape;
+        self.cell_percentage = cursor.cell_percentage;
+    }
+    let at = scene.cursor_render_point();
+    let size = point(geometry.cell_width, geometry.cell_height);
+    let center = point(
+        geometry.origin_x + (at.x + lit(0.5)) * geometry.cell_width,
+        geometry.origin_y + (at.y + lit(0.5)) * geometry.cell_height
+    );
+    var parent: i64 = 0;
+    if scene.has_cursor_parent {
+        parent = scene.cursor_parent;
+    }
+    let jumped = !self.has_position or self.has_parent != scene.has_cursor_parent or self.parent != parent or
+        self.x != cursor.x or
+        self.y != cursor.y;
+    self.has_position = true;
+    self.has_parent = scene.has_cursor_parent;
+    self.parent = parent;
+    self.x = cursor.x;
+    self.y = cursor.y;
+    if !self.initialized {
+        for 0..4 |index| {
+            var corner = self.corners[index];
+            corner.snap(center, size);
+            self.corners[index] = corner;
+        }
+        self.initialized = true;
+        self.animating = false;
+        return;
+    }
+    if jumped {
+        var alignments = [4]f32{ lit(0.0), lit(0.0), lit(0.0), lit(0.0) };
+        for 0..4 |index| {
+            let corner = self.corners[index];
+            alignments[index] = corner.direction_alignment(center, size);
+        }
+        for 0..4 |index| {
+            var rank = 0;
+            for 0..4 |other| {
+                if alignments[other] < alignments[index] or (alignments[other] == alignments[index] and other < index) {
+                    rank = rank + 1;
+                }
+            }
+            var corner = self.corners[index];
+            corner.jump(center, size, rank);
+            self.corners[index] = corner;
+        }
+    }
+    var animating = false;
+    for 0..4 |index| {
+        var corner = self.corners[index];
+        if corner.update(center, size, dt) {
+            animating = true;
+        }
+        self.corners[index] = corner;
+    }
+    self.animating = animating;
+    return;
+}
+
+pub fn (self: &CursorAnimation) needs_animation_frame() -> bool {
+    return self.animating;
+}
+
+/// Whether there is a cursor to draw.
+pub fn (self: &CursorAnimation) is_placed() -> bool {
+    return self.initialized;
+}
+
+/// Where corner index is drawn, on a whole pixel.
+pub fn (self: &CursorAnimation) corner_pixel(index: i64) -> Point {
+    let at = self.corners[index].current;
+    return point(math::round<f32>(at.x), math::round<f32>(at.y));
+}

@@ -1,0 +1,73 @@
+import std::mem;
+import std::string;
+import std::testing;
+
+// Reads `\e` as ESC and `\a` as BEL, which a string literal cannot hold.
+fn escaped(allocator: Allocator, text: []u8) -> !string::String {
+    var out = string::new(allocator);
+    errdefer out.deinit(allocator);
+    var index = 0;
+    while index < mem::len(text) {
+        if text[index] == cast<u8>(92) and index + 1 < mem::len(text) {
+            let next = text[index + 1];
+            if next == cast<u8>(101) {
+                try out.append_byte(allocator, cast<u8>(27));
+            } else if next == cast<u8>(97) {
+                try out.append_byte(allocator, cast<u8>(7));
+            } else {
+                try out.append_byte(allocator, next);
+            }
+            index = index + 2;
+        } else {
+            try out.append_byte(allocator, text[index]);
+            index = index + 1;
+        }
+    }
+    return move out;
+}
+
+fn feed(allocator: Allocator, tracker: &var PromptTracker, text: []u8) -> !void {
+    let input = try escaped(allocator, text);
+    defer input.deinit(allocator);
+    let bytes = input.as_bytes();
+    return tracker.feed(allocator, bytes);
+}
+
+test "counts one ready prompt per prompt" {
+    let allocator = mem::page_allocator();
+    var tracker = new_prompt_tracker(allocator);
+    defer tracker.deinit(allocator);
+    try feed(allocator, &var tracker, "\e]133;C\e\\");
+    testing::expect(tracker.observed);
+    testing::expect_equal<u64>(0, tracker.ready_generation);
+
+    try feed(allocator, &var tracker, "\e]133;B");
+    testing::expect_equal<u64>(0, tracker.ready_generation);
+    try feed(allocator, &var tracker, "\e\\");
+    testing::expect_equal<u64>(1, tracker.ready_generation);
+
+    try feed(allocator, &var tracker, "\e]0;133;B\a");
+    testing::expect_equal<u64>(1, tracker.ready_generation);
+    try feed(allocator, &var tracker, "\e]133;B;fresh\a");
+    testing::expect_equal<u64>(1, tracker.ready_generation);
+
+    try feed(allocator, &var tracker, "\e]133;A\e\\prompt> \e]133;B\a");
+    testing::expect_equal<u64>(2, tracker.ready_generation);
+    try feed(allocator, &var tracker, "\e]133;B");
+    try feed(allocator, &var tracker, ";duplicate\e\\");
+    testing::expect_equal<u64>(2, tracker.ready_generation);
+
+    try feed(allocator, &var tracker, "\e]133;D;0\e\\\e]133;B\e\\");
+    testing::expect_equal<u64>(3, tracker.ready_generation);
+}
+
+test "reset forgets the marks" {
+    let allocator = mem::page_allocator();
+    var tracker = new_prompt_tracker(allocator);
+    defer tracker.deinit(allocator);
+    try feed(allocator, &var tracker, "\e]133;A\e\\\e]133;B\e\\");
+    testing::expect_equal<u64>(1, tracker.ready_generation);
+    tracker.reset();
+    testing::expect(!tracker.observed);
+    testing::expect_equal<u64>(0, tracker.ready_generation);
+}

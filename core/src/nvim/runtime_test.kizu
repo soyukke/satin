@@ -1,0 +1,186 @@
+import satin::term;
+import std::fs;
+import std::io;
+import std::mem;
+import std::process;
+import std::string;
+import std::testing;
+
+fn test_size() -> term::GridSize {
+    return term::GridSize { rows: 4, cols: 20, pixel_width: 200, pixel_height: 80 };
+}
+
+/// Whether the row of a grid's window shows text at its start.
+fn row_starts_with(runtime: &Runtime, grid: i64, row: i64, text: []u8) -> bool {
+    if runtime.editor.window(grid) |cache| {
+        if cache.line(cache.line_id(row)) |line| {
+            let shown = line.text.as_bytes();
+            return mem::starts_with(shown, text);
+        }
+    }
+    return false;
+}
+
+/// Drains for up to three seconds, until the row shows text.
+fn drains_to(allocator: Allocator, runtime: &var Runtime, grid: i64, row: i64, text: []u8) -> !bool {
+    for 0..300 |_| {
+        let _ = try runtime.drain(allocator);
+        if row_starts_with(runtime, grid, row, text) {
+            return true;
+        }
+        // SAFETY: sleeping takes no memory of ours.
+        let _ = unsafe usleep(10000);
+    }
+    return false;
+}
+
+fn append_event_name(allocator: Allocator, out: &var string::String, name: []u8, argument_count: i64) -> mem::Error!void {
+    try append_array(allocator, out, 2);
+    try append_str(allocator, out, name);
+    try append_array(allocator, out, argument_count);
+    return;
+}
+
+/// The redraw a small screen starts with: a grid of 20 x 4 showing "hi" on
+/// its first row, then a directory change.
+fn append_canned_output(allocator: Allocator, out: &var string::String) -> mem::Error!void {
+    try append_array(allocator, out, 3);
+    try append_int(allocator, out, 2);
+    try append_str(allocator, out, "redraw");
+    try append_array(allocator, out, 3);
+    try append_event_name(allocator, out, "grid_resize", 3);
+    try append_int(allocator, out, 1);
+    try append_int(allocator, out, 20);
+    try append_int(allocator, out, 4);
+    try append_event_name(allocator, out, "grid_line", 4);
+    try append_int(allocator, out, 1);
+    try append_int(allocator, out, 0);
+    try append_int(allocator, out, 0);
+    try append_array(allocator, out, 2);
+    try append_array(allocator, out, 1);
+    try append_str(allocator, out, "h");
+    try append_array(allocator, out, 1);
+    try append_str(allocator, out, "i");
+    try append_event_name(allocator, out, "flush", 0);
+    try append_array(allocator, out, 3);
+    try append_int(allocator, out, 2);
+    try append_str(allocator, out, "satin_cwd_changed");
+    try append_array(allocator, out, 1);
+    try append_str(allocator, out, "/work/project");
+    return;
+}
+
+test "redraws build the screen, and input becomes requests" {
+    let allocator = mem::page_allocator();
+    var canned = string::new(allocator);
+    defer canned.deinit(allocator);
+    try append_canned_output(allocator, &var canned);
+    var script = string::new(allocator);
+    defer script.deinit(allocator);
+    // The stand-in writes the canned output and keeps what it is sent.
+    try write_stand_in(allocator, "runtime",
+        \\cat "$0.out"
+        \\exec cat > "$0.in"
+    , &var script);
+    var output_path = string::new(allocator);
+    defer output_path.deinit(allocator);
+    try output_path.append_string(allocator, &script);
+    try output_path.append_bytes(allocator, ".out");
+    var input_path = string::new(allocator);
+    defer input_path.deinit(allocator);
+    try input_path.append_string(allocator, &script);
+    try input_path.append_bytes(allocator, ".in");
+    let output_name = output_path.as_bytes();
+    let input_name = input_path.as_bytes();
+    let canned_bytes = canned.as_bytes();
+    try fs::write_file(io::blocking(), &output_name, &canned_bytes);
+    var launch = new_launch(allocator);
+    defer launch.deinit(allocator);
+    launch.has_executable = true;
+    try launch.executable.append_string(allocator, &script);
+    launch.has_cwd = true;
+    try launch.cwd.append_bytes(allocator, "/tmp");
+    var runtime = try spawn_runtime(allocator, test_size(), &launch);
+    errdefer runtime.deinit(allocator);
+    var directory = string::new(allocator);
+    defer directory.deinit(allocator);
+    testing::expect(try runtime.take_working_directory_update(allocator, &var directory));
+    testing::expect(!try runtime.take_working_directory_update(allocator, &var directory));
+    testing::expect(try drains_to(allocator, &var runtime, 1, 0, "hi"));
+    directory.clear();
+    testing::expect(try runtime.take_working_directory_update(allocator, &var directory));
+    let moved = directory.as_bytes();
+    testing::expect(mem::equal_bytes(moved, "/work/project"));
+    testing::expect(runtime.wakeup_fd() >= 0);
+    testing::expect(!runtime.is_exited());
+    testing::expect(runtime.exit_code() == -1);
+    try runtime.input_bytes(allocator, ":q");
+    try runtime.command(allocator, "redraw");
+    testing::expect(!try runtime.mouse_input(allocator, "left", "press", "", 1, 2, 3));
+    try runtime.resize(allocator, term::GridSize { rows: 5, cols: 30, pixel_width: 300, pixel_height: 100 });
+    runtime.deinit(allocator);
+    let sent = try fs::read_file(io::blocking(), allocator, &input_name, mem::Limit::Bytes(1048576));
+    defer sent.deinit(allocator);
+    let requests = sent.as_bytes();
+    testing::expect(contains(requests, "nvim_ui_attach"));
+    testing::expect(contains(requests, "ext_multigrid"));
+    testing::expect(contains(requests, "satin_pixel_width"));
+    testing::expect(contains(requests, "nvim_set_current_dir"));
+    testing::expect(contains(requests, "nvim_input"));
+    testing::expect(contains(requests, "nvim_input_mouse"));
+    testing::expect(contains(requests, "nvim_ui_try_resize"));
+    remove_stand_in(&script);
+    if fs::remove_file(io::blocking(), &output_name) {} else |_| {}
+    if fs::remove_file(io::blocking(), &input_name) {} else |_| {}
+}
+
+test "a real nvim shows what is typed into it" {
+    // Runs only when SATIN_TEST_NVIM names an nvim to start.
+    let allocator = mem::page_allocator();
+    var launch = new_launch(allocator);
+    defer launch.deinit(allocator);
+    if process::env("SATIN_TEST_NVIM") |program| {
+        launch.has_executable = true;
+        try launch.executable.append_bytes(allocator, program);
+    }
+    if !launch.has_executable {
+        return;
+    }
+    try append_word(allocator, &var launch.arguments, "-u");
+    try append_word(allocator, &var launch.arguments, "NONE");
+    var runtime = try spawn_runtime(allocator, test_size(), &launch);
+    defer runtime.deinit(allocator);
+    var typed = string::new(allocator);
+    defer typed.deinit(allocator);
+    try typed.append_bytes(allocator, "ihello <world>");
+    try typed.append_byte(allocator, 27);
+    let keys = typed.as_bytes();
+    try runtime.input_bytes(allocator, keys);
+    var shown = false;
+    for 0..300 |_| {
+        if !shown {
+            let _ = try runtime.drain(allocator);
+            for 0..runtime.editor.window_count() |index| {
+                if row_starts_with(&runtime, runtime.editor.window_grid(index), 0, "hello <world>") {
+                    shown = true;
+                }
+            }
+            // SAFETY: sleeping takes no memory of ours.
+            let _ = unsafe usleep(10000);
+        }
+    }
+    testing::expect(shown);
+    testing::expect(runtime.editor.window_count() >= 1);
+    try runtime.command(allocator, "qa!");
+    var exited = false;
+    for 0..300 |_| {
+        if !exited {
+            let _ = try runtime.drain(allocator);
+            exited = runtime.is_exited();
+            // SAFETY: sleeping takes no memory of ours.
+            let _ = unsafe usleep(10000);
+        }
+    }
+    testing::expect(exited);
+    testing::expect(runtime.exit_code() == 0);
+}

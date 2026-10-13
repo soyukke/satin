@@ -1,0 +1,136 @@
+import std::mem;
+import std::process;
+import std::string;
+import std::testing;
+
+/// Reads from pty until its child has exited and the PTY is drained, or two
+/// seconds pass. Returns whether the child exited.
+fn read_until_exit(allocator: Allocator, pty: &var Pty, out: &var string::String) -> !bool {
+    for 0..200 |_attempt| {
+        let read = try pty.read_available(allocator, out);
+        if !read and pty.poll_exited() {
+            let _ = try pty.read_available(allocator, out);
+            return true;
+        }
+        // SAFETY: sleeping takes no memory of ours.
+        let _ = unsafe usleep(10000);
+    }
+    return false;
+}
+
+fn output_has(out: &string::String, needle: []u8) -> bool {
+    let bytes = out.as_bytes();
+    return find_bytes(bytes, needle, 0) >= 0;
+}
+
+test "a direct startup command runs on the PTY with the terminal's environment" {
+    let allocator = mem::page_allocator();
+    var config = new_spawn_config(allocator);
+    defer config.deinit(allocator);
+    config.direct_startup = true;
+    config.has_cwd = true;
+    try config.cwd.append_bytes(allocator, "/tmp");
+    try append_text(allocator, &var config.startup_command, "/bin/sh");
+    try append_text(allocator, &var config.startup_command, "-c");
+    try append_text(allocator, &var config.startup_command, "echo ready $TERM $TERM_PROGRAM; pwd; stty size");
+    var directory = string::new(allocator);
+    defer directory.deinit(allocator);
+    var pty = try spawn_pty(allocator, 80, 24, 800, 480, &config, &var directory);
+    defer pty.deinit(allocator);
+    var out = string::new(allocator);
+    defer out.deinit(allocator);
+    testing::expect(pty.wakeup_fd() >= 0);
+    testing::expect(!pty.interactive_shell_owns_foreground());
+    testing::expect(try read_until_exit(allocator, &var pty, &var out));
+    testing::expect(output_has(&out, "ready xterm-256color satin"));
+    testing::expect(output_has(&out, "/tmp"));
+    testing::expect(output_has(&out, "24 80"));
+    let directory_bytes = directory.as_bytes();
+    testing::expect(mem::equal_bytes(directory_bytes, "/tmp"));
+}
+
+test "a shell runs the startup command typed at it, resized, and exits" {
+    let allocator = mem::page_allocator();
+    var config = new_spawn_config(allocator);
+    defer config.deinit(allocator);
+    config.has_shell = true;
+    try config.shell.append_bytes(allocator, "/bin/sh");
+    try append_text(allocator, &var config.startup_command, "/bin/sh");
+    try append_text(allocator, &var config.startup_command, "-c");
+    try append_text(allocator, &var config.startup_command, "stty size; echo done");
+    var directory = string::new(allocator);
+    defer directory.deinit(allocator);
+    var pty = try spawn_pty(allocator, 80, 24, 800, 480, &config, &var directory);
+    defer pty.deinit(allocator);
+    try pty.resize(100, 30, 1000, 600);
+    var out = string::new(allocator);
+    defer out.deinit(allocator);
+    testing::expect(try read_until_exit(allocator, &var pty, &var out));
+    testing::expect(output_has(&out, "30 100"));
+    testing::expect(output_has(&out, "done"));
+}
+
+test "a long-running child is ended with its PTY" {
+    let allocator = mem::page_allocator();
+    var config = new_spawn_config(allocator);
+    defer config.deinit(allocator);
+    config.direct_startup = true;
+    try append_text(allocator, &var config.startup_command, "/bin/sleep");
+    try append_text(allocator, &var config.startup_command, "30");
+    var directory = string::new(allocator);
+    defer directory.deinit(allocator);
+    var pty = try spawn_pty(allocator, 80, 24, 800, 480, &config, &var directory);
+    testing::expect(!pty.poll_exited());
+    let wrote = pty.write_all("x");
+    pty.deinit(allocator);
+    try wrote;
+}
+
+test "a configured shell must be an executable absolute file" {
+    let allocator = mem::page_allocator();
+    var config = new_spawn_config(allocator);
+    defer config.deinit(allocator);
+    var out = string::new(allocator);
+    defer out.deinit(allocator);
+    try append_configured_shell(allocator, &config, &var out);
+    testing::expect(out.len() > 0);
+    out.clear();
+    config.has_shell = true;
+    try config.shell.append_bytes(allocator, " /bin/sh ");
+    try append_configured_shell(allocator, &config, &var out);
+    let chosen = out.as_bytes();
+    testing::expect(mem::equal_bytes(chosen, "/bin/sh"));
+    config.shell.clear();
+    try config.shell.append_bytes(allocator, "/etc/hosts");
+    var refused = false;
+    if append_configured_shell(allocator, &config, &var out) {} else |_| {
+        refused = true;
+    }
+    testing::expect(refused);
+    config.shell.clear();
+    try config.shell.append_bytes(allocator, "bin/sh");
+    refused = false;
+    if append_configured_shell(allocator, &config, &var out) {} else |_| {
+        refused = true;
+    }
+    testing::expect(refused);
+}
+
+test "a child with unread output is ended without waiting on it" {
+    let allocator = mem::page_allocator();
+    var config = new_spawn_config(allocator);
+    defer config.deinit(allocator);
+    config.direct_startup = true;
+    try append_text(allocator, &var config.startup_command, "/bin/sh");
+    try append_text(allocator, &var config.startup_command, "-c");
+    // Fills the terminal's output buffer and ignores the request to end.
+    try append_text(allocator, &var config.startup_command, "trap '' TERM HUP; while :; do echo xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; done");
+    var directory = string::new(allocator);
+    defer directory.deinit(allocator);
+    var pty = try spawn_pty(allocator, 80, 24, 800, 480, &config, &var directory);
+    // SAFETY: sleeping takes no memory of ours.
+    let _ = unsafe usleep(200000);
+    let started = process::monotonic_millis();
+    pty.deinit(allocator);
+    testing::expect(process::monotonic_millis() - started < 2000);
+}

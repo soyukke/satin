@@ -1,0 +1,1011 @@
+// An artifact drawn for a terminal: a title line, a line about it, and its
+// body cut to the pane, as ANSI truecolor text with Kitty graphics for
+// images, and the same screen as plain lines.
+import std::array;
+import std::fmt;
+import std::mem;
+import std::string;
+
+enum LineStyle {
+    Normal,
+    Heading,
+    Muted,
+    Accent,
+    Added,
+    Removed,
+    Warning,
+}
+
+struct RgbColor {
+    red: u8,
+    green: u8,
+    blue: u8,
+}
+
+/// How a run of text is drawn: a line style, and what it changes of it.
+struct SpanStyle {
+    base: LineStyle,
+    has_foreground: bool,
+    foreground: RgbColor,
+    has_background: bool,
+    background: RgbColor,
+    bold: bool,
+    italic: bool,
+    underline: bool,
+    strikethrough: bool,
+}
+
+fn no_color() -> RgbColor {
+    return RgbColor { red: 0, green: 0, blue: 0 };
+}
+
+/// The style of text drawn as its line is.
+fn span_style(base: LineStyle) -> SpanStyle {
+    return SpanStyle {
+        base: base,
+        has_foreground: false,
+        foreground: no_color(),
+        has_background: false,
+        background: no_color(),
+        bold: false,
+        italic: false,
+        underline: false,
+        strikethrough: false
+    };
+}
+
+fn same_color(left: RgbColor, right: RgbColor) -> bool {
+    return left.red == right.red and left.green == right.green and left.blue == right.blue;
+}
+
+fn same_span_style(left: SpanStyle, right: SpanStyle) -> bool {
+    return left.base == right.base and left.has_foreground == right.has_foreground
+        and same_color(left.foreground, right.foreground) and left.has_background == right.has_background
+        and same_color(left.background, right.background) and left.bold == right.bold
+        and left.italic == right.italic and left.underline == right.underline
+        and left.strikethrough == right.strikethrough;
+}
+
+struct StyledSpan {
+    text: string::String,
+    style: SpanStyle,
+}
+
+fn (self: StyledSpan) deinit(allocator: Allocator) -> void {
+    self.text.deinit(allocator);
+    return;
+}
+
+/// One line of a body: runs of text, and the style of the cells after
+/// them.
+struct StyledLine {
+    style: LineStyle,
+    spans: array::Array<StyledSpan>,
+}
+
+fn (self: StyledLine) deinit(allocator: Allocator) -> void {
+    self.spans.deinit(allocator);
+    return;
+}
+
+/// A PNG drawn before the body line after_line, in columns by rows cells.
+struct BodyImage {
+    after_line: i64,
+    columns: i64,
+    rows: i64,
+    alt: string::String,
+    bytes: string::String,
+}
+
+fn (self: BodyImage) deinit(allocator: Allocator) -> void {
+    self.alt.deinit(allocator);
+    self.bytes.deinit(allocator);
+    return;
+}
+
+/// An artifact's body cut to a pane: its lines and images, and how much
+/// of the source the cut left out.
+struct BodyRender {
+    lines: array::Array<StyledLine>,
+    compacted: bool,
+    omitted_items: i64,
+    source_lines: i64,
+    images: array::Array<BodyImage>,
+}
+
+fn (self: BodyRender) deinit(allocator: Allocator) -> void {
+    self.lines.deinit(allocator);
+    self.images.deinit(allocator);
+    return;
+}
+
+fn new_body(allocator: Allocator) -> BodyRender {
+    return BodyRender {
+        lines: array::new<StyledLine>(allocator),
+        compacted: false,
+        omitted_items: 0,
+        source_lines: 0,
+        images: array::new<BodyImage>(allocator)
+    };
+}
+
+/// A whole screen of an artifact: `ansi` is what a terminal is sent, each
+/// row ending in a carriage return and a line feed, and `plain_lines` the
+/// text of each row.
+pub struct RenderedArtifact {
+    pub ansi: string::String,
+    pub plain_lines: array::Array<string::String>,
+    pub compacted: bool,
+    pub omitted_items: i64,
+}
+
+pub fn (self: RenderedArtifact) deinit(allocator: Allocator) -> void {
+    self.ansi.deinit(allocator);
+    self.plain_lines.deinit(allocator);
+    return;
+}
+
+/// Appends a line of one run of text to lines.
+fn append_plain_line(
+    allocator: Allocator,
+    lines: &var array::Array<StyledLine>,
+    text: []u8,
+    style: LineStyle
+) -> mem::Error!void {
+    var owned = try string::from_bytes(allocator, text);
+    errdefer owned.deinit(allocator);
+    var spans = array::new<StyledSpan>(allocator);
+    errdefer spans.deinit(allocator);
+    try spans.append(allocator, StyledSpan { text: move owned, style: span_style(style) });
+    try lines.append(allocator, StyledLine { style: style, spans: move spans });
+    return;
+}
+
+/// The text of the manifest's source, bytes that are not UTF-8 replaced.
+fn read_text_source(
+    allocator: Allocator,
+    message: &var string::String,
+    manifest: &ArtifactManifest
+) -> ArtifactFailure!string::String {
+    let path = manifest.source.as_bytes();
+    var raw = string::new(allocator);
+    defer raw.deinit(allocator);
+    try read_bounded_source(allocator, message, path, max_text_bytes(), "text artifact", &var raw);
+    let bytes = raw.as_bytes();
+    var content = string::new(allocator);
+    errdefer content.deinit(allocator);
+    try append_lossy(allocator, &var content, bytes);
+    return move content;
+}
+
+/// The source as lines wrapped to width, each source line after prefix,
+/// and the first limit of them kept. Text, trees and timelines.
+fn render_wrapped_body(
+    allocator: Allocator,
+    message: &var string::String,
+    manifest: &ArtifactManifest,
+    width: i64,
+    limit: i64,
+    prefix: []u8
+) -> ArtifactFailure!BodyRender {
+    let content = try read_text_source(allocator, message, manifest);
+    defer content.deinit(allocator);
+    let text = content.as_bytes();
+    var body = new_body(allocator);
+    errdefer body.deinit(allocator);
+    var wrapped = array::new<string::String>(allocator);
+    defer wrapped.deinit(allocator);
+    var line = string::new(allocator);
+    defer line.deinit(allocator);
+    var cursor: i64 = 0;
+    var start: i64 = 0;
+    var end: i64 = 0;
+    while next_line(text, &var cursor, &var start, &var end) {
+        let source_line = text[start..end];
+        line.clear();
+        try line.append_bytes(allocator, prefix);
+        try line.append_bytes(allocator, source_line[0..trimmed_end(source_line)]);
+        let bytes = line.as_bytes();
+        try wrap_display(allocator, &var wrapped, bytes, width);
+        body.source_lines = body.source_lines + 1;
+    }
+    for 0..wrapped.len() |index| {
+        if index >= limit {
+            break;
+        }
+        if wrapped.at(index) |kept| {
+            let bytes = kept.as_bytes();
+            try append_plain_line(allocator, &var body.lines, bytes, LineStyle::Normal);
+        }
+    }
+    if wrapped.len() > limit {
+        body.omitted_items = wrapped.len() - limit;
+        body.compacted = true;
+    }
+    return move body;
+}
+
+fn diff_line_style(line: []u8) -> LineStyle {
+    if mem::starts_with(line, "+") and !mem::starts_with(line, "+++") {
+        return LineStyle::Added;
+    }
+    if mem::starts_with(line, "-") and !mem::starts_with(line, "---") {
+        return LineStyle::Removed;
+    }
+    if mem::starts_with(line, "@@") {
+        return LineStyle::Accent;
+    }
+    if mem::starts_with(line, "diff ") or mem::starts_with(line, "index ") {
+        return LineStyle::Heading;
+    }
+    return LineStyle::Normal;
+}
+
+/// The first limit lines of a diff, each cut to width and colored by what
+/// it adds, removes or names.
+fn render_diff_body(
+    allocator: Allocator,
+    message: &var string::String,
+    manifest: &ArtifactManifest,
+    width: i64,
+    limit: i64
+) -> ArtifactFailure!BodyRender {
+    let content = try read_text_source(allocator, message, manifest);
+    defer content.deinit(allocator);
+    let text = content.as_bytes();
+    var body = new_body(allocator);
+    errdefer body.deinit(allocator);
+    var cut = string::new(allocator);
+    defer cut.deinit(allocator);
+    var truncated_items: i64 = 0;
+    var cursor: i64 = 0;
+    var start: i64 = 0;
+    var end: i64 = 0;
+    while next_line(text, &var cursor, &var start, &var end) {
+        body.source_lines = body.source_lines + 1;
+        if body.lines.len() >= limit {
+            continue;
+        }
+        let line = text[start..end];
+        if display_width(line) > width {
+            truncated_items = truncated_items + 1;
+        }
+        cut.clear();
+        let _ = try append_truncated(allocator, &var cut, line, width);
+        let bytes = cut.as_bytes();
+        try append_plain_line(allocator, &var body.lines, bytes, diff_line_style(line));
+    }
+    body.omitted_items = body.source_lines - body.lines.len() + truncated_items;
+    body.compacted = body.omitted_items > 0;
+    return move body;
+}
+
+/// A table drawn with box borders: a header row, and the rows that fit
+/// limit lines.
+fn render_table_body(
+    allocator: Allocator,
+    message: &var string::String,
+    manifest: &ArtifactManifest,
+    width: i64,
+    limit: i64
+) -> ArtifactFailure!BodyRender {
+    let content = try read_text_source(allocator, message, manifest);
+    defer content.deinit(allocator);
+    let text = content.as_bytes();
+    let source = manifest.source.as_bytes();
+    var table = try parse_table(allocator, message, text, source);
+    defer table.deinit(allocator);
+    if table.headers.len() == 0 {
+        try append_text(allocator, &var table.headers, "value");
+    }
+    var body = new_body(allocator);
+    errdefer body.deinit(allocator);
+    body.source_lines = count_lines(text);
+    let column_count = table_column_limit(width, table.headers.len());
+    let omitted_columns = table.headers.len() - column_count;
+    // The two borders and the header row.
+    var data_limit = limit - 3;
+    if data_limit < 0 {
+        data_limit = 0;
+    }
+    var omitted_rows = table.rows.len() - data_limit;
+    if omitted_rows < 0 {
+        omitted_rows = 0;
+    }
+    let widths = try table_widths(allocator, width, column_count);
+    defer widths.deinit(allocator);
+    let truncated_cells = count_truncated_cells(&table, &widths, data_limit);
+    var line = string::new(allocator);
+    defer line.deinit(allocator);
+    // U+250C, U+252C, U+2510.
+    try append_table_border(allocator, &var line, 9484, 9516, 9488, &widths);
+    try append_body_line(allocator, &var body, &var line, LineStyle::Muted, limit);
+    try append_table_row(allocator, &var line, &table.headers, &widths);
+    try append_body_line(allocator, &var body, &var line, LineStyle::Heading, limit);
+    // U+251C, U+253C, U+2524.
+    try append_table_border(allocator, &var line, 9500, 9532, 9508, &widths);
+    try append_body_line(allocator, &var body, &var line, LineStyle::Muted, limit);
+    for 0..table.rows.len() |index| {
+        if index >= data_limit {
+            break;
+        }
+        if table.rows.at(index) |row| {
+            try append_table_row(allocator, &var line, row, &widths);
+            try append_body_line(allocator, &var body, &var line, LineStyle::Normal, limit);
+        }
+    }
+    body.omitted_items = omitted_rows + omitted_columns + truncated_cells;
+    body.compacted = body.omitted_items > 0;
+    return move body;
+}
+
+/// Appends line to the body when it has fewer than limit lines, and
+/// empties line.
+fn append_body_line(
+    allocator: Allocator,
+    body: &var BodyRender,
+    line: &var string::String,
+    style: LineStyle,
+    limit: i64
+) -> mem::Error!void {
+    if body.lines.len() < limit {
+        let bytes = line.as_bytes();
+        try append_plain_line(allocator, &var body.lines, bytes, style);
+    }
+    line.clear();
+    return;
+}
+
+/// Reads the width and height a PNG's header gives; false when bytes do
+/// not start with a PNG signature and an IHDR chunk of a picture that has
+/// a size.
+fn png_size(bytes: []u8, width: &var i64, height: &var i64) -> bool {
+    if mem::len(bytes) < 24 {
+        return false;
+    }
+    let signature = bytes[0..8];
+    if cast<i64>(signature[0]) != 137 or !mem::equal_bytes(signature[1..4], "PNG")
+        or cast<i64>(signature[4]) != 13 or cast<i64>(signature[5]) != 10 or cast<i64>(signature[6]) != 26
+        or cast<i64>(signature[7]) != 10 {
+        return false;
+    }
+    if big_endian_u32(bytes, 8) != 13 or !mem::equal_bytes(bytes[12..16], "IHDR") {
+        return false;
+    }
+    width = big_endian_u32(bytes, 16);
+    height = big_endian_u32(bytes, 20);
+    return width > 0 and height > 0;
+}
+
+fn big_endian_u32(bytes: []u8, index: i64) -> i64 {
+    return cast<i64>(bytes[index]) << 24 | cast<i64>(bytes[index + 1]) << 16 | cast<i64>(bytes[index + 2]) << 8
+        | cast<i64>(bytes[index + 3]);
+}
+
+/// The image alone: the document gives it every row under its heading.
+fn render_image_body(
+    allocator: Allocator,
+    message: &var string::String,
+    manifest: &ArtifactManifest
+) -> ArtifactFailure!BodyRender {
+    let path = manifest.source.as_bytes();
+    var image = string::new(allocator);
+    errdefer image.deinit(allocator);
+    try read_bounded_source(allocator, message, path, max_image_bytes(), "image", &var image);
+    var width: i64 = 0;
+    var height: i64 = 0;
+    let bytes = image.as_bytes();
+    let decoded = png_size(bytes, &var width, &var height);
+    if !decoded {
+        explain(allocator, message, "decode PNG header ", path, "");
+        return ArtifactError::Failed;
+    }
+    var body = new_body(allocator);
+    errdefer body.deinit(allocator);
+    var alt = string::new(allocator);
+    errdefer alt.deinit(allocator);
+    try alt.append_string(allocator, &manifest.title);
+    try body.images.append(allocator, BodyImage { after_line: 0, columns: 1, rows: 1, alt: move alt, bytes: move image });
+    return move body;
+}
+
+/// What a viewer shows when the policy defers previews.
+fn deferred_body(allocator: Allocator, manifest: &ArtifactManifest) -> mem::Error!BodyRender {
+    var body = new_body(allocator);
+    errdefer body.deinit(allocator);
+    try append_plain_line(allocator, &var body.lines, "Preview generation is deferred by policy.", LineStyle::Warning);
+    var source = try string::from_bytes(allocator, "Source: ");
+    defer source.deinit(allocator);
+    try fmt::append_i64(allocator, &var source, manifest.source_bytes);
+    try source.append_bytes(allocator, " bytes");
+    let bytes = source.as_bytes();
+    try append_plain_line(allocator, &var body.lines, bytes, LineStyle::Muted);
+    body.compacted = true;
+    body.omitted_items = manifest.preview.omitted_items;
+    body.source_lines = manifest.preview.source_lines;
+    return move body;
+}
+
+/// The manifest's body for a pane of columns by rows cells, of which the
+/// heading takes three rows.
+fn render_body(
+    allocator: Allocator,
+    message: &var string::String,
+    manifest: &ArtifactManifest,
+    columns: i64,
+    rows: i64
+) -> ArtifactFailure!BodyRender {
+    var width = columns;
+    if width < 1 {
+        width = 1;
+    }
+    var body_rows = rows - 3;
+    if body_rows < 1 {
+        body_rows = 1;
+    }
+    match manifest.kind {
+        Image => return render_image_body(allocator, message, manifest),
+        Table => return render_table_body(allocator, message, manifest, width, body_rows),
+        Diff => return render_diff_body(allocator, message, manifest, width, body_rows),
+        Markdown => return render_markdown_body(allocator, message, manifest, width, body_rows),
+        Text => return render_wrapped_body(allocator, message, manifest, width, body_rows, ""),
+        Tree => return render_wrapped_body(allocator, message, manifest, width, body_rows, ""),
+        Timeline => {},
+    }
+    var bullet = string::new(allocator);
+    defer bullet.deinit(allocator);
+    // U+25CF.
+    try append_scalar(allocator, &var bullet, 9679);
+    try bullet.append_byte(allocator, 32);
+    let prefix = bullet.as_bytes();
+    return render_wrapped_body(allocator, message, manifest, width, body_rows, prefix);
+}
+
+/// What a body says of the preview it is, under an overflow policy.
+/// Reject fails for a body that left something out.
+fn preview_summary(
+    allocator: Allocator,
+    message: &var string::String,
+    overflow: ArtifactOverflow,
+    body: &BodyRender
+) -> ArtifactFailure!ArtifactPreviewSummary {
+    if overflow == ArtifactOverflow::Reject and body.compacted {
+        explain(allocator, message,
+            "artifact preview exceeds the configured bounds; change the source or overflow policy", "", "");
+        return ArtifactError::Failed;
+    }
+    var status = ArtifactPreviewStatus::Ready;
+    if overflow == ArtifactOverflow::Defer {
+        status = ArtifactPreviewStatus::Deferred;
+    } else if body.compacted {
+        status = ArtifactPreviewStatus::Compacted;
+    }
+    return ArtifactPreviewSummary { status: status, source_lines: body.source_lines, omitted_items: body.omitted_items };
+}
+
+fn append_reset(allocator: Allocator, out: &var string::String) -> mem::Error!void {
+    try append_escape(allocator, out, "[0m");
+    return;
+}
+
+fn append_line_end(allocator: Allocator, out: &var string::String) -> mem::Error!void {
+    try append_reset(allocator, out);
+    try out.append_byte(allocator, 13);
+    try out.append_byte(allocator, 10);
+    return;
+}
+
+/// Appends the escape sequence that starts text of a line style.
+fn append_style_escape(allocator: Allocator, out: &var string::String, style: LineStyle) -> mem::Error!void {
+    let sequence = match style {
+        Normal => "[38;2;220;224;230m",
+        Heading => "[1;38;2;244;247;252m",
+        Muted => "[38;2;132;142;156m",
+        Accent => "[38;2;91;192;235m",
+        Added => "[38;2;126;211;154m",
+        Removed => "[38;2;242;139;130m",
+        Warning => "[1;38;2;240;190;85m",
+    };
+    try append_escape(allocator, out, sequence);
+    return;
+}
+
+/// Appends the escape sequence that sets a color; layer is `[38;2;` for
+/// the text and `[48;2;` for what is behind it.
+fn append_color_escape(
+    allocator: Allocator,
+    out: &var string::String,
+    layer: []u8,
+    color: RgbColor
+) -> mem::Error!void {
+    try append_escape(allocator, out, layer);
+    try fmt::append_i64(allocator, out, cast<i64>(color.red));
+    try out.append_byte(allocator, 59);
+    try fmt::append_i64(allocator, out, cast<i64>(color.green));
+    try out.append_byte(allocator, 59);
+    try fmt::append_i64(allocator, out, cast<i64>(color.blue));
+    try out.append_byte(allocator, 109);
+    return;
+}
+
+/// Appends the escape sequences that start text of a span style.
+fn append_span_style(allocator: Allocator, out: &var string::String, style: SpanStyle) -> mem::Error!void {
+    try append_reset(allocator, out);
+    try append_style_escape(allocator, out, style.base);
+    if style.has_foreground {
+        try append_color_escape(allocator, out, "[38;2;", style.foreground);
+    }
+    if style.has_background {
+        try append_color_escape(allocator, out, "[48;2;", style.background);
+    }
+    if style.bold {
+        try append_escape(allocator, out, "[1m");
+    }
+    if style.italic {
+        try append_escape(allocator, out, "[3m");
+    }
+    if style.underline {
+        try append_escape(allocator, out, "[4m");
+    }
+    if style.strikethrough {
+        try append_escape(allocator, out, "[9m");
+    }
+    return;
+}
+
+/// Appends one scalar to spans: to the last span when it has the style,
+/// and as a span of its own otherwise.
+fn append_styled_scalar(
+    allocator: Allocator,
+    spans: &var array::Array<StyledSpan>,
+    scalar: i64,
+    style: SpanStyle
+) -> mem::Error!void {
+    if spans.len() > 0 {
+        if spans.at_mut(spans.len() - 1) |last| {
+            if same_span_style(last.style, style) {
+                return append_scalar(allocator, &var last.text, scalar);
+            }
+        }
+    }
+    var text = string::new(allocator);
+    errdefer text.deinit(allocator);
+    try append_scalar(allocator, &var text, scalar);
+    try spans.append(allocator, StyledSpan { text: move text, style: style });
+    return;
+}
+
+fn spans_width(spans: &array::Array<StyledSpan>) -> i64 {
+    var width: i64 = 0;
+    for 0..spans.len() |index| {
+        if spans.at(index) |span| {
+            let bytes = span.text.as_bytes();
+            width = width + display_width(bytes);
+        }
+    }
+    return width;
+}
+
+/// The spans cut to width cells, an ellipsis in the last one. Called for
+/// spans wider than width.
+fn truncate_styled_spans(
+    allocator: Allocator,
+    spans: &array::Array<StyledSpan>,
+    width: i64,
+    fallback: LineStyle
+) -> mem::Error!array::Array<StyledSpan> {
+    var output = array::new<StyledSpan>(allocator);
+    errdefer output.deinit(allocator);
+    if width <= 0 {
+        return move output;
+    }
+    var current_width: i64 = 0;
+    var last_style = span_style(fallback);
+    var full = false;
+    for 0..spans.len() |span_index| {
+        if full {
+            break;
+        }
+        if spans.at(span_index) |span| {
+            last_style = span.style;
+            let bytes = span.text.as_bytes();
+            var index: i64 = 0;
+            while index < mem::len(bytes) {
+                var scalar: i64 = 0;
+                let length = decode_scalar(bytes, index, &var scalar);
+                let cells = scalar_width(scalar);
+                if current_width + cells > width - 1 {
+                    full = true;
+                    break;
+                }
+                try append_styled_scalar(allocator, &var output, scalar, span.style);
+                current_width = current_width + cells;
+                index = index + length;
+            }
+        }
+    }
+    // U+2026.
+    try append_styled_scalar(allocator, &var output, 8230, last_style);
+    return move output;
+}
+
+/// Appends each span to ansi after its style, and its text to plain.
+fn append_spans(
+    allocator: Allocator,
+    ansi: &var string::String,
+    plain: &var string::String,
+    spans: &array::Array<StyledSpan>
+) -> mem::Error!void {
+    for 0..spans.len() |index| {
+        if spans.at(index) |span| {
+            try append_span_style(allocator, ansi, span.style);
+            try ansi.append_string(allocator, &span.text);
+            try plain.append_string(allocator, &span.text);
+        }
+    }
+    return;
+}
+
+/// Appends one row of text in a line style, cut and padded to width.
+fn push_document_line(
+    allocator: Allocator,
+    rendered: &var RenderedArtifact,
+    text: []u8,
+    width: i64,
+    style: LineStyle
+) -> mem::Error!void {
+    var fitted = string::new(allocator);
+    errdefer fitted.deinit(allocator);
+    try append_fitted(allocator, &var fitted, text, width);
+    try append_style_escape(allocator, &var rendered.ansi, style);
+    try rendered.ansi.append_string(allocator, &fitted);
+    try append_line_end(allocator, &var rendered.ansi);
+    try rendered.plain_lines.append(allocator, move fitted);
+    return;
+}
+
+/// Appends one row of styled spans, cut and padded to width.
+fn push_document_styled_line(
+    allocator: Allocator,
+    rendered: &var RenderedArtifact,
+    line: &StyledLine,
+    width: i64
+) -> mem::Error!void {
+    var text = string::new(allocator);
+    errdefer text.deinit(allocator);
+    if spans_width(&line.spans) <= width {
+        try append_spans(allocator, &var rendered.ansi, &var text, &line.spans);
+    } else {
+        let cut = try truncate_styled_spans(allocator, &line.spans, width, line.style);
+        defer cut.deinit(allocator);
+        try append_spans(allocator, &var rendered.ansi, &var text, &cut);
+    }
+    let written = text.as_bytes();
+    let padding = width - display_width(written);
+    try append_spaces(allocator, &var text, padding);
+    try append_reset(allocator, &var rendered.ansi);
+    try append_style_escape(allocator, &var rendered.ansi, line.style);
+    try append_spaces(allocator, &var rendered.ansi, padding);
+    try append_line_end(allocator, &var rendered.ansi);
+    try rendered.plain_lines.append(allocator, move text);
+    return;
+}
+
+fn base64_letter(value: i64) -> u8 {
+    let alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    return alphabet[value & 63];
+}
+
+fn append_base64(allocator: Allocator, out: &var string::String, bytes: []u8) -> mem::Error!void {
+    var index: i64 = 0;
+    while index < mem::len(bytes) {
+        let rest = mem::len(bytes) - index;
+        var value = cast<i64>(bytes[index]) << 16;
+        if rest > 1 {
+            value = value | cast<i64>(bytes[index + 1]) << 8;
+        }
+        if rest > 2 {
+            value = value | cast<i64>(bytes[index + 2]);
+        }
+        try out.append_byte(allocator, base64_letter(value >> 18));
+        try out.append_byte(allocator, base64_letter(value >> 12));
+        if rest > 1 {
+            try out.append_byte(allocator, base64_letter(value >> 6));
+        } else {
+            try out.append_byte(allocator, 61);
+        }
+        if rest > 2 {
+            try out.append_byte(allocator, base64_letter(value));
+        } else {
+            try out.append_byte(allocator, 61);
+        }
+        index = index + 3;
+    }
+    return;
+}
+
+/// Appends the Kitty graphics escapes that send payload, a PNG in
+/// base64, 4096 bytes an escape.
+fn append_kitty_chunks(
+    allocator: Allocator,
+    out: &var string::String,
+    payload: []u8,
+    columns: i64,
+    rows: i64
+) -> mem::Error!void {
+    var index: i64 = 0;
+    while index < mem::len(payload) {
+        var end = index + 4096;
+        if end > mem::len(payload) {
+            end = mem::len(payload);
+        }
+        var more: i64 = 0;
+        if end < mem::len(payload) {
+            more = 1;
+        }
+        if index == 0 {
+            try append_escape(allocator, out, "_Ga=T,f=100,q=2,C=1,c=");
+            try fmt::append_i64(allocator, out, columns);
+            try out.append_bytes(allocator, ",r=");
+            try fmt::append_i64(allocator, out, rows);
+            try out.append_bytes(allocator, ",m=");
+        } else {
+            try append_escape(allocator, out, "_Gm=");
+        }
+        try fmt::append_i64(allocator, out, more);
+        try out.append_byte(allocator, 59);
+        try out.append_bytes(allocator, payload[index..end]);
+        try out.append_byte(allocator, 27);
+        try out.append_byte(allocator, 92);
+        index = end;
+    }
+    return;
+}
+
+/// Appends the Kitty graphics escapes that draw a PNG in columns by rows
+/// cells at the cursor, which stays where it is.
+fn append_kitty_image(
+    allocator: Allocator,
+    out: &var string::String,
+    image: []u8,
+    columns: i64,
+    rows: i64
+) -> mem::Error!void {
+    var encoded = string::new(allocator);
+    defer encoded.deinit(allocator);
+    try append_base64(allocator, &var encoded, image);
+    let payload = encoded.as_bytes();
+    try append_kitty_chunks(allocator, out, payload, columns, rows);
+    return;
+}
+
+/// Appends an image inside a body: centered in width, over at most rows
+/// rows.
+fn push_document_image(
+    allocator: Allocator,
+    rendered: &var RenderedArtifact,
+    image: &BodyImage,
+    width: i64,
+    rows: i64
+) -> mem::Error!void {
+    if rows <= 0 {
+        return;
+    }
+    var diagnostic = try string::from_bytes(allocator, "[image: ");
+    defer diagnostic.deinit(allocator);
+    try diagnostic.append_string(allocator, &image.alt);
+    try diagnostic.append_byte(allocator, 93);
+    let label = diagnostic.as_bytes();
+    var plain = string::new(allocator);
+    errdefer plain.deinit(allocator);
+    try append_fitted(allocator, &var plain, label, width);
+    try rendered.plain_lines.append(allocator, move plain);
+    var columns = image.columns;
+    if columns > width {
+        columns = width;
+    }
+    if columns < 1 {
+        columns = 1;
+    }
+    var left_padding = (width - columns) / 2;
+    if left_padding < 0 {
+        left_padding = 0;
+    }
+    var right_padding = width - (columns + left_padding);
+    if right_padding < 0 {
+        right_padding = 0;
+    }
+    let bytes = image.bytes.as_bytes();
+    try append_style_escape(allocator, &var rendered.ansi, LineStyle::Normal);
+    try append_spaces(allocator, &var rendered.ansi, left_padding);
+    try append_reset(allocator, &var rendered.ansi);
+    try append_kitty_image(allocator, &var rendered.ansi, bytes, columns, rows);
+    try append_style_escape(allocator, &var rendered.ansi, LineStyle::Normal);
+    try append_spaces(allocator, &var rendered.ansi, columns + right_padding);
+    try append_line_end(allocator, &var rendered.ansi);
+    for 1..rows |_| {
+        try push_document_line(allocator, rendered, "", width, LineStyle::Normal);
+    }
+    return;
+}
+
+/// Appends the body's lines, each image before the line it comes after,
+/// until limit rows are used. The rows it used.
+fn push_body_rows(
+    allocator: Allocator,
+    rendered: &var RenderedArtifact,
+    body: &BodyRender,
+    width: i64,
+    limit: i64
+) -> mem::Error!i64 {
+    var used: i64 = 0;
+    var image_index: i64 = 0;
+    for 0..body.lines.len() + 1 |line_index| {
+        while used < limit {
+            var rows: i64 = 0;
+            if body.images.at(image_index) |image| {
+                if image.after_line == line_index {
+                    rows = image.rows;
+                    if rows > limit - used {
+                        rows = limit - used;
+                    }
+                    try push_document_image(allocator, rendered, image, width, rows);
+                }
+            }
+            if rows == 0 {
+                break;
+            }
+            used = used + rows;
+            image_index = image_index + 1;
+        }
+        if used < limit {
+            if body.lines.at(line_index) |line| {
+                try push_document_styled_line(allocator, rendered, line, width);
+                used = used + 1;
+            }
+        }
+    }
+    return used;
+}
+
+/// Appends `kind · v3 · en-US · 1.2 KiB` to out.
+fn append_meta(allocator: Allocator, out: &var string::String, manifest: &ArtifactManifest) -> mem::Error!void {
+    try out.append_bytes(allocator, kind_name(manifest.kind));
+    try out.append_bytes(allocator, " · v");
+    try fmt::append_i64(allocator, out, manifest.version);
+    try out.append_bytes(allocator, " · ");
+    try out.append_string(allocator, &manifest.language);
+    try out.append_bytes(allocator, " · ");
+    try append_byte_count(allocator, out, manifest.source_bytes);
+    return;
+}
+
+/// The screen of an artifact that is one image: the heading, and the
+/// image over every row under it.
+fn render_image_document(
+    allocator: Allocator,
+    manifest: &ArtifactManifest,
+    columns: i64,
+    rows: i64,
+    body: &BodyRender,
+    image: []u8
+) -> mem::Error!RenderedArtifact {
+    var image_rows = rows - 2;
+    if image_rows < 1 {
+        image_rows = 1;
+    }
+    var rendered = RenderedArtifact {
+        ansi: string::new(allocator),
+        plain_lines: array::new<string::String>(allocator),
+        compacted: body.compacted,
+        omitted_items: body.omitted_items
+    };
+    errdefer rendered.deinit(allocator);
+    let title = manifest.title.as_bytes();
+    try push_document_line(allocator, &var rendered, title, columns, LineStyle::Heading);
+    var meta = string::new(allocator);
+    defer meta.deinit(allocator);
+    try append_meta(allocator, &var meta, manifest);
+    let meta_bytes = meta.as_bytes();
+    try push_document_line(allocator, &var rendered, meta_bytes, columns, LineStyle::Muted);
+    try append_kitty_image(allocator, &var rendered.ansi, image, columns, image_rows);
+    for 0..image_rows |_| {
+        try append_text(allocator, &var rendered.plain_lines, "");
+    }
+    return move rendered;
+}
+
+/// The screen of an artifact: its title, a line about it, an empty line,
+/// and its body over the rows that are left.
+fn render_document(
+    allocator: Allocator,
+    manifest: &ArtifactManifest,
+    columns: i64,
+    rows: i64,
+    body: &BodyRender
+) -> mem::Error!RenderedArtifact {
+    if body.lines.len() == 0 and body.images.len() == 1 {
+        if body.images.at(0) |image| {
+            let bytes = image.bytes.as_bytes();
+            return render_image_document(allocator, manifest, columns, rows, body, bytes);
+        }
+    }
+    var body_rows = rows - 3;
+    if body_rows < 1 {
+        body_rows = 1;
+    }
+    var rendered = RenderedArtifact {
+        ansi: string::new(allocator),
+        plain_lines: array::new<string::String>(allocator),
+        compacted: body.compacted,
+        omitted_items: body.omitted_items
+    };
+    errdefer rendered.deinit(allocator);
+    let title = manifest.title.as_bytes();
+    try push_document_line(allocator, &var rendered, title, columns, LineStyle::Heading);
+    var meta = string::new(allocator);
+    defer meta.deinit(allocator);
+    try append_meta(allocator, &var meta, manifest);
+    if body.omitted_items > 0 {
+        try meta.append_bytes(allocator, " · +");
+        try fmt::append_i64(allocator, &var meta, body.omitted_items);
+        try meta.append_bytes(allocator, " omitted");
+    }
+    let meta_bytes = meta.as_bytes();
+    try push_document_line(allocator, &var rendered, meta_bytes, columns, LineStyle::Muted);
+    try push_document_line(allocator, &var rendered, "", columns, LineStyle::Normal);
+    let rendered_rows = try push_body_rows(allocator, &var rendered, body, columns, body_rows);
+    for rendered_rows..body_rows |_| {
+        try push_document_line(allocator, &var rendered, "", columns, LineStyle::Normal);
+    }
+    return move rendered;
+}
+
+/// Draws the manifest's artifact for a pane of terminal_columns by
+/// terminal_rows cells; a size below zero is the policy's. A pane is at
+/// least 20 columns by 8 rows.
+pub fn render_artifact(
+    allocator: Allocator,
+    message: &var string::String,
+    manifest: &ArtifactManifest,
+    policy: &ArtifactPolicy,
+    terminal_columns: i64,
+    terminal_rows: i64
+) -> ArtifactFailure!RenderedArtifact {
+    var columns = policy.max_columns;
+    if terminal_columns >= 0 {
+        columns = terminal_columns;
+        if columns > max_view_columns() {
+            columns = max_view_columns();
+        }
+    }
+    var rows = policy.max_rows;
+    if terminal_rows >= 0 {
+        rows = terminal_rows;
+        if rows > max_view_rows() {
+            rows = max_view_rows();
+        }
+    }
+    if columns < 20 or rows < 8 {
+        explain(allocator, message, "artifact pane requires at least 20 columns and 8 rows", "", "");
+        return ArtifactError::Failed;
+    }
+    if policy.overflow == ArtifactOverflow::Defer {
+        let body = try deferred_body(allocator, manifest);
+        defer body.deinit(allocator);
+        return render_document(allocator, manifest, columns, rows, &body);
+    }
+    let body = try render_body(allocator, message, manifest, columns, rows);
+    defer body.deinit(allocator);
+    return render_document(allocator, manifest, columns, rows, &body);
+}
+
+/// What a viewer writes of a rendered artifact: all of it but the line
+/// end after its last row, which would scroll the first row away.
+fn viewer_output_length(ansi: []u8) -> i64 {
+    let length = mem::len(ansi);
+    if length >= 2 and ansi[length - 2] == cast<u8>(13) and ansi[length - 1] == cast<u8>(10) {
+        return length - 2;
+    }
+    return length;
+}

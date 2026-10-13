@@ -1,0 +1,598 @@
+// The store's files and the viewer's terminal, straight on libc: owner-only
+// directories, files replaced in one rename, the lock registrations take
+// in turn, and the size and mode of the terminal.
+import std::fmt;
+import std::fs;
+import std::io;
+import std::mem;
+import std::process;
+import std::string;
+
+extern "c" fn malloc(size: usize) -> ?ptr<u8>
+extern "c" fn free(p: ptr<u8>) -> void
+// `open` and `ioctl` are variadic, which Kizu cannot declare. On arm64
+// Darwin a variadic argument travels on the stack, where a ninth integer
+// argument also goes, so six unused register arguments put the real one
+// there. This declaration is wrong on any other target.
+extern "c" fn open(
+    path: ptr<const u8>,
+    flags: i32,
+    unused2: u64,
+    unused3: u64,
+    unused4: u64,
+    unused5: u64,
+    unused6: u64,
+    unused7: u64,
+    mode: i64
+) -> i32
+extern "c" fn ioctl(
+    fd: i32,
+    request: u64,
+    unused2: u64,
+    unused3: u64,
+    unused4: u64,
+    unused5: u64,
+    unused6: u64,
+    unused7: u64,
+    size: &var WindowSize
+) -> i32
+extern "c" fn close(descriptor: i32) -> i32
+extern "c" fn read(descriptor: i32, buffer: ptr<u8>, count: usize) -> isize
+extern "c" fn write(descriptor: i32, bytes: ptr<const u8>, count: usize) -> isize
+extern "c" fn fsync(descriptor: i32) -> i32
+extern "c" fn flock(descriptor: i32, operation: i32) -> i32
+extern "c" fn stat(path: ptr<const u8>, out: ptr<u8>) -> i32
+extern "c" fn lstat(path: ptr<const u8>, out: ptr<u8>) -> i32
+extern "c" fn fstat(descriptor: i32, out: ptr<u8>) -> i32
+extern "c" fn mkdir(path: ptr<const u8>, mode: u16) -> i32
+extern "c" fn geteuid() -> u32
+extern "c" fn getpid() -> i32
+extern "c" fn isatty(descriptor: i32) -> i32
+extern "c" fn tcgetattr(descriptor: i32, out: ptr<u8>) -> i32
+extern "c" fn tcsetattr(descriptor: i32, actions: i32, value: ptr<u8>) -> i32
+extern "c" fn clock_gettime(clock: i32, out: &var ClockTime) -> i32
+
+/// Darwin's `struct winsize`.
+extern "c" struct WindowSize {
+    rows: u16,
+    columns: u16,
+    pixel_width: u16,
+    pixel_height: u16,
+}
+
+/// Darwin's `struct timespec`.
+extern "c" struct ClockTime {
+    seconds: i64,
+    nanoseconds: i64,
+}
+
+/// What stat says of a file: the `st_mode`, `st_uid` and `st_size`.
+struct FileStatus {
+    mode: i64,
+    owner: i64,
+    size: i64,
+}
+
+fn no_status() -> FileStatus {
+    return FileStatus { mode: 0, owner: 0, size: 0 };
+}
+
+fn (self: &FileStatus) is_directory() -> bool {
+    return self.mode & 61440 == 16384;
+}
+
+fn (self: &FileStatus) is_regular() -> bool {
+    return self.mode & 61440 == 32768;
+}
+
+/// Whether the file is this user's and closed to everyone else.
+fn (self: &FileStatus) is_owner_only() -> bool {
+    return self.owner == effective_user() and self.mode & 63 == 0;
+}
+
+fn effective_user() -> i64 {
+    // SAFETY: geteuid has no preconditions.
+    return cast<i64>(unsafe geteuid());
+}
+
+fn process_id() -> i64 {
+    // SAFETY: getpid has no preconditions.
+    return cast<i64>(unsafe getpid());
+}
+
+/// Nanoseconds since the Unix epoch.
+fn unix_nanos() -> i64 {
+    var now = ClockTime { seconds: 0, nanoseconds: 0 };
+    // SAFETY: now is one writable timespec; 0 is CLOCK_REALTIME.
+    let _ = unsafe clock_gettime(0, &var now);
+    return now.seconds * 1000000000 + now.nanoseconds;
+}
+
+/// path with a NUL after it, for a C call.
+fn c_path(allocator: Allocator, path: []u8) -> mem::Error!string::String {
+    var out = try string::from_bytes(allocator, path);
+    errdefer out.deinit(allocator);
+    try out.append_byte(allocator, 0);
+    return move out;
+}
+
+/// Reads the fields of the `struct stat` at storage.
+///
+/// storage must hold a struct stat a stat call filled.
+unsafe fn read_status(storage: ptr<u8>, out: &var FileStatus) -> void {
+    // SAFETY: the caller's struct has st_mode as the u16 four bytes in.
+    out.mode = cast<i64>(unsafe ptr_read(cast<ptr<u16>>(ptr_offset(storage, 4))));
+    // SAFETY: as above; st_uid is the u32 sixteen bytes in.
+    out.owner = cast<i64>(unsafe ptr_read(cast<ptr<u32>>(ptr_offset(storage, 16))));
+    // SAFETY: as above; st_size is the i64 ninety-six bytes in.
+    out.size = unsafe ptr_read(cast<ptr<i64>>(ptr_offset(storage, 96)));
+    return;
+}
+
+/// What stat says of path, following a symbolic link when follow is set;
+/// false when nothing is there.
+fn path_status(allocator: Allocator, path: []u8, follow: bool, out: &var FileStatus) -> mem::Error!bool {
+    let name = try c_path(allocator, path);
+    defer name.deinit(allocator);
+    // SAFETY: malloc returns 512 bytes, more than a struct stat, or null.
+    let storage = unsafe malloc(512) orelse return mem::Error::OutOfMemory;
+    let name_bytes = name.as_bytes();
+    var result: i32 = 0;
+    if follow {
+        // SAFETY: name ends in NUL; storage holds a struct stat.
+        result = unsafe stat(ptr_of(name_bytes), storage);
+    } else {
+        // SAFETY: as above.
+        result = unsafe lstat(ptr_of(name_bytes), storage);
+    }
+    if result == 0 {
+        // SAFETY: the call above filled storage.
+        unsafe read_status(storage, out);
+    }
+    // SAFETY: storage came from malloc and nothing reads it after this.
+    unsafe free(storage);
+    return result == 0;
+}
+
+/// What fstat says of an open file; false when it cannot be asked.
+fn descriptor_status(descriptor: i32, out: &var FileStatus) -> mem::Error!bool {
+    // SAFETY: malloc returns 512 bytes, more than a struct stat, or null.
+    let storage = unsafe malloc(512) orelse return mem::Error::OutOfMemory;
+    // SAFETY: storage holds a struct stat.
+    let result = unsafe fstat(descriptor, storage);
+    if result == 0 {
+        // SAFETY: the call above filled storage.
+        unsafe read_status(storage, out);
+    }
+    // SAFETY: storage came from malloc and nothing reads it after this.
+    unsafe free(storage);
+    return result == 0;
+}
+
+fn close_descriptor(descriptor: i32) -> void {
+    if descriptor >= 0 {
+        // SAFETY: the descriptor is the caller's own and closed once.
+        let _ = unsafe close(descriptor);
+    }
+    return;
+}
+
+/// The length of the directory part of path, which is `/` for a name in
+/// the root; 0 when path has no parent.
+fn parent_length(path: []u8) -> i64 {
+    var index = mem::len(path) - 1;
+    while index > 0 and path[index] != cast<u8>(47) {
+        index = index - 1;
+    }
+    if index == 0 and mem::len(path) > 1 and path[0] == cast<u8>(47) {
+        return 1;
+    }
+    if index < 0 {
+        return 0;
+    }
+    return index;
+}
+
+/// Where the last name of path starts.
+fn name_start(path: []u8) -> i64 {
+    var index = mem::len(path);
+    while index > 0 and path[index - 1] != cast<u8>(47) {
+        index = index - 1;
+    }
+    return index;
+}
+
+/// directory, a `/`, and name.
+fn joined(allocator: Allocator, directory: []u8, name: []u8) -> mem::Error!string::String {
+    var out = try string::from_bytes(allocator, directory);
+    errdefer out.deinit(allocator);
+    if mem::len(directory) == 0 or directory[mem::len(directory) - 1] != cast<u8>(47) {
+        try out.append_byte(allocator, 47);
+    }
+    try out.append_bytes(allocator, name);
+    return move out;
+}
+
+/// Creates directory and the directories above it that are missing, each
+/// for its owner alone; false when one could not be made.
+fn create_directories(allocator: Allocator, directory: []u8) -> mem::Error!bool {
+    var status = no_status();
+    if mem::len(directory) <= 1 or try path_status(allocator, directory, true, &var status) {
+        return true;
+    }
+    if !try create_directories(allocator, directory[0..parent_length(directory)]) {
+        return false;
+    }
+    let name = try c_path(allocator, directory);
+    defer name.deinit(allocator);
+    let name_bytes = name.as_bytes();
+    // SAFETY: name ends in NUL; 448 is 0700.
+    if unsafe mkdir(ptr_of(name_bytes), 448) != 0 {
+        // Another process may have made it in between.
+        return try path_status(allocator, directory, true, &var status) and status.is_directory();
+    }
+    return true;
+}
+
+/// Makes sure path is a directory of this user's that nobody else can
+/// open, creating it and its parents when they are missing.
+fn ensure_owner_only_directory(
+    allocator: Allocator,
+    message: &var string::String,
+    path: []u8
+) -> ArtifactFailure!void {
+    if !try create_directories(allocator, path) {
+        explain(allocator, message, "create artifact directory ", path, "");
+        return ArtifactError::Failed;
+    }
+    var status = no_status();
+    let found = try path_status(allocator, path, false, &var status);
+    if !found or !status.is_directory() or !status.is_owner_only() {
+        explain(allocator, message, "artifact directory must be owner-only: ", path, "");
+        return ArtifactError::Failed;
+    }
+    return;
+}
+
+/// Fails unless path is a directory of this user's that nobody else can
+/// open.
+fn validate_existing_artifact_directory(
+    allocator: Allocator,
+    message: &var string::String,
+    path: []u8
+) -> ArtifactFailure!void {
+    var status = no_status();
+    if !try path_status(allocator, path, false, &var status) {
+        explain(allocator, message, "inspect artifact directory ", path, "");
+        return ArtifactError::Failed;
+    }
+    if !status.is_directory() or !status.is_owner_only() {
+        explain(allocator, message, "artifact directory is not owner-only: ", path, "");
+        return ArtifactError::Failed;
+    }
+    return;
+}
+
+/// Creates the one directory path, which must not exist, for its owner
+/// alone.
+fn create_owner_only_directory(
+    allocator: Allocator,
+    message: &var string::String,
+    path: []u8
+) -> ArtifactFailure!void {
+    let name = try c_path(allocator, path);
+    defer name.deinit(allocator);
+    let name_bytes = name.as_bytes();
+    // SAFETY: name ends in NUL; 448 is 0700.
+    if unsafe mkdir(ptr_of(name_bytes), 448) != 0 {
+        explain(allocator, message, "create artifact directory ", path, "");
+        return ArtifactError::Failed;
+    }
+    try validate_existing_artifact_directory(allocator, message, path);
+    return;
+}
+
+/// Opens path with flags, creating it for its owner alone when the flags
+/// say to create. The descriptor, or -1.
+fn open_file(allocator: Allocator, path: []u8, flags: i32) -> mem::Error!i32 {
+    let name = try c_path(allocator, path);
+    defer name.deinit(allocator);
+    let name_bytes = name.as_bytes();
+    // SAFETY: name ends in NUL; 384 is 0600, read where the variadic mode is.
+    return unsafe open(ptr_of(name_bytes), flags, 0, 0, 0, 0, 0, 0, 384);
+}
+
+/// Writes all of bytes to an open file; false when the file takes no more.
+fn write_all(descriptor: i32, bytes: []u8) -> bool {
+    var written: i64 = 0;
+    while written < mem::len(bytes) {
+        let rest = bytes[written..mem::len(bytes)];
+        // SAFETY: rest is its length in readable bytes.
+        let count = unsafe write(descriptor, ptr_of(rest), cast<usize>(mem::len(rest)));
+        if count <= 0 {
+            return false;
+        }
+        written = written + cast<i64>(count);
+    }
+    return true;
+}
+
+/// Replaces the file at path with bytes in one step: they are written to a
+/// new file beside it, only its owner can read, which is synced and then
+/// renamed over path. A reader sees the old file or the new, never a part.
+fn replace_file(
+    allocator: Allocator,
+    message: &var string::String,
+    path: []u8,
+    bytes: []u8
+) -> ArtifactFailure!void {
+    var temporary = try string::from_bytes(allocator, path[0..name_start(path)]);
+    defer temporary.deinit(allocator);
+    try temporary.append_bytes(allocator, ".artifact-");
+    try fmt::append_i64(allocator, &var temporary, process_id());
+    try temporary.append_byte(allocator, 45);
+    try fmt::append_i64(allocator, &var temporary, unix_nanos());
+    try temporary.append_bytes(allocator, ".tmp");
+    let name = temporary.as_bytes();
+    // O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC.
+    let descriptor = try open_file(allocator, name, 16779777);
+    if descriptor < 0 {
+        explain(allocator, message, "create artifact file ", name, "");
+        return ArtifactError::Failed;
+    }
+    // SAFETY: descriptor is the file opened above.
+    let stored = write_all(descriptor, bytes) and unsafe fsync(descriptor) == 0;
+    close_descriptor(descriptor);
+    if !stored {
+        explain(allocator, message, "write artifact file ", name, "");
+        return ArtifactError::Failed;
+    }
+    if fs::rename(io::blocking(), name, path) {} else |_| {
+        explain(allocator, message, "replace artifact file ", path, "");
+        return ArtifactError::Failed;
+    }
+    return;
+}
+
+/// Replaces the file at path with bytes, after making sure its directory
+/// is there and owner-only.
+fn write_bytes_atomically(
+    allocator: Allocator,
+    message: &var string::String,
+    path: []u8,
+    bytes: []u8
+) -> ArtifactFailure!void {
+    try ensure_owner_only_directory(allocator, message, path[0..parent_length(path)]);
+    try replace_file(allocator, message, path, bytes);
+    return;
+}
+
+/// Takes the lock of the artifact store at root, waiting for a holder to
+/// let go of it. The descriptor that holds it; closing it lets go.
+fn lock_artifact_store(allocator: Allocator, message: &var string::String, root: []u8) -> ArtifactFailure!i32 {
+    try ensure_owner_only_directory(allocator, message, root);
+    let path = try joined(allocator, root, ".register.lock");
+    defer path.deinit(allocator);
+    let name = path.as_bytes();
+    // O_RDWR | O_CREAT | O_NOFOLLOW | O_CLOEXEC.
+    let descriptor = try open_file(allocator, name, 16777986);
+    if descriptor < 0 {
+        explain(allocator, message, "open artifact store lock ", name, "");
+        return ArtifactError::Failed;
+    }
+    var status = no_status();
+    var found = false;
+    if descriptor_status(descriptor, &var status) |read| {
+        found = read;
+    } else |_| {}
+    if !found or !status.is_regular() or !status.is_owner_only() {
+        close_descriptor(descriptor);
+        explain(allocator, message, "artifact store lock must be owner-only: ", name, "");
+        return ArtifactError::Failed;
+    }
+    // SAFETY: descriptor is the lock file opened above; 2 is LOCK_EX.
+    if unsafe flock(descriptor, 2) != 0 {
+        close_descriptor(descriptor);
+        explain(allocator, message, "lock artifact store ", root, "");
+        return ArtifactError::Failed;
+    }
+    return descriptor;
+}
+
+/// Reads the regular file at path, at most maximum bytes long, into out.
+/// label names the file in the message of a failure.
+fn read_bounded_source(
+    allocator: Allocator,
+    message: &var string::String,
+    path: []u8,
+    maximum: i64,
+    label: []u8,
+    out: &var string::String
+) -> ArtifactFailure!void {
+    var status = no_status();
+    if !try path_status(allocator, path, true, &var status) {
+        explain(allocator, message, "open ", label, " source ");
+        if message.append_bytes(allocator, path) {} else |_| {}
+        return ArtifactError::Failed;
+    }
+    if !status.is_regular() {
+        explain(allocator, message, label, " source must be a regular file", "");
+        return ArtifactError::Failed;
+    }
+    var failed = status.size > maximum;
+    var exceeded = failed;
+    if !failed {
+        if fs::read_file(io::blocking(), allocator, path, mem::Limit::Bytes(maximum)) |content| {
+            defer content.deinit(allocator);
+            try out.append_string(allocator, &content);
+        } else |err| {
+            failed = true;
+            exceeded = err == fs::Error::LimitExceeded;
+        }
+    }
+    if exceeded {
+        explain(allocator, message, label, " source exceeds the ", "");
+        if fmt::append_i64(allocator, message, maximum) {} else |_| {}
+        if message.append_bytes(allocator, "-byte preview limit") {} else |_| {}
+        return ArtifactError::Failed;
+    }
+    if failed {
+        explain(allocator, message, "read ", label, " source ");
+        if message.append_bytes(allocator, path) {} else |_| {}
+        return ArtifactError::Failed;
+    }
+    return;
+}
+
+/// Reads the whole file at path into out; false when it cannot be read.
+fn read_whole(allocator: Allocator, path: []u8, out: &var string::String) -> bool {
+    if fs::read_file_into(io::blocking(), allocator, path, out) {
+        return true;
+    } else |_| {}
+    return false;
+}
+
+/// The columns and rows of the terminal standard output is, through the
+/// outs; an out stays -1 when the terminal does not say. COLUMNS and
+/// LINES answer when standard output is no terminal.
+fn terminal_size(columns: &var i64, rows: &var i64) -> void {
+    columns = -1;
+    rows = -1;
+    var size = WindowSize { rows: 0, columns: 0, pixel_width: 0, pixel_height: 0 };
+    // SAFETY: size is one writable winsize, where the variadic argument is; 1074295912 is TIOCGWINSZ.
+    if unsafe ioctl(1, 1074295912, 0, 0, 0, 0, 0, 0, &var size) == 0 {
+        if size.columns > 0 {
+            columns = cast<i64>(size.columns);
+        }
+        if size.rows > 0 {
+            rows = cast<i64>(size.rows);
+        }
+        return;
+    }
+    if process::env("COLUMNS") |text| {
+        columns = positive_number(text);
+    }
+    if process::env("LINES") |text| {
+        rows = positive_number(text);
+    }
+    return;
+}
+
+/// A whole number above zero of at most five digits; -1 for anything else.
+fn positive_number(text: []u8) -> i64 {
+    if mem::len(text) == 0 or mem::len(text) > 5 {
+        return -1;
+    }
+    var value: i64 = 0;
+    for 0..mem::len(text) |index| {
+        let digit = cast<i64>(text[index]) - 48;
+        if digit < 0 or digit > 9 {
+            return -1;
+        }
+        value = value * 10 + digit;
+    }
+    if value == 0 {
+        return -1;
+    }
+    return value;
+}
+
+fn is_terminal(descriptor: i32) -> bool {
+    // SAFETY: isatty accepts any descriptor.
+    return unsafe isatty(descriptor) == 1;
+}
+
+fn write_terminal(bytes: []u8) -> bool {
+    if io::write_stdout(io::blocking(), bytes) {
+        return true;
+    } else |_| {}
+    return false;
+}
+
+fn append_escape(allocator: Allocator, out: &var string::String, sequence: []u8) -> mem::Error!void {
+    try out.append_byte(allocator, 27);
+    try out.append_bytes(allocator, sequence);
+    return;
+}
+
+/// Makes standard input hand over each key as it is pressed, without
+/// echo, and switches the terminal to its alternate screen. The settings
+/// it had, in a malloc'd `struct termios` that leave_presentation takes.
+fn enter_presentation(allocator: Allocator, message: &var string::String) -> ArtifactFailure!ptr<u8> {
+    // SAFETY: malloc returns 256 bytes, two of a struct termios and more, or null.
+    let original = unsafe malloc(256) orelse return mem::Error::OutOfMemory;
+    // SAFETY: the second half of the storage.
+    let raw = unsafe ptr_offset(original, 128);
+    // SAFETY: original holds a struct termios, which tcgetattr fills.
+    var ready = unsafe tcgetattr(0, original) == 0;
+    if ready {
+        // SAFETY: raw holds a struct termios too.
+        ready = unsafe tcgetattr(0, raw) == 0;
+    }
+    if ready {
+        // SAFETY: c_lflag is the u64 twenty-four bytes in.
+        let local_flags = unsafe cast<ptr<u64>>(ptr_offset(raw, 24));
+        // SAFETY: as above.
+        let flags = unsafe ptr_read(local_flags);
+        let presentation: u64 = 264;
+        // SAFETY: as above; 264 is ICANON | ECHO.
+        unsafe ptr_write(local_flags, flags & ~presentation);
+        // SAFETY: c_cc starts thirty-two bytes in; VMIN is its entry 16.
+        unsafe ptr_write(ptr_offset(raw, 48), 1);
+        // SAFETY: as above; VTIME is its entry 17.
+        unsafe ptr_write(ptr_offset(raw, 49), 0);
+        // SAFETY: raw is the initialized struct; 0 is TCSANOW.
+        ready = unsafe tcsetattr(0, 0, raw) == 0;
+    }
+    if !ready {
+        // SAFETY: original came from malloc and nothing reads it after this.
+        unsafe free(original);
+        explain(allocator, message, "configure the terminal", "", "");
+        return ArtifactError::Failed;
+    }
+    var enter = string::new(allocator);
+    defer enter.deinit(allocator);
+    if append_escape(allocator, &var enter, "[?1049h") {} else |_| {}
+    let bytes = enter.as_bytes();
+    if !write_terminal(bytes) {
+        leave_presentation(allocator, original);
+        explain(allocator, message, "write to the terminal", "", "");
+        return ArtifactError::Failed;
+    }
+    return original;
+}
+
+/// Puts standard input's settings back, shows the cursor and leaves the
+/// alternate screen.
+fn leave_presentation(allocator: Allocator, original: ptr<u8>) -> void {
+    // SAFETY: original is the struct tcgetattr filled; 0 is TCSANOW.
+    let _ = unsafe tcsetattr(0, 0, original);
+    // SAFETY: original came from malloc and nothing reads it after this.
+    unsafe free(original);
+    var leave = string::new(allocator);
+    defer leave.deinit(allocator);
+    if append_escape(allocator, &var leave, "[?25h") {} else |_| {}
+    if append_escape(allocator, &var leave, "[?1049l") {} else |_| {}
+    let bytes = leave.as_bytes();
+    let _ = write_terminal(bytes);
+    return;
+}
+
+/// Reads standard input until it ends. A pane closes its viewer by closing
+/// the pane, and a viewer in a terminal of its own ends with Ctrl-C.
+fn wait_until_closed(allocator: Allocator, message: &var string::String) -> ArtifactFailure!void {
+    // SAFETY: malloc returns 64 bytes or null.
+    let storage = unsafe malloc(64) orelse return mem::Error::OutOfMemory;
+    var count: isize = 1;
+    while count > 0 {
+        // SAFETY: storage holds 64 writable bytes.
+        count = unsafe read(0, storage, 64);
+    }
+    // SAFETY: storage came from malloc and nothing reads it after this.
+    unsafe free(storage);
+    if count < 0 {
+        explain(allocator, message, "read the terminal", "", "");
+        return ArtifactError::Failed;
+    }
+    return;
+}

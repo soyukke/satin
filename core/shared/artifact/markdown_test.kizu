@@ -1,0 +1,796 @@
+import std::array;
+import std::fs;
+import std::io;
+import std::mem;
+import std::string;
+import std::testing;
+
+/// The blocks of content, a line each: `T`, `C`, `B`, `I` or `R` for
+/// text, code, a table, an image or a rule, then a block's label and
+/// text between bars. A table's cells follow its line, a row a line.
+fn describe_blocks(allocator: Allocator, content: []u8) -> mem::Error!string::String {
+    var builder = new_markdown_builder(allocator);
+    defer builder.deinit(allocator);
+    try parse_markdown(allocator, &var builder, content);
+    var out = string::new(allocator);
+    errdefer out.deinit(allocator);
+    for 0..builder.blocks.len() |index| {
+        if builder.blocks.at(index) |block| {
+            try describe_block(allocator, &var out, block);
+        }
+    }
+    return move out;
+}
+
+fn describe_row(allocator: Allocator, out: &var string::String, row: &array::Array<string::String>) -> mem::Error!void {
+    for 0..row.len() |index| {
+        if row.at(index) |cell| {
+            try out.append_byte(allocator, 91);
+            try out.append_string(allocator, cell);
+            try out.append_byte(allocator, 93);
+        }
+    }
+    try out.append_byte(allocator, 10);
+    return;
+}
+
+fn describe_block(allocator: Allocator, out: &var string::String, block: &MarkdownBlock) -> mem::Error!void {
+    var letter = "R";
+    if block.kind == MarkdownBlockKind::Text {
+        letter = "T";
+    } else if block.kind == MarkdownBlockKind::Code {
+        letter = "C";
+    } else if block.kind == MarkdownBlockKind::Table {
+        letter = "B";
+    } else if block.kind == MarkdownBlockKind::Image {
+        letter = "I";
+    }
+    try out.append_bytes(allocator, letter);
+    try out.append_byte(allocator, 124);
+    try out.append_string(allocator, &block.label);
+    try out.append_byte(allocator, 124);
+    try out.append_string(allocator, &block.text);
+    try out.append_byte(allocator, 10);
+    if block.kind == MarkdownBlockKind::Table {
+        try describe_row(allocator, out, &block.table.headers);
+        for 0..block.table.rows.len() |index| {
+            if block.table.rows.at(index) |row| {
+                try describe_row(allocator, out, row);
+            }
+        }
+    }
+    return;
+}
+
+/// Whether content reads as the blocks expected describes.
+fn reads_as(content: []u8, expected: []u8) -> bool {
+    let allocator = mem::page_allocator();
+    if describe_blocks(allocator, content) |described| {
+        defer described.deinit(allocator);
+        let bytes = described.as_bytes();
+        if !mem::equal_bytes(bytes, expected) {
+            if fs::write_file(io::blocking(), "/tmp/satin-markdown-test-actual.txt", bytes) {} else |_| {}
+        }
+        return mem::equal_bytes(bytes, expected);
+    } else |_| {}
+    return false;
+}
+
+/// What the first text block of content draws the span that holds
+/// exactly text as: 1 when there is one, and then 2 bold, 4 italic, 8
+/// struck, 16 underlined, 32 in the accent color, 64 on a background.
+fn span_flags(content: []u8, text: []u8) -> i64 {
+    let allocator = mem::page_allocator();
+    var builder = new_markdown_builder(allocator);
+    defer builder.deinit(allocator);
+    if parse_markdown(allocator, &var builder, content) {} else |_| {}
+    if builder.blocks.at(0) |block| {
+        for 0..block.spans.len() |index| {
+            if block.spans.at(index) |span| {
+                let bytes = span.text.as_bytes();
+                if mem::equal_bytes(bytes, text) {
+                    var flags: i64 = 1;
+                    if span.style.bold {
+                        flags = flags | 2;
+                    }
+                    if span.style.italic {
+                        flags = flags | 4;
+                    }
+                    if span.style.strikethrough {
+                        flags = flags | 8;
+                    }
+                    if span.style.underline {
+                        flags = flags | 16;
+                    }
+                    if span.style.base == LineStyle::Accent {
+                        flags = flags | 32;
+                    }
+                    if span.style.has_background {
+                        flags = flags | 64;
+                    }
+                    return flags;
+                }
+            }
+        }
+    }
+    return 0;
+}
+
+/// The rows content is drawn as in width cells, limit rows at most: a
+/// line each, and `[image COLUMNSxROWS alt]` where a picture goes.
+fn draw(content: []u8, width: i64, limit: i64, omitted: &var i64) -> mem::Error!string::String {
+    let allocator = mem::page_allocator();
+    var out = string::new(allocator);
+    errdefer out.deinit(allocator);
+    var manifest = new_manifest(allocator, ArtifactKind::Markdown);
+    defer manifest.deinit(allocator);
+    try manifest.title.append_bytes(allocator, "Report");
+    try manifest.document.append_bytes(allocator, "/tmp/report.md");
+    var message = string::new(allocator);
+    defer message.deinit(allocator);
+    if render_markdown_content(allocator, &var message, &manifest, content, width, limit) |body| {
+        defer body.deinit(allocator);
+        omitted = body.omitted_items;
+        for 0..body.lines.len() |index| {
+            if body.lines.at(index) |line| {
+                try append_plain_text(allocator, &var out, &line.spans);
+                try out.append_byte(allocator, 10);
+            }
+        }
+    } else |_| {
+        try out.append_bytes(allocator, "failed: ");
+        try out.append_string(allocator, &message);
+    }
+    return move out;
+}
+
+/// Whether content is drawn as expected in width cells.
+fn draws_as(content: []u8, width: i64, expected: []u8) -> bool {
+    let allocator = mem::page_allocator();
+    var omitted: i64 = 0;
+    if draw(content, width, 100, &var omitted) |drawn| {
+        defer drawn.deinit(allocator);
+        let bytes = drawn.as_bytes();
+        if !mem::equal_bytes(bytes, expected) {
+            if fs::write_file(io::blocking(), "/tmp/satin-markdown-test-actual.txt", bytes) {} else |_| {}
+        }
+        return mem::equal_bytes(bytes, expected);
+    } else |_| {}
+    return false;
+}
+
+test "the reader recognizes rich blocks" {
+    testing::expect(reads_as(
+        \\# Report
+        \\
+        \\| A | B |
+        \\|---|---|
+        \\| 1 | 2 |
+        \\
+        \\```rust
+        \\fn main() {}
+        \\```
+        \\
+    ,
+        \\T|▌ |Report
+        \\B||
+        \\[A][B]
+        \\[1][2]
+        \\C|rust|fn main() {}
+        \\
+        \\
+    ));
+}
+
+test "inline emphasis keeps its spans" {
+    let content = "plain **bold** *italic* ~~gone~~ and `code` plus ``a ` backtick``";
+    testing::expect(span_flags(content, "bold") == 3);
+    testing::expect(span_flags(content, "italic") == 5);
+    testing::expect(span_flags(content, "gone") == 9);
+    testing::expect(span_flags(content, "code") == 97);
+    testing::expect(span_flags(content, "a ` backtick") == 97);
+    testing::expect(span_flags(content, "plain ") == 1);
+    testing::expect(span_flags("a [link](https://example.test) b", "link") == 49);
+    testing::expect(span_flags("***both*** and __strong__", "both") == 7);
+    testing::expect(span_flags("***both*** and __strong__", "strong") == 3);
+    testing::expect(span_flags("snake_case_word *open", "snake_case_word *open") == 1);
+    testing::expect(span_flags("~~a~ ~b~~ ~c~", "c") == 9);
+    testing::expect(span_flags("~~a~ ~b~~ ~c~", "~~a~ ~b~~ ") == 1);
+    testing::expect(span_flags("これは**太字**です", "太字") == 3);
+}
+
+test "fenced code obeys the row budget" {
+    let allocator = mem::page_allocator();
+    var layout = MarkdownLayout { width: 20, limit: 4, used_rows: 0, has_content: false, last_blank: false };
+    var body = new_body(allocator);
+    defer body.deinit(allocator);
+    try render_code(allocator, &var layout, &var body, "rust",
+        \\let a = 1;
+        \\let b = 2;
+        \\let c = 3;
+        \\let d = 4;
+        \\
+    );
+    testing::expect(body.lines.len() == 4);
+    testing::expect(body.omitted_items == 2);
+    testing::expect(body.compacted);
+}
+
+test "a long code line is cut at a scalar's end" {
+    let allocator = mem::page_allocator();
+    var line = string::new(allocator);
+    defer line.deinit(allocator);
+    for 0..max_code_line_bytes() |_| {
+        try line.append_bytes(allocator, "日");
+    }
+    var layout = MarkdownLayout { width: 20, limit: 4, used_rows: 0, has_content: false, last_blank: false };
+    var body = new_body(allocator);
+    defer body.deinit(allocator);
+    try push_test_code_line(allocator, &var layout, &var body, &line);
+    var checked = false;
+    if body.lines.at(0) |drawn| {
+        if drawn.spans.at(1) |span| {
+            let bytes = span.text.as_bytes();
+            testing::expect(is_valid_utf8(bytes));
+            testing::expect(ends_with(bytes, "日…"));
+            testing::expect(mem::len(bytes) == 4095 + 3);
+            checked = true;
+        }
+    }
+    testing::expect(checked);
+}
+
+fn push_test_code_line(
+    allocator: Allocator,
+    layout: &var MarkdownLayout,
+    body: &var BodyRender,
+    line: &string::String
+) -> mem::Error!void {
+    let bytes = line.as_bytes();
+    try layout_push_code_line(allocator, layout, body, bytes, false);
+    return;
+}
+
+/// What safe_local_png_destination makes of destination: the path it
+/// keeps, or `-` for a destination it refuses.
+fn kept_destination(destination: []u8, expected: []u8) -> bool {
+    let allocator = mem::page_allocator();
+    var out = string::new(allocator);
+    defer out.deinit(allocator);
+    var safe = false;
+    if safe_local_png_destination(allocator, destination, &var out) |kept| {
+        safe = kept;
+    } else |_| {}
+    let bytes = out.as_bytes();
+    if !safe {
+        return mem::equal_bytes(expected, "-");
+    }
+    return mem::equal_bytes(bytes, expected);
+}
+
+test "unsafe or remote images are not snapshotted" {
+    testing::expect(kept_destination("../secret.png", "-"));
+    testing::expect(kept_destination("https://example.test/a.png", "-"));
+    testing::expect(kept_destination("images/chart.png", "images/chart.png"));
+    testing::expect(kept_destination("./images//./chart.PNG?v=2#top", "images/chart.PNG"));
+    testing::expect(kept_destination(" chart.png ", "chart.png"));
+    testing::expect(kept_destination("images/../chart.png", "-"));
+    testing::expect(kept_destination("/tmp/chart.png", "-"));
+    testing::expect(kept_destination("data:image/png;base64,AAAA", "-"));
+    testing::expect(kept_destination("#chart.png", "-"));
+    testing::expect(kept_destination("chart.jpg", "-"));
+    testing::expect(kept_destination(".hidden/chart.png", "-"));
+    testing::expect(kept_destination("Versions/chart.png", "-"));
+    testing::expect(kept_destination("images/versions/chart.png", "images/versions/chart.png"));
+    testing::expect(kept_destination("", "-"));
+}
+
+test "rich Markdown snapshots its images and draws structured blocks" {
+    let allocator = mem::page_allocator();
+    let root = try test_directory(allocator, "rich-markdown");
+    defer root.deinit(allocator);
+    let root_bytes = root.as_bytes();
+    defer remove_tree(allocator, root_bytes);
+    let socket = try joined(allocator, root_bytes, "control.sock");
+    defer socket.deinit(allocator);
+    let socket_bytes = socket.as_bytes();
+    let source_root = try joined(allocator, root_bytes, "source");
+    defer source_root.deinit(allocator);
+    let source_root_bytes = source_root.as_bytes();
+    let image_root = try joined(allocator, source_root_bytes, "images");
+    defer image_root.deinit(allocator);
+    let image_root_bytes = image_root.as_bytes();
+    testing::expect(try create_directories(allocator, image_root_bytes));
+    let source = try joined(allocator, source_root_bytes, "report.md");
+    defer source.deinit(allocator);
+    let source_bytes = source.as_bytes();
+    let image = try joined(allocator, image_root_bytes, "chart.png");
+    defer image.deinit(allocator);
+    let image_bytes = image.as_bytes();
+    var png = try test_png(allocator);
+    defer png.deinit(allocator);
+    try write_test_file(image_bytes, &png);
+    try fs::write_file(io::blocking(), source_bytes,
+        \\# Rich report
+        \\
+        \\Status **first**, *reviewed*, ~~stale~~, run `cargo test`.
+        \\
+        \\| Check | Result |
+        \\|---|---|
+        \\| tests | pass |
+        \\
+        \\```rust
+        \\let answer = "yes";
+        \\assert_eq!(answer, "yes");
+        \\```
+        \\
+        \\![Trend](images/chart.png)
+        \\
+    );
+    var message = string::new(allocator);
+    defer message.deinit(allocator);
+    let policy = try default_policy(allocator);
+    defer policy.deinit(allocator);
+    let first = try register_test(allocator, &var message, socket_bytes, &policy, ArtifactKind::Markdown,
+        "Rich report", source_bytes, "");
+    defer first.deinit(allocator);
+    let id = first.id.as_bytes();
+    // The picture changes and the Markdown does not: that is a version.
+    try png.append_byte(allocator, 200);
+    try write_test_file(image_bytes, &png);
+    let second = try register_test(allocator, &var message, socket_bytes, &policy, ArtifactKind::Markdown,
+        "Rich report", source_bytes, id);
+    defer second.deinit(allocator);
+    remove_tree(allocator, source_root_bytes);
+    testing::expect(second.version == 2);
+    testing::expect(second.assets.len() == 1);
+    if second.assets.at(0) |asset| {
+        let asset_bytes = asset.as_bytes();
+        testing::expect(exists(allocator, asset_bytes));
+        testing::expect(ends_with(asset_bytes, "/versions/v002/images/chart.png"));
+    }
+    let document = second.document.as_bytes();
+    let version_root = document[0..parent_length(document)];
+    let versions_root = version_root[0..parent_length(version_root)];
+    let mirrored = try joined(allocator, versions_root[0..parent_length(versions_root)], "images/chart.png");
+    defer mirrored.deinit(allocator);
+    let mirrored_bytes = mirrored.as_bytes();
+    testing::expect(exists(allocator, mirrored_bytes));
+    let rendered = try render_artifact(allocator, &var message, &second, &policy, -1, -1);
+    defer rendered.deinit(allocator);
+    let ansi = rendered.ansi.as_bytes();
+    testing::expect(screen_contains(&rendered, "Check"));
+    testing::expect(screen_contains(&rendered, "┌─ rust"));
+    testing::expect(screen_contains(&rendered, "cargo test"));
+    testing::expect(screen_contains(&rendered, "│ let answer = "));
+    testing::expect(contains(ansi, "[3m"));
+    testing::expect(contains(ansi, "[9m"));
+    testing::expect(contains(ansi, "[48;2;38;48;61m"));
+    testing::expect(rendered.plain_lines.len() == 32);
+    testing::expect(rows_fit(&rendered, 80, false));
+    testing::expect(contains(ansi, "_Ga=T,f=100"));
+    // The heading that repeats the title is not drawn twice.
+    testing::expect(!screen_contains(&rendered, "▌ Rich report"));
+}
+
+fn write_test_file(path: []u8, content: &string::String) -> ArtifactFailure!void {
+    let bytes = content.as_bytes();
+    if fs::write_file(io::blocking(), path, bytes) {} else |_| {
+        return ArtifactError::Failed;
+    }
+    return;
+}
+
+test "a Markdown artifact keeps at most four pictures" {
+    let allocator = mem::page_allocator();
+    let root = try test_directory(allocator, "markdown-images");
+    defer root.deinit(allocator);
+    let root_bytes = root.as_bytes();
+    defer remove_tree(allocator, root_bytes);
+    let source = try joined(allocator, root_bytes, "report.md");
+    defer source.deinit(allocator);
+    let source_bytes = source.as_bytes();
+    let png = try test_png(allocator);
+    defer png.deinit(allocator);
+    let names = "abcde";
+    for 0..5 |index| {
+        var name = try joined(allocator, root_bytes, names[index..index + 1]);
+        defer name.deinit(allocator);
+        try name.append_bytes(allocator, ".png");
+        let name_bytes = name.as_bytes();
+        try write_test_file(name_bytes, &png);
+    }
+    var message = string::new(allocator);
+    defer message.deinit(allocator);
+    var assets = array::new<ArtifactAsset>(allocator);
+    defer assets.deinit(allocator);
+    try snapshot_local_pngs(allocator, &var message,
+        "![a](a.png) ![again](./a.png) ![far](https://example.test/d.png) ![up](../b.png)", source_bytes, &var assets);
+    testing::expect(assets.len() == 1);
+    assets.clear(allocator);
+    try snapshot_local_pngs(allocator, &var message,
+        \\![a](a.png) ![b](b.png)
+        \\
+        \\| t |
+        \\|---|
+        \\| ![c](c.png) |
+        \\
+        \\[![d](d.png)](https://example.test)
+        \\
+    , source_bytes, &var assets);
+    testing::expect(assets.len() == 4);
+    if assets.at(2) |asset| {
+        let name = asset.relative_path.as_bytes();
+        testing::expect(mem::equal_bytes(name, "c.png"));
+        testing::expect(asset.bytes.len() == png.len());
+    }
+    assets.clear(allocator);
+    var refused = false;
+    if snapshot_local_pngs(allocator, &var message, "![a](a.png) ![b](b.png) ![c](c.png) ![d](d.png) ![e](e.png)",
+        source_bytes, &var assets) {} else |_| {
+        refused = true;
+    }
+    let why = message.as_bytes();
+    testing::expect(refused);
+    testing::expect(mem::equal_bytes(why, "Markdown artifacts support at most 4 local PNG images"));
+    assets.clear(allocator);
+    refused = false;
+    if snapshot_local_pngs(allocator, &var message, "![gone](missing.png)", source_bytes, &var assets) {} else |_| {
+        refused = true;
+    }
+    let missing = message.as_bytes();
+    testing::expect(refused);
+    testing::expect(contains(missing, "resolve Markdown image "));
+    let fake = try joined(allocator, root_bytes, "fake.png");
+    defer fake.deinit(allocator);
+    let fake_bytes = fake.as_bytes();
+    try fs::write_file(io::blocking(), fake_bytes, "not a picture, whatever its name says");
+    refused = false;
+    if snapshot_local_pngs(allocator, &var message, "![fake](fake.png)", source_bytes, &var assets) {} else |_| {
+        refused = true;
+    }
+    let undecoded = message.as_bytes();
+    testing::expect(refused);
+    testing::expect(contains(undecoded, "decode PNG header "));
+}
+
+test "headings, paragraphs and breaks are text blocks" {
+    testing::expect(reads_as(
+        \\# One #
+        \\## Two
+        \\### Three ###
+        \\#### Four
+        \\#No heading
+        \\
+        \\Setext
+        \\two lines
+        \\===
+        \\
+        \\Under
+        \\---
+        \\soft
+        \\break and a hard\
+        \\break
+        \\
+        \\***
+        \\- - -
+        \\
+    ,
+        \\T|▌ |One
+        \\T|▌ |Two
+        \\T|› |Three
+        \\T|· |Four
+        \\T||#No heading
+        \\T|▌ |Setext two lines
+        \\T|▌ |Under
+        \\T||soft break and a hard
+        \\break
+        \\R||
+        \\R||
+        \\
+    ));
+}
+
+test "lists give their items markers and tight task boxes are lost" {
+    testing::expect(reads_as(
+        \\- one
+        \\  still one
+        \\- two
+        \\  1. first
+        \\  2. second
+        \\     - deep
+        \\- [x] tight task
+        \\
+        \\7. seven
+        \\
+        \\   more of seven
+        \\8. [ ] loose task
+        \\
+        \\* [x] done
+        \\
+        \\* other
+        \\
+    ,
+        \\T|• |one still one
+        \\T|• |two
+        \\T|  1. |first
+        \\T|  2. |second
+        \\T|    • |deep
+        \\T|• |tight task
+        \\T|7. |seven
+        \\T|7. |more of seven
+        \\T|8. ☐ |loose task
+        \\T|• ☑ |done
+        \\T|• |other
+        \\
+    ));
+}
+
+test "quotes nest, name their alerts and take lazy lines" {
+    testing::expect(reads_as(
+        \\> quoted
+        \\lazy line
+        \\> > nested
+        \\
+        \\> [!WARNING]
+        \\> Careful.
+        \\
+        \\> - item
+        \\>
+        \\> ```sh
+        \\> echo hi
+        \\> ```
+        \\after
+        \\
+    ,
+        \\T|│ |quoted lazy line
+        \\T|│ │ |nested
+        \\T|WARNING │ |Careful.
+        \\T|│ • |item
+        \\C|sh|echo hi
+        \\
+        \\T||after
+        \\
+    ));
+}
+
+test "code blocks keep their source and name their language" {
+    testing::expect(reads_as(
+        \\    indented
+        \\      more
+        \\
+        \\    after a blank
+        \\
+        \\~~~ python title
+        \\print("```")
+        \\~~~
+        \\
+        \\  ```
+        \\  two in
+        \\ one in
+        \\  ```
+        \\
+        \\```
+        \\never closed
+        \\
+    ,
+        \\C||indented
+        \\  more
+        \\
+        \\after a blank
+        \\
+        \\C|python|print("```")
+        \\
+        \\C||two in
+        \\one in
+        \\
+        \\C||never closed
+        \\
+        \\
+    ));
+}
+
+test "tables need a delimiter row and fill their rows" {
+    testing::expect(reads_as(
+        \\| Name | Value |
+        \\|:-----|------:|
+        \\| a \| b | `c\|d` | dropped |
+        \\| **bold** [link](x) |
+        \\no pipes
+        \\
+        \\left | right
+        \\--- | ---
+        \\1 | ![pic](p.png)
+        \\# Heading ends it
+        \\
+        \\| not | a table |
+        \\| one |
+        \\
+    ,
+        \\B||
+        \\[Name][Value]
+        \\[a | b][‹c|d›]
+        \\[bold link][]
+        \\[no pipes][]
+        \\B||
+        \\[left][right]
+        \\[1][[Image: pic]]
+        \\T|▌ |Heading ends it
+        \\T||| not | a table | | one |
+        \\
+    ));
+}
+
+test "HTML and metadata are left out" {
+    testing::expect(reads_as(
+        \\---
+        \\title: front matter
+        \\---
+        \\
+        \\<div>
+        \\*not read*
+        \\</div>
+        \\
+        \\<!-- a comment
+        \\over lines -->
+        \\
+        \\text <b>bold</b> <!-- gone --> end
+        \\
+    ,
+        \\T||HTML block omitted
+        \\T||HTML block omitted
+        \\T||text bold  end
+        \\
+    ));
+}
+
+test "links, references and footnotes read as their text" {
+    testing::expect(reads_as(
+        \\[inline](https://example.test "title") <https://auto.test> <a@b.c>
+        \\[text][ref] [ref][] [Ref] [missing][nope] [none]
+        \\note[^1] and[^none]
+        \\
+        \\[ref]: https://example.test/ref
+        \\[^1]: The note.
+        \\    More of it.
+        \\
+    ,
+        \\T||inline https://auto.test a@b.c text ref Ref [missing][nope] [none] note[1] and[^none]
+        \\T||The note. More of it.
+        \\
+    ));
+    testing::expect(span_flags(
+        \\[text][ref]
+        \\
+        \\[ref]: /url
+    , "text") == 49);
+    testing::expect(span_flags(
+        \\[text][nope]
+        \\
+        \\[ref]: /url
+    , "[text][nope]") == 1);
+}
+
+test "escapes and entities are the characters they stand for" {
+    testing::expect(reads_as(
+        \\\*not\* \_em\_ \# \a &amp; &lt;b&gt; &quot;&#39;&#x41;&#66; &bogus; &#0;
+        \\
+    ,
+        \\T||*not* _em_ # \a & <b> "'AB &bogus; �
+        \\
+    ));
+}
+
+test "an image ends the text before it" {
+    testing::expect(reads_as(
+        \\before ![alt *text*](images/a.png "title") after
+        \\
+        \\- item ![two](<b c.png>)
+        \\
+        \\![ref][pic]
+        \\
+        \\[pic]: remote.png
+        \\
+    ,
+        \\T||before
+        \\I|images/a.png|alt text
+        \\T||after
+        \\T|• |item
+        \\I|b c.png|two
+        \\I|remote.png|ref
+        \\
+    ));
+}
+
+test "a document is drawn wrapped, boxed and prefixed" {
+    testing::expect(draws_as(
+        \\# Report
+        \\
+        \\## Findings
+        \\
+        \\A paragraph that is long enough to wrap in a narrow pane.
+        \\
+        \\- first item wraps under its own text
+        \\  - 入れ子の項目は全角で折り返す
+        \\
+        \\> [!NOTE]
+        \\> quoted
+        \\
+        \\| Check | Result |
+        \\|---|---|
+        \\| tests | pass |
+        \\
+        \\```sh
+        \\cargo test
+        \\```
+        \\
+        \\---
+        \\
+        \\![Far](https://example.test/far.png)
+        \\
+    , 24,
+        \\▌ Findings
+        \\
+        \\A paragraph that is long
+        \\enough to wrap in a nar
+        \\row pane.
+        \\
+        \\• first item wraps under
+        \\  its own text
+        \\
+        \\  • 入れ子の項目は全角で
+        \\    折り返す
+        \\
+        \\NOTE │ quoted
+        \\
+        \\┌───────────┬──────────┐
+        \\│Check      │Result    │
+        \\├───────────┼──────────┤
+        \\│tests      │pass      │
+        \\└───────────┴──────────┘
+        \\
+        \\┌─ sh
+        \\│ cargo test
+        \\└─
+        \\
+        \\────────────────────────
+        \\
+        \\▧ Image: Far (remote or
+        \\  non-PNG source not fet
+        \\  ched)
+        \\
+    ));
+}
+
+test "what a pane cannot show is counted" {
+    let allocator = mem::page_allocator();
+    var omitted: i64 = 0;
+    let drawn = try draw(
+        \\one
+        \\
+        \\two
+        \\
+        \\```
+        \\a line of code that is wider than the pane
+        \\b
+        \\c
+        \\```
+        \\
+        \\three
+        \\
+    , 20, 6, &var omitted);
+    defer drawn.deinit(allocator);
+    let bytes = drawn.as_bytes();
+    testing::expect(mem::equal_bytes(bytes,
+        \\one
+        \\
+        \\two
+        \\
+        \\┌─ code
+        \\└─
+        \\
+    ));
+    // The three code lines, which leave the last row to the line that
+    // closes the block, then an empty line and the last paragraph.
+    testing::expect(omitted == 5);
+}

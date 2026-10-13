@@ -1,0 +1,70 @@
+// The spawn configuration as the host sends it: a JSON object of which
+// every key may be left out.
+import std::array;
+import std::json;
+import std::map;
+import std::string;
+
+/// direct_startup comes first: std::json::decode does not compile for a
+/// struct whose first field is an optional owner (gaps/README.md).
+pub struct SpawnDocument {
+    pub direct_startup: ?bool,
+    pub cwd: ?string::String,
+    pub shell: ?string::String,
+    pub environment: ?map::Map<[]u8, string::String>,
+    pub startup_command: ?array::Array<string::String>,
+}
+
+fn (self: SpawnDocument) deinit(allocator: Allocator) -> void {
+    if self.cwd |held| {
+        held.deinit(allocator);
+    }
+    if self.shell |held| {
+        held.deinit(allocator);
+    }
+    if self.environment |held| {
+        held.deinit(allocator);
+    }
+    if self.startup_command |held| {
+        held.deinit(allocator);
+    }
+    return;
+}
+
+/// Reads a spawn configuration from its JSON. Keys it does not know are
+/// ignored.
+pub fn spawn_config_from_json(allocator: Allocator, document: []u8) -> json::DecodeError!SpawnConfig {
+    let read = try json::decode_ignore_unknown<SpawnDocument>(allocator, document);
+    defer read.deinit(allocator);
+    var config = new_spawn_config(allocator);
+    errdefer config.deinit(allocator);
+    if read.cwd |cwd| {
+        config.has_cwd = true;
+        try config.cwd.append_string(allocator, cwd);
+    }
+    if read.shell |shell| {
+        config.has_shell = true;
+        try config.shell.append_string(allocator, shell);
+    }
+    if read.environment |environment| {
+        for 0..environment.len() |index| {
+            if environment.key_at(index) |key| {
+                if environment.at(key) |value| {
+                    let text = value.as_bytes();
+                    try append_text(allocator, &var config.environment_keys, key);
+                    try append_text(allocator, &var config.environment_values, text);
+                }
+            }
+        }
+    }
+    if read.startup_command |command| {
+        for 0..command.len() |index| {
+            if command.at(index) |argument| {
+                let text = argument.as_bytes();
+                try append_text(allocator, &var config.startup_command, text);
+            }
+        }
+    }
+    config.direct_startup = read.direct_startup orelse false;
+    return move config;
+}

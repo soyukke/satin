@@ -1,0 +1,881 @@
+// Parsing what tmux answers: topology rows, window layouts, session rows, and
+// the octal escapes of output and captures. A failure names what was wrong in
+// why, the message the Rust parser's error carried.
+import satin::core;
+import std::array;
+import std::fmt;
+import std::mem;
+import std::string;
+
+pub error ParseError {
+    Invalid,
+}
+
+pub error Failure = ParseError or mem::Error;
+
+fn snapshot_field_count() -> i64 {
+    return 41;
+}
+
+/// Sets why to message, before the caller returns `ParseError::Invalid`.
+pub fn set_why(allocator: Allocator, why: &var string::String, message: []u8) -> mem::Error!void {
+    why.clear();
+    return why.append_bytes(allocator, message);
+}
+
+/// Parses a decimal number no larger than max as Rust's `str::parse` does,
+/// failing with its message.
+pub fn parse_number(allocator: Allocator, bytes: []u8, max: i64, out: &var i64, why: &var string::String) -> Failure!void {
+    var index = 0;
+    if mem::len(bytes) > 0 and bytes[0] == cast<u8>(43) {
+        index = 1;
+    }
+    if mem::len(bytes) == 0 {
+        try set_why(allocator, why, "cannot parse integer from empty string");
+        return ParseError::Invalid;
+    }
+    if index >= mem::len(bytes) {
+        try set_why(allocator, why, "invalid digit found in string");
+        return ParseError::Invalid;
+    }
+    var value: i64 = 0;
+    while index < mem::len(bytes) {
+        let digit = cast<i64>(bytes[index]) - 48;
+        if digit < 0 or digit > 9 {
+            try set_why(allocator, why, "invalid digit found in string");
+            return ParseError::Invalid;
+        }
+        value = value * 10 + digit;
+        if value > max {
+            try set_why(allocator, why, "number too large to fit in target type");
+            return ParseError::Invalid;
+        }
+        index = index + 1;
+    }
+    out = value;
+    return;
+}
+
+pub fn u32_max() -> i64 {
+    return 4294967295;
+}
+
+pub fn u16_max() -> i64 {
+    return 65535;
+}
+
+fn require_utf8(allocator: Allocator, bytes: []u8, why: &var string::String) -> Failure!void {
+    if !is_valid_utf8(bytes) {
+        try set_why(allocator, why, "invalid utf-8 sequence");
+        return ParseError::Invalid;
+    }
+    return;
+}
+
+/// `$7` with prefix `$` is 7.
+pub fn parse_prefixed_id(allocator: Allocator, value: []u8, prefix: u8, out: &var i64, why: &var string::String) -> Failure!void {
+    if mem::len(value) == 0 or value[0] != prefix {
+        why.clear();
+        try why.append_bytes(allocator, "tmux id ");
+        try append_debug_quoted(allocator, why, value);
+        try why.append_bytes(allocator, " omitted '");
+        try why.append_byte(allocator, prefix);
+        try why.append_bytes(allocator, "' prefix");
+        return ParseError::Invalid;
+    }
+    return parse_number(allocator, value[1..mem::len(value)], u32_max(), out, why);
+}
+
+/// Writes value the way Rust's `{:?}` writes a str: quoted, with `"` and `\`
+/// escaped.
+fn append_debug_quoted(allocator: Allocator, out: &var string::String, value: []u8) -> mem::Error!void {
+    try out.append_byte(allocator, cast<u8>(34));
+    var index = 0;
+    while index < mem::len(value) {
+        let byte = value[index];
+        if byte == cast<u8>(34) or byte == cast<u8>(92) {
+            try out.append_byte(allocator, cast<u8>(92));
+        }
+        try out.append_byte(allocator, byte);
+        index = index + 1;
+    }
+    return out.append_byte(allocator, cast<u8>(34));
+}
+
+pub fn parse_flag(allocator: Allocator, value: []u8, out: &var bool, why: &var string::String) -> Failure!void {
+    if mem::equal_bytes(value, "0") {
+        out = false;
+        return;
+    }
+    if mem::equal_bytes(value, "1") {
+        out = true;
+        return;
+    }
+    why.clear();
+    try why.append_bytes(allocator, "invalid tmux boolean ");
+    try append_debug_quoted(allocator, why, value);
+    return ParseError::Invalid;
+}
+
+/// Splits tab-separated rows of `#{q:...}` fields: `\` escapes the next byte,
+/// and a `\` at the end of a line continues the field on the next line with a
+/// newline.
+pub fn parse_quoted_rows(
+    allocator: Allocator,
+    lines: &array::Array<string::String>,
+    field_count: i64,
+    rows: &var array::Array<array::Array<string::String>>,
+    why: &var string::String
+) -> Failure!void {
+    var fields = array::new<string::String>(allocator);
+    defer fields.deinit(allocator);
+    var field = string::new(allocator);
+    defer field.deinit(allocator);
+    var escaped = false;
+    var line_index = 0;
+    while lines.at(line_index) |line| {
+        line_index = line_index + 1;
+        let bytes = line.as_bytes();
+        var index = 0;
+        while index < mem::len(bytes) {
+            let byte = bytes[index];
+            index = index + 1;
+            if escaped {
+                try field.append_byte(allocator, byte);
+                escaped = false;
+            } else if byte == cast<u8>(92) {
+                escaped = true;
+            } else if byte == cast<u8>(9) {
+                let done = try take_string(allocator, &var field);
+                try fields.append(allocator, move done);
+            } else {
+                try field.append_byte(allocator, byte);
+            }
+        }
+        if escaped {
+            try field.append_byte(allocator, cast<u8>(10));
+            escaped = false;
+            continue;
+        }
+        let done = try take_string(allocator, &var field);
+        try fields.append(allocator, move done);
+        if fields.len() != field_count {
+            why.clear();
+            try why.append_bytes(allocator, "tmux topology row has ");
+            try fmt::append_i64(allocator, why, fields.len());
+            try why.append_bytes(allocator, " fields, expected ");
+            try fmt::append_i64(allocator, why, field_count);
+            return ParseError::Invalid;
+        }
+        var row = array::new<string::String>(allocator);
+        errdefer row.deinit(allocator);
+        while fields.len() > 0 {
+            let taken = fields.remove(0) catch break;
+            try row.append(allocator, move taken);
+        }
+        try rows.append(allocator, move row);
+    }
+    if escaped or field.len() != 0 or fields.len() != 0 {
+        try set_why(allocator, why, "tmux topology response ended inside an escaped row");
+        return ParseError::Invalid;
+    }
+    return;
+}
+
+/// Moves the bytes of value into a new String and empties value.
+pub fn take_string(allocator: Allocator, value: &var string::String) -> mem::Error!string::String {
+    let bytes = value.as_bytes();
+    let taken = try string::from_bytes(allocator, bytes);
+    value.clear();
+    return move taken;
+}
+
+/// Copies field index of row as an owned String.
+fn field_string(allocator: Allocator, row: &array::Array<string::String>, index: i64) -> mem::Error!string::String {
+    if row.at(index) |field| {
+        let bytes = field.as_bytes();
+        return string::from_bytes(allocator, bytes);
+    }
+    return string::new(allocator);
+}
+
+fn field_number(allocator: Allocator, row: &array::Array<string::String>, index: i64, max: i64, why: &var string::String) -> Failure!i64 {
+    var value: i64 = 0;
+    if row.at(index) |field| {
+        let bytes = field.as_bytes();
+        try parse_number(allocator, bytes, max, &var value, why);
+    }
+    return value;
+}
+
+fn field_flag(allocator: Allocator, row: &array::Array<string::String>, index: i64, why: &var string::String) -> Failure!bool {
+    var value = false;
+    if row.at(index) |field| {
+        let bytes = field.as_bytes();
+        try parse_flag(allocator, bytes, &var value, why);
+    }
+    return value;
+}
+
+fn field_id(allocator: Allocator, row: &array::Array<string::String>, index: i64, prefix: u8, why: &var string::String) -> Failure!i64 {
+    var value: i64 = 0;
+    if row.at(index) |field| {
+        let bytes = field.as_bytes();
+        try parse_prefixed_id(allocator, bytes, prefix, &var value, why);
+    }
+    return value;
+}
+
+fn parse_private_modes(allocator: Allocator, value: []u8, why: &var string::String) -> Failure!array::Array<i64> {
+    var modes = array::new<i64>(allocator);
+    errdefer modes.deinit(allocator);
+    if mem::len(value) == 0 {
+        return move modes;
+    }
+    var start = 0;
+    var index = 0;
+    while index <= mem::len(value) {
+        if index == mem::len(value) or value[index] == cast<u8>(44) {
+            var mode: i64 = 0;
+            try parse_number(allocator, value[start..index], u16_max(), &var mode, why);
+            try modes.append(allocator, mode);
+            start = index + 1;
+        }
+        index = index + 1;
+    }
+    return move modes;
+}
+
+pub fn parse_pane(allocator: Allocator, row: &array::Array<string::String>, why: &var string::String) -> Failure!Pane {
+    let pane_id = try field_id(allocator, row, 9, cast<u8>(37), why);
+    let index = try field_number(allocator, row, 10, u32_max(), why);
+    let active = try field_flag(allocator, row, 11, why);
+    let cols = try field_number(allocator, row, 13, u16_max(), why);
+    let rows = try field_number(allocator, row, 14, u16_max(), why);
+    let cursor_x = try field_number(allocator, row, 15, u16_max(), why);
+    let cursor_y = try field_number(allocator, row, 16, u16_max(), why);
+    let cursor_visible = try field_flag(allocator, row, 17, why);
+    let cursor_blinking = try field_flag(allocator, row, 19, why);
+    let history_size = try field_number(allocator, row, 20, u32_max(), why);
+    let alternate_on = try field_flag(allocator, row, 21, why);
+    let insert_mode = try field_flag(allocator, row, 22, why);
+    let application_cursor = try field_flag(allocator, row, 23, why);
+    let application_keypad = try field_flag(allocator, row, 24, why);
+    let origin_mode = try field_flag(allocator, row, 25, why);
+    let wrap_mode = try field_flag(allocator, row, 26, why);
+    let mouse_standard = try field_flag(allocator, row, 27, why);
+    let mouse_button = try field_flag(allocator, row, 28, why);
+    let mouse_any = try field_flag(allocator, row, 29, why);
+    let mouse_utf8 = try field_flag(allocator, row, 30, why);
+    let mouse_sgr = try field_flag(allocator, row, 31, why);
+    let input_off = try field_flag(allocator, row, 32, why);
+    let scroll_region_upper = try field_number(allocator, row, 33, u16_max(), why);
+    let scroll_region_lower = try field_number(allocator, row, 34, u16_max(), why);
+    var modes_text = try field_string(allocator, row, 36);
+    defer modes_text.deinit(allocator);
+    let modes_bytes = modes_text.as_bytes();
+    var private_modes = try parse_private_modes(allocator, modes_bytes, why);
+    errdefer private_modes.deinit(allocator);
+    var current_path = try field_string(allocator, row, 12);
+    errdefer current_path.deinit(allocator);
+    var cursor_shape = try field_string(allocator, row, 18);
+    errdefer cursor_shape.deinit(allocator);
+    var key_mode = try field_string(allocator, row, 37);
+    errdefer key_mode.deinit(allocator);
+    var current_command = try field_string(allocator, row, 38);
+    errdefer current_command.deinit(allocator);
+    var title = try field_string(allocator, row, 39);
+    errdefer title.deinit(allocator);
+    let allow_passthrough = try field_string(allocator, row, 40);
+    return Pane {
+        pane_id: pane_id,
+        index: index,
+        active: active,
+        current_path: move current_path,
+        cols: cols,
+        rows: rows,
+        cursor_x: cursor_x,
+        cursor_y: cursor_y,
+        cursor_visible: cursor_visible,
+        cursor_shape: move cursor_shape,
+        cursor_blinking: cursor_blinking,
+        history_size: history_size,
+        alternate_on: alternate_on,
+        insert_mode: insert_mode,
+        application_cursor: application_cursor,
+        application_keypad: application_keypad,
+        origin_mode: origin_mode,
+        wrap_mode: wrap_mode,
+        mouse_standard: mouse_standard,
+        mouse_button: mouse_button,
+        mouse_any: mouse_any,
+        mouse_utf8: mouse_utf8,
+        mouse_sgr: mouse_sgr,
+        input_off: input_off,
+        scroll_region_upper: scroll_region_upper,
+        scroll_region_lower: scroll_region_lower,
+        private_modes: move private_modes,
+        key_mode: move key_mode,
+        current_command: move current_command,
+        title: move title,
+        allow_passthrough: move allow_passthrough
+    };
+}
+
+fn window_position(windows: &array::Array<Window>, window_id: i64) -> i64 {
+    var index = 0;
+    while windows.at(index) |window| {
+        if window.window_id == window_id {
+            return index;
+        }
+        index = index + 1;
+    }
+    return -1;
+}
+
+/// Parses a `list-panes -s` answer into the session's windows, each with its
+/// panes, windows and panes in index order.
+pub fn parse_snapshot(allocator: Allocator, lines: &array::Array<string::String>, why: &var string::String) -> Failure!Snapshot {
+    var rows = array::new<array::Array<string::String>>(allocator);
+    defer rows.deinit(allocator);
+    try parse_quoted_rows(allocator, lines, snapshot_field_count(), &var rows, why);
+    var windows = array::new<Window>(allocator);
+    errdefer windows.deinit(allocator);
+    var session_id: i64 = 0;
+    var server_pid: i64 = 0;
+    var active_window_id: i64 = -1;
+    var session_name = string::new(allocator);
+    errdefer session_name.deinit(allocator);
+    var socket_path = string::new(allocator);
+    errdefer socket_path.deinit(allocator);
+    var row_index = 0;
+    while rows.at(row_index) |row| {
+        var index = 0;
+        while row.at(index) |field| {
+            let bytes = field.as_bytes();
+            try require_utf8(allocator, bytes, why);
+            index = index + 1;
+        }
+        let row_session_id = try field_id(allocator, row, 0, cast<u8>(36), why);
+        let window_id = try field_id(allocator, row, 3, cast<u8>(64), why);
+        if row_index == 0 {
+            session_id = row_session_id;
+            let name = try field_string(allocator, row, 1);
+            defer name.deinit(allocator);
+            try session_name.append_string(allocator, &name);
+            let socket = try field_string(allocator, row, 2);
+            defer socket.deinit(allocator);
+            try socket_path.append_string(allocator, &socket);
+            server_pid = try field_number(allocator, row, 35, u32_max(), why);
+        }
+        if try field_flag(allocator, row, 6, why) {
+            active_window_id = window_id;
+        }
+        var position = window_position(&windows, window_id);
+        if position < 0 {
+            let window_index = try field_number(allocator, row, 4, u32_max(), why);
+            var name = try field_string(allocator, row, 5);
+            errdefer name.deinit(allocator);
+            var layout_text = try field_string(allocator, row, 7);
+            defer layout_text.deinit(allocator);
+            let layout_bytes = layout_text.as_bytes();
+            var layout = try parse_layout(allocator, layout_bytes, why);
+            errdefer layout.deinit(allocator);
+            let zoomed = try field_flag(allocator, row, 8, why);
+            try windows.append(allocator, Window {
+                window_id: window_id,
+                index: window_index,
+                name: move name,
+                active_pane_id: -1,
+                zoomed: zoomed,
+                layout: move layout,
+                panes: array::new<Pane>(allocator)
+            });
+            position = windows.len() - 1;
+        }
+        let pane = try parse_pane(allocator, row, why);
+        // A failure cannot leave through `try` while the window is borrowed:
+        // the errdefer above would release windows under the borrow.
+        var appended = false;
+        if windows.at_mut(position) |window| {
+            if window.panes.append(allocator, move pane) {
+                appended = true;
+            } else |_| {}
+        } else {
+            pane.deinit(allocator);
+            appended = true;
+        }
+        if !appended {
+            return mem::Error::OutOfMemory;
+        }
+        row_index = row_index + 1;
+    }
+    if windows.len() == 0 {
+        try set_why(allocator, why, "tmux topology response contained no panes");
+        return ParseError::Invalid;
+    }
+    sort_windows(&var windows);
+    var index = 0;
+    while windows.at_mut(index) |window| {
+        sort_panes(&var window.panes);
+        window.active_pane_id = first_active_pane(&window.panes);
+        index = index + 1;
+    }
+    if active_window_id < 0 {
+        if windows.at(0) |first| {
+            active_window_id = first.window_id;
+        }
+    }
+    return Snapshot {
+        session_id: session_id,
+        session_name: move session_name,
+        socket_path: move socket_path,
+        server_pid: server_pid,
+        active_window_id: active_window_id,
+        windows: move windows
+    };
+}
+
+/// The active pane of a window's panes, or its first.
+fn first_active_pane(panes: &array::Array<Pane>) -> i64 {
+    var index = 0;
+    while panes.at(index) |pane| {
+        if pane.active {
+            return pane.pane_id;
+        }
+        index = index + 1;
+    }
+    if panes.at(0) |first| {
+        return first.pane_id;
+    }
+    return -1;
+}
+
+fn window_index_at(windows: &array::Array<Window>, index: i64) -> i64 {
+    if windows.at(index) |window| {
+        return window.index;
+    }
+    return 0;
+}
+
+fn pane_index_at(panes: &array::Array<Pane>, index: i64) -> i64 {
+    if panes.at(index) |pane| {
+        return pane.index;
+    }
+    return 0;
+}
+
+/// Stable insertion sort by window index, Rust's `sort_by_key`.
+fn sort_windows(windows: &var array::Array<Window>) -> void {
+    var index = 1;
+    while index < windows.len() {
+        var at = index;
+        while at > 0 and window_index_at(windows, at - 1) > window_index_at(windows, at) {
+            windows.swap(at - 1, at) catch return;
+            at = at - 1;
+        }
+        index = index + 1;
+    }
+}
+
+fn sort_panes(panes: &var array::Array<Pane>) -> void {
+    var index = 1;
+    while index < panes.len() {
+        var at = index;
+        while at > 0 and pane_index_at(panes, at - 1) > pane_index_at(panes, at) {
+            panes.swap(at - 1, at) catch return;
+            at = at - 1;
+        }
+        index = index + 1;
+    }
+}
+
+/// A parsed layout node: where it is in the layout's nodes, and its size.
+struct LayoutPart {
+    node: i64,
+    width: i64,
+    height: i64,
+}
+
+struct LayoutParser {
+    cursor: i64,
+}
+
+/// Parses `checksum,WxH,X,Y,...` into a layout: `{...}` children sit side by
+/// side, `[...]` children stack, and a run of children folds into nested
+/// two-way splits whose ratios are the first child's share.
+pub fn parse_layout(allocator: Allocator, value: []u8, why: &var string::String) -> Failure!core::Layout {
+    var comma = 0;
+    while comma < mem::len(value) and value[comma] != cast<u8>(44) {
+        comma = comma + 1;
+    }
+    if comma == mem::len(value) {
+        try set_why(allocator, why, "tmux layout omitted checksum");
+        return ParseError::Invalid;
+    }
+    let input = value[comma + 1..mem::len(value)];
+    var nodes = array::new<core::Node>(allocator);
+    errdefer nodes.deinit(allocator);
+    var parser = LayoutParser { cursor: 0 };
+    let root = try parser.parse_node(allocator, input, &var nodes, why);
+    if parser.cursor != mem::len(input) {
+        try set_why(allocator, why, "tmux layout has trailing input");
+        return ParseError::Invalid;
+    }
+    return core::Layout { nodes: move nodes, root: root.node };
+}
+
+fn (self: &var LayoutParser) peek(input: []u8) -> i64 {
+    if self.cursor < mem::len(input) {
+        return cast<i64>(input[self.cursor]);
+    }
+    return -1;
+}
+
+fn (self: &var LayoutParser) expect(allocator: Allocator, input: []u8, expected: u8, why: &var string::String) -> Failure!void {
+    if self.peek(input) != cast<i64>(expected) {
+        why.clear();
+        try why.append_bytes(allocator, "tmux layout expected byte ");
+        try fmt::append_i64(allocator, why, cast<i64>(expected));
+        return ParseError::Invalid;
+    }
+    self.cursor = self.cursor + 1;
+    return;
+}
+
+fn (self: &var LayoutParser) number(allocator: Allocator, input: []u8, why: &var string::String) -> Failure!i64 {
+    let start = self.cursor;
+    while self.peek(input) >= 48 and self.peek(input) <= 57 {
+        self.cursor = self.cursor + 1;
+    }
+    if start == self.cursor {
+        try set_why(allocator, why, "tmux layout expected a number");
+        return ParseError::Invalid;
+    }
+    var value: i64 = 0;
+    try parse_number(allocator, input[start..self.cursor], u32_max(), &var value, why);
+    return value;
+}
+
+fn (self: &var LayoutParser) parse_node(
+    allocator: Allocator,
+    input: []u8,
+    nodes: &var array::Array<core::Node>,
+    why: &var string::String
+) -> Failure!LayoutPart {
+    let width = try self.number(allocator, input, why);
+    try self.expect(allocator, input, cast<u8>(120), why);
+    let height = try self.number(allocator, input, why);
+    try self.expect(allocator, input, cast<u8>(44), why);
+    try self.number(allocator, input, why);
+    try self.expect(allocator, input, cast<u8>(44), why);
+    try self.number(allocator, input, why);
+    let next = self.peek(input);
+    if next == 44 {
+        self.cursor = self.cursor + 1;
+        let pane = try self.number(allocator, input, why);
+        try nodes.append(allocator, core::leaf_node(pane));
+        return LayoutPart { node: nodes.len() - 1, width: width, height: height };
+    }
+    if next == 123 or next == 91 {
+        return self.parse_children(allocator, input, nodes, width, height, next, why);
+    }
+    try set_why(allocator, why, "tmux layout node omitted pane id or children");
+    return ParseError::Invalid;
+}
+
+fn (self: &var LayoutParser) parse_children(
+    allocator: Allocator,
+    input: []u8,
+    nodes: &var array::Array<core::Node>,
+    width: i64,
+    height: i64,
+    open: i64,
+    why: &var string::String
+) -> Failure!LayoutPart {
+    self.cursor = self.cursor + 1;
+    var close = cast<u8>(93);
+    var axis = core::Axis::Horizontal;
+    if open == 123 {
+        close = cast<u8>(125);
+        axis = core::Axis::Vertical;
+    }
+    var children = array::new<LayoutPart>(allocator);
+    defer children.deinit(allocator);
+    let first = try self.parse_node(allocator, input, nodes, why);
+    try children.append(allocator, first);
+    while self.peek(input) == 44 {
+        self.cursor = self.cursor + 1;
+        let child = try self.parse_node(allocator, input, nodes, why);
+        try children.append(allocator, child);
+    }
+    try self.expect(allocator, input, close, why);
+    if children.len() < 2 {
+        try set_why(allocator, why, "tmux layout container has fewer than two children");
+        return ParseError::Invalid;
+    }
+    let node = try fold_children(allocator, &children, 0, axis, nodes, why);
+    return LayoutPart { node: node, width: width, height: height };
+}
+
+fn extent(part: LayoutPart, axis: core::Axis) -> i64 {
+    if axis == core::Axis::Vertical {
+        return part.width;
+    }
+    return part.height;
+}
+
+/// Folds children from start on into nested splits and returns the node.
+fn fold_children(
+    allocator: Allocator,
+    children: &array::Array<LayoutPart>,
+    start: i64,
+    axis: core::Axis,
+    nodes: &var array::Array<core::Node>,
+    why: &var string::String
+) -> Failure!i64 {
+    let first = children.get_or_panic(start);
+    let first_extent = extent(first, axis);
+    var remaining: i64 = 0;
+    var index = start + 1;
+    while children.get(index) |child| {
+        remaining = remaining + extent(child, axis);
+        if remaining > u32_max() {
+            try set_why(allocator, why, "tmux layout dimensions overflow");
+            return ParseError::Invalid;
+        }
+        index = index + 1;
+    }
+    let ratio = cast<f64>(first_extent) / cast<f64>(first_extent + remaining);
+    var second: i64 = -1;
+    if start + 2 == children.len() {
+        second = children.get_or_panic(start + 1).node;
+    } else {
+        second = try fold_children(allocator, children, start + 1, axis, nodes, why);
+    }
+    try nodes.append(allocator, core::split_node(axis, ratio, first.node, second));
+    return nodes.len() - 1;
+}
+
+/// Splits one `|`-separated session row, `\` escaping the next byte.
+fn parse_session_fields(allocator: Allocator, line: []u8, fields: &var array::Array<string::String>, why: &var string::String) -> Failure!void {
+    var field = string::new(allocator);
+    defer field.deinit(allocator);
+    var escaped = false;
+    var index = 0;
+    while index < mem::len(line) {
+        let byte = line[index];
+        index = index + 1;
+        if escaped {
+            try field.append_byte(allocator, byte);
+            escaped = false;
+        } else if byte == cast<u8>(92) {
+            escaped = true;
+        } else if byte == cast<u8>(124) {
+            let done = try take_string(allocator, &var field);
+            try fields.append(allocator, move done);
+        } else {
+            try field.append_byte(allocator, byte);
+        }
+    }
+    if escaped {
+        try set_why(allocator, why, "tmux session row ended inside an escaped field");
+        return ParseError::Invalid;
+    }
+    let done = try take_string(allocator, &var field);
+    return fields.append(allocator, move done);
+}
+
+fn session_name_before(sessions: &array::Array<Session>, left: i64, right: i64) -> bool {
+    var result = false;
+    if sessions.at(left) |first| {
+        if sessions.at(right) |second| {
+            let first_name = first.name.as_bytes();
+            let second_name = second.name.as_bytes();
+            result = compare_bytes(first_name, second_name) > 0;
+        }
+    }
+    return result;
+}
+
+/// Orders two byte strings the way Rust compares `str`: -1, 0 or 1.
+pub fn compare_bytes(first: []u8, second: []u8) -> i64 {
+    var index = 0;
+    while index < mem::len(first) and index < mem::len(second) {
+        if first[index] != second[index] {
+            if first[index] < second[index] {
+                return -1;
+            }
+            return 1;
+        }
+        index = index + 1;
+    }
+    if mem::len(first) < mem::len(second) {
+        return -1;
+    }
+    if mem::len(first) > mem::len(second) {
+        return 1;
+    }
+    return 0;
+}
+
+/// Parses `list-sessions` rows, sorted by name.
+pub fn parse_sessions(allocator: Allocator, lines: &array::Array<string::String>, why: &var string::String) -> Failure!array::Array<Session> {
+    var sessions = array::new<Session>(allocator);
+    errdefer sessions.deinit(allocator);
+    var line_index = 0;
+    while lines.at(line_index) |line| {
+        line_index = line_index + 1;
+        let bytes = line.as_bytes();
+        var fields = array::new<string::String>(allocator);
+        defer fields.deinit(allocator);
+        try parse_session_fields(allocator, bytes, &var fields, why);
+        if fields.len() != 5 {
+            why.clear();
+            try why.append_bytes(allocator, "tmux session row has ");
+            try fmt::append_i64(allocator, why, fields.len());
+            try why.append_bytes(allocator, " fields, expected 5");
+            return ParseError::Invalid;
+        }
+        var index = 0;
+        while fields.at(index) |field| {
+            let field_text = field.as_bytes();
+            if (index == 1 or index == 3) and !is_valid_utf8(field_text) {
+                try set_why(allocator, why, "invalid utf-8 sequence");
+                return ParseError::Invalid;
+            }
+            index = index + 1;
+        }
+        var session_id: i64 = 0;
+        if fields.at(0) |field| {
+            let id = field.as_bytes();
+            if mem::len(id) == 0 or id[0] != cast<u8>(36) {
+                try set_why(allocator, why, "tmux session id omitted its prefix");
+                return ParseError::Invalid;
+            }
+            try parse_number(allocator, id[1..mem::len(id)], u32_max(), &var session_id, why);
+        }
+        let window_count = try field_number(allocator, &fields, 2, u32_max(), why);
+        let server_pid = try field_number(allocator, &fields, 4, u32_max(), why);
+        var name = try field_string(allocator, &fields, 1);
+        errdefer name.deinit(allocator);
+        let socket_path = try field_string(allocator, &fields, 3);
+        try sessions.append(allocator, Session {
+            session_id: session_id,
+            name: move name,
+            window_count: window_count,
+            socket_path: move socket_path,
+            server_pid: server_pid
+        });
+    }
+    var index = 1;
+    while index < sessions.len() {
+        var at = index;
+        while at > 0 and session_name_before(&sessions, at - 1, at) {
+            sessions.swap(at - 1, at) catch break;
+            at = at - 1;
+        }
+        index = index + 1;
+    }
+    return move sessions;
+}
+
+fn is_octal(byte: u8) -> bool {
+    return byte >= cast<u8>(48) and byte <= cast<u8>(55);
+}
+
+fn decode_octal(bytes: []u8, index: i64) -> u8 {
+    let value = (cast<i64>(bytes[index]) - 48) * 64 + (cast<i64>(bytes[index + 1]) - 48) * 8 +
+        (cast<i64>(bytes[index + 2]) - 48);
+    return cast<u8>(value);
+}
+
+/// Decodes `%output` data: `\ooo` is one byte, everything else is itself.
+/// With capture set, `\\` is also one backslash, as `capture-pane -C` writes.
+pub fn decode_escaped(
+    allocator: Allocator,
+    bytes: []u8,
+    capture: bool,
+    out: &var string::String,
+    why: &var string::String
+) -> Failure!void {
+    var index = 0;
+    let count = mem::len(bytes);
+    while index < count {
+        let byte = bytes[index];
+        if byte != cast<u8>(92) {
+            try out.append_byte(allocator, byte);
+            index = index + 1;
+            continue;
+        }
+        if capture and index + 1 < count and bytes[index + 1] == cast<u8>(92) {
+            try out.append_byte(allocator, cast<u8>(92));
+            index = index + 2;
+            continue;
+        }
+        if index + 3 >= count or !is_octal(bytes[index + 1]) or !is_octal(bytes[index + 2]) or
+            !is_octal(bytes[index + 3]) {
+            if capture {
+                try set_why(allocator, why, "invalid tmux capture escape");
+            } else {
+                try set_why(allocator, why, "invalid tmux output escape");
+            }
+            return ParseError::Invalid;
+        }
+        try out.append_byte(allocator, decode_octal(bytes, index + 1));
+        index = index + 4;
+    }
+    return;
+}
+
+/// Writes each byte as `\ooo`, which a double-quoted tmux argument reads back
+/// as that byte.
+pub fn append_octal_argument(allocator: Allocator, out: &var string::String, bytes: []u8) -> mem::Error!void {
+    var index = 0;
+    while index < mem::len(bytes) {
+        let value = cast<i64>(bytes[index]);
+        try out.append_byte(allocator, cast<u8>(92));
+        try out.append_byte(allocator, cast<u8>(48 + value / 64));
+        try out.append_byte(allocator, cast<u8>(48 + value / 8 % 8));
+        try out.append_byte(allocator, cast<u8>(48 + value % 8));
+        index = index + 1;
+    }
+    return;
+}
+
+pub fn is_ascii_whitespace(byte: u8) -> bool {
+    return byte == cast<u8>(32) or byte == cast<u8>(9) or byte == cast<u8>(10) or
+        byte == cast<u8>(12) or byte == cast<u8>(13);
+}
+
+/// The first index of bytes that is not ASCII whitespace.
+pub fn trim_start(bytes: []u8) -> i64 {
+    var start = 0;
+    while start < mem::len(bytes) and is_ascii_whitespace(bytes[start]) {
+        start = start + 1;
+    }
+    return start;
+}
+
+/// One past the last index of bytes that is not ASCII whitespace, no earlier
+/// than start.
+pub fn trim_end(bytes: []u8, start: i64) -> i64 {
+    var end = mem::len(bytes);
+    while end > start and is_ascii_whitespace(bytes[end - 1]) {
+        end = end - 1;
+    }
+    return end;
+}
+
+/// The index of needle in haystack, or -1.
+pub fn find_bytes(haystack: []u8, needle: []u8) -> i64 {
+    let count = mem::len(needle);
+    var index = 0;
+    while index + count <= mem::len(haystack) {
+        if mem::equal_bytes(haystack[index..index + count], needle) {
+            return index;
+        }
+        index = index + 1;
+    }
+    return -1;
+}

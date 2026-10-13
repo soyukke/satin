@@ -1,0 +1,125 @@
+import std::mem;
+import std::string;
+import std::testing;
+
+/// Whether reading line gives expected as its JSON and timeout.
+fn reads_as(line: []u8, id: i64, expected: []u8, timeout_millis: i64) -> bool {
+    let allocator = mem::page_allocator();
+    if read_request(allocator, line, id) |request| {
+        defer request.deinit(allocator);
+        let json = request.json.as_bytes();
+        return mem::equal_bytes(json, expected) and request.timeout_millis == timeout_millis;
+    } else |_| {}
+    return false;
+}
+
+fn is_refused(line: []u8) -> bool {
+    let allocator = mem::page_allocator();
+    if read_request(allocator, line, -1) |request| {
+        request.deinit(allocator);
+        return false;
+    } else |_| {}
+    return true;
+}
+
+test "a request round trips with its command's fields" {
+    let status =
+        \\{"version":1,"command":"status-set","pane":7,"status":"done","summary":"tests passed"}
+    ;
+    testing::expect(reads_as(status, -1, status, 30000));
+    let artifact =
+        \\{"version":1,"command":"artifact-show","pane":7,"artifact":"a123abc@2","axis":"vertical","background":true}
+    ;
+    testing::expect(reads_as(artifact, -1, artifact, 30000));
+    testing::expect(reads_as(
+        \\{"command":"list","version":1,"extra":[1,2]}
+    , -1,
+        \\{"version":1,"command":"list"}
+    , 30000));
+}
+
+test "fields a client leaves out read as their defaults" {
+    testing::expect(reads_as(
+        \\{"version":1,"command":"new-tab","cwd":"/tmp/project"}
+    , -1,
+        \\{"version":1,"command":"new-tab","cwd":"/tmp/project","title":null,"background":false}
+    , 30000));
+    testing::expect(reads_as(
+        \\{"version":1,"command":"status-set","pane":1,"status":"s","summary":"t","agent_session_start":true}
+    , -1,
+        \\{"version":1,"command":"status-set","pane":1,"status":"s","summary":"t","agent_session_start":true}
+    , 30000));
+}
+
+test "the host reads a request with its id, and how long it may take" {
+    testing::expect(reads_as(
+        \\{"version":1,"command":"open-neovim","pane":4,"cwd":"/tmp/project","executable":"/usr/local/bin/nvim","arguments":["-u","NONE","file name"],"environment":{"NVIM_APPNAME":"minimal","PATH":"/usr/bin:/bin"}}
+    , 5,
+        \\{"id":5,"version":1,"command":"open-neovim","pane":4,"cwd":"/tmp/project","executable":"/usr/local/bin/nvim","arguments":["-u","NONE","file name"],"environment":{"NVIM_APPNAME":"minimal","PATH":"/usr/bin:/bin"}}
+    , -1));
+    testing::expect(reads_as(
+        \\{"version":1,"command":"status-wait","pane":2,"timeout_ms":5000}
+    , 0,
+        \\{"id":0,"version":1,"command":"status-wait","pane":2,"timeout_ms":5000}
+    , 7000));
+    testing::expect(reads_as(
+        \\{"version":1,"command":"status-wait","pane":2,"timeout_ms":99999999}
+    , -1,
+        \\{"version":1,"command":"status-wait","pane":2,"timeout_ms":99999999}
+    , 3602000));
+}
+
+test "what is no request is refused" {
+    testing::expect(is_refused("[]"));
+    testing::expect(is_refused("{nope"));
+    testing::expect(is_refused(
+        \\{"version":2,"command":"list"}
+    ));
+    testing::expect(is_refused(
+        \\{"command":"list"}
+    ));
+    testing::expect(is_refused(
+        \\{"version":1,"command":"reboot"}
+    ));
+    testing::expect(is_refused(
+        \\{"version":1,"command":"read-screen"}
+    ));
+    testing::expect(is_refused(
+        \\{"version":1,"command":"read-screen","pane":-1}
+    ));
+    testing::expect(is_refused(
+        \\{"version":1,"command":"split","pane":1,"axis":"diagonal"}
+    ));
+    testing::expect(is_refused(
+        \\{"version":1,"command":"send","pane":1,"text":5}
+    ));
+}
+
+test "a response is read as one line" {
+    let allocator = mem::page_allocator();
+    var out = string::new(allocator);
+    defer out.deinit(allocator);
+    var ok = false;
+    try read_response(allocator,
+        \\{ "ok": true, "result": {"tabs": []} }
+    , &var out, &var ok);
+    let line = out.as_bytes();
+    testing::expect(ok);
+    testing::expect(mem::equal_bytes(line,
+        \\{"ok":true,"result":{"tabs":[]}}
+    ));
+    out.clear();
+    try append_failure(allocator, &var out, "timeout", "control request timed out");
+    var failure = string::new(allocator);
+    defer failure.deinit(allocator);
+    let written = out.as_bytes();
+    try read_response(allocator, written, &var failure, &var ok);
+    testing::expect(!ok);
+    var refused = false;
+    if read_response(allocator,
+        \\{"ok":false,"error":"broken"}
+    , &var failure, &var ok) {} else |_| {
+        refused = true;
+    }
+    testing::expect(refused);
+}

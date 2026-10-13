@@ -1,0 +1,67 @@
+import std::mem;
+import std::string;
+import std::testing;
+
+test "a table is read from delimited text and from JSON" {
+    let allocator = mem::page_allocator();
+    var message = string::new(allocator);
+    defer message.deinit(allocator);
+    var out = string::new(allocator);
+    defer out.deinit(allocator);
+    let delimited = try parse_table(allocator, &var message,
+        \\a	b
+        \\1	x | y
+        \\
+    , "/tmp/values.tsv");
+    defer delimited.deinit(allocator);
+    try append_markdown_table(allocator, &var out, &delimited);
+    let objects = try parse_table(allocator, &var message,
+        \\[{"b": 1, "a": "x  y"}, {"c": null, "a": true}, 7]
+    , "/tmp/values.txt");
+    defer objects.deinit(allocator);
+    try append_markdown_table(allocator, &var out, &objects);
+    let arrays = try parse_table(allocator, &var message,
+        \\[[1, 2.5], ["three"], 4]
+    , "/tmp/values.json");
+    defer arrays.deinit(allocator);
+    try append_markdown_table(allocator, &var out, &arrays);
+    let object = try parse_table(allocator, &var message,
+        \\{"z": [1, 2], "y": {"k": "v"}}
+    , "/tmp/values.json");
+    defer object.deinit(allocator);
+    try append_markdown_table(allocator, &var out, &object);
+    let scalar = try parse_table(allocator, &var message, "12", "/tmp/values.json");
+    defer scalar.deinit(allocator);
+    try append_markdown_table(allocator, &var out, &scalar);
+    let bytes = out.as_bytes();
+    testing::expect(mem::equal_bytes(bytes[0..mem::len(bytes) - 1],
+        \\| a | b |
+        \\| --- | --- |
+        \\| 1 | x \| y |
+        \\| a | b | c |
+        \\| --- | --- | --- |
+        \\| x y | 1 |  |
+        \\| true |  | — |
+        \\|  |  |  |
+        \\| 1 | 2 |
+        \\| --- | --- |
+        \\| 1 | 2.5 |
+        \\| three |  |
+        \\| 4 |  |
+        \\| key | value |
+        \\| --- | --- |
+        \\| y | {"k":"v"} |
+        \\| z | [1,2] |
+        \\| value |
+        \\| --- |
+        \\| 12 |
+    ));
+    var refused = false;
+    if parse_table(allocator, &var message, "[1, 2", "/tmp/values.txt") |table| {
+        table.deinit(allocator);
+    } else |_| {
+        refused = true;
+    }
+    testing::expect(refused);
+    testing::expect(table_column_limit(80, 9) == 6 and table_column_limit(20, 9) == 2 and table_column_limit(5, 3) == 1);
+}

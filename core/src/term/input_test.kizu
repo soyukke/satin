@@ -1,0 +1,174 @@
+import std::mem;
+import std::string;
+import std::testing;
+
+/// A 80 x 24 terminal fed text, with `^` read as ESC.
+fn fed_terminal(allocator: Allocator, text: []u8) -> !ptr<u8> {
+    var input = string::new(allocator);
+    defer input.deinit(allocator);
+    for 0..mem::len(text) |index| {
+        if text[index] == cast<u8>(94) {
+            try input.append_byte(allocator, cast<u8>(27));
+        } else {
+            try input.append_byte(allocator, text[index]);
+        }
+    }
+    let terminal = new_terminal(80, 24, 1000) orelse return GhosttyError::Refused;
+    let bytes = input.as_bytes();
+    // SAFETY: terminal is live; the caller frees it.
+    unsafe write_terminal(terminal, bytes);
+    return terminal;
+}
+
+/// Whether out is expected, with `^` in expected read as ESC and `$` as CR.
+fn is_bytes(out: &string::String, expected: []u8) -> bool {
+    let bytes = out.as_bytes();
+    if mem::len(bytes) != mem::len(expected) {
+        return false;
+    }
+    for 0..mem::len(expected) |index| {
+        var want = expected[index];
+        if want == cast<u8>(94) {
+            want = 27;
+        } else if want == cast<u8>(36) {
+            want = 13;
+        }
+        if bytes[index] != want {
+            return false;
+        }
+    }
+    return true;
+}
+
+fn key(code: i64, modifiers: u32, text: []u8) -> KeyInput {
+    return KeyInput {
+        key_code: code,
+        modifiers: modifiers,
+        has_text: mem::len(text) > 0,
+        text: text,
+        unshifted: text,
+        repeat: false,
+        released: false
+    };
+}
+
+test "maps macOS virtual key codes" {
+    testing::expect(macos_key(0) == 20);
+    testing::expect(macos_key(36) == 58);
+    testing::expect(macos_key(126) == 78);
+    testing::expect(macos_key(10) == 0);
+    testing::expect(macos_key(127) == 0);
+    testing::expect(macos_key(500) == 0);
+}
+
+test "encodes keys from the terminal's modes" {
+    let allocator = mem::page_allocator();
+    let terminal = try fed_terminal(allocator, "");
+    var encoder = try new_input_encoder(allocator);
+    defer encoder.deinit(allocator);
+    var out = string::new(allocator);
+    defer out.deinit(allocator);
+    // SAFETY: terminal is live until free_terminal below.
+    testing::expect(try unsafe encoder.encode_key(allocator, terminal, key(0, 0, "a"), &var out));
+    testing::expect(is_bytes(&out, "a"));
+    out.clear();
+    // SAFETY: as above.
+    testing::expect(try unsafe encoder.encode_key(allocator, terminal, key(36, 0, ""), &var out));
+    testing::expect(is_bytes(&out, "$"));
+    out.clear();
+    // SAFETY: as above.
+    testing::expect(try unsafe encoder.encode_key(allocator, terminal, key(126, 0, ""), &var out));
+    testing::expect(is_bytes(&out, "^[A"));
+    out.clear();
+    // SAFETY: as above.
+    testing::expect(try unsafe encoder.encode_key(allocator, terminal, key(8, 2, "c"), &var out));
+    testing::expect(out.len() == 1);
+    out.clear();
+    // SAFETY: as above.
+    testing::expect(!try unsafe encoder.encode_key(allocator, terminal, key(10, 0, "x"), &var out));
+    // SAFETY: terminal came from new_terminal and nothing uses it after this.
+    unsafe free_terminal(terminal);
+}
+
+test "application cursor keys change an arrow" {
+    let allocator = mem::page_allocator();
+    let terminal = try fed_terminal(allocator, "^[?1h");
+    var encoder = try new_input_encoder(allocator);
+    defer encoder.deinit(allocator);
+    var out = string::new(allocator);
+    defer out.deinit(allocator);
+    // SAFETY: terminal is live until free_terminal below.
+    testing::expect(try unsafe encoder.encode_key(allocator, terminal, key(126, 0, ""), &var out));
+    testing::expect(is_bytes(&out, "^OA"));
+    // SAFETY: terminal came from new_terminal and nothing uses it after this.
+    unsafe free_terminal(terminal);
+}
+
+test "reports the mouse only when the terminal tracks it" {
+    let allocator = mem::page_allocator();
+    let press = MouseInput {
+        action: MouseAction::Press,
+        has_button: true,
+        button: 1,
+        modifiers: 0,
+        x: cast<f32>(15.0),
+        y: cast<f32>(30.0),
+        cell_width: 10,
+        cell_height: 20
+    };
+    var encoder = try new_input_encoder(allocator);
+    defer encoder.deinit(allocator);
+    var out = string::new(allocator);
+    defer out.deinit(allocator);
+    let plain = try fed_terminal(allocator, "");
+    // SAFETY: plain is live until free_terminal below.
+    testing::expect(!try unsafe encoder.encode_mouse(allocator, plain, 80, 24, press, &var out));
+    // SAFETY: plain came from new_terminal and nothing uses it after this.
+    unsafe free_terminal(plain);
+    let tracking = try fed_terminal(allocator, "^[?1000h^[?1006h");
+    // SAFETY: tracking is live until free_terminal below.
+    testing::expect(try unsafe encoder.encode_mouse(allocator, tracking, 80, 24, press, &var out));
+    testing::expect(is_bytes(&out, "^[<0;2;2M"));
+    // SAFETY: tracking came from new_terminal and nothing uses it after this.
+    unsafe free_terminal(tracking);
+}
+
+test "brackets a paste when the terminal asks" {
+    let allocator = mem::page_allocator();
+    var encoder = try new_input_encoder(allocator);
+    defer encoder.deinit(allocator);
+    var out = string::new(allocator);
+    defer out.deinit(allocator);
+    let plain = try fed_terminal(allocator, "");
+    // SAFETY: plain is live until free_terminal below.
+    try unsafe encoder.encode_paste(allocator, plain, "hi", &var out);
+    testing::expect(is_bytes(&out, "hi"));
+    // SAFETY: plain came from new_terminal and nothing uses it after this.
+    unsafe free_terminal(plain);
+    out.clear();
+    let bracketed = try fed_terminal(allocator, "^[?2004h");
+    // SAFETY: bracketed is live until free_terminal below.
+    try unsafe encoder.encode_paste(allocator, bracketed, "hi", &var out);
+    testing::expect(is_bytes(&out, "^[200~hi^[201~"));
+    // SAFETY: bracketed came from new_terminal and nothing uses it after this.
+    unsafe free_terminal(bracketed);
+}
+
+test "reports focus only when the terminal asks" {
+    let allocator = mem::page_allocator();
+    var encoder = try new_input_encoder(allocator);
+    defer encoder.deinit(allocator);
+    var out = string::new(allocator);
+    defer out.deinit(allocator);
+    let plain = try fed_terminal(allocator, "");
+    // SAFETY: plain is live until free_terminal below.
+    testing::expect(!try unsafe encoder.encode_focus(allocator, plain, true, &var out));
+    // SAFETY: plain came from new_terminal and nothing uses it after this.
+    unsafe free_terminal(plain);
+    let asking = try fed_terminal(allocator, "^[?1004h");
+    // SAFETY: asking is live until free_terminal below.
+    testing::expect(try unsafe encoder.encode_focus(allocator, asking, false, &var out));
+    testing::expect(is_bytes(&out, "^[O"));
+    // SAFETY: asking came from new_terminal and nothing uses it after this.
+    unsafe free_terminal(asking);
+}

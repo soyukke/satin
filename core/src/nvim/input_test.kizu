@@ -1,0 +1,47 @@
+import std::mem;
+import std::string;
+import std::testing;
+
+/// Whether text, with `^` read as ESC and `$` as CR, becomes expected.
+fn notation_is(text: []u8, expected: []u8) -> bool {
+    let allocator = mem::page_allocator();
+    var input = string::new(allocator);
+    defer input.deinit(allocator);
+    for 0..mem::len(text) |index| {
+        var byte = text[index];
+        if byte == cast<u8>(94) {
+            byte = 27;
+        } else if byte == cast<u8>(36) {
+            byte = 13;
+        }
+        if input.append_byte(allocator, byte) {} else |_| {}
+    }
+    var out = string::new(allocator);
+    defer out.deinit(allocator);
+    let bytes = input.as_bytes();
+    if append_input_notation(allocator, &var out, bytes) {} else |_| {}
+    let notation = out.as_bytes();
+    return mem::equal_bytes(notation, expected);
+}
+
+test "terminal input becomes nvim key notation" {
+    testing::expect(notation_is("^[A", "<Up>"));
+    testing::expect(notation_is("^[3~", "<Del>"));
+    testing::expect(notation_is("^[6~x", "<PageDown>x"));
+    testing::expect(notation_is(":edit file$", ":edit file<CR>"));
+    testing::expect(notation_is("a<b", "a<lt>b"));
+    testing::expect(notation_is("^", "<Esc>"));
+    testing::expect(notation_is("^[", "<Esc>["));
+    let allocator = mem::page_allocator();
+    var out = string::new(allocator);
+    defer out.deinit(allocator);
+    var control = string::new(allocator);
+    defer control.deinit(allocator);
+    try control.append_byte(allocator, 16);
+    try control.append_byte(allocator, 127);
+    try control.append_byte(allocator, 0);
+    let bytes = control.as_bytes();
+    try append_input_notation(allocator, &var out, bytes);
+    let notation = out.as_bytes();
+    testing::expect(mem::equal_bytes(notation, "<C-p><BS>"));
+}

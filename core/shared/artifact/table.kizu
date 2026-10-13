@@ -1,0 +1,565 @@
+// A table artifact's source read into headers and rows: delimited text
+// with a header line, or JSON in one of the shapes a tool tends to print.
+import std::array;
+import std::fmt;
+import std::json;
+import std::map;
+import std::mem;
+import std::sort;
+import std::string;
+
+struct Table {
+    headers: array::Array<string::String>,
+    rows: array::Array<array::Array<string::String>>,
+}
+
+fn (self: Table) deinit(allocator: Allocator) -> void {
+    self.headers.deinit(allocator);
+    self.rows.deinit(allocator);
+    return;
+}
+
+fn new_table(allocator: Allocator) -> Table {
+    return Table {
+        headers: array::new<string::String>(allocator),
+        rows: array::new<array::Array<string::String>>(allocator)
+    };
+}
+
+/// Appends value to out as one line of words: controls become spaces, and
+/// each run of white space one space, with none at either end.
+fn append_sanitized(allocator: Allocator, out: &var string::String, value: []u8) -> mem::Error!void {
+    let before = out.len();
+    var pending = false;
+    var index: i64 = 0;
+    while index < mem::len(value) {
+        var scalar: i64 = 0;
+        let length = decode_scalar(value, index, &var scalar);
+        if is_control(scalar) or is_white_space(scalar) {
+            pending = true;
+        } else {
+            if pending and out.len() > before {
+                try out.append_byte(allocator, 32);
+            }
+            pending = false;
+            try out.append_bytes(allocator, value[index..index + length]);
+        }
+        index = index + length;
+    }
+    return;
+}
+
+fn append_sanitized_cell(
+    allocator: Allocator,
+    cells: &var array::Array<string::String>,
+    value: []u8
+) -> mem::Error!void {
+    var cell = string::new(allocator);
+    errdefer cell.deinit(allocator);
+    try append_sanitized(allocator, &var cell, value);
+    try cells.append(allocator, move cell);
+    return;
+}
+
+/// Whether the name path ends in has extension after its last dot. A
+/// name that only starts with a dot has none.
+fn has_extension(path: []u8, extension: []u8) -> bool {
+    let name = path[name_start(path)..mem::len(path)];
+    var dot = mem::len(name) - 1;
+    while dot > 0 and name[dot] != cast<u8>(46) {
+        dot = dot - 1;
+    }
+    if dot <= 0 {
+        return false;
+    }
+    return mem::equal_bytes(name[dot + 1..mem::len(name)], extension);
+}
+
+/// As has_extension, with the name's ASCII letters lowered first.
+fn has_lowered_extension(path: []u8, extension: []u8) -> bool {
+    let name = path[name_start(path)..mem::len(path)];
+    var dot = mem::len(name) - 1;
+    while dot > 0 and name[dot] != cast<u8>(46) {
+        dot = dot - 1;
+    }
+    if dot <= 0 {
+        return false;
+    }
+    return equal_lowered(name[dot + 1..mem::len(name)], extension);
+}
+
+/// The cells of one delimited line: each without the white space and the
+/// double quotes around it.
+fn split_delimited_row(
+    allocator: Allocator,
+    line: []u8,
+    delimiter: u8
+) -> mem::Error!array::Array<string::String> {
+    var cells = array::new<string::String>(allocator);
+    errdefer cells.deinit(allocator);
+    var field_start: i64 = 0;
+    for 0..mem::len(line) + 1 |index| {
+        if index < mem::len(line) and line[index] != delimiter {
+            continue;
+        }
+        let field = line[field_start..index];
+        var end = trimmed_end(field);
+        var start = trimmed_start(field[0..end]);
+        while start < end and field[start] == cast<u8>(34) {
+            start = start + 1;
+        }
+        while end > start and field[end - 1] == cast<u8>(34) {
+            end = end - 1;
+        }
+        try append_sanitized_cell(allocator, &var cells, field[start..end]);
+        field_start = index + 1;
+    }
+    return move cells;
+}
+
+/// The text of a JSON value in a cell: a string as it is, null as a dash,
+/// and anything else as its JSON.
+fn append_json_cell(
+    allocator: Allocator,
+    cells: &var array::Array<string::String>,
+    value: &json::Value
+) -> mem::Error!void {
+    match value {
+        Str(text) => {
+            let bytes = text.as_bytes();
+            try append_sanitized_cell(allocator, cells, bytes);
+            return;
+        },
+        Null => {
+            // U+2014.
+            var dash = string::new(allocator);
+            errdefer dash.deinit(allocator);
+            try append_scalar(allocator, &var dash, 8212);
+            try cells.append(allocator, move dash);
+            return;
+        },
+        _ => {},
+    }
+    var encoded = string::new(allocator);
+    defer encoded.deinit(allocator);
+    try json::encode<json::Value>(allocator, value, &var encoded);
+    let bytes = encoded.as_bytes();
+    try append_sanitized_cell(allocator, cells, bytes);
+    return;
+}
+
+fn contains_text(items: &array::Array<string::String>, text: []u8) -> bool {
+    for 0..items.len() |index| {
+        if items.at(index) |item| {
+            let bytes = item.as_bytes();
+            if mem::equal_bytes(bytes, text) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+/// The keys of an object in byte order, which is the order the Rust
+/// reader kept them in.
+fn sorted_keys(
+    allocator: Allocator,
+    entries: &map::Map<[]u8, json::Value>
+) -> mem::Error!array::Array<string::String> {
+    var keys = array::new<string::String>(allocator);
+    errdefer keys.deinit(allocator);
+    for 0..entries.len() |index| {
+        if entries.key_at(index) |key| {
+            try append_text(allocator, &var keys, key);
+        }
+    }
+    if sort::strings(&var keys) {} else |_| {}
+    return move keys;
+}
+
+fn append_row(allocator: Allocator, table: &var Table, value: &json::Value, objects: bool) -> mem::Error!void {
+    var row = array::new<string::String>(allocator);
+    errdefer row.deinit(allocator);
+    if objects {
+        for 0..table.headers.len() |index| {
+            if table.headers.at(index) |header| {
+                let name = header.as_bytes();
+                var found = false;
+                match value {
+                    Obj(entries) => {
+                        if entries.at(name) |member| {
+                            try append_json_cell(allocator, &var row, member);
+                            found = true;
+                        }
+                    },
+                    _ => {},
+                }
+                if !found {
+                    try append_text(allocator, &var row, "");
+                }
+            }
+        }
+    } else {
+        var listed = false;
+        match value {
+            Arr(items) => {
+                listed = true;
+                for 0..items.len() |index| {
+                    if items.at(index) |item| {
+                        try append_json_cell(allocator, &var row, item);
+                    }
+                }
+            },
+            _ => {},
+        }
+        if !listed {
+            try append_json_cell(allocator, &var row, value);
+        }
+    }
+    try table.rows.append(allocator, move row);
+    return;
+}
+
+/// A JSON array as a table: objects give a column a key, arrays a column
+/// an index, and other values one `value` column.
+fn fill_array_table(allocator: Allocator, table: &var Table, values: &array::Array<json::Value>) -> mem::Error!void {
+    var objects = false;
+    var arrays = false;
+    var first_width: i64 = 0;
+    if values.at(0) |first| {
+        match first {
+            Obj(_) => {
+                objects = true;
+            },
+            Arr(items) => {
+                arrays = true;
+                first_width = items.len();
+            },
+            _ => {},
+        }
+    }
+    if objects {
+        for 0..values.len() |index| {
+            if values.at(index) |value| {
+                match value {
+                    Obj(entries) => {
+                        let keys = try sorted_keys(allocator, entries);
+                        defer keys.deinit(allocator);
+                        for 0..keys.len() |key_index| {
+                            if keys.at(key_index) |key| {
+                                let name = key.as_bytes();
+                                if !contains_text(&table.headers, name) {
+                                    try append_text(allocator, &var table.headers, name);
+                                }
+                            }
+                        }
+                    },
+                    _ => {},
+                }
+            }
+        }
+    } else if arrays {
+        for 0..first_width |index| {
+            var number = string::new(allocator);
+            errdefer number.deinit(allocator);
+            try fmt::append_i64(allocator, &var number, index + 1);
+            try table.headers.append(allocator, move number);
+        }
+    } else {
+        try append_text(allocator, &var table.headers, "value");
+    }
+    for 0..values.len() |index| {
+        if values.at(index) |value| {
+            if arrays {
+                try append_row(allocator, table, value, false);
+            } else if objects {
+                try append_row(allocator, table, value, true);
+            } else {
+                var row = array::new<string::String>(allocator);
+                errdefer row.deinit(allocator);
+                try append_json_cell(allocator, &var row, value);
+                try table.rows.append(allocator, move row);
+            }
+        }
+    }
+    return;
+}
+
+fn fill_json_table(allocator: Allocator, table: &var Table, value: &json::Value) -> mem::Error!void {
+    match value {
+        Arr(values) => {
+            try fill_array_table(allocator, table, values);
+            return;
+        },
+        Obj(entries) => {
+            try append_text(allocator, &var table.headers, "key");
+            try append_text(allocator, &var table.headers, "value");
+            let keys = try sorted_keys(allocator, entries);
+            defer keys.deinit(allocator);
+            for 0..keys.len() |index| {
+                if keys.at(index) |key| {
+                    let name = key.as_bytes();
+                    if entries.at(name) |member| {
+                        var row = array::new<string::String>(allocator);
+                        errdefer row.deinit(allocator);
+                        try append_text(allocator, &var row, name);
+                        try append_json_cell(allocator, &var row, member);
+                        try table.rows.append(allocator, move row);
+                    }
+                }
+            }
+            return;
+        },
+        _ => {},
+    }
+    try append_text(allocator, &var table.headers, "value");
+    var row = array::new<string::String>(allocator);
+    errdefer row.deinit(allocator);
+    try append_json_cell(allocator, &var row, value);
+    try table.rows.append(allocator, move row);
+    return;
+}
+
+/// Reads a table from content. It is JSON when source ends in `.json` or
+/// content starts with a bracket or a brace, and otherwise lines of cells
+/// with tabs between them for `.tsv` and commas for anything else.
+fn parse_table(
+    allocator: Allocator,
+    message: &var string::String,
+    content: []u8,
+    source: []u8
+) -> ArtifactFailure!Table {
+    var table = new_table(allocator);
+    errdefer table.deinit(allocator);
+    let lead = trimmed_start(content);
+    var json_shaped = has_extension(source, "json");
+    if lead < mem::len(content) and (content[lead] == cast<u8>(91) or content[lead] == cast<u8>(123)) {
+        json_shaped = true;
+    }
+    if json_shaped {
+        var decoded = false;
+        if json::decode<json::Value>(allocator, content) |value| {
+            defer value.deinit(allocator);
+            try fill_json_table(allocator, &var table, &value);
+            decoded = true;
+        } else |_| {}
+        if !decoded {
+            explain(allocator, message, "decode table JSON", "", "");
+            return ArtifactError::Failed;
+        }
+        return move table;
+    }
+    var delimiter: u8 = 44;
+    if has_extension(source, "tsv") {
+        delimiter = 9;
+    }
+    var cursor: i64 = 0;
+    var start: i64 = 0;
+    var end: i64 = 0;
+    var first = true;
+    while next_line(content, &var cursor, &var start, &var end) {
+        let line = content[start..end];
+        if first {
+            first = false;
+            var headers = try split_delimited_row(allocator, line, delimiter);
+            defer headers.deinit(allocator);
+            for 0..headers.len() |index| {
+                if headers.at(index) |header| {
+                    let bytes = header.as_bytes();
+                    try append_text(allocator, &var table.headers, bytes);
+                }
+            }
+            continue;
+        }
+        if trimmed_end(line) == 0 {
+            continue;
+        }
+        var row = try split_delimited_row(allocator, line, delimiter);
+        errdefer row.deinit(allocator);
+        try table.rows.append(allocator, move row);
+    }
+    return move table;
+}
+
+/// The columns of a table that fit width cells, each at least six wide:
+/// at most six, at least one.
+fn table_column_limit(width: i64, columns: i64) -> i64 {
+    let available = width - 1;
+    var count = columns;
+    if count > 6 {
+        count = 6;
+    }
+    while count > 1 {
+        if available / count >= 7 {
+            return count;
+        }
+        count = count - 1;
+    }
+    return 1;
+}
+
+/// The cells each of columns takes when width is shared between them and
+/// their borders.
+fn table_widths(allocator: Allocator, width: i64, columns: i64) -> mem::Error!array::Array<i64> {
+    var count = columns;
+    if count < 1 {
+        count = 1;
+    }
+    var available = width - (count + 1);
+    if available < 0 {
+        available = 0;
+    }
+    var widths = array::new<i64>(allocator);
+    errdefer widths.deinit(allocator);
+    for 0..count |index| {
+        var cells = available / count;
+        if index < available % count {
+            cells = cells + 1;
+        }
+        try widths.append(allocator, cells);
+    }
+    return move widths;
+}
+
+/// Appends a horizontal border to out; left, middle and right are the
+/// scalars at its corners and joints.
+fn append_table_border(
+    allocator: Allocator,
+    out: &var string::String,
+    left: i64,
+    middle: i64,
+    right: i64,
+    widths: &array::Array<i64>
+) -> mem::Error!void {
+    try append_scalar(allocator, out, left);
+    for 0..widths.len() |index| {
+        if index > 0 {
+            try append_scalar(allocator, out, middle);
+        }
+        let width = widths.get(index) orelse 0;
+        for 0..width |_| {
+            // U+2500.
+            try append_scalar(allocator, out, 9472);
+        }
+    }
+    try append_scalar(allocator, out, right);
+    return;
+}
+
+/// Appends one row to out: each value fitted to its column, between
+/// vertical bars.
+fn append_table_row(
+    allocator: Allocator,
+    out: &var string::String,
+    values: &array::Array<string::String>,
+    widths: &array::Array<i64>
+) -> mem::Error!void {
+    for 0..widths.len() |index| {
+        // U+2502.
+        try append_scalar(allocator, out, 9474);
+        let width = widths.get(index) orelse 0;
+        if values.at(index) |value| {
+            let bytes = value.as_bytes();
+            try append_fitted(allocator, out, bytes, width);
+        } else {
+            try append_spaces(allocator, out, width);
+        }
+    }
+    try append_scalar(allocator, out, 9474);
+    return;
+}
+
+/// The cells of a row among the first columns that are wider than theirs.
+fn count_wide_cells(values: &array::Array<string::String>, widths: &array::Array<i64>) -> i64 {
+    var count: i64 = 0;
+    for 0..widths.len() |index| {
+        if values.at(index) |value| {
+            let bytes = value.as_bytes();
+            let width = widths.get(index) orelse 0;
+            if display_width(bytes) > width {
+                count = count + 1;
+            }
+        }
+    }
+    return count;
+}
+
+/// The cells of the headers and the first row_limit rows that do not fit
+/// their columns.
+fn count_truncated_cells(table: &Table, widths: &array::Array<i64>, row_limit: i64) -> i64 {
+    var count = count_wide_cells(&table.headers, widths);
+    for 0..table.rows.len() |index| {
+        if index >= row_limit {
+            break;
+        }
+        if table.rows.at(index) |row| {
+            count = count + count_wide_cells(row, widths);
+        }
+    }
+    return count;
+}
+
+/// Appends value to out as a Markdown table cell: one line, its bars
+/// escaped.
+fn append_markdown_cell(allocator: Allocator, out: &var string::String, value: []u8) -> mem::Error!void {
+    var cell = string::new(allocator);
+    defer cell.deinit(allocator);
+    try append_sanitized(allocator, &var cell, value);
+    let bytes = cell.as_bytes();
+    try append_escaped_bars(allocator, out, bytes);
+    return;
+}
+
+/// Appends text to out with a backslash before each vertical bar.
+fn append_escaped_bars(allocator: Allocator, out: &var string::String, text: []u8) -> mem::Error!void {
+    for 0..mem::len(text) |index| {
+        if text[index] == cast<u8>(124) {
+            try out.append_byte(allocator, 92);
+        }
+        try out.append_byte(allocator, text[index]);
+    }
+    return;
+}
+
+/// Appends the table to out as a Markdown table. A table without headers
+/// gets one `value` column.
+fn append_markdown_table(allocator: Allocator, out: &var string::String, table: &Table) -> mem::Error!void {
+    var columns = table.headers.len();
+    if columns == 0 {
+        columns = 1;
+        try out.append_bytes(allocator, "| value");
+    }
+    for 0..table.headers.len() |index| {
+        if table.headers.at(index) |header| {
+            let bytes = header.as_bytes();
+            try out.append_bytes(allocator, "| ");
+            try append_markdown_cell(allocator, out, bytes);
+            try out.append_byte(allocator, 32);
+        }
+    }
+    if table.headers.len() == 0 {
+        try out.append_byte(allocator, 32);
+    }
+    try out.append_byte(allocator, 124);
+    try out.append_byte(allocator, 10);
+    for 0..columns |_| {
+        try out.append_bytes(allocator, "| --- ");
+    }
+    try out.append_byte(allocator, 124);
+    try out.append_byte(allocator, 10);
+    for 0..table.rows.len() |row_index| {
+        if table.rows.at(row_index) |row| {
+            for 0..columns |index| {
+                try out.append_bytes(allocator, "| ");
+                if row.at(index) |value| {
+                    let bytes = value.as_bytes();
+                    try append_markdown_cell(allocator, out, bytes);
+                }
+                try out.append_byte(allocator, 32);
+            }
+            try out.append_byte(allocator, 124);
+            try out.append_byte(allocator, 10);
+        }
+    }
+    return;
+}

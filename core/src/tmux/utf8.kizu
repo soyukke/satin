@@ -1,0 +1,125 @@
+// The two UTF-8 answers the Rust side relied on: whether bytes are valid
+// (`str::from_utf8`) and a lossy copy (`String::from_utf8_lossy`).
+import std::mem;
+import std::string;
+
+/// The length of the valid UTF-8 sequence at index, or 0 when the bytes there
+/// do not start one. The rules are the standard's: no overlong forms, no
+/// surrogates, nothing above U+10FFFF.
+fn utf8_sequence_length(bytes: []u8, index: i64) -> i64 {
+    let count = mem::len(bytes);
+    let first = cast<i64>(bytes[index]);
+    if first < 128 {
+        return 1;
+    }
+    var length = 0;
+    var low = 128;
+    var high = 191;
+    if first >= 194 and first <= 223 {
+        length = 2;
+    } else if first >= 224 and first <= 239 {
+        length = 3;
+        if first == 224 {
+            low = 160;
+        } else if first == 237 {
+            high = 159;
+        }
+    } else if first >= 240 and first <= 244 {
+        length = 4;
+        if first == 240 {
+            low = 144;
+        } else if first == 244 {
+            high = 143;
+        }
+    } else {
+        return 0;
+    }
+    var offset = 1;
+    while offset < length {
+        if index + offset >= count {
+            return 0;
+        }
+        let next = cast<i64>(bytes[index + offset]);
+        if offset == 1 {
+            if next < low or next > high {
+                return 0;
+            }
+        } else if next < 128 or next > 191 {
+            return 0;
+        }
+        offset = offset + 1;
+    }
+    return length;
+}
+
+pub fn is_valid_utf8(bytes: []u8) -> bool {
+    var index = 0;
+    while index < mem::len(bytes) {
+        let length = utf8_sequence_length(bytes, index);
+        if length == 0 {
+            return false;
+        }
+        index = index + length;
+    }
+    return true;
+}
+
+/// How many bytes of an invalid sequence at index one U+FFFD replaces: the
+/// longest prefix of a sequence that could still have been valid, and at
+/// least one byte.
+fn utf8_invalid_length(bytes: []u8, index: i64) -> i64 {
+    let count = mem::len(bytes);
+    let first = cast<i64>(bytes[index]);
+    var expected = 0;
+    var low = 128;
+    var high = 191;
+    if first >= 194 and first <= 223 {
+        expected = 2;
+    } else if first >= 224 and first <= 239 {
+        expected = 3;
+        if first == 224 {
+            low = 160;
+        } else if first == 237 {
+            high = 159;
+        }
+    } else if first >= 240 and first <= 244 {
+        expected = 4;
+        if first == 240 {
+            low = 144;
+        } else if first == 244 {
+            high = 143;
+        }
+    } else {
+        return 1;
+    }
+    var offset = 1;
+    while offset < expected and index + offset < count {
+        let next = cast<i64>(bytes[index + offset]);
+        if offset == 1 {
+            if next < low or next > high {
+                return offset;
+            }
+        } else if next < 128 or next > 191 {
+            return offset;
+        }
+        offset = offset + 1;
+    }
+    return offset;
+}
+
+pub fn append_lossy_utf8(allocator: Allocator, out: &var string::String, bytes: []u8) -> mem::Error!void {
+    var index = 0;
+    while index < mem::len(bytes) {
+        let length = utf8_sequence_length(bytes, index);
+        if length > 0 {
+            try out.append_bytes(allocator, bytes[index..index + length]);
+            index = index + length;
+        } else {
+            try out.append_byte(allocator, cast<u8>(239));
+            try out.append_byte(allocator, cast<u8>(191));
+            try out.append_byte(allocator, cast<u8>(189));
+            index = index + utf8_invalid_length(bytes, index);
+        }
+    }
+    return;
+}

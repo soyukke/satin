@@ -1,0 +1,182 @@
+// The libghostty-vt terminal a runtime owns, with what Kizu tracks beside
+// it: the replies it owes the PTY, the bells it rang, and the prompt marks
+// in its output.
+//
+// The callbacks run inside `ghostty_terminal_vt_write`, while the feed holds
+// the Screen. So what they write lives apart, in a Sink with storage of its
+// own that libghostty hands back as userdata.
+import satin::vt;
+import std::mem;
+import std::string;
+
+fn option_userdata() -> i32 {
+    return 0;
+}
+
+fn option_write_pty() -> i32 {
+    return 1;
+}
+
+fn option_bell() -> i32 {
+    return 2;
+}
+
+/// What the callbacks write while the terminal reads its input.
+struct Sink {
+    replies: string::String,
+    bells: u64,
+}
+
+/// Reads the Sink libghostty hands a callback as userdata.
+fn sink_of(userdata: ?ptr<u8>) -> ?ptr<Sink> {
+    let data = userdata orelse return null;
+    // SAFETY: new_screen set userdata to the Screen's Sink storage.
+    return unsafe cast<ptr<Sink>>(data);
+}
+
+export "c" fn satin_term_on_write_pty(
+    terminal: ?ptr<u8>,
+    userdata: ?ptr<u8>,
+    data: ?ptr<const u8>,
+    length: usize
+) -> void {
+    let cell = sink_of(userdata) orelse return;
+    let bytes = data orelse return;
+    // SAFETY: libghostty passes length readable bytes at data for this call.
+    let reply = unsafe view_from_ptr(bytes, cast<i64>(length));
+    // SAFETY: cell is the Sink storage, which no other code holds during vt_write.
+    let sink = unsafe &var cell.*;
+    if sink.replies.append_bytes(mem::page_allocator(), reply) {} else |_| {}
+    return;
+}
+
+export "c" fn satin_term_on_bell(terminal: ?ptr<u8>, userdata: ?ptr<u8>) -> void {
+    let cell = sink_of(userdata) orelse return;
+    // SAFETY: cell is the Sink storage, which no other code holds during vt_write.
+    let sink = unsafe &var cell.*;
+    sink.bells = sink.bells + 1;
+    return;
+}
+
+/// One terminal and what Kizu tracks beside it.
+///
+/// terminal is a live libghostty terminal whose userdata is sink, malloc
+/// storage holding one Sink; deinit frees both, once.
+pub unsafe struct Screen {
+    terminal: ptr<u8>,
+    sink: ptr<Sink>,
+    prompt: vt::PromptTracker,
+}
+
+/// Points the terminal's callbacks at the Kizu functions and its userdata
+/// at sink.
+fn install_callbacks(terminal: ptr<u8>, sink: ptr<Sink>) -> bool {
+    // SAFETY: the address is the Sink storage, which lives as long as the terminal.
+    let userdata = unsafe cast<ptr<u8>>(sink);
+    // SAFETY: the address is a function of the WritePtyFn signature.
+    let write_pty = unsafe cast<ptr<u8>>(cast<ptr<const u8>>(satin_term_on_write_pty));
+    // SAFETY: the address is a function of the BellFn signature.
+    let bell = unsafe cast<ptr<u8>>(cast<ptr<const u8>>(satin_term_on_bell));
+    // SAFETY: terminal is live; each option takes the pointer it is passed.
+    let set_userdata = unsafe ghostty_terminal_set(terminal, option_userdata(), userdata);
+    // SAFETY: as above.
+    let set_write_pty = unsafe ghostty_terminal_set(terminal, option_write_pty(), write_pty);
+    // SAFETY: as above.
+    let set_bell = unsafe ghostty_terminal_set(terminal, option_bell(), bell);
+    return set_userdata == success() and set_write_pty == success() and set_bell == success();
+}
+
+/// A terminal of cols x rows keeping max_scrollback lines of history.
+pub fn new_screen(allocator: Allocator, cols: u16, rows: u16, max_scrollback: usize) -> GhosttyError!Screen {
+    let terminal = new_terminal(cols, rows, max_scrollback) orelse return GhosttyError::Refused;
+    // SAFETY: malloc returns storage for one Sink or null.
+    let storage = unsafe malloc(mem::size_of<Sink>());
+    if storage |slot| {
+        // SAFETY: slot is fresh storage for one Sink.
+        let sink = unsafe cast<ptr<Sink>>(slot);
+        let empty = Sink { replies: string::new(mem::page_allocator()), bells: 0 };
+        // SAFETY: sink is fresh storage for one Sink; the sink now lives there.
+        unsafe ptr_write(sink, move empty);
+        // SAFETY: the Screen holds the terminal and sink it is built from.
+        let screen = unsafe Screen { terminal: terminal, sink: sink, prompt: vt::new_prompt_tracker(allocator) };
+        if install_callbacks(terminal, sink) {
+            return move screen;
+        }
+        screen.deinit(allocator);
+        return GhosttyError::Refused;
+    }
+    // SAFETY: terminal came from new_terminal and nothing holds it.
+    unsafe free_terminal(terminal);
+    return GhosttyError::Refused;
+}
+
+pub fn (self: Screen) deinit(allocator: Allocator) -> void {
+    // SAFETY: the terminal is freed first, so no callback reaches the sink after.
+    unsafe free_terminal(self.terminal);
+    // SAFETY: the sink came from new_screen and is read out once, here.
+    let sink = unsafe ptr_read(self.sink);
+    sink.replies.deinit(mem::page_allocator());
+    // SAFETY: the sink storage came from malloc and nothing reads it after this.
+    unsafe free(cast<ptr<u8>>(self.sink));
+    self.prompt.deinit(allocator);
+}
+
+/// The libghostty terminal, which lives as long as the Screen.
+pub fn (self: &Screen) handle() -> ptr<u8> {
+    return self.terminal;
+}
+
+/// Feeds output to the terminal, and to the prompt tracker beside it.
+pub fn (self: &var Screen) feed(allocator: Allocator, bytes: []u8) -> mem::Error!void {
+    // The callbacks this runs write only the sink, which self does not hold.
+    // SAFETY: the terminal is live.
+    unsafe write_terminal(self.terminal, bytes);
+    try self.prompt.feed(allocator, bytes);
+    return;
+}
+
+/// Appends the replies the terminal owes the PTY since the last take to
+/// out.
+pub fn (self: &Screen) take_replies(allocator: Allocator, out: &var string::String) -> mem::Error!void {
+    let cell = self.sink;
+    // SAFETY: cell is the Sink storage; no vt_write runs during this call.
+    let sink = unsafe &var cell.*;
+    let replies = sink.replies.as_bytes();
+    let result = out.append_bytes(allocator, replies);
+    sink.replies.clear();
+    try result;
+    return;
+}
+
+/// Drops the replies the terminal owes the PTY.
+pub fn (self: &Screen) clear_replies() -> void {
+    let cell = self.sink;
+    // SAFETY: cell is the Sink storage; no vt_write runs during this call.
+    let sink = unsafe &var cell.*;
+    sink.replies.clear();
+    return;
+}
+
+/// The bells rung since the last take.
+pub fn (self: &Screen) take_bells() -> u64 {
+    let cell = self.sink;
+    // SAFETY: cell is the Sink storage; no vt_write runs during this call.
+    let sink = unsafe &var cell.*;
+    let bells = sink.bells;
+    sink.bells = 0;
+    return bells;
+}
+
+/// Whether the output carried any OSC 133 mark.
+pub fn (self: &Screen) prompt_seen() -> bool {
+    return self.prompt.observed;
+}
+
+/// Counts the prompts that became ready for input.
+pub fn (self: &Screen) prompt_generation() -> u64 {
+    return self.prompt.ready_generation;
+}
+
+pub fn (self: &var Screen) reset_prompt() -> void {
+    self.prompt.reset();
+}

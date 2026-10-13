@@ -1,0 +1,430 @@
+// The `satin` command: turns its arguments into one control request, sends
+// it to the app, and prints the answer. The Rust `satin` binary.
+import satin::control;
+import std::array;
+import std::io;
+import std::json;
+import std::map;
+import std::mem;
+import std::process;
+import std::string;
+
+fn version() -> []u8 {
+    return "0.2.37";
+}
+
+fn write_out(bytes: []u8) -> void {
+    if io::write_stdout(io::blocking(), bytes) {} else |_| {}
+    return;
+}
+
+fn write_line(bytes: []u8) -> void {
+    if io::write_stdout_line(io::blocking(), bytes) {} else |_| {}
+    return;
+}
+
+/// Prints text, and a newline when it does not end in one.
+fn write_text(text: []u8) -> void {
+    write_out(text);
+    if mem::len(text) == 0 or text[mem::len(text) - 1] != cast<u8>(10) {
+        write_line("");
+    }
+    return;
+}
+
+/// Appends the control socket's path to out: `--socket`, the environment,
+/// or the app's own place under the home directory.
+fn resolve_socket(cli: &var Cli, allocator: Allocator, out: &var string::String) -> CliFailure!void {
+    if try cli.flag_or_environment(allocator, "--socket", "SATIN_SOCKET", "NVTERM_SOCKET", out) {
+        return;
+    }
+    if process::env("HOME") |home| {
+        try out.append_bytes(allocator, home);
+        try out.append_bytes(allocator, "/Library/Application Support/Satin/run/control.sock");
+        return;
+    }
+    cli.say(allocator, "set SATIN_SOCKET or pass --socket PATH", "", "");
+    return CliError::Failed;
+}
+
+/// Sends request to the app and appends its answer to out.
+fn exchange(
+    cli: &var Cli,
+    allocator: Allocator,
+    socket: []u8,
+    request: []u8,
+    out: &var string::String
+) -> CliFailure!void {
+    var timeout_millis: i64 = 30000;
+    if control::read_request(allocator, request, -1) |read| {
+        timeout_millis = read.timeout_millis;
+        read.deinit(allocator);
+    } else |_| {
+        cli.say(allocator, "invalid control request", "", "");
+        return CliError::Failed;
+    }
+    var descriptor: i32 = -1;
+    if control::connect_to(allocator, socket) |connected| {
+        descriptor = connected;
+    } else |_| {
+        cli.say(allocator, "connect ", socket, "");
+        return CliError::Failed;
+    }
+    if control::send_on(allocator, descriptor, request, timeout_millis, out) {} else |_| {
+        cli.say(allocator, "no answer from ", socket, "");
+        return CliError::Failed;
+    }
+    return;
+}
+
+/// Appends value to out over several lines, two spaces a level.
+fn append_pretty(allocator: Allocator, value: &json::Value, out: &var string::String) -> mem::Error!void {
+    try json::encode_with_spaces<json::Value>(allocator, 2, value, out);
+    return;
+}
+
+/// Sets the message from a failed response's error.
+fn say_error(cli: &var Cli, allocator: Allocator, entries: &map::Map<[]u8, json::Value>) -> void {
+    cli.say(allocator, "request failed without an error", "", "");
+    if entries.at("error") |error| {
+        match error {
+            Obj(body) => {
+                if body.at("code") |code| {
+                    match code {
+                        Str(text) => {
+                            let bytes = text.as_bytes();
+                            cli.say(allocator, bytes, ": ", "");
+                        },
+                        _ => {},
+                    }
+                }
+                if body.at("message") |message| {
+                    match message {
+                        Str(text) => {
+                            let bytes = text.as_bytes();
+                            if cli.message.append_bytes(allocator, bytes) {} else |_| {}
+                        },
+                        _ => {},
+                    }
+                }
+            },
+            _ => {},
+        }
+    }
+    return;
+}
+
+/// Prints a result: its text when it is one or has a `text`, and the
+/// whole of it otherwise.
+fn print_result(allocator: Allocator, result: &json::Value) -> mem::Error!void {
+    match result {
+        Str(text) => {
+            let bytes = text.as_bytes();
+            write_text(bytes);
+            return;
+        },
+        Obj(entries) => {
+            if entries.at("text") |member| {
+                match member {
+                    Str(text) => {
+                        let bytes = text.as_bytes();
+                        write_text(bytes);
+                        return;
+                    },
+                    _ => {},
+                }
+            }
+        },
+        _ => {},
+    }
+    var pretty = string::new(allocator);
+    defer pretty.deinit(allocator);
+    try append_pretty(allocator, result, &var pretty);
+    let bytes = pretty.as_bytes();
+    write_line(bytes);
+    return;
+}
+
+/// Prints the app's answer the way the caller asked for it, and fails when
+/// the answer reports a failure.
+fn print_response(cli: &var Cli, allocator: Allocator, answer: []u8) -> CliFailure!void {
+    if json::decode<json::Value>(allocator, answer) |document| {
+        defer document.deinit(allocator);
+        if cli.json_output {
+            var pretty = string::new(allocator);
+            defer pretty.deinit(allocator);
+            try append_pretty(allocator, &document, &var pretty);
+            let bytes = pretty.as_bytes();
+            write_line(bytes);
+        }
+        match &document {
+            Obj(entries) => {
+                var ok = false;
+                if entries.at("ok") |value| {
+                    match value {
+                        Bool(set) => {
+                            ok = set;
+                        },
+                        _ => {},
+                    }
+                }
+                if !ok {
+                    say_error(cli, allocator, entries);
+                    return CliError::Failed;
+                }
+                if cli.json_output {
+                    return;
+                }
+                if entries.at("result") |result| {
+                    try print_result(allocator, result);
+                } else {
+                    write_line("null");
+                }
+                return;
+            },
+            _ => {},
+        }
+    } else |_| {}
+    cli.say(allocator, "decode control response", "", "");
+    return CliError::Failed;
+}
+
+/// The identifier a Satin pane's environment carries under key.
+fn environment_identifier(cli: &var Cli, allocator: Allocator, key: []u8, label: []u8) -> CliFailure!i64 {
+    if process::env(key) |value| {
+        let identifier = parse_index(value);
+        if identifier < 0 {
+            cli.say(allocator, "invalid ", label, " identifier in ");
+            if cli.message.append_bytes(allocator, key) {} else |_| {}
+            return CliError::Failed;
+        }
+        return identifier;
+    }
+    cli.say(allocator, key, " is required; run this command inside a Satin pane", "");
+    return CliError::Failed;
+}
+
+/// The i64 member name of an object value; -1 when it has none.
+fn member_number(value: &json::Value, name: []u8) -> i64 {
+    match value {
+        Obj(entries) => {
+            if entries.at(name) |member| {
+                match member {
+                    I64(number) => return number,
+                    _ => {},
+                }
+            }
+        },
+        _ => {},
+    }
+    return -1;
+}
+
+/// Appends the element of the array member list whose id is identifier to
+/// out as JSON, and its `tab` to owner; false when there is none.
+fn append_identified(
+    allocator: Allocator,
+    entries: &map::Map<[]u8, json::Value>,
+    list: []u8,
+    identifier: i64,
+    out: &var string::String,
+    owner: &var i64
+) -> mem::Error!bool {
+    if entries.at(list) |members| {
+        match members {
+            Arr(items) => {
+                for 0..items.len() |index| {
+                    if items.at(index) |item| {
+                        if member_number(item, "id") == identifier {
+                            owner = member_number(item, "tab");
+                            try json::encode<json::Value>(allocator, item, out);
+                            return true;
+                        }
+                    }
+                }
+            },
+            _ => {},
+        }
+    }
+    return false;
+}
+
+/// Appends the answer `identify` gives to out: the socket, and the tab and
+/// pane of the list answer this pane's environment names.
+fn append_identity(
+    cli: &var Cli,
+    allocator: Allocator,
+    socket: []u8,
+    listed: &json::Value,
+    out: &var string::String
+) -> CliFailure!void {
+    let tab_id = try environment_identifier(cli, allocator, "SATIN_TAB_ID", "tab");
+    let pane_id = try environment_identifier(cli, allocator, "SATIN_PANE_ID", "pane");
+    var tab = string::new(allocator);
+    defer tab.deinit(allocator);
+    var pane = string::new(allocator);
+    defer pane.deinit(allocator);
+    var unused: i64 = -1;
+    var pane_tab: i64 = -1;
+    var found_tab = false;
+    var found_pane = false;
+    match listed {
+        Obj(entries) => {
+            found_tab = try append_identified(allocator, entries, "tabs", tab_id, &var tab, &var unused);
+            found_pane = try append_identified(allocator, entries, "panes", pane_id, &var pane, &var pane_tab);
+        },
+        _ => {},
+    }
+    if !found_tab {
+        cli.say(allocator, "SATIN_TAB_ID does not identify a live tab", "", "");
+        return CliError::Failed;
+    }
+    if !found_pane {
+        cli.say(allocator, "SATIN_PANE_ID does not identify a live pane", "", "");
+        return CliError::Failed;
+    }
+    if pane_tab != tab_id {
+        cli.say(allocator, "SATIN_TAB_ID and SATIN_PANE_ID do not identify the same live context", "", "");
+        return CliError::Failed;
+    }
+    var quoted = json::encoder(allocator);
+    defer quoted.deinit(allocator);
+    try quoted.write_bytes(socket);
+    try out.append_bytes(allocator,
+        \\{"ok":true,"result":{"socket":
+    );
+    try quoted.finish_into(allocator, out);
+    try out.append_bytes(allocator,
+        \\,"tab":
+    );
+    try out.append_string(allocator, &tab);
+    try out.append_bytes(allocator,
+        \\,"pane":
+    );
+    try out.append_string(allocator, &pane);
+    try out.append_bytes(allocator, "}}");
+    return;
+}
+
+fn identify(cli: &var Cli, allocator: Allocator, socket: []u8) -> CliFailure!void {
+    var answer = string::new(allocator);
+    defer answer.deinit(allocator);
+    try exchange(cli, allocator, socket,
+        \\{"version":1,"command":"list"}
+    , &var answer);
+    let listed = answer.as_bytes();
+    var identity = string::new(allocator);
+    defer identity.deinit(allocator);
+    var failed = true;
+    if json::decode<json::Value>(allocator, listed) |document| {
+        defer document.deinit(allocator);
+        match &document {
+            Obj(entries) => {
+                var ok = false;
+                if entries.at("ok") |value| {
+                    match value {
+                        Bool(set) => {
+                            ok = set;
+                        },
+                        _ => {},
+                    }
+                }
+                if ok {
+                    if entries.at("result") |result| {
+                        try append_identity(cli, allocator, socket, result, &var identity);
+                        failed = false;
+                    }
+                }
+            },
+            _ => {},
+        }
+    } else |_| {}
+    if failed {
+        // A failed list answer is printed as it came.
+        try print_response(cli, allocator, listed);
+        cli.say(allocator, "list response did not include a result", "", "");
+        return CliError::Failed;
+    }
+    let bytes = identity.as_bytes();
+    try print_response(cli, allocator, bytes);
+    return;
+}
+
+fn run(cli: &var Cli, allocator: Allocator) -> CliFailure!void {
+    if cli.args.len() == 1 and cli.first_is("--version") {
+        write_out("satin ");
+        write_line(version());
+        return;
+    }
+    if cli.args.len() == 1 and (cli.first_is("help") or cli.first_is("--help") or cli.first_is("-h")) {
+        write_line(usage());
+        return;
+    }
+    if cli.first_is("skill") {
+        cli.shift(allocator);
+        try cli.ensure_empty(allocator);
+        write_line(skill_text());
+        return;
+    }
+    var socket = string::new(allocator);
+    defer socket.deinit(allocator);
+    var socket_given = string::new(allocator);
+    defer socket_given.deinit(allocator);
+    let has_socket = try cli.extract_value(allocator, "--socket", &var socket_given);
+    cli.json_output = cli.remove_flag(allocator, "--json");
+    if has_socket {
+        try socket.append_string(allocator, &socket_given);
+    } else {
+        try resolve_socket(cli, allocator, &var socket);
+    }
+    let path = socket.as_bytes();
+    if cli.first_is("artifact") {
+        cli.shift(allocator);
+        if run_artifact(cli, allocator, path) {} else |err| {
+            if err == mem::Error::OutOfMemory {
+                return mem::Error::OutOfMemory;
+            }
+            return CliError::Failed;
+        }
+        return;
+    }
+    if cli.first_is("identify") {
+        cli.shift(allocator);
+        try cli.ensure_empty(allocator);
+        try identify(cli, allocator, path);
+        return;
+    }
+    var request = string::new(allocator);
+    defer request.deinit(allocator);
+    try parse_request(cli, allocator, &var request);
+    let line = request.as_bytes();
+    var answer = string::new(allocator);
+    defer answer.deinit(allocator);
+    try exchange(cli, allocator, path, line, &var answer);
+    let bytes = answer.as_bytes();
+    try print_response(cli, allocator, bytes);
+    return;
+}
+
+/// Runs the command line this process was started with.
+pub fn run_main() -> !process::ExitStatus {
+    let allocator = mem::page_allocator();
+    var cli = Cli { args: array::new<string::String>(allocator), message: string::new(allocator), json_output: false };
+    defer cli.deinit(allocator);
+    for 0..process::arg_count() |index| {
+        let word = try process::arg(index);
+        var owned = try string::from_bytes(allocator, word);
+        errdefer owned.deinit(allocator);
+        try cli.args.append(allocator, move owned);
+    }
+    if run(&var cli, allocator) {
+        return process::ExitStatus::Success;
+    } else |_| {}
+    if cli.message.len() == 0 {
+        cli.say(allocator, "out of memory", "", "");
+    }
+    let message = cli.message.as_bytes();
+    if io::write_stderr(io::blocking(), "satin: ") {} else |_| {}
+    if io::write_stderr_line(io::blocking(), message) {} else |_| {}
+    return process::ExitStatus::Failure;
+}

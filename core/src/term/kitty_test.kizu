@@ -1,0 +1,140 @@
+import std::mem;
+import std::string;
+import std::testing;
+
+/// A terminal of cols x rows cells, pixels a cell square, that keeps images.
+fn kitty_terminal(cols: u16, rows: u16, pixels: u32) -> GhosttyError!ptr<u8> {
+    let terminal = new_terminal(cols, rows, 0) orelse return GhosttyError::Refused;
+    // SAFETY: terminal is live; the caller frees it.
+    if unsafe configure_kitty_graphics(terminal) {} else |_| {
+        // SAFETY: terminal came from new_terminal and nothing uses it after this.
+        unsafe free_terminal(terminal);
+        return GhosttyError::Refused;
+    }
+    // SAFETY: terminal is live.
+    if unsafe resize_terminal(terminal, cols, rows, pixels, pixels) {} else |_| {}
+    return terminal;
+}
+
+/// Feeds text with `^` read as ESC and `$` as CR LF.
+///
+/// terminal must be a live libghostty terminal.
+unsafe fn feed_kitty(allocator: Allocator, terminal: ptr<u8>, text: []u8) -> !void {
+    var input = string::new(allocator);
+    defer input.deinit(allocator);
+    for 0..mem::len(text) |index| {
+        if text[index] == cast<u8>(94) {
+            try input.append_byte(allocator, 27);
+        } else if text[index] == cast<u8>(36) {
+            try input.append_byte(allocator, 13);
+            try input.append_byte(allocator, 10);
+        } else {
+            try input.append_byte(allocator, text[index]);
+        }
+    }
+    let bytes = input.as_bytes();
+    // SAFETY: the caller passes a live terminal.
+    unsafe write_terminal(terminal, bytes);
+    return;
+}
+
+/// A one-pixel opaque red PNG, base64 as the protocol carries it.
+fn red_pixel_png() -> []u8 {
+    return "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==";
+}
+
+test "a transmitted PNG is placed at the cursor with its pixels decoded" {
+    let allocator = mem::page_allocator();
+    let terminal = try kitty_terminal(8, 4, 8);
+    var images = try new_kitty_images(allocator);
+    defer images.deinit(allocator);
+    // SAFETY: terminal is live until free_terminal below.
+    try unsafe feed_kitty(allocator, terminal, "^[2;3H^_Ga=T,f=100,t=d,i=81,z=0,q=2;");
+    // SAFETY: as above.
+    try unsafe feed_kitty(allocator, terminal, red_pixel_png());
+    // SAFETY: as above.
+    try unsafe feed_kitty(allocator, terminal, "^\\");
+    // SAFETY: as above.
+    try unsafe images.collect(allocator, terminal);
+    testing::expect(images.placements.len() == 1);
+    let placement = images.placements.get(0) orelse return GhosttyError::Refused;
+    testing::expect(placement.image_id == 81);
+    testing::expect(placement.viewport_col == 2 and placement.viewport_row == 1);
+    testing::expect(placement.image_width == 1 and placement.image_height == 1);
+    testing::expect(placement.source_width == 1 and placement.source_height == 1);
+    var pixels = string::new(allocator);
+    defer pixels.deinit(allocator);
+    testing::expect(try images.append_pixels(allocator, 81, &var pixels));
+    let rgba = pixels.as_bytes();
+    testing::expect(mem::len(rgba) == 4);
+    testing::expect(rgba[0] == cast<u8>(255) and rgba[1] == cast<u8>(0) and rgba[2] == cast<u8>(0));
+    testing::expect(rgba[3] == cast<u8>(255));
+    // SAFETY: as above.
+    try unsafe feed_kitty(allocator, terminal, "^_Ga=d,d=I,i=81,q=2^\\");
+    // SAFETY: as above.
+    try unsafe images.collect(allocator, terminal);
+    testing::expect(images.placements.len() == 0);
+    pixels.clear();
+    testing::expect(!try images.append_pixels(allocator, 81, &var pixels));
+    // SAFETY: terminal came from new_terminal and nothing uses it after this.
+    unsafe free_terminal(terminal);
+}
+
+test "placements come lowest z first and follow the terminal's scroll" {
+    let allocator = mem::page_allocator();
+    let terminal = try kitty_terminal(8, 4, 16);
+    var images = try new_kitty_images(allocator);
+    defer images.deinit(allocator);
+    // Raw RGB pixels, which need no decoder: AQID is 1 2 3. C=1 leaves the cursor where it was.
+    // SAFETY: terminal is live until free_terminal below.
+    try unsafe feed_kitty(allocator, terminal, "^_Ga=T,f=24,s=1,v=1,i=5,z=7,C=1,q=2;AQID^\\");
+    // SAFETY: as above.
+    try unsafe feed_kitty(allocator, terminal, "^[4;1H^_Ga=T,f=24,s=1,v=1,i=6,z=-3,C=1,q=2;BAUG^\\");
+    // SAFETY: as above.
+    try unsafe images.collect(allocator, terminal);
+    testing::expect(images.placements.len() == 2);
+    let lowest = images.placements.get(0) orelse return GhosttyError::Refused;
+    let highest = images.placements.get(1) orelse return GhosttyError::Refused;
+    testing::expect(lowest.image_id == 6 and lowest.z == -3 and lowest.viewport_row == 3);
+    testing::expect(highest.image_id == 5 and highest.z == 7 and highest.viewport_row == 0);
+    var pixels = string::new(allocator);
+    defer pixels.deinit(allocator);
+    testing::expect(try images.append_pixels(allocator, 5, &var pixels));
+    let rgba = pixels.as_bytes();
+    testing::expect(mem::len(rgba) == 4 and rgba[0] == cast<u8>(1) and rgba[2] == cast<u8>(3));
+    testing::expect(rgba[3] == cast<u8>(255));
+    // SAFETY: as above.
+    try unsafe feed_kitty(allocator, terminal, "$one$two$three");
+    // SAFETY: as above.
+    try unsafe images.collect(allocator, terminal);
+    var still_low = false;
+    for 0..images.placements.len() |index| {
+        let placement = images.placements.get(index) orelse return GhosttyError::Refused;
+        if placement.image_id == 6 {
+            still_low = placement.viewport_row < 3;
+        }
+    }
+    testing::expect(still_low);
+    // SAFETY: terminal came from new_terminal and nothing uses it after this.
+    unsafe free_terminal(terminal);
+}
+
+test "images stay with the terminal that received them" {
+    let allocator = mem::page_allocator();
+    let first = try kitty_terminal(8, 4, 8);
+    let second = try kitty_terminal(8, 4, 8);
+    var images = try new_kitty_images(allocator);
+    defer images.deinit(allocator);
+    // SAFETY: first is live until free_terminal below.
+    try unsafe feed_kitty(allocator, first, "^_Ga=T,f=24,s=1,v=1,i=61,q=2;AQID^\\");
+    // SAFETY: second is live until free_terminal below.
+    try unsafe images.collect(allocator, second);
+    testing::expect(images.placements.len() == 0);
+    // SAFETY: as above.
+    try unsafe images.collect(allocator, first);
+    testing::expect(images.placements.len() == 1);
+    // SAFETY: first came from new_terminal and nothing uses it after this.
+    unsafe free_terminal(first);
+    // SAFETY: second came from new_terminal and nothing uses it after this.
+    unsafe free_terminal(second);
+}

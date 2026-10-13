@@ -1,0 +1,119 @@
+import std::mem;
+import std::string;
+import std::testing;
+
+fn png_hex_digit(byte: u8) -> u8 {
+    let value = cast<i64>(byte);
+    if value >= 97 {
+        return cast<u8>(value - 87);
+    }
+    return cast<u8>(value - 48);
+}
+
+/// The bytes hex spells, two digits a byte.
+fn png_bytes(allocator: Allocator, hex: []u8) -> !string::String {
+    var out = string::new(allocator);
+    errdefer out.deinit(allocator);
+    var index: i64 = 0;
+    while index + 1 < mem::len(hex) {
+        try out.append_byte(allocator, png_hex_digit(hex[index]) * 16 + png_hex_digit(hex[index + 1]));
+        index = index + 2;
+    }
+    return move out;
+}
+
+/// Whether the PNG that image spells decodes to width x height pixels that pixels spells.
+fn decodes_to(image: []u8, width: i64, height: i64, pixels: []u8) -> !bool {
+    let allocator = mem::page_allocator();
+    let source = try png_bytes(allocator, image);
+    defer source.deinit(allocator);
+    let expected = try png_bytes(allocator, pixels);
+    defer expected.deinit(allocator);
+    var out = string::new(allocator);
+    defer out.deinit(allocator);
+    var decoded_width: i64 = 0;
+    var decoded_height: i64 = 0;
+    let source_bytes = source.as_bytes();
+    try decode_png(allocator, source_bytes, &var decoded_width, &var decoded_height, &var out);
+    let out_bytes = out.as_bytes();
+    let expected_bytes = expected.as_bytes();
+    return decoded_width == width and decoded_height == height and mem::equal_bytes(out_bytes, expected_bytes);
+}
+
+test "decodes 8-bit RGBA through every row filter" {
+    testing::expect(try decodes_to(
+        "89504e470d0a1a0a0000000d49484452000000050000000608060000000bfb544b00000003744558746b0076cb04f3900000004449444154789c017e0081ff00a54dca182530bb1d6d132cded6237b2ed91e3f72011fcb1971f8797b6532f80986eb2421d5ecbeabcd02bbd5d577a255eb8633edfca17b85d5f41cb8dde202140000004549444154ebb103e0aa60a0a4d7037bad858057b40bc6f53b00575e04641115a1a530256971f394605c35bcab8a1dcfc90046dc8ed4b7c2764d2a5a4d767706f85d8690024ad04b3c0d65ad6e6d0000000049454e44ae426082",
+        5,
+        6,
+        "a54dca182530bb1d6d132cded6237b2ed91e3f721fcb1971174494d6493c9d5c3460be31201e69fedaa0eee8b9997f5c7c2999fdafe593253cd654af4dfad71427a0aeb3fee9232f8af2211f9ee491c5b10becb5563bfc1e6f93427ecbc8fe2955e5cd8e46dc8ed4b7c2764d2a5a4d767706f85d8690024a"
+    ));
+}
+
+test "narrows 16-bit RGB and applies its transparent color" {
+    testing::expect(try decodes_to(
+        "89504e470d0a1a0a0000000d49484452000000030000000510020000005f831db60000000674524e531aeb346b001e522ba6f600000003744558746b0076cb04f3900000003549444154789c015f00a0ff00d680bd0ea32140401ba4e9cdc8e5cbcfcc4601c9ca3502f68a043ceadc6b0d55754b058002028a4f0346b8914db4d345020000003549444154e5158d9f872bf7c910d99203e40208dc136bad2520d94cdc2b547bf3559a0431d7170f8f6c2eb1a9e7fe41b1ce3603520621a12a6bd05debc50000000049454e44ae426082",
+        3,
+        5,
+        "d6bda3ff401be9ffc8cbccffc935f6ffcd1f61ff226ae1ff5338aeff1a3400004d33baff0d246affc04c81ffb1baf2ff3e3bf9ffeef5f7ff9f2b49ff"
+    ));
+}
+
+test "spreads 1-bit gray over the range" {
+    testing::expect(try decodes_to(
+        "89504e470d0a1a0a0000000d494844520000000a0000000301000000008246a3d800000003744558746b0076cb04f3900000000849444154789c63286460dcea5785f8da0000000949444154cd34fd00000a4002cc5355d26f0000000049454e44ae426082",
+        10,
+        3,
+        "000000ffffffffffffffffffffffffff000000ff000000ff000000ffffffffff000000ff000000ffffffffff000000ffffffffffffffffff000000ffffffffff000000ffffffffff000000ff000000ff000000ffffffffff000000ff000000ffffffffffffffffff000000ff000000ffffffffffffffffff"
+    ));
+}
+
+test "looks 4-bit indexes up in the palette and its alphas" {
+    testing::expect(try decodes_to(
+        "89504e470d0a1a0a0000000d4948445200000007000000040403000000b0e8384e00000030504c54458463b0e4b2ba29703474f064ac68f700f5b02b3dc666f45bdeaa2ccaedcd2b5157410e4dee4af2b34f430a073447de63711384650000000374524e530080c8544a161700000003744558746b0076cb04f3900000000e49444154789c6348689bbe80b1774bad10d378dd18e90000000f49444154f6b3930a988d0e551e0600548d08aa545022640000000049454e44ae426082",
+        7,
+        4,
+        "2b3dc6ff8463b000deaa2cff2b3dc6ffcaedcdff66f45bff2b5157ffdeaa2cffb34f43ffac68f7ffe4b2ba80410e4dff0a0734ffb34f43ffac68f7ffac68f7ff8463b0000a0734ff00f5b0ff8463b000ac68f7ff00f5b0ffac68f7ff47de63ff74f064ffe4b2ba802b5157ff47de63ff"
+    ));
+}
+
+test "places the pixels of an interlaced gray and alpha image" {
+    testing::expect(try decodes_to(
+        "89504e470d0a1a0a0000000d49484452000000090000000a0804000001bb0b8ca300000003744558746b0076cb04f3900000006949444154789c01c80037ff00361d7e8401531c5589000e2001eb5e008a422d8e2d85008d15668d01cf4c0ad902c1300bdc00814630cb7252add7a32f01679f2d451d25560076db007f6132e7e2a6e7f401ef700ae3e37b88e802e9140454418f25520330278f02449fdde6048f46adb03b0000006a494441545a6b54ba7736c70067e546d53ec8e2a1257bdb256c9b3e4fbb4901bb09f2e1341fe3a0d377a255fcb652608dd1026f68759d5ddf41043e6909a1450dcbfb05000321a5d11700962422c0ab7c8377ced1c0729c044734a15e19ef63fcc3e324dd4b3d9caf0551027854847b6eb2470000000049454e44ae426082",
+        9,
+        10,
+        "3636361d7f7f7f618d8d8d15323232e70e0e0e20e2e2e2a66666668de7e7e7f47e7e7e84676767e5464646d53e3e3ec8e2e2e2a12525257bdbdbdb256c6c6c9b3e3e3e4fbbbbbb4981818146efefef70303030cbf9f9f95372727252dcdcdcceadadadd7646464b6a3a3a32fbbbbbb09adadadeae1e1e109c4c4c4a997979720393939753535352b8787878b1414145c8a8a8a42d8d8d884cfcfcf4cfdfdfda72d2d2d8e1d1d1d5dd9d9d925898989082d2d2d852a2a2a71222222873e3e3ee8050505add5d5d589424242167a7a7a38525252861919195c6767679f9c9c9c69949494e45b5b5b8ab1b1b1098080801207070709616161f37d7d7de4363636ddfdfdfdc99d9d9d6e757575af65656547cfcfcfb11b1b1b4207070724828282dc5353531c2b2b2bc39090907c96969617ebebeb5e50505089e4e4e401868686baa8a8a8a57d7d7d119e9e9e6fb6b6b65d000000abc3c3c32af3f3f38e6666667f0202022e8787872d"
+    ));
+}
+
+test "reads an interlaced image narrower than a pass" {
+    testing::expect(try decodes_to(
+        "89504e470d0a1a0a0000000d494844520000000500000003020000000143eab21300000003744558746b0076cb04f3900000000a49444154789c63706000811f0c1f3024a4f70000000b494441541827302c71000014bc039e30cf450d0000000049454e44ae426082",
+        5,
+        3,
+        "555555ffffffffff000000ffffffffff000000ffaaaaaaffaaaaaaff555555ff000000ff555555ffffffffffaaaaaaffffffffff555555ffaaaaaaff"
+    ));
+}
+
+test "refuses bytes that are not a whole PNG" {
+    let allocator = mem::page_allocator();
+    let source = try png_bytes(allocator, "89504e470d0a1a0a0000000d49484452000000050000000608060000000bfb544b00000003744558746b0076cb04f3900000004449444154789c017e0081ff00a54dca182530bb1d6d132cded6237b2ed91e3f72011fcb1971f8797b6532f80986eb2421d5ecbeabcd02bbd5d577a255eb8633edfca17b85d5f41cb8dde202140000004549444154ebb103e0aa60a0a4d7037bad858057b40bc6f53b00575e04641115a1a530256971f394605c35bcab8a1dcfc90046dc8ed4b7c2764d2a5a4d767706f85d8690024ad04b3c0d65ad6e6d0000000049454e44ae426082");
+    defer source.deinit(allocator);
+    let bytes = source.as_bytes();
+    var out = string::new(allocator);
+    defer out.deinit(allocator);
+    var width: i64 = 0;
+    var height: i64 = 0;
+    try png_size(bytes, &var width, &var height);
+    testing::expect(width == 5 and height == 6);
+    var refused = false;
+    if decode_png(allocator, bytes[0..mem::len(bytes) - 20], &var width, &var height, &var out) {} else |_| {
+        refused = true;
+    }
+    testing::expect(refused);
+    refused = false;
+    if decode_png(allocator, "not a png at all, only some text", &var width, &var height, &var out) {} else |_| {
+        refused = true;
+    }
+    testing::expect(refused);
+    testing::expect(out.len() == 0);
+}

@@ -1,0 +1,664 @@
+import satin::term;
+import std::array;
+import std::mem;
+import std::process;
+import std::string;
+import std::testing;
+
+fn white() -> Rgba {
+    return Rgba { r: 255, g: 255, b: 255, a: 255 };
+}
+
+fn pixel_rect(x: i64, y: i64, width: i64, height: i64) -> Rect {
+    return Rect { x: span(x), y: span(y), width: span(width), height: span(height) };
+}
+
+/// How many pixels of the rows from top up to bottom and the columns from
+/// left up to right the bitmap has anything in.
+fn lit_pixels(bitmap: &Bitmap, left: i64, top: i64, right: i64, bottom: i64) -> i64 {
+    var lit_count = 0;
+    for top..bottom |y| {
+        for left..right |x| {
+            if cast<i64>(bitmap.pixel(x, y).a) > 32 {
+                lit_count = lit_count + 1;
+            }
+        }
+    }
+    return lit_count;
+}
+
+fn same_bitmaps(first: &Bitmap, second: &Bitmap) -> bool {
+    if first.width() != second.width() or first.height() != second.height() {
+        return false;
+    }
+    for 0..first.height() |y| {
+        for 0..first.width() |x| {
+            if !same_rgba(first.pixel(x, y), second.pixel(x, y)) {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+/// Adds text as one cell of a run of its own to list: the cell's left edge
+/// at x, its baseline at baseline.
+fn add_text(
+    allocator: Allocator,
+    list: &var DisplayList,
+    text: []u8,
+    x: i64,
+    baseline: i64,
+    bold: bool,
+    color: Rgba
+) -> mem::Error!void {
+    let first = list.clusters.len();
+    try list.add_cluster(allocator, text, 0);
+    try list.text_run(
+        allocator,
+        TextRun {
+        first: first,
+        count: 1,
+        x: span(x),
+        baseline: span(baseline),
+        advance: lit(12.0),
+        cells: 1,
+        bold: bold,
+        italic: false,
+        key: 0
+    },
+        color
+    );
+    return;
+}
+
+/// A painter sized for cells 24 pixels high and a clear bitmap of width x
+/// height, with list drawn into it.
+struct Drawn {
+    painter: Painter,
+    bitmap: Bitmap,
+}
+
+fn (self: Drawn) deinit(allocator: Allocator) -> void {
+    self.painter.deinit(allocator);
+    self.bitmap.deinit();
+}
+
+fn drawn(allocator: Allocator, list: &DisplayList, width: i64, height: i64) -> mem::Error!Drawn {
+    var painter = new_painter(allocator) orelse return mem::Error::OutOfMemory;
+    errdefer painter.deinit(allocator);
+    let bitmap = new_bitmap(width, height) orelse return mem::Error::OutOfMemory;
+    errdefer bitmap.deinit();
+    let metrics = try painter.metrics(allocator, pane_geometry(width, height, 12.0, 24.0));
+    testing::expect(metrics.ascent > lit(10.0) and metrics.ascent < lit(24.0));
+    try painter.execute(allocator, list, &bitmap);
+    return Drawn { painter: move painter, bitmap: move bitmap };
+}
+
+test "a filled rectangle lands where it says, as blue, green, red and alpha bytes" {
+    let allocator = mem::page_allocator();
+    var list = new_display_list(allocator);
+    defer list.deinit(allocator);
+    try list.fill_rect(allocator, pixel_rect(2, 3, 4, 5), Rgba { r: 10, g: 20, b: 30, a: 255 });
+    let result = try drawn(allocator, &list, 16, 16);
+    defer result.deinit(allocator);
+
+    testing::expect(same_rgba(result.bitmap.pixel(2, 3), Rgba { r: 10, g: 20, b: 30, a: 255 }));
+    testing::expect(same_rgba(result.bitmap.pixel(5, 7), Rgba { r: 10, g: 20, b: 30, a: 255 }));
+    testing::expect_equal<i64>(20, lit_pixels(&result.bitmap, 0, 0, 16, 16));
+    testing::expect_equal<i64>(0, cast<i64>(result.bitmap.pixel(1, 3).a));
+    testing::expect_equal<i64>(0, cast<i64>(result.bitmap.pixel(2, 2).a));
+    testing::expect_equal<i64>(0, cast<i64>(result.bitmap.pixel(6, 3).a));
+    testing::expect_equal<i64>(0, cast<i64>(result.bitmap.pixel(2, 8).a));
+    // The first row is the top one: nothing is at the mirrored place.
+    testing::expect_equal<i64>(0, cast<i64>(result.bitmap.pixel(2, 12).a));
+    // SAFETY: (2, 3) is a pixel of the bitmap, four readable bytes.
+    let stored = unsafe view_from_ptr(cast<ptr<const u8>>(result.bitmap.pixels_at(2, 3)), 4);
+    testing::expect_equal<i64>(30, cast<i64>(stored[0]));
+    testing::expect_equal<i64>(20, cast<i64>(stored[1]));
+    testing::expect_equal<i64>(10, cast<i64>(stored[2]));
+    testing::expect_equal<i64>(255, cast<i64>(stored[3]));
+    testing::expect_equal<i64>(64, result.bitmap.row_bytes());
+}
+
+test "a clear fills the target and a tint mixes with what is under it" {
+    let allocator = mem::page_allocator();
+    var list = new_display_list(allocator);
+    defer list.deinit(allocator);
+    try list.clear_target(allocator, Rgba { r: 0, g: 0, b: 0, a: 255 });
+    try list.fill_rect(allocator, pixel_rect(0, 0, 4, 4), Rgba { r: 255, g: 255, b: 255, a: 89 });
+    let result = try drawn(allocator, &list, 8, 8);
+    defer result.deinit(allocator);
+
+    testing::expect(same_rgba(result.bitmap.pixel(7, 7), Rgba { r: 0, g: 0, b: 0, a: 255 }));
+    let tinted = result.bitmap.pixel(1, 1);
+    testing::expect(cast<i64>(tinted.r) >= 88 and cast<i64>(tinted.r) <= 90);
+    testing::expect(tinted.r == tinted.g and tinted.g == tinted.b and cast<i64>(tinted.a) == 255);
+}
+
+test "a glyph lights pixels inside its cell and none outside" {
+    let allocator = mem::page_allocator();
+    var list = new_display_list(allocator);
+    defer list.deinit(allocator);
+    // The cell from (24, 8) to (36, 32), its baseline 19 pixels down.
+    try add_text(allocator, &var list, "M", 24, 27, false, white());
+    let result = try drawn(allocator, &list, 60, 40);
+    defer result.deinit(allocator);
+
+    let inside = lit_pixels(&result.bitmap, 24, 8, 36, 32);
+    testing::expect(inside > 20);
+    testing::expect_equal<i64>(inside, lit_pixels(&result.bitmap, 0, 0, 60, 40));
+    // An M stands on its baseline: nothing of it is under that.
+    testing::expect_equal<i64>(0, lit_pixels(&result.bitmap, 24, 28, 36, 32));
+    testing::expect(lit_pixels(&result.bitmap, 24, 12, 36, 27) == inside);
+}
+
+test "glyphs are drawn the right way up" {
+    let allocator = mem::page_allocator();
+    var list = new_display_list(allocator);
+    defer list.deinit(allocator);
+    try add_text(allocator, &var list, "_", 0, 20, false, white());
+    try add_text(allocator, &var list, "'", 24, 20, false, white());
+    let result = try drawn(allocator, &list, 48, 32);
+    defer result.deinit(allocator);
+
+    // The underscore is under the baseline and the quote well over it.
+    testing::expect(lit_pixels(&result.bitmap, 0, 20, 12, 32) > 4);
+    testing::expect_equal<i64>(0, lit_pixels(&result.bitmap, 0, 0, 12, 19));
+    testing::expect(lit_pixels(&result.bitmap, 24, 0, 36, 12) > 4);
+    testing::expect_equal<i64>(0, lit_pixels(&result.bitmap, 24, 14, 36, 32));
+}
+
+test "bold differs from regular" {
+    let allocator = mem::page_allocator();
+    var regular = new_display_list(allocator);
+    defer regular.deinit(allocator);
+    try add_text(allocator, &var regular, "M", 4, 24, false, white());
+    let light = try drawn(allocator, &regular, 24, 32);
+    defer light.deinit(allocator);
+    var bold = new_display_list(allocator);
+    defer bold.deinit(allocator);
+    try add_text(allocator, &var bold, "M", 4, 24, true, white());
+    let heavy = try drawn(allocator, &bold, 24, 32);
+    defer heavy.deinit(allocator);
+
+    testing::expect(!same_bitmaps(&light.bitmap, &heavy.bitmap));
+    testing::expect(lit_pixels(&heavy.bitmap, 0, 0, 24, 32) > lit_pixels(&light.bitmap, 0, 0, 24, 32));
+}
+
+test "text comes out in the run's color" {
+    let allocator = mem::page_allocator();
+    var list = new_display_list(allocator);
+    defer list.deinit(allocator);
+    try add_text(allocator, &var list, "█", 4, 24, false, Rgba { r: 200, g: 100, b: 50, a: 255 });
+    let result = try drawn(allocator, &list, 24, 32);
+    defer result.deinit(allocator);
+    // The shade's glyph covers the middle of its cell whole.
+    testing::expect(same_rgba(result.bitmap.pixel(10, 16), Rgba { r: 200, g: 100, b: 50, a: 255 }));
+}
+
+test "a character the family lacks is drawn from a fallback font" {
+    let allocator = mem::page_allocator();
+    var list = new_display_list(allocator);
+    defer list.deinit(allocator);
+    try add_text(allocator, &var list, "日", 4, 24, false, white());
+    try add_text(allocator, &var list, "😀", 40, 24, false, white());
+    try add_text(allocator, &var list, "é", 80, 24, false, white());
+    let result = try drawn(allocator, &list, 110, 36);
+    defer result.deinit(allocator);
+
+    testing::expect(lit_pixels(&result.bitmap, 0, 0, 36, 36) > 30);
+    testing::expect(lit_pixels(&result.bitmap, 36, 0, 76, 36) > 30);
+    testing::expect(lit_pixels(&result.bitmap, 76, 0, 110, 36) > 10);
+    testing::expect(result.painter.fonts.len() > 4);
+    // The ideograph is white as asked; the emoji brings its own colors.
+    var colored = 0;
+    for 0..36 |y| {
+        for 0..76 |x| {
+            let pixel = result.bitmap.pixel(x, y);
+            if cast<i64>(pixel.a) > 200 and pixel.r != pixel.b {
+                colored = colored + 1;
+                testing::expect(x >= 36);
+            }
+        }
+    }
+    testing::expect(colored > 10);
+}
+
+test "cli status symbols use the monochrome default family" {
+    let allocator = mem::page_allocator();
+    var list = new_display_list(allocator);
+    defer list.deinit(allocator);
+    let red_only = Rgba { r: 255, g: 0, b: 0, a: 255 };
+    try add_text(allocator, &var list, "⚠", 4, 24, false, red_only);
+    try add_text(allocator, &var list, "✢", 34, 24, false, red_only);
+    try add_text(allocator, &var list, "✳", 64, 24, false, red_only);
+    try add_text(allocator, &var list, "✶", 94, 24, false, red_only);
+    try add_text(allocator, &var list, "✻", 124, 24, false, red_only);
+    try add_text(allocator, &var list, "✽", 154, 24, false, red_only);
+    let result = try drawn(allocator, &list, 184, 36);
+    defer result.deinit(allocator);
+
+    for 0..6 |symbol| {
+        testing::expect(lit_pixels(&result.bitmap, symbol * 30, 0, symbol * 30 + 30, 36) > 8);
+    }
+    for 0..36 |y| {
+        for 0..184 |x| {
+            let pixel = result.bitmap.pixel(x, y);
+            testing::expect(cast<i64>(pixel.g) == 0 and cast<i64>(pixel.b) == 0);
+        }
+    }
+}
+
+test "clipping holds until it is popped" {
+    let allocator = mem::page_allocator();
+    var list = new_display_list(allocator);
+    defer list.deinit(allocator);
+    let red_only = Rgba { r: 255, g: 0, b: 0, a: 255 };
+    try list.push_clip(allocator, pixel_rect(4, 4, 8, 8));
+    try list.push_clip(allocator, pixel_rect(6, 0, 2, 16));
+    try list.fill_rect(allocator, pixel_rect(0, 0, 16, 16), red_only);
+    try add_text(allocator, &var list, "M", 0, 14, false, white());
+    try list.pop_clip(allocator);
+    try list.fill_rect(allocator, pixel_rect(0, 5, 16, 1), white());
+    try list.pop_clip(allocator);
+    try list.fill_rect(allocator, pixel_rect(0, 15, 16, 1), white());
+    let result = try drawn(allocator, &list, 16, 16);
+    defer result.deinit(allocator);
+
+    // Both clips: columns 6 and 7 of rows 4 to 11.
+    // Red, or the white of the letter drawn over it and clipped with it.
+    testing::expect(cast<i64>(result.bitmap.pixel(6, 4).r) == 255 and cast<i64>(result.bitmap.pixel(6, 4).a) == 255);
+    testing::expect(cast<i64>(result.bitmap.pixel(7, 11).r) == 255 and cast<i64>(result.bitmap.pixel(7, 11).a) == 255);
+    testing::expect_equal<i64>(0, cast<i64>(result.bitmap.pixel(6, 3).a));
+    testing::expect_equal<i64>(0, cast<i64>(result.bitmap.pixel(8, 8).a));
+    testing::expect_equal<i64>(0, cast<i64>(result.bitmap.pixel(3, 8).a));
+    // The outer clip alone, then none.
+    testing::expect(same_rgba(result.bitmap.pixel(4, 5), white()));
+    testing::expect(same_rgba(result.bitmap.pixel(11, 5), white()));
+    testing::expect_equal<i64>(0, cast<i64>(result.bitmap.pixel(12, 5).a));
+    testing::expect(same_rgba(result.bitmap.pixel(0, 15), white()));
+    // 16 red pixels, 8 white ones of which 2 are over red, and a row of 16.
+    testing::expect_equal<i64>(38, lit_pixels(&result.bitmap, 0, 0, 16, 16));
+}
+
+fn test_image(owner: usize, number: u32) -> ImageDraw {
+    return ImageDraw {
+        owner: owner,
+        image_id: 5,
+        image_number: number,
+        width: 2,
+        height: 2,
+        source: pixel_rect(0, 0, 2, 2)
+    };
+}
+
+/// Gives painter a 2 x 2 image: red and green over blue and white, the
+/// white at half alpha.
+fn put_test_image(allocator: Allocator, painter: &var Painter, image: ImageDraw) -> mem::Error!bool {
+    var rgba = string::new(allocator);
+    defer rgba.deinit(allocator);
+    for 0..16 |index| {
+        var value: u8 = 0;
+        if index == 0 or index == 5 or index == 10 or index == 3 or index == 7 or index == 11 {
+            value = 255;
+        }
+        if index >= 12 {
+            value = 255;
+        }
+        if index == 15 {
+            value = 128;
+        }
+        try rgba.append_byte(allocator, value);
+    }
+    let bytes = rgba.as_bytes();
+    return try painter.put_image(allocator, image, bytes);
+}
+
+test "an image is scaled into its rectangle, its first row at the top" {
+    let allocator = mem::page_allocator();
+    var painter = new_painter(allocator) orelse return;
+    defer painter.deinit(allocator);
+    let bitmap = new_bitmap(16, 16) orelse return;
+    defer bitmap.deinit();
+    var list = new_display_list(allocator);
+    defer list.deinit(allocator);
+    let image = test_image(1, 1);
+    try list.clear_target(allocator, Rgba { r: 0, g: 0, b: 0, a: 255 });
+    try list.image(allocator, image, pixel_rect(4, 2, 8, 8));
+
+    // An image the painter was not given draws nothing.
+    testing::expect(!painter.has_image(image));
+    try painter.execute(allocator, &list, &bitmap);
+    testing::expect(same_rgba(bitmap.pixel(5, 3), Rgba { r: 0, g: 0, b: 0, a: 255 }));
+
+    testing::expect(try put_test_image(allocator, &var painter, image));
+    testing::expect(painter.has_image(image));
+    testing::expect(!painter.has_image(test_image(1, 2)));
+    testing::expect(!painter.has_image(test_image(2, 1)));
+    try painter.execute(allocator, &list, &bitmap);
+    testing::expect(same_rgba(bitmap.pixel(4, 2), Rgba { r: 255, g: 0, b: 0, a: 255 }));
+    testing::expect(same_rgba(bitmap.pixel(7, 5), Rgba { r: 255, g: 0, b: 0, a: 255 }));
+    testing::expect(same_rgba(bitmap.pixel(8, 2), Rgba { r: 0, g: 255, b: 0, a: 255 }));
+    testing::expect(same_rgba(bitmap.pixel(4, 6), Rgba { r: 0, g: 0, b: 255, a: 255 }));
+    // White at half alpha over black.
+    let mixed_pixel = bitmap.pixel(11, 9);
+    testing::expect(cast<i64>(mixed_pixel.r) >= 126 and cast<i64>(mixed_pixel.r) <= 130);
+    testing::expect(mixed_pixel.r == mixed_pixel.g and mixed_pixel.g == mixed_pixel.b);
+    testing::expect(same_rgba(bitmap.pixel(3, 2), Rgba { r: 0, g: 0, b: 0, a: 255 }));
+    testing::expect(same_rgba(bitmap.pixel(12, 9), Rgba { r: 0, g: 0, b: 0, a: 255 }));
+    testing::expect(same_rgba(bitmap.pixel(4, 10), Rgba { r: 0, g: 0, b: 0, a: 255 }));
+}
+
+test "an image's source is the part of it that is drawn" {
+    let allocator = mem::page_allocator();
+    var painter = new_painter(allocator) orelse return;
+    defer painter.deinit(allocator);
+    let bitmap = new_bitmap(8, 8) orelse return;
+    defer bitmap.deinit();
+    var list = new_display_list(allocator);
+    defer list.deinit(allocator);
+    var image = test_image(1, 1);
+    testing::expect(try put_test_image(allocator, &var painter, image));
+    // The right column: green over half white.
+    image.source = pixel_rect(1, 0, 1, 2);
+    try list.clear_target(allocator, Rgba { r: 0, g: 0, b: 0, a: 255 });
+    try list.image(allocator, image, pixel_rect(0, 0, 8, 8));
+    try painter.execute(allocator, &list, &bitmap);
+
+    testing::expect(same_rgba(bitmap.pixel(0, 0), Rgba { r: 0, g: 255, b: 0, a: 255 }));
+    testing::expect(same_rgba(bitmap.pixel(7, 3), Rgba { r: 0, g: 255, b: 0, a: 255 }));
+    testing::expect(bitmap.pixel(0, 7).r == bitmap.pixel(0, 7).g and cast<i64>(bitmap.pixel(0, 7).r) > 100);
+}
+
+test "images are kept by owner, replaced by number and dropped when not drawn" {
+    let allocator = mem::page_allocator();
+    var painter = new_painter(allocator) orelse return;
+    defer painter.deinit(allocator);
+    var list = new_display_list(allocator);
+    defer list.deinit(allocator);
+    testing::expect(try put_test_image(allocator, &var painter, test_image(1, 1)));
+    testing::expect(try put_test_image(allocator, &var painter, test_image(2, 1)));
+    testing::expect(try put_test_image(allocator, &var painter, test_image(1, 2)));
+    testing::expect_equal<i64>(2, painter.image_count());
+    testing::expect(painter.has_image(test_image(1, 2)) and !painter.has_image(test_image(1, 1)));
+    // Pixels that are not the image's size are refused.
+    testing::expect(!try painter.put_image(allocator, test_image(3, 1), "short"));
+
+    try list.image(allocator, test_image(1, 2), pixel_rect(0, 0, 2, 2));
+    painter.retain_images(1, &list);
+    painter.retain_images(2, &list);
+    testing::expect_equal<i64>(1, painter.image_count());
+    testing::expect(painter.has_image(test_image(1, 2)));
+    list.reset(allocator);
+    painter.retain_images(2, &list);
+    testing::expect_equal<i64>(1, painter.image_count());
+    painter.forget_images(1);
+    testing::expect_equal<i64>(0, painter.image_count());
+}
+
+test "a quad is filled and a line stroked" {
+    let allocator = mem::page_allocator();
+    var list = new_display_list(allocator);
+    defer list.deinit(allocator);
+    try list.clear_target(allocator, Rgba { r: 0, g: 0, b: 0, a: 255 });
+    try list.quad(
+        allocator,
+        Point { x: lit(2.0), y: lit(2.0) },
+        Point { x: lit(8.0), y: lit(2.0) },
+        Point { x: lit(8.0), y: lit(10.0) },
+        Point { x: lit(2.0), y: lit(10.0) },
+        Rgba { r: 255, g: 255, b: 255, a: 199 }
+    );
+    try list.line(
+        allocator,
+        Point { x: lit(10.0), y: lit(14.5) },
+        Point { x: lit(16.0), y: lit(14.5) },
+        lit(1.0),
+        Rgba { r: 0, g: 255, b: 0, a: 255 }
+    );
+    let result = try drawn(allocator, &list, 20, 20);
+    defer result.deinit(allocator);
+
+    let inside = result.bitmap.pixel(5, 6);
+    testing::expect(cast<i64>(inside.r) >= 198 and cast<i64>(inside.r) <= 200);
+    testing::expect(same_rgba(result.bitmap.pixel(2, 2), inside) and same_rgba(result.bitmap.pixel(7, 9), inside));
+    testing::expect(same_rgba(result.bitmap.pixel(8, 6), Rgba { r: 0, g: 0, b: 0, a: 255 }));
+    testing::expect(same_rgba(result.bitmap.pixel(5, 10), Rgba { r: 0, g: 0, b: 0, a: 255 }));
+    testing::expect(same_rgba(result.bitmap.pixel(12, 14), Rgba { r: 0, g: 255, b: 0, a: 255 }));
+    testing::expect(same_rgba(result.bitmap.pixel(12, 13), Rgba { r: 0, g: 0, b: 0, a: 255 }));
+    testing::expect(same_rgba(result.bitmap.pixel(12, 15), Rgba { r: 0, g: 0, b: 0, a: 255 }));
+}
+
+test "the font's measures follow the cell and the family" {
+    let allocator = mem::page_allocator();
+    var painter = new_painter(allocator) orelse return;
+    defer painter.deinit(allocator);
+    let small = try painter.metrics(allocator, pane_geometry(100, 100, 10.0, 20.0));
+    let large = try painter.metrics(allocator, pane_geometry(100, 100, 20.0, 40.0));
+    // A 16.4 pixel font: its letters near six tenths of that wide.
+    testing::expect(small.cell_width > lit(8.0) and small.cell_width < lit(12.0));
+    testing::expect(small.ascent > lit(12.0) and small.ascent < lit(20.0));
+    testing::expect(small.descent > lit(2.0) and small.descent < lit(8.0));
+    testing::expect(small.cell_height >= small.ascent + small.descent);
+    testing::expect(small.underline_position > lit(0.0) and small.underline_thickness > lit(0.0));
+    testing::expect(large.ascent > small.ascent * lit(1.9) and large.ascent < small.ascent * lit(2.1));
+
+    testing::expect(!try painter.set_font_family(allocator, "  "));
+    testing::expect(try painter.set_font_family(allocator, " Courier New "));
+    testing::expect(!try painter.set_font_family(allocator, "Courier New"));
+    let other = try painter.metrics(allocator, pane_geometry(100, 100, 20.0, 40.0));
+    testing::expect(other.ascent != large.ascent or other.descent != large.descent);
+    // A family the system does not have is drawn with the default one.
+    testing::expect(try painter.set_font_family(allocator, "No Such Family 4f2a"));
+    let missing = try painter.metrics(allocator, pane_geometry(100, 100, 20.0, 40.0));
+    testing::expect(missing.ascent == large.ascent and missing.cell_width == large.cell_width);
+}
+
+/// Adds texts' bytes, a cell each, as one run from x of cells advance
+/// wide, with its key, or with none when keyed is false.
+fn add_run(
+    allocator: Allocator,
+    list: &var DisplayList,
+    texts: []u8,
+    x: i64,
+    baseline: i64,
+    advance: i64,
+    bold: bool,
+    keyed: bool
+) -> mem::Error!void {
+    let first = list.clusters.len();
+    var key = run_key(bold, false);
+    for 0..mem::len(texts) |index| {
+        try list.add_cluster(allocator, texts[index..index + 1], index);
+        key = run_key_add(key, texts[index..index + 1]);
+    }
+    if !keyed {
+        key = 0;
+    }
+    try list.text_run(
+        allocator,
+        TextRun {
+        first: first,
+        count: mem::len(texts),
+        x: span(x),
+        baseline: span(baseline),
+        advance: span(advance),
+        cells: mem::len(texts),
+        bold: bold,
+        italic: false,
+        key: key
+    },
+        white()
+    );
+    return;
+}
+
+test "a shaped run is kept, by its texts and its style" {
+    let allocator = mem::page_allocator();
+    var list = new_display_list(allocator);
+    defer list.deinit(allocator);
+    try add_run(allocator, &var list, "ab", 0, 20, 12, false, true);
+    try add_run(allocator, &var list, "ab", 30, 20, 12, false, true);
+    try add_run(allocator, &var list, "ab", 60, 20, 12, true, true);
+    try add_run(allocator, &var list, "a ", 90, 20, 12, false, true);
+    // A run without a key is shaped and not kept.
+    try add_run(allocator, &var list, "ab", 120, 20, 12, false, false);
+    var result = try drawn(allocator, &list, 150, 32);
+    defer result.deinit(allocator);
+
+    testing::expect_equal<i64>(3, result.painter.cached_runs());
+    // Two glyphs a run shaped, one for the run that ends in a space, and
+    // none for the second run, which is the first's.
+    testing::expect_equal<i64>(7, result.painter.shaped.len());
+    let first = lit_pixels(&result.bitmap, 0, 0, 24, 32);
+    testing::expect(first > 20);
+    testing::expect_equal<i64>(first, lit_pixels(&result.bitmap, 30, 0, 54, 32));
+    testing::expect_equal<i64>(first, lit_pixels(&result.bitmap, 120, 0, 144, 32));
+    testing::expect(lit_pixels(&result.bitmap, 60, 0, 84, 32) > first);
+    testing::expect_equal<i64>(0, lit_pixels(&result.bitmap, 102, 0, 120, 32));
+    // Drawn again, every run is found and nothing new is shaped but the
+    // run without a key.
+    try result.painter.execute(allocator, &list, &result.bitmap);
+    testing::expect_equal<i64>(3, result.painter.cached_runs());
+    testing::expect_equal<i64>(9, result.painter.shaped.len());
+    // Another size is other fonts: nothing shaped is kept across it.
+    let larger = try result.painter.metrics(allocator, pane_geometry(150, 32, 15.0, 30.0));
+    testing::expect(larger.ascent > lit(20.0));
+    testing::expect_equal<i64>(0, result.painter.cached_runs());
+    testing::expect_equal<i64>(0, result.painter.shaped.len());
+}
+
+test "ime preedit matches committed japanese text pixels" {
+    let allocator = mem::page_allocator();
+    let geometry = pane_geometry(80, 60, 10.0, 20.0);
+    let background = rgb(3, 5, 7);
+    let cursor_color = rgb(210, 220, 230);
+    var composing = try main_stage(allocator, 8, 3);
+    defer composing.deinit(allocator);
+    composing.scene.background = background;
+    composing.scene.cursor_color = cursor_color;
+    composing.scene.has_cursor = true;
+    composing.scene.cursor = block_cursor(2, 1);
+    var preedit = new_display_list(allocator);
+    defer preedit.deinit(allocator);
+    try composing.draw(allocator, &var preedit, geometry, "日本");
+
+    var committed = try main_stage(allocator, 8, 3);
+    defer committed.deinit(allocator);
+    committed.scene.background = background;
+    committed.scene.cursor_color = cursor_color;
+    var cells = array::new<term::Cell>(allocator);
+    defer cells.deinit(allocator);
+    var style = plain_style();
+    style.underline = term::Underline::Single;
+    style.has_underline_color = true;
+    style.underline_color = background;
+    try cells.append(allocator, styled_cell(0, 1, cursor_color, plain_style()));
+    try cells.append(allocator, styled_cell(0, 1, cursor_color, plain_style()));
+    try cells.append(allocator, styled_cell(1, 3, background, style));
+    try cells.append(allocator, styled_cell(0, 1, background, style));
+    try cells.append(allocator, styled_cell(4, 3, background, style));
+    try cells.append(allocator, styled_cell(0, 1, background, style));
+    try cells.append(allocator, styled_cell(0, 1, cursor_color, plain_style()));
+    try cells.append(allocator, styled_cell(0, 1, cursor_color, plain_style()));
+    for 2..6 |index| {
+        if cells.at_mut(index) |cell| {
+            cell.has_bg = true;
+            cell.bg = cursor_color;
+        }
+    }
+    let view = cells.as_slice();
+    try committed.set_row(allocator, 1, 1, view, " 日本");
+    var list = new_display_list(allocator);
+    defer list.deinit(allocator);
+    try committed.draw(allocator, &var list, geometry, "");
+
+    let composed = try drawn(allocator, &preedit, 80, 60);
+    defer composed.deinit(allocator);
+    let written = try drawn(allocator, &list, 80, 60);
+    defer written.deinit(allocator);
+    testing::expect(same_bitmaps(&composed.bitmap, &written.bitmap));
+    // The text is there: strokes darker than the cursor's color behind them.
+    testing::expect(same_rgba(composed.bitmap.pixel(20, 20), opaque(cursor_color)));
+    var inked = 0;
+    for 20..36 |y| {
+        for 20..60 |x| {
+            if !same_rgba(composed.bitmap.pixel(x, y), opaque(cursor_color)) {
+                inked = inked + 1;
+            }
+        }
+    }
+    testing::expect(inked > 60);
+    // And the underline, in the background's color.
+    testing::expect(same_rgba(composed.bitmap.pixel(30, 37), opaque(background)));
+    testing::expect(same_rgba(composed.bitmap.pixel(70, 30), opaque(background)));
+}
+
+test "adjacent full blocks fill the bitmap's cell run without seams" {
+    let allocator = mem::page_allocator();
+    let foreground = rgb(222, 128, 128);
+    let geometry = pane_geometry(160, 48, 18.544922, 35.33203);
+    var stage = try main_stage(allocator, 8, 1);
+    defer stage.deinit(allocator);
+    var cells = array::new<term::Cell>(allocator);
+    defer cells.deinit(allocator);
+    for 0..8 |_| {
+        try cells.append(allocator, styled_cell(0, 3, foreground, plain_style()));
+    }
+    let view = cells.as_slice();
+    try stage.set_row(allocator, 1, 0, view, "█");
+    var list = new_display_list(allocator);
+    defer list.deinit(allocator);
+    try stage.draw(allocator, &var list, geometry, "");
+    let result = try drawn(allocator, &list, 160, 48);
+    defer result.deinit(allocator);
+
+    for 0..148 |x| {
+        testing::expect(same_rgba(result.bitmap.pixel(x, 18), opaque(foreground)));
+    }
+    testing::expect(same_rgba(result.bitmap.pixel(148, 18), Rgba { r: 0, g: 0, b: 0, a: 255 }));
+}
+
+test "a frame of 200 x 60 cells is built and drawn into 3000 x 1800 pixels" {
+    let allocator = mem::page_allocator();
+    let geometry = pane_geometry(3000, 1800, 15.0, 30.0);
+    var stage = try main_stage(allocator, 200, 60);
+    defer stage.deinit(allocator);
+    stage.scene.background = rgb(20, 22, 26);
+    var text = string::new(allocator);
+    defer text.deinit(allocator);
+    for 0..200 |col| {
+        try text.append_byte(allocator, cast<u8>(33 + col % 90));
+    }
+    let row_text = text.as_bytes();
+    for 0..60 |row| {
+        try stage.set_text(allocator, 1, row, row_text, rgb(220, 220, 210), row % 2 == 0, rgb(40, 44, 52));
+    }
+    var painter = new_painter(allocator) orelse return;
+    defer painter.deinit(allocator);
+    let bitmap = new_bitmap(3000, 1800) orelse return;
+    defer bitmap.deinit();
+    var list = new_display_list(allocator);
+    defer list.deinit(allocator);
+    try stage.draw(allocator, &var list, geometry, "");
+    try painter.execute(allocator, &list, &bitmap);
+
+    var build_millis: i64 = 0;
+    var draw_millis: i64 = 0;
+    let frames = 10;
+    for 0..frames |_| {
+        let started = process::monotonic_millis();
+        try stage.draw(allocator, &var list, geometry, "");
+        let built = process::monotonic_millis();
+        try painter.execute(allocator, &list, &bitmap);
+        build_millis = build_millis + built - started;
+        draw_millis = draw_millis + process::monotonic_millis() - built;
+    }
+    print(build_millis * 100 / frames);
+    print(draw_millis * 100 / frames);
+    testing::expect_equal<i64>(60, list.count_of(CommandKind::Text));
+    testing::expect_equal<i64>(12000, list.clusters.len());
+    testing::expect(lit_pixels(&bitmap, 0, 0, 3000, 30) > 3000 * 29);
+    testing::expect(same_rgba(bitmap.pixel(2999, 1799), Rgba { r: 20, g: 22, b: 26, a: 255 }));
+}

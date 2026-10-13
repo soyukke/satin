@@ -1,0 +1,64 @@
+// What every export of the host boundary shares: C strings in, malloc
+// strings out, and flags.
+import satin::tmux;
+import std::mem;
+import std::string;
+
+extern "c" fn malloc(size: usize) -> ?ptr<u8>
+extern "c" fn free(p: ptr<u8>) -> void
+extern "c" fn strlen(s: ptr<const u8>) -> usize
+fn flag(value: bool) -> u8 {
+    if value {
+        return 1;
+    }
+    return 0;
+}
+
+/// The length of a NUL-terminated C string, without the NUL.
+///
+/// text must be NUL-terminated.
+unsafe fn c_length(text: ptr<const u8>) -> i64 {
+    // SAFETY: the caller passes a NUL-terminated string.
+    return cast<i64>(unsafe strlen(text));
+}
+
+/// Copies bytes into NUL-terminated malloc storage the host frees with
+/// `satin_string_free`; null when they hold a NUL or there is no storage.
+fn string_out(bytes: []u8) -> ?ptr<u8> {
+    let length = mem::len(bytes);
+    for 0..length |index| {
+        if bytes[index] == cast<u8>(0) {
+            return null;
+        }
+    }
+    // SAFETY: malloc returns length + 1 bytes of storage or null.
+    let storage = unsafe malloc(cast<usize>(length + 1));
+    if storage |out| {
+        // SAFETY: out holds length + 1 writable bytes.
+        let view = unsafe mut_view_from_ptr(out, length + 1);
+        for 0..length |index| {
+            view[index] = bytes[index];
+        }
+        view[length] = cast<u8>(0);
+    }
+    return storage;
+}
+
+/// string_out of a String's bytes.
+fn owned_out(text: &string::String) -> ?ptr<u8> {
+    let bytes = text.as_bytes();
+    return string_out(bytes);
+}
+
+fn is_utf8(bytes: []u8) -> bool {
+    return tmux::is_valid_utf8(bytes);
+}
+
+/// Frees a string an export returned.
+export "c" fn satin_string_free(text: ?ptr<u8>) -> void {
+    if text |live| {
+        // SAFETY: live came from string_out and is freed once.
+        unsafe free(live);
+    }
+    return;
+}

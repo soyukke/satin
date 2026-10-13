@@ -1,0 +1,259 @@
+// The lines drawn with a cell's text: underlines of five kinds, a
+// strikethrough and an overline. The Rust `neovide_text::decorations`.
+import satin::term;
+import std::math;
+import std::mem;
+
+fn underline_ratio() -> f32 {
+    return lit(0.86);
+}
+
+fn strikethrough_ratio() -> f32 {
+    return lit(0.54);
+}
+
+fn overline_ratio() -> f32 {
+    return lit(0.12);
+}
+
+/// How far a double underline's lines and a curly one's peaks are from the
+/// underline's own height.
+fn underline_swing() -> f32 {
+    return lit(1.5);
+}
+
+/// Where a line is drawn: its screen row, which a cursor may put between
+/// rows, the screen column of its first cell, how many of its cells show,
+/// and the pixels its window's scroll slides it by.
+struct LineSpot {
+    row: f32,
+    left: i64,
+    width: i64,
+    y_offset: f32,
+}
+
+/// The height of the decoration that is ratio of the way down the spot's row.
+fn decoration_y(spot: LineSpot, ratio: f32, layout: &Layout) -> f32 {
+    return layout.row_y(spot.row + ratio) + spot.y_offset;
+}
+
+/// A coordinate as Skia's hairlines read it: cut to a sixty-fourth of a
+/// pixel.
+fn hairline_coordinate(value: f32) -> f32 {
+    return math::trunc<f32>(value * lit(64.0)) / lit(64.0);
+}
+
+/// The pixel a hairline's coordinate rounds to: halves go up.
+fn hairline_pixel(value: f32) -> f32 {
+    return math::floor<f32>(value + lit(0.5));
+}
+
+/// A level stroke from start_x to end_x in the pixel row y is in, one
+/// pixel thick: the Rust renderer stroked every decoration with a paint of
+/// no width, which Skia draws as a hairline whatever the font's own
+/// underline measures.
+fn stroke_level(
+    allocator: Allocator,
+    list: &var DisplayList,
+    start_x: f32,
+    end_x: f32,
+    y: f32,
+    color: Rgba,
+    layout: &Layout
+) -> mem::Error!void {
+    try list.fill_rect(
+        allocator,
+        Rect { x: start_x, y: math::floor<f32>(y), width: end_x - start_x, height: layout.stroke },
+        color
+    );
+    return;
+}
+
+/// The pixels of a hairline from one point to the other, as Skia's scan
+/// conversion picks them without antialiasing: a line that is wider than
+/// it is high has one pixel in every column from the pixel its left end
+/// rounds to up to the one its right end rounds to, in the row the line
+/// crosses that column's center in, and a line that is higher than wide
+/// the same with rows and columns traded. The pixels of one row that touch
+/// are one rectangle.
+fn stroke_hairline(allocator: Allocator, list: &var DisplayList, from: Point, to: Point, color: Rgba) -> mem::Error!void {
+    var x0 = hairline_coordinate(from.x);
+    var y0 = hairline_coordinate(from.y);
+    var x1 = hairline_coordinate(to.x);
+    var y1 = hairline_coordinate(to.y);
+    let one = lit(1.0);
+    if math::abs<f32>(x1 - x0) > math::abs<f32>(y1 - y0) {
+        if x0 > x1 {
+            let x = x0;
+            let y = y0;
+            x0 = x1;
+            y0 = y1;
+            x1 = x;
+            y1 = y;
+        }
+        let first = hairline_pixel(x0);
+        let stop = hairline_pixel(x1);
+        let slope = (y1 - y0) / (x1 - x0);
+        // How far the first column's center is past the line's left end.
+        var lead = first + lit(0.5) - x0;
+        if lead >= one {
+            lead = lead - one;
+        }
+        var column = first;
+        var start = first;
+        var row = math::floor<f32>(y0 + slope * lead);
+        while column < stop {
+            let next = column + one;
+            let next_row = math::floor<f32>(y0 + slope * (lead + next - first));
+            if next >= stop or next_row != row {
+                try list.fill_rect(allocator, Rect { x: start, y: row, width: next - start, height: one }, color);
+                start = next;
+                row = next_row;
+            }
+            column = next;
+        }
+        return;
+    }
+    if y0 > y1 {
+        let x = x0;
+        let y = y0;
+        x0 = x1;
+        y0 = y1;
+        x1 = x;
+        y1 = y;
+    }
+    let first = hairline_pixel(y0);
+    let stop = hairline_pixel(y1);
+    if first >= stop {
+        return;
+    }
+    let slope = (x1 - x0) / (y1 - y0);
+    var lead = first + lit(0.5) - y0;
+    if lead >= one {
+        lead = lead - one;
+    }
+    var row = first;
+    while row < stop {
+        let column = math::floor<f32>(x0 + slope * (lead + row - first));
+        try list.fill_rect(allocator, Rect { x: column, y: row, width: one, height: one }, color);
+        row = row + one;
+    }
+    return;
+}
+
+/// The pixels of a disc of radius around (x, y) filled without
+/// antialiasing: the ones whose centers are in it, a rectangle a row.
+fn fill_dot(allocator: Allocator, list: &var DisplayList, x: f32, y: f32, radius: f32, color: Rgba) -> mem::Error!void {
+    let half = lit(0.5);
+    var row = math::floor<f32>(y - radius);
+    while row <= math::floor<f32>(y + radius) {
+        let dy = row + half - y;
+        var left = math::floor<f32>(x - radius);
+        var width = lit(0.0);
+        var column = left;
+        while column <= math::floor<f32>(x + radius) {
+            let dx = column + half - x;
+            if dx * dx + dy * dy <= radius * radius {
+                if width == lit(0.0) {
+                    left = column;
+                }
+                width = width + lit(1.0);
+            }
+            column = column + lit(1.0);
+        }
+        if width > lit(0.0) {
+            try list.fill_rect(allocator, Rect { x: left, y: row, width: width, height: lit(1.0) }, color);
+        }
+        row = row + lit(1.0);
+    }
+    return;
+}
+
+fn draw_underline(
+    allocator: Allocator,
+    list: &var DisplayList,
+    start_x: f32,
+    end_x: f32,
+    y: f32,
+    kind: term::Underline,
+    color: Rgba,
+    layout: &Layout
+) -> mem::Error!void {
+    if kind == term::Underline::Double {
+        try stroke_level(allocator, list, start_x, end_x, y - underline_swing(), color, layout);
+        try stroke_level(allocator, list, start_x, end_x, y + underline_swing(), color, layout);
+        return;
+    }
+    if kind == term::Underline::Curly {
+        let step = math::max<f32>(layout.geometry.cell_width / lit(3.0), lit(2.0));
+        var x = start_x;
+        var up = true;
+        while x < end_x {
+            let next = math::min<f32>(x + step, end_x);
+            var next_y = y + underline_swing();
+            if up {
+                next_y = y - underline_swing();
+            }
+            try stroke_hairline(allocator, list, Point { x: x, y: y }, Point { x: next, y: next_y }, color);
+            x = next;
+            up = !up;
+        }
+        return;
+    }
+    if kind == term::Underline::Dotted {
+        var x = start_x;
+        while x <= end_x {
+            try fill_dot(allocator, list, x, y, lit(0.8), color);
+            x = x + lit(3.0);
+        }
+        return;
+    }
+    if kind == term::Underline::Dashed {
+        var x = start_x;
+        while x < end_x {
+            try stroke_level(allocator, list, x, math::min<f32>(x + lit(4.0), end_x), y, color, layout);
+            x = x + lit(7.0);
+        }
+        return;
+    }
+    try stroke_level(allocator, list, start_x, end_x, y, color, layout);
+    return;
+}
+
+/// Draws style's lines under, through and over the screen columns from
+/// start_col up to end_col of the spot's row, in fg unless the underline
+/// has a color of its own.
+fn draw_decorations(
+    allocator: Allocator,
+    list: &var DisplayList,
+    start_col: i64,
+    end_col: i64,
+    style: term::CellStyle,
+    fg: term::Color,
+    spot: LineSpot,
+    layout: &Layout
+) -> mem::Error!void {
+    let underlined = style.underline != term::Underline::None;
+    if !underlined and !style.strikethrough and !style.overline {
+        return;
+    }
+    let start_x = layout.column_x(start_col);
+    let end_x = layout.column_x(end_col);
+    if underlined {
+        var color = opaque(fg);
+        if style.has_underline_color {
+            color = opaque(style.underline_color);
+        }
+        let y = decoration_y(spot, underline_ratio(), layout);
+        try draw_underline(allocator, list, start_x, end_x, y, style.underline, color, layout);
+    }
+    if style.strikethrough {
+        let y = decoration_y(spot, strikethrough_ratio(), layout);
+        try stroke_level(allocator, list, start_x, end_x, y, opaque(fg), layout);
+    }
+    if style.overline {
+        let y = decoration_y(spot, overline_ratio(), layout);
+        try stroke_level(allocator, list, start_x, end_x, y, opaque(fg), layout);
+    }
+    return;
+}

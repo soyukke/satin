@@ -1,0 +1,200 @@
+// The URL a word under the pointer names, and the directory a terminal's
+// reported working directory names. The Rust `terminal_runtime::url` and
+// `terminal_pwd_path`.
+import satin::tmux;
+import std::mem;
+import std::string;
+
+/// Where needle first starts in bytes at or after from; -1 when nowhere.
+pub fn find_bytes(bytes: []u8, needle: []u8, from: i64) -> i64 {
+    let last = mem::len(bytes) - mem::len(needle);
+    var index = from;
+    while index <= last {
+        if mem::starts_with(bytes[index..mem::len(bytes)], needle) {
+            return index;
+        }
+        index = index + 1;
+    }
+    return -1;
+}
+
+fn is_ascii_alphanumeric(byte: u8) -> bool {
+    let value = cast<i64>(byte);
+    return (value >= 48 and value <= 57) or (value >= 65 and value <= 90) or (value >= 97 and value <= 122);
+}
+
+/// Whether byte is a character RFC 3986 lets a URL hold.
+fn is_url_byte(byte: u8) -> bool {
+    if is_ascii_alphanumeric(byte) {
+        return true;
+    }
+    let allowed = "-._~:/?#[]@!$&'()*+,;=%";
+    for 0..mem::len(allowed) |index| {
+        if allowed[index] == byte {
+            return true;
+        }
+    }
+    return false;
+}
+
+fn count_byte(bytes: []u8, byte: u8) -> i64 {
+    var count: i64 = 0;
+    for 0..mem::len(bytes) |index| {
+        if bytes[index] == byte {
+            count = count + 1;
+        }
+    }
+    return count;
+}
+
+/// The length of url without trailing sentence punctuation and closing
+/// brackets that nothing in it opens.
+fn trimmed_url_length(url: []u8) -> i64 {
+    var length = mem::len(url);
+    while length > 0 {
+        let kept = url[0..length];
+        let last = cast<i64>(url[length - 1]);
+        var dropped = false;
+        if last == 41 {
+            dropped = count_byte(kept, 40) < count_byte(kept, 41);
+        } else if last == 93 {
+            dropped = count_byte(kept, 91) < count_byte(kept, 93);
+        } else {
+            dropped = last == 46 or last == 44 or last == 59 or last == 58 or last == 33 or last == 63 or
+                last == 39;
+        }
+        if !dropped {
+            return length;
+        }
+        length = length - 1;
+    }
+    return length;
+}
+
+fn scheme(index: i64) -> []u8 {
+    if index == 0 {
+        return "https://";
+    }
+    if index == 1 {
+        return "http://";
+    }
+    if index == 2 {
+        return "file://";
+    }
+    if index == 3 {
+        return "mailto:";
+    }
+    return "www.";
+}
+
+/// Appends the URL in a whitespace-delimited word to out; false when the
+/// word holds none. Words carry prose punctuation that no whitespace
+/// separates, so the URL ends at the first character outside RFC 3986 and
+/// drops trailing sentence punctuation and unbalanced closing brackets.
+pub fn normalize_terminal_url(allocator: Allocator, value: []u8, out: &var string::String) -> mem::Error!bool {
+    var start: i64 = -1;
+    for 0..4 |index| {
+        let found = find_bytes(value, scheme(index), 0);
+        if found >= 0 and (start < 0 or found < start) {
+            start = found;
+        }
+    }
+    var bare = false;
+    if start < 0 {
+        start = find_bytes(value, scheme(4), 0);
+        if start < 0 {
+            return false;
+        }
+        if start > 0 and is_ascii_alphanumeric(value[start - 1]) {
+            return false;
+        }
+        bare = true;
+    }
+    var end = start;
+    while end < mem::len(value) and is_url_byte(value[end]) {
+        end = end + 1;
+    }
+    let candidate = value[start..end];
+    let url = candidate[0..trimmed_url_length(candidate)];
+    var has_target = false;
+    for 0..5 |index| {
+        let prefix = scheme(index);
+        if mem::len(url) > mem::len(prefix) and mem::starts_with(url, prefix) {
+            has_target = true;
+        }
+    }
+    if !has_target {
+        return false;
+    }
+    if bare {
+        try out.append_bytes(allocator, "https://");
+    }
+    try out.append_bytes(allocator, url);
+    return true;
+}
+
+fn hex_value(byte: u8) -> i64 {
+    let value = cast<i64>(byte);
+    if value >= 48 and value <= 57 {
+        return value - 48;
+    }
+    if value >= 97 and value <= 102 {
+        return value - 87;
+    }
+    if value >= 65 and value <= 70 {
+        return value - 55;
+    }
+    return -1;
+}
+
+fn decoded_is_utf8(out: &string::String, from: i64) -> bool {
+    let decoded = out.as_bytes();
+    return tmux::is_valid_utf8(decoded[from..mem::len(decoded)]);
+}
+
+/// Appends the directory a reported working directory names to out: an
+/// absolute path, or the path of a `file://host/path` URL, with its percent
+/// escapes decoded. False, leaving out as it was, when pwd names none or
+/// decodes to bytes that are not UTF-8.
+pub fn terminal_pwd_path(allocator: Allocator, pwd: []u8, out: &var string::String) -> mem::Error!bool {
+    let trimmed = mem::trim_ascii(pwd);
+    if mem::len(trimmed) == 0 {
+        return false;
+    }
+    var path = trimmed;
+    if mem::starts_with(trimmed, "file://") {
+        let slash = find_bytes(trimmed, "/", 7);
+        if slash < 0 {
+            return false;
+        }
+        path = trimmed[slash..mem::len(trimmed)];
+    } else if trimmed[0] != cast<u8>(47) {
+        return false;
+    }
+    let before = out.len();
+    var index: i64 = 0;
+    while index < mem::len(path) {
+        if path[index] != cast<u8>(37) {
+            try out.append_byte(allocator, path[index]);
+            index = index + 1;
+            continue;
+        }
+        var high: i64 = -1;
+        var low: i64 = -1;
+        if index + 2 < mem::len(path) {
+            high = hex_value(path[index + 1]);
+            low = hex_value(path[index + 2]);
+        }
+        if high < 0 or low < 0 {
+            let _ = out.truncate(before);
+            return false;
+        }
+        try out.append_byte(allocator, cast<u8>(high * 16 + low));
+        index = index + 3;
+    }
+    if !decoded_is_utf8(out, before) {
+        let _ = out.truncate(before);
+        return false;
+    }
+    return true;
+}

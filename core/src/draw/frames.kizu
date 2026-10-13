@@ -1,0 +1,399 @@
+// What a renderer keeps between frames for each pane it draws, and the
+// frame itself: a terminal or an editor in, a display list out. The Rust
+// `NativeSkiaMetalRenderer` without its Skia surface.
+//
+// Time is a parameter, in milliseconds of a monotonic clock, so a frame is
+// a function of what it is given.
+import satin::nvim;
+import satin::term;
+import std::map;
+import std::math;
+import std::mem;
+
+/// How often blinking text asks for a frame, in milliseconds.
+fn text_blink_millis() -> i64 {
+    return 500;
+}
+
+/// One pane's state: the composed text's line, the cursor's corners and
+/// blink, when it was last drawn (while has_last_frame is set) and in which
+/// frame, and what of it is still moving.
+struct PaneState {
+    preedit: PreeditCache,
+    cursor: CursorAnimation,
+    blink: CursorBlink,
+    has_last_frame: bool,
+    last_frame_ms: i64,
+    scroll_active: bool,
+    text_blink: bool,
+    last_render_frame: u64,
+}
+
+fn new_pane_state(allocator: Allocator) -> PaneState {
+    return PaneState {
+        preedit: new_preedit_cache(allocator),
+        cursor: new_cursor_animation(),
+        blink: new_cursor_blink(),
+        has_last_frame: false,
+        last_frame_ms: 0,
+        scroll_active: false,
+        text_blink: false,
+        last_render_frame: 0
+    };
+}
+
+fn (self: PaneState) deinit(allocator: Allocator) -> void {
+    self.preedit.deinit(allocator);
+}
+
+/// The seconds from the pane's last frame to now_ms, zero for its first
+/// and never more than max_animation_dt().
+fn (self: &PaneState) elapsed(now_ms: i64) -> f32 {
+    if !self.has_last_frame {
+        return lit(0.0);
+    }
+    let seconds = span(math::max<i64>(now_ms - self.last_frame_ms, 0)) / lit(1000.0);
+    return math::min<f32>(seconds, max_animation_dt());
+}
+
+/// elapsed, with now_ms made the pane's last frame.
+fn (self: &var PaneState) animation_dt(now_ms: i64) -> f32 {
+    let dt = self.elapsed(now_ms);
+    self.has_last_frame = true;
+    self.last_frame_ms = now_ms;
+    return dt;
+}
+
+/// The milliseconds from now_ms until the pane needs its next frame: none
+/// while something moves; null when nothing will change.
+fn (self: &PaneState) next_frame_delay_ms(now_ms: i64) -> ?i64 {
+    if self.cursor.needs_animation_frame() or self.scroll_active {
+        return 0;
+    }
+    var delay = self.blink.next_frame_delay_ms(now_ms);
+    if self.text_blink {
+        delay = math::min<i64>(delay orelse text_blink_millis(), text_blink_millis());
+    }
+    return delay;
+}
+
+/// Brings the cursor and the composed text up to scene, dt seconds after
+/// the last frame. Whether there is composed text to draw.
+fn (self: &var PaneState) settle(
+    allocator: Allocator,
+    scene: &Scene,
+    geometry: Geometry,
+    dt: f32,
+    preedit: []u8,
+    now_ms: i64
+) -> mem::Error!bool {
+    self.cursor.update(scene, geometry, dt);
+    self.blink.update_at(now_ms, scene.has_cursor, scene.cursor);
+    // The composed text is drawn in the background's color on the cursor's.
+    return try self.preedit.prepare(
+        allocator,
+        preedit,
+        scene.background,
+        scene.cursor_color,
+        scene.preedit_available_columns(geometry)
+    );
+}
+
+/// Makes scene a terminal's: one window that fills the pane.
+fn terminal_scene(allocator: Allocator, scene: &var Scene, runtime: &term::Runtime) -> mem::Error!void {
+    scene.background = runtime.frame.background;
+    scene.cursor_color = runtime.frame.cursor_color;
+    scene.has_cursor = runtime.frame.has_cursor;
+    scene.cursor = SceneCursor {
+        x: runtime.frame.cursor.x,
+        y: runtime.frame.cursor.y,
+        shape: runtime.frame.cursor.shape,
+        cell_percentage: 100,
+        blinkwait_ms: 0,
+        blinkon_ms: 0,
+        blinkoff_ms: 0
+    };
+    scene.has_cursor_parent = true;
+    scene.cursor_parent = 1;
+    var view = main_view(1, runtime.model.window.width, runtime.model.window.height);
+    view.scroll_position = runtime.model.window.spring.position;
+    view.margins = runtime.model.window.margins;
+    try scene.add_window(allocator, view);
+    try scene.plan(allocator);
+    return;
+}
+
+fn window_kind(kind: nvim::WindowKind) -> WindowKind {
+    if kind == nvim::WindowKind::Float {
+        return WindowKind::Float;
+    }
+    if kind == nvim::WindowKind::Message {
+        return WindowKind::Message;
+    }
+    return WindowKind::Normal;
+}
+
+/// Makes scene an editor's: its windows where Neovim placed them, its
+/// cursor and its message selection. Whether any of its text blinks.
+fn editor_scene(allocator: Allocator, scene: &var Scene, editor: &nvim::Editor) -> mem::Error!bool {
+    var blinks = false;
+    scene.background = editor.background();
+    scene.cursor_color = editor.cursor_color();
+    if editor.cursor() |cursor| {
+        scene.has_cursor = true;
+        scene.cursor = SceneCursor {
+            x: cursor.x,
+            y: cursor.y,
+            shape: cursor.shape,
+            cell_percentage: cursor.cell_percentage,
+            blinkwait_ms: cursor.blinkwait_ms,
+            blinkon_ms: cursor.blinkon_ms,
+            blinkoff_ms: cursor.blinkoff_ms
+        };
+    }
+    if editor.cursor_parent_grid() |grid| {
+        scene.has_cursor_parent = true;
+        scene.cursor_parent = grid;
+    }
+    if editor.message_selection() |selection| {
+        scene.has_selection = true;
+        scene.selection = Selection {
+            grid: selection.grid,
+            start_row: selection.start.row,
+            start_col: selection.start.col,
+            end_row: selection.end.row,
+            end_col: selection.end.col
+        };
+    }
+    for 0..editor.window_count() |index| {
+        let grid = editor.window_grid(index);
+        let placement = editor.placement(grid);
+        if editor.window(grid) |cache| {
+            if cache_has_blink(cache) {
+                blinks = true;
+            }
+            try scene.add_window(
+                allocator,
+                WindowView {
+                grid: grid,
+                top: placement.top,
+                left: placement.left,
+                width: placement.width,
+                height: placement.height,
+                kind: window_kind(placement.kind),
+                zindex: placement.zindex,
+                compindex: placement.compindex,
+                hidden: placement.hidden,
+                scroll_position: cache.spring.position,
+                margins: cache.margins
+            }
+            );
+        }
+    }
+    try scene.plan(allocator);
+    return blinks;
+}
+
+/// The panes a renderer draws, by the address of the runtime each shows,
+/// and the frame being drawn.
+pub struct Frames {
+    frame_id: u64,
+    panes: map::Map<usize, PaneState>,
+}
+
+pub fn new_frames(allocator: Allocator) -> Frames {
+    return Frames { frame_id: 0, panes: map::new<usize, PaneState>(allocator) };
+}
+
+pub fn (self: Frames) deinit(allocator: Allocator) -> void {
+    self.panes.deinit(allocator);
+}
+
+/// Starts the next frame: only the panes drawn in it ask for another.
+pub fn (self: &var Frames) begin_frame() -> void {
+    self.frame_id = self.frame_id + 1;
+    if self.frame_id != 0 {
+        return;
+    }
+    self.frame_id = 1;
+    var index: i64 = 0;
+    while self.panes.key_at(index) |id| {
+        if self.panes.at_mut(id) |pane| {
+            pane.last_render_frame = 0;
+        }
+        index = index + 1;
+    }
+    return;
+}
+
+/// Drops what is kept for the pane that showed the runtime at id.
+pub fn (self: &var Frames) forget_runtime(allocator: Allocator, id: usize) -> void {
+    if self.panes.remove(allocator, id) |pane| {
+        pane.deinit(allocator);
+    }
+    return;
+}
+
+pub fn (self: &Frames) pane_count() -> i64 {
+    return self.panes.len();
+}
+
+/// The milliseconds from now_ms until a pane drawn in this frame needs the
+/// next one; null when none does.
+pub fn (self: &Frames) next_frame_delay_ms(now_ms: i64) -> ?i64 {
+    var soonest: ?i64 = null;
+    var index: i64 = 0;
+    while self.panes.key_at(index) |id| {
+        if self.panes.at(id) |pane| {
+            if pane.last_render_frame == self.frame_id {
+                if pane.next_frame_delay_ms(now_ms) |delay| {
+                    soonest = math::min<i64>(soonest orelse delay, delay);
+                }
+            }
+        }
+        index = index + 1;
+    }
+    return soonest;
+}
+
+pub fn (self: &Frames) needs_animation_frame(now_ms: i64) -> bool {
+    if self.next_frame_delay_ms(now_ms) |_delay| {
+        return true;
+    }
+    return false;
+}
+
+fn (self: &var Frames) ensure_pane(allocator: Allocator, id: usize) -> mem::Error!void {
+    if self.panes.contains(id) {
+        return;
+    }
+    var pane = new_pane_state(allocator);
+    errdefer pane.deinit(allocator);
+    try self.panes.insert(allocator, id, move pane);
+    return;
+}
+
+/// Makes list the commands that draw the terminal's pane at now_ms: reads
+/// its viewport and its images, moves its scroll and its cursor on, and
+/// lays out preedit, the text an input method is composing (empty for
+/// none). id is the runtime's address; clear says the pane is the first of
+/// its frame.
+pub fn (self: &var Frames) render_terminal(
+    allocator: Allocator,
+    list: &var DisplayList,
+    runtime: &var term::Runtime,
+    id: usize,
+    geometry: Geometry,
+    metrics: FontMetrics,
+    clear: bool,
+    preedit: []u8,
+    now_ms: i64
+) -> term::Failure!void {
+    list.reset(allocator);
+    var has_images = true;
+    if runtime.collect_kitty(allocator) {} else |_| {
+        has_images = false;
+    }
+    try self.ensure_pane(allocator, id);
+    let frame_id = self.frame_id;
+    var scene = new_scene(allocator);
+    defer scene.deinit(allocator);
+    let layout = new_layout(geometry, metrics, now_ms);
+    if self.panes.at_mut(id) |pane| {
+        let dt = pane.animation_dt(now_ms);
+        if runtime.model.advance_animations(dt) {}
+        // A scroll the output asked for is kept until the model is brought
+        // up to this frame, so whether it is still moving is read after.
+        try runtime.update_model(allocator);
+        pane.scroll_active = runtime.model.has_active_animation();
+        try terminal_scene(allocator, &var scene, runtime);
+        let has_preedit = try pane.settle(allocator, &scene, geometry, dt, preedit, now_ms);
+        pane.text_blink = cache_has_blink(&runtime.model.window);
+        pane.last_render_frame = frame_id;
+        let placements = runtime.kitty.placements.as_slice();
+        try begin_scene(allocator, list, &scene, &layout, clear);
+        if has_images {
+            try draw_kitty_images(allocator, list, &scene, &layout, placements, id, false);
+        }
+        for 0..scene.step_count() |index| {
+            try draw_step(allocator, list, &scene, index, &runtime.model.window, &layout);
+        }
+        if has_images {
+            try draw_kitty_images(allocator, list, &scene, &layout, placements, id, true);
+        }
+        try finish_scene(
+            allocator,
+            list,
+            &scene,
+            &layout,
+            &pane.cursor,
+            pane.blink.should_render(),
+            has_preedit,
+            &pane.preedit.line
+        );
+    }
+    return;
+}
+
+/// render_terminal for an editor: draws its windows in Neovim's order, the
+/// floats between two others as one layer. placements are the images its
+/// terminal holds, and scroll_active whether a scroll of it is still moving.
+pub fn (self: &var Frames) render_editor(
+    allocator: Allocator,
+    list: &var DisplayList,
+    editor: &nvim::Editor,
+    placements: []term::Placement,
+    scroll_active: bool,
+    id: usize,
+    geometry: Geometry,
+    metrics: FontMetrics,
+    clear: bool,
+    preedit: []u8,
+    now_ms: i64
+) -> mem::Error!void {
+    list.reset(allocator);
+    try self.ensure_pane(allocator, id);
+    let frame_id = self.frame_id;
+    var scene = new_scene(allocator);
+    defer scene.deinit(allocator);
+    let layout = new_layout(geometry, metrics, now_ms);
+    if self.panes.at_mut(id) |pane| {
+        // The editor's scrolls were moved on by the caller, which holds it
+        // to write; the pane's own clock moves the cursor.
+        let dt = pane.animation_dt(now_ms);
+        pane.scroll_active = scroll_active;
+        pane.text_blink = try editor_scene(allocator, &var scene, editor);
+        let has_preedit = try pane.settle(allocator, &scene, geometry, dt, preedit, now_ms);
+        pane.last_render_frame = frame_id;
+        try begin_scene(allocator, list, &scene, &layout, clear);
+        try draw_kitty_images(allocator, list, &scene, &layout, placements, id, false);
+        for 0..scene.step_count() |index| {
+            if editor.window(scene.step_grid(index)) |cache| {
+                try draw_step(allocator, list, &scene, index, cache, &layout);
+            }
+        }
+        try draw_kitty_images(allocator, list, &scene, &layout, placements, id, true);
+        try finish_scene(
+            allocator,
+            list,
+            &scene,
+            &layout,
+            &pane.cursor,
+            pane.blink.should_render(),
+            has_preedit,
+            &pane.preedit.line
+        );
+    }
+    return;
+}
+
+/// The seconds an editor's scrolls move on for the frame at now_ms of the
+/// pane that shows the runtime at id: what render_editor will move its
+/// cursor by.
+pub fn (self: &var Frames) editor_dt(allocator: Allocator, id: usize, now_ms: i64) -> mem::Error!f32 {
+    try self.ensure_pane(allocator, id);
+    if self.panes.at(id) |pane| {
+        return pane.elapsed(now_ms);
+    }
+    return lit(0.0);
+}

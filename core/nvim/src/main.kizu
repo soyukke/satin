@@ -1,0 +1,8 @@
+// The entry point of the `satin-nvim` command; satin::launcher holds what
+// it does.
+import satin::launcher;
+import std::process;
+
+fn main() -> !process::ExitStatus {
+    return launcher::run_main();
+}

@@ -1,0 +1,76 @@
+import std::mem;
+import std::string;
+import std::testing;
+
+fn escaped(allocator: Allocator, text: []u8) -> !string::String {
+    var out = string::new(allocator);
+    errdefer out.deinit(allocator);
+    var index = 0;
+    while index < mem::len(text) {
+        if text[index] == cast<u8>(92) and index + 1 < mem::len(text) {
+            let next = text[index + 1];
+            if next == cast<u8>(101) {
+                try out.append_byte(allocator, cast<u8>(27));
+            } else if next == cast<u8>(97) {
+                try out.append_byte(allocator, cast<u8>(7));
+            } else {
+                try out.append_byte(allocator, next);
+            }
+            index = index + 2;
+        } else {
+            try out.append_byte(allocator, text[index]);
+            index = index + 1;
+        }
+    }
+    return move out;
+}
+
+fn feed_tracker(allocator: Allocator, tracker: &var ScrollTracker, text: []u8) -> !ScrollUpdate {
+    let input = try escaped(allocator, text);
+    defer input.deinit(allocator);
+    let bytes = input.as_bytes();
+    return tracker.feed(allocator, bytes);
+}
+
+fn expect_update(update: ScrollUpdate, rows: i64, has_region: bool, top: i64, bottom: i64, left: i64, right: i64) -> void {
+    testing::expect_equal<i64>(rows, update.rows);
+    testing::expect(update.has_region == has_region);
+    if has_region {
+        testing::expect_equal<i64>(top, update.region.top);
+        testing::expect_equal<i64>(bottom, update.region.bottom);
+        testing::expect_equal<i64>(left, update.region.left);
+        testing::expect_equal<i64>(right, update.region.right);
+    }
+}
+
+test "reads a region delete-line sequence" {
+    let allocator = mem::page_allocator();
+    var tracker = new_tracker(allocator, 1);
+    defer tracker.deinit(allocator);
+    expect_update(try feed_tracker(allocator, &var tracker, "\e[1;22r\e[H\e["), 0, false, 0, 0, 0, 0);
+    expect_update(try feed_tracker(allocator, &var tracker, "11M\e[r"), 11, true, 1, 22, 0, 0);
+}
+
+test "reads a Satin rectangular scroll event" {
+    let allocator = mem::page_allocator();
+    var tracker = new_tracker(allocator, 1);
+    defer tracker.deinit(allocator);
+    expect_update(try feed_tracker(allocator, &var tracker, "\e]777;SatinScroll;1;31;2;47;26;160\e\\"), 24, true, 2, 47, 26, 160);
+}
+
+test "ignores cursor and control string updates" {
+    let allocator = mem::page_allocator();
+    var tracker = new_tracker(allocator, 1);
+    defer tracker.deinit(allocator);
+    expect_update(try feed_tracker(allocator, &var tracker, "\e[?25l\e[24;70H\e[13A\e[?25h"), 0, false, 0, 0, 0, 0);
+    expect_update(try feed_tracker(allocator, &var tracker, "\e]2;not-a-scroll-\e[8M\a"), 0, false, 0, 0, 0, 0);
+}
+
+test "reads scroll up and down sequences" {
+    let allocator = mem::page_allocator();
+    var tracker = new_tracker(allocator, 1);
+    defer tracker.deinit(allocator);
+    expect_update(try feed_tracker(allocator, &var tracker, "\e[3S"), 3, false, 0, 0, 0, 0);
+    expect_update(try feed_tracker(allocator, &var tracker, "\e[2T"), -2, false, 0, 0, 0, 0);
+    expect_update(try feed_tracker(allocator, &var tracker, "\e[L"), -1, false, 0, 0, 0, 0);
+}

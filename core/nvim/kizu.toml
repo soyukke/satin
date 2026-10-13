@@ -1,0 +1,8 @@
+[package]
+name = "satin"
+version = "0.1.0"
+
+# The `satin-nvim` command: the `nvim` a Satin pane finds first. It opens
+# Neovim in the app's own UI when it can, and runs the real nvim otherwise.
+[modules]
+paths = ["../shared", "src"]

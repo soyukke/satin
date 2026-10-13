@@ -1,0 +1,847 @@
+// What the host asks a terminal apart from its frame: the selection and its
+// text, the link under a point, a search over the screen, the title, the
+// working directory, and where the viewport is scrolled. The Rust
+// `NativeTerminalRuntime` methods of the same names.
+import satin::tmux;
+import std::array;
+import std::mem;
+import std::string;
+
+/// libghostty's `GhosttyGridRef`: one cell of a terminal, valid until the
+/// terminal next changes.
+extern "c" struct GridRef {
+    size: usize,
+    node: ?ptr<u8>,
+    x: u16,
+    y: u16,
+}
+
+/// libghostty's `GhosttySelection`.
+extern "c" struct Selection {
+    size: usize,
+    start: GridRef,
+    end: GridRef,
+    rectangle: bool,
+}
+
+/// The coordinate arm of libghostty's `GhosttyPointValue`, padded to the
+/// union's size.
+extern "c" struct PointValue {
+    x: u16,
+    y: u32,
+    padding: u64,
+}
+
+/// libghostty's `GhosttyPoint`.
+extern "c" struct Point {
+    tag: i32,
+    value: PointValue,
+}
+
+/// The delta arm of libghostty's `GhosttyTerminalScrollViewportValue`, padded
+/// to the union's size.
+extern "c" struct ScrollValue {
+    delta: isize,
+    padding: u64,
+}
+
+/// libghostty's `GhosttyTerminalScrollViewport`.
+extern "c" struct ScrollViewport {
+    tag: i32,
+    value: ScrollValue,
+}
+
+/// libghostty's `GhosttyTerminalSelectWordOptions`.
+extern "c" struct SelectWordOptions {
+    size: usize,
+    target: GridRef,
+    boundary_codepoints: ?ptr<u8>,
+    boundary_codepoints_len: usize,
+}
+
+/// libghostty's `GhosttyTerminalSelectionFormatOptions`.
+extern "c" struct FormatOptions {
+    size: usize,
+    emit: i32,
+    unwrap: bool,
+    trim: bool,
+    selection: ?ptr<u8>,
+}
+
+/// A `size_t` a call writes.
+extern "c" struct Length {
+    value: usize,
+}
+
+/// libghostty's `GhosttyString`: bytes the terminal owns until it next
+/// changes.
+extern "c" struct BorrowedText {
+    data: ?ptr<const u8>,
+    len: usize,
+}
+
+@link_library("ghostty-vt")
+extern "c" fn ghostty_terminal_set(terminal: ptr<u8>, option: i32, value: ?ptr<u8>) -> i32
+@link_library("ghostty-vt")
+extern "c" fn ghostty_terminal_resize(
+    terminal: ptr<u8>,
+    cols: u16,
+    rows: u16,
+    cell_width: u32,
+    cell_height: u32
+) -> i32
+@link_library("ghostty-vt")
+extern "c" fn ghostty_terminal_scroll_viewport(terminal: ptr<u8>, behavior: ScrollViewport) -> void
+@link_library("ghostty-vt")
+extern "c" fn ghostty_terminal_grid_ref(terminal: ptr<u8>, point: Point, out: &var GridRef) -> i32
+@link_library("ghostty-vt")
+extern "c" fn ghostty_grid_ref_graphemes(
+    target: &GridRef,
+    out: ptr<u8>,
+    out_len: usize,
+    written: &var Length
+) -> i32
+@link_library("ghostty-vt")
+extern "c" fn ghostty_grid_ref_hyperlink_uri(
+    target: &GridRef,
+    out: ptr<u8>,
+    out_len: usize,
+    written: &var Length
+) -> i32
+@link_library("ghostty-vt")
+extern "c" fn ghostty_terminal_select_all(terminal: ptr<u8>, out: &var Selection) -> i32
+@link_library("ghostty-vt")
+extern "c" fn ghostty_terminal_select_word(
+    terminal: ptr<u8>,
+    options: &SelectWordOptions,
+    out: &var Selection
+) -> i32
+@link_library("ghostty-vt")
+extern "c" fn ghostty_terminal_selection_format_buf(
+    terminal: ptr<u8>,
+    options: FormatOptions,
+    out: ptr<u8>,
+    out_len: usize,
+    written: &var Length
+) -> i32
+fn terminal_option_selection() -> i32 {
+    return 21;
+}
+fn terminal_data_cursor_x() -> i32 {
+    return 3;
+}
+
+fn terminal_data_cursor_y() -> i32 {
+    return 4;
+}
+
+fn terminal_data_title() -> i32 {
+    return 12;
+}
+
+fn terminal_data_pwd() -> i32 {
+    return 13;
+}
+
+fn terminal_data_total_rows() -> i32 {
+    return 14;
+}
+
+/// `GHOSTTY_NO_VALUE`.
+fn no_value() -> i32 {
+    return -4;
+}
+
+fn point_viewport() -> i32 {
+    return 1;
+}
+
+fn point_screen() -> i32 {
+    return 2;
+}
+
+fn empty_grid_ref() -> GridRef {
+    return GridRef { size: mem::size_of<GridRef>(), node: null, x: 0, y: 0 };
+}
+
+fn empty_selection() -> Selection {
+    return Selection {
+        size: mem::size_of<Selection>(),
+        start: empty_grid_ref(),
+        end: empty_grid_ref(),
+        rectangle: false
+    };
+}
+
+/// A Slot the queries pass values through.
+///
+/// slot is a Slot, freed by deinit, once.
+unsafe struct QuerySlot {
+    slot: ptr<u8>,
+}
+
+/// Runs queries against one terminal. buffer is what libghostty writes text
+/// to, and is always full-length zero-initialized storage. search_query and
+/// search_row are the last find that matched, read when search_active is
+/// set, so the next find for the same text goes on from its row.
+pub struct Queries {
+    scratch: QuerySlot,
+    buffer: string::String,
+    row_text: string::String,
+    row_columns: array::Array<i64>,
+    search_active: bool,
+    search_query: string::String,
+    search_row: i64,
+}
+
+pub fn new_queries(allocator: Allocator) -> Failure!Queries {
+    var buffer = string::new(allocator);
+    errdefer buffer.deinit(allocator);
+    try grow_buffer(allocator, &var buffer, 256);
+    let slot = new_slot() orelse return GhosttyError::Refused;
+    // SAFETY: slot is a Slot from new_slot.
+    let scratch = unsafe QuerySlot { slot: slot };
+    return Queries {
+        scratch: move scratch,
+        buffer: move buffer,
+        row_text: string::new(allocator),
+        row_columns: array::new<i64>(allocator),
+        search_active: false,
+        search_query: string::new(allocator),
+        search_row: 0
+    };
+}
+
+pub fn (self: Queries) deinit(allocator: Allocator) -> void {
+    // SAFETY: the slot came from malloc and nothing reads it after this.
+    unsafe free(self.scratch.slot);
+    self.buffer.deinit(allocator);
+    self.row_text.deinit(allocator);
+    self.row_columns.deinit(allocator);
+    self.search_query.deinit(allocator);
+}
+
+/// The viewport's scrollbar, read through slot.
+///
+/// terminal must be a live libghostty terminal and slot a Slot.
+unsafe fn read_scrollbar(terminal: ptr<u8>, slot: ptr<u8>) -> GhosttyError!Scrollbar {
+    // SAFETY: the caller passes a live terminal; the slot holds a scrollbar.
+    let result = unsafe ghostty_terminal_get(terminal, terminal_data_scrollbar(), slot);
+    if result != success() {
+        return GhosttyError::Refused;
+    }
+    // SAFETY: libghostty wrote a scrollbar to the slot.
+    let scrollbar = unsafe ptr_read(cast<ptr<TerminalScrollbar>>(slot));
+    return Scrollbar { top: scrollbar.offset, visible: scrollbar.len, total: scrollbar.total };
+}
+
+/// The viewport's scrollbar.
+///
+/// terminal must be a live libghostty terminal.
+pub unsafe fn(self: &Queries) scrollbar(terminal: ptr<u8>) -> GhosttyError!Scrollbar {
+    // SAFETY: the caller passes a live terminal; the slot is a Slot.
+    return unsafe read_scrollbar(terminal, self.scratch.slot);
+}
+
+/// The rows a scroll of requested rows can move a viewport, which stops at
+/// either end of the scrollback.
+pub fn bounded_scroll_rows(requested: i64, scrollbar: Scrollbar) -> i64 {
+    if requested == 0 or scrollbar.total <= scrollbar.visible {
+        return 0;
+    }
+    let top = cast<i64>(scrollbar.top);
+    let max_top = cast<i64>(scrollbar.total - scrollbar.visible);
+    if requested < 0 {
+        if 0 - requested > top {
+            return 0 - top;
+        }
+        return requested;
+    }
+    var available = max_top - top;
+    if available < 0 {
+        available = 0;
+    }
+    if requested > available {
+        return available;
+    }
+    return requested;
+}
+
+/// Scrolls the viewport by rows, positive toward the newest output.
+///
+/// terminal must be a live libghostty terminal.
+pub unsafe fn scroll_viewport_by(terminal: ptr<u8>, rows: i64) -> void {
+    let behavior = ScrollViewport { tag: 2, value: ScrollValue { delta: cast<isize>(rows), padding: 0 } };
+    // SAFETY: the caller passes a live terminal.
+    unsafe ghostty_terminal_scroll_viewport(terminal, behavior);
+    return;
+}
+
+/// Scrolls the viewport to the newest output.
+///
+/// terminal must be a live libghostty terminal.
+pub unsafe fn scroll_viewport_to_bottom(terminal: ptr<u8>) -> void {
+    let behavior = ScrollViewport { tag: 1, value: ScrollValue { delta: 0, padding: 0 } };
+    // SAFETY: the caller passes a live terminal.
+    unsafe ghostty_terminal_scroll_viewport(terminal, behavior);
+    return;
+}
+
+/// Scrolls the viewport by up to requested rows and returns the rows it
+/// moved.
+///
+/// terminal must be a live libghostty terminal.
+pub unsafe fn(self: &Queries) scroll_delta(terminal: ptr<u8>, requested: i64) -> i64 {
+    var rows = requested;
+    // SAFETY: the caller passes a live terminal.
+    if unsafe self.scrollbar(terminal) |scrollbar| {
+        rows = bounded_scroll_rows(requested, scrollbar);
+    } else |_| {}
+    if rows != 0 {
+        // SAFETY: the caller passes a live terminal.
+        unsafe scroll_viewport_by(terminal, rows);
+    }
+    return rows;
+}
+
+/// Resizes the terminal to cols x rows of cells that many pixels each.
+///
+/// terminal must be a live libghostty terminal.
+pub unsafe fn resize_terminal(
+    terminal: ptr<u8>,
+    cols: u16,
+    rows: u16,
+    cell_width: u32,
+    cell_height: u32
+) -> GhosttyError!void {
+    // SAFETY: the caller passes a live terminal.
+    let result = unsafe ghostty_terminal_resize(terminal, cols, rows, at_least_one(cell_width), at_least_one(cell_height));
+    if result != success() {
+        return GhosttyError::Refused;
+    }
+    return;
+}
+
+/// The cell at (x, y) in the coordinates tag names.
+///
+/// terminal must be a live libghostty terminal.
+unsafe fn grid_ref_at(terminal: ptr<u8>, tag: i32, x: i64, y: i64) -> GhosttyError!GridRef {
+    var target = empty_grid_ref();
+    let point = Point { tag: tag, value: PointValue { x: cast<u16>(x), y: cast<u32>(y), padding: 0 } };
+    // SAFETY: the caller passes a live terminal; target is a sized GridRef.
+    let result = unsafe ghostty_terminal_grid_ref(terminal, point, &var target);
+    if result != success() {
+        return GhosttyError::Refused;
+    }
+    return move target;
+}
+
+/// The viewport cell at (col, row), clamped into a cols x rows viewport.
+///
+/// terminal must be a live libghostty terminal.
+unsafe fn viewport_grid_ref(terminal: ptr<u8>, cols: i64, rows: i64, row: i64, col: i64) -> GhosttyError!GridRef {
+    var x = col;
+    if x > cols - 1 {
+        x = cols - 1;
+    }
+    if x < 0 {
+        x = 0;
+    }
+    var y = row;
+    if y > rows - 1 {
+        y = rows - 1;
+    }
+    if y < 0 {
+        y = 0;
+    }
+    // SAFETY: the caller passes a live terminal.
+    return unsafe grid_ref_at(terminal, point_viewport(), x, y);
+}
+
+/// Makes selection the terminal's selection, passing it through slot.
+///
+/// terminal must be a live libghostty terminal, selection one of its own,
+/// and slot a Slot.
+unsafe fn install_selection(terminal: ptr<u8>, slot: ptr<u8>, selection: Selection) -> GhosttyError!void {
+    // SAFETY: the slot is writable storage larger than a Selection.
+    unsafe ptr_write(cast<ptr<Selection>>(slot), move selection);
+    // SAFETY: the caller passes a live terminal; the slot holds a Selection for this call.
+    let result = unsafe ghostty_terminal_set(terminal, terminal_option_selection(), slot);
+    if result != success() {
+        return GhosttyError::Refused;
+    }
+    return;
+}
+
+/// Makes selection the terminal's selection.
+///
+/// terminal must be a live libghostty terminal and selection one of its own.
+unsafe fn(self: &Queries) set_selection(terminal: ptr<u8>, selection: Selection) -> GhosttyError!void {
+    // SAFETY: the caller passes a live terminal and its selection; the slot is a Slot.
+    return unsafe install_selection(terminal, self.scratch.slot, move selection);
+}
+
+/// Leaves the terminal with no selection.
+///
+/// terminal must be a live libghostty terminal.
+pub unsafe fn clear_selection(terminal: ptr<u8>) -> GhosttyError!void {
+    // SAFETY: the caller passes a live terminal; a null selection clears it.
+    let result = unsafe ghostty_terminal_set(terminal, terminal_option_selection(), null);
+    if result != success() {
+        return GhosttyError::Refused;
+    }
+    return;
+}
+
+/// Selects everything the terminal holds; nothing when it holds nothing.
+///
+/// terminal must be a live libghostty terminal.
+pub unsafe fn(self: &Queries) select_all(terminal: ptr<u8>) -> GhosttyError!void {
+    var selection = empty_selection();
+    // SAFETY: the caller passes a live terminal; selection is a sized Selection.
+    let result = unsafe ghostty_terminal_select_all(terminal, &var selection);
+    if result == no_value() {
+        // SAFETY: the caller passes a live terminal.
+        return unsafe clear_selection(terminal);
+    }
+    if result != success() {
+        return GhosttyError::Refused;
+    }
+    // SAFETY: the caller passes a live terminal, which made the selection.
+    return unsafe self.set_selection(terminal, move selection);
+}
+
+/// Formats the terminal's selection, or the one in the slot when use_slot is
+/// set, as plain unwrapped trimmed text in the buffer. Returns the bytes
+/// written; -1 when there is no selection.
+///
+/// terminal must be a live libghostty terminal; with use_slot, the slot
+/// holds a Selection of that terminal.
+unsafe fn(self: &var Queries) format_selection(
+    allocator: Allocator,
+    terminal: ptr<u8>,
+    use_slot: bool
+) -> Failure!i64 {
+    var written = Length { value: 0 };
+    // SAFETY: the caller passes a live terminal and, with use_slot, a Selection in the slot.
+    var result = unsafe self.run_format(terminal, use_slot, &var written);
+    if result == out_of_space() {
+        try grow_buffer(allocator, &var self.buffer, cast<i64>(written.value));
+        // SAFETY: as above.
+        result = unsafe self.run_format(terminal, use_slot, &var written);
+    }
+    if result == no_value() {
+        return -1;
+    }
+    if result != success() {
+        return GhosttyError::Refused;
+    }
+    return cast<i64>(written.value);
+}
+
+/// One format call into the buffer.
+///
+/// terminal must be a live libghostty terminal; with use_slot, the slot
+/// holds a Selection of that terminal.
+unsafe fn(self: &var Queries) run_format(terminal: ptr<u8>, use_slot: bool, written: &var Length) -> i32 {
+    var selection: ?ptr<u8> = null;
+    if use_slot {
+        selection = self.scratch.slot;
+    }
+    let options = FormatOptions {
+        size: mem::size_of<FormatOptions>(),
+        emit: 0,
+        unwrap: true,
+        trim: true,
+        selection: selection
+    };
+    let storage = self.buffer.as_mut_bytes();
+    let capacity = cast<usize>(mem::len(storage));
+    // SAFETY: the caller passes a live terminal; storage is capacity writable bytes.
+    return unsafe ghostty_terminal_selection_format_buf(terminal, move options, mut_ptr_of(storage), capacity, written);
+}
+
+/// Appends the selected text to out. False when nothing is selected.
+///
+/// terminal must be a live libghostty terminal.
+pub unsafe fn(self: &var Queries) selected_text(
+    allocator: Allocator,
+    terminal: ptr<u8>,
+    out: &var string::String
+) -> Failure!bool {
+    // SAFETY: the caller passes a live terminal.
+    let written = try unsafe self.format_selection(allocator, terminal, false);
+    if written < 0 {
+        return false;
+    }
+    let bytes = self.buffer.as_bytes();
+    try tmux::append_lossy_utf8(allocator, out, bytes[0..written]);
+    return true;
+}
+
+/// Appends the link at the viewport cell (col, row) to out: the cell's
+/// hyperlink when it has one, else the URL in the word there. False when
+/// there is neither.
+///
+/// terminal must be a live libghostty terminal of cols x rows.
+pub unsafe fn(self: &var Queries) hyperlink_at(
+    allocator: Allocator,
+    terminal: ptr<u8>,
+    cols: i64,
+    rows: i64,
+    row: i64,
+    col: i64,
+    out: &var string::String
+) -> Failure!bool {
+    // SAFETY: the caller passes a live terminal.
+    let target = try unsafe viewport_grid_ref(terminal, cols, rows, row, col);
+    var written = Length { value: 0 };
+    var result = self.run_hyperlink(&target, &var written);
+    if result == out_of_space() {
+        try grow_buffer(allocator, &var self.buffer, cast<i64>(written.value));
+        result = self.run_hyperlink(&target, &var written);
+    }
+    if result != success() {
+        return GhosttyError::Refused;
+    }
+    if written.value > 0 {
+        let bytes = self.buffer.as_bytes();
+        try tmux::append_lossy_utf8(allocator, out, bytes[0..cast<i64>(written.value)]);
+        return true;
+    }
+    let slot = self.scratch.slot;
+    // SAFETY: the slot is writable storage for the two boundary codepoints, space and tab.
+    unsafe ptr_write(cast<ptr<u32>>(slot), 32);
+    // SAFETY: as above; the second codepoint sits four bytes in.
+    unsafe ptr_write(cast<ptr<u32>>(ptr_offset(slot, 4)), 9);
+    let options = SelectWordOptions {
+        size: mem::size_of<SelectWordOptions>(),
+        target: move target,
+        boundary_codepoints: slot,
+        boundary_codepoints_len: 2
+    };
+    var selection = empty_selection();
+    // SAFETY: the caller passes a live terminal, whose cell target is; the slot holds two codepoints.
+    let word_result = unsafe ghostty_terminal_select_word(terminal, &options, &var selection);
+    if word_result == no_value() {
+        return false;
+    }
+    if word_result != success() {
+        return GhosttyError::Refused;
+    }
+    // SAFETY: the slot is writable storage larger than a Selection.
+    unsafe ptr_write(cast<ptr<Selection>>(slot), move selection);
+    // SAFETY: the caller passes a live terminal; the slot holds the word's Selection.
+    let length = try unsafe self.format_selection(allocator, terminal, true);
+    if length < 0 {
+        return false;
+    }
+    var word = string::new(allocator);
+    defer word.deinit(allocator);
+    try self.append_buffer_lossy(allocator, length, &var word);
+    let word_bytes = word.as_bytes();
+    return normalize_terminal_url(allocator, word_bytes, out);
+}
+
+fn (self: &Queries) append_buffer_lossy(allocator: Allocator, length: i64, out: &var string::String) -> mem::Error!void {
+    let bytes = self.buffer.as_bytes();
+    return tmux::append_lossy_utf8(allocator, out, bytes[0..length]);
+}
+
+/// One hyperlink read into the buffer.
+fn (self: &var Queries) run_hyperlink(target: &GridRef, written: &var Length) -> i32 {
+    let storage = self.buffer.as_mut_bytes();
+    let capacity = cast<usize>(mem::len(storage));
+    // SAFETY: target is a cell of a terminal that has not changed since; storage is capacity writable bytes.
+    return unsafe ghostty_grid_ref_hyperlink_uri(target, mut_ptr_of(storage), capacity, written);
+}
+
+/// Appends a terminal string value to out; false when it is empty, not
+/// UTF-8, or libghostty has none.
+///
+/// terminal must be a live libghostty terminal.
+unsafe fn(self: &Queries) terminal_text(
+    allocator: Allocator,
+    terminal: ptr<u8>,
+    data: i32,
+    out: &var string::String
+) -> mem::Error!bool {
+    let slot = self.scratch.slot;
+    // SAFETY: the caller passes a live terminal; the slot holds a BorrowedText.
+    let result = unsafe ghostty_terminal_get(terminal, data, slot);
+    if result != success() {
+        return false;
+    }
+    // SAFETY: libghostty wrote a BorrowedText to the slot.
+    let text = unsafe ptr_read(cast<ptr<BorrowedText>>(slot));
+    let data_live = text.data orelse return false;
+    if text.len == 0 {
+        return false;
+    }
+    // SAFETY: the terminal owns len bytes at data until it next changes, which is after this call.
+    let bytes = unsafe view_from_ptr(data_live, cast<i64>(text.len));
+    if !tmux::is_valid_utf8(bytes) {
+        return false;
+    }
+    try out.append_bytes(allocator, bytes);
+    return true;
+}
+
+/// Appends the title the terminal's output set to out; false when none.
+///
+/// terminal must be a live libghostty terminal.
+pub unsafe fn(self: &Queries) title(allocator: Allocator, terminal: ptr<u8>, out: &var string::String) -> mem::Error!bool {
+    // SAFETY: the caller passes a live terminal.
+    return unsafe self.terminal_text(allocator, terminal, terminal_data_title(), out);
+}
+
+/// Appends the directory the terminal's output reported to out, as a path;
+/// false when it reported none that names one.
+///
+/// terminal must be a live libghostty terminal.
+pub unsafe fn(self: &Queries) working_directory(
+    allocator: Allocator,
+    terminal: ptr<u8>,
+    out: &var string::String
+) -> mem::Error!bool {
+    var pwd = string::new(allocator);
+    defer pwd.deinit(allocator);
+    // SAFETY: the caller passes a live terminal.
+    if !try unsafe self.terminal_text(allocator, terminal, terminal_data_pwd(), &var pwd) {
+        return false;
+    }
+    let bytes = pwd.as_bytes();
+    return terminal_pwd_path(allocator, bytes, out);
+}
+
+/// Whether the alternate screen is the active one.
+///
+/// terminal must be a live libghostty terminal.
+pub unsafe fn(self: &Queries) is_alternate(terminal: ptr<u8>) -> GhosttyError!bool {
+    let slot = self.scratch.slot;
+    // SAFETY: the caller passes a live terminal; the slot holds a screen value.
+    let result = unsafe ghostty_terminal_get(terminal, terminal_data_active_screen(), slot);
+    if result != success() {
+        return GhosttyError::Refused;
+    }
+    return slot_i32(slot) == 1;
+}
+
+/// Where the cursor is in the active area, as (x, y) through the outs.
+///
+/// terminal must be a live libghostty terminal.
+pub unsafe fn(self: &Queries) cursor_position(terminal: ptr<u8>, x: &var i64, y: &var i64) -> GhosttyError!void {
+    let slot = self.scratch.slot;
+    // SAFETY: the caller passes a live terminal; the slot holds a u16.
+    let x_result = unsafe ghostty_terminal_get(terminal, terminal_data_cursor_x(), slot);
+    if x_result != success() {
+        return GhosttyError::Refused;
+    }
+    x = cast<i64>(slot_u16(slot));
+    // SAFETY: as above.
+    let y_result = unsafe ghostty_terminal_get(terminal, terminal_data_cursor_y(), slot);
+    if y_result != success() {
+        return GhosttyError::Refused;
+    }
+    y = cast<i64>(slot_u16(slot));
+    return;
+}
+
+/// Appends value's UTF-8 to out; a value that is no scalar appends nothing.
+fn append_scalar(allocator: Allocator, out: &var string::String, value: i64) -> mem::Error!void {
+    if value < 0 or value > 1114111 or (value >= 55296 and value <= 57343) {
+        return;
+    }
+    if value < 128 {
+        return out.append_byte(allocator, cast<u8>(value));
+    }
+    if value < 2048 {
+        try out.append_byte(allocator, cast<u8>(192 + value / 64));
+        return out.append_byte(allocator, cast<u8>(128 + value % 64));
+    }
+    if value < 65536 {
+        try out.append_byte(allocator, cast<u8>(224 + value / 4096));
+        try out.append_byte(allocator, cast<u8>(128 + (value / 64) % 64));
+        return out.append_byte(allocator, cast<u8>(128 + value % 64));
+    }
+    try out.append_byte(allocator, cast<u8>(240 + value / 262144));
+    try out.append_byte(allocator, cast<u8>(128 + (value / 4096) % 64));
+    try out.append_byte(allocator, cast<u8>(128 + (value / 64) % 64));
+    return out.append_byte(allocator, cast<u8>(128 + value % 64));
+}
+
+/// The codepoints a Slot holds.
+fn slot_codepoints() -> usize {
+    return 32;
+}
+
+/// Reads screen row into row_text, with the byte each column starts at in
+/// row_columns.
+///
+/// terminal must be a live libghostty terminal of cols columns.
+unsafe fn(self: &var Queries) read_screen_row(
+    allocator: Allocator,
+    terminal: ptr<u8>,
+    cols: i64,
+    row: i64
+) -> Failure!void {
+    self.row_text.clear();
+    self.row_columns.clear(allocator);
+    let slot = self.scratch.slot;
+    for 0..cols |col| {
+        // SAFETY: the caller passes a live terminal.
+        let target = try unsafe grid_ref_at(terminal, point_screen(), col, row);
+        try self.row_columns.append(allocator, self.row_text.len());
+        var written = Length { value: 0 };
+        // SAFETY: target is a cell of the live terminal; the slot holds slot_codepoints() u32s.
+        let result = unsafe ghostty_grid_ref_graphemes(&target, slot, slot_codepoints(), &var written);
+        if result != success() {
+            continue;
+        }
+        // SAFETY: libghostty wrote written.value u32 codepoints to the slot.
+        let codepoints = unsafe view_from_ptr(cast<ptr<u32>>(slot), cast<i64>(written.value));
+        for 0..mem::count<u32>(codepoints) |index| {
+            try append_scalar(allocator, &var self.row_text, cast<i64>(codepoints[index]));
+        }
+    }
+    return;
+}
+
+/// The column the byte at offset of row_text belongs to.
+fn (self: &Queries) column_of(offset: i64, fallback: i64) -> i64 {
+    var column = fallback;
+    var found = false;
+    for 0..self.row_columns.len() |index| {
+        let start = self.row_columns.get(index) orelse 0;
+        if start <= offset {
+            column = index;
+            found = true;
+        }
+    }
+    if !found {
+        return fallback;
+    }
+    return column;
+}
+
+/// The row a find for query starts at: past the last match when the query
+/// is the last one, else the edge of the viewport the search leaves from.
+fn (self: &Queries) search_start_row(
+    query: []u8,
+    backwards: bool,
+    total_rows: i64,
+    viewport_top: i64,
+    rows: i64
+) -> i64 {
+    let last_query = self.search_query.as_bytes();
+    if self.search_active and mem::equal_bytes(last_query, query) {
+        if backwards {
+            if self.search_row == 0 {
+                return total_rows - 1;
+            }
+            return self.search_row - 1;
+        }
+        return (self.search_row + 1) % total_rows;
+    }
+    var top = viewport_top;
+    if top > total_rows - 1 {
+        top = total_rows - 1;
+    }
+    if !backwards {
+        return top;
+    }
+    var bottom = top;
+    if rows > 1 {
+        bottom = top + rows - 1;
+    }
+    if bottom > total_rows - 1 {
+        bottom = total_rows - 1;
+    }
+    return bottom;
+}
+
+/// Searches the whole screen for query from where the last search stopped,
+/// wrapping around, and selects and scrolls to the first match. False when
+/// nothing matches.
+///
+/// terminal must be a live libghostty terminal of cols x rows.
+pub unsafe fn(self: &var Queries) find(
+    allocator: Allocator,
+    terminal: ptr<u8>,
+    cols: i64,
+    rows: i64,
+    query: []u8,
+    backwards: bool
+) -> Failure!bool {
+    if mem::len(query) == 0 {
+        return false;
+    }
+    let slot = self.scratch.slot;
+    // SAFETY: the caller passes a live terminal; the slot holds a usize.
+    let total_result = unsafe ghostty_terminal_get(terminal, terminal_data_total_rows(), slot);
+    if total_result != success() {
+        return GhosttyError::Refused;
+    }
+    let total_rows = cast<i64>(slot_usize(slot));
+    if total_rows == 0 {
+        return false;
+    }
+    // SAFETY: the caller passes a live terminal.
+    let scrollbar = try unsafe self.scrollbar(terminal);
+    let start_row = self.search_start_row(query, backwards, total_rows, cast<i64>(scrollbar.top), rows);
+    for 0..total_rows |offset| {
+        var row = (start_row + offset) % total_rows;
+        if backwards {
+            row = (start_row + total_rows - offset % total_rows) % total_rows;
+        }
+        // SAFETY: the caller passes a live terminal of cols columns.
+        try unsafe self.read_screen_row(allocator, terminal, cols, row);
+        let start_byte = self.find_in_row(query);
+        if start_byte < 0 {
+            continue;
+        }
+        let start_col = self.column_of(start_byte, 0);
+        let end_col = self.column_of(start_byte + mem::len(query) - 1, start_col);
+        // SAFETY: the caller passes a live terminal.
+        unsafe reveal_row(terminal, row, scrollbar);
+        // SAFETY: the caller passes a live terminal.
+        let start = try unsafe grid_ref_at(terminal, point_screen(), start_col, row);
+        // SAFETY: as above.
+        let end = try unsafe grid_ref_at(terminal, point_screen(), end_col, row);
+        let selection = Selection { size: mem::size_of<Selection>(), start: move start, end: move end, rectangle: false };
+        // SAFETY: the caller passes a live terminal, whose cells start and end are.
+        try unsafe self.set_selection(terminal, move selection);
+        self.search_active = true;
+        self.search_row = row;
+        self.search_query.clear();
+        try self.search_query.append_bytes(allocator, query);
+        return true;
+    }
+    return false;
+}
+
+fn (self: &Queries) find_in_row(query: []u8) -> i64 {
+    let text = self.row_text.as_bytes();
+    return find_bytes(text, query, 0);
+}
+
+/// Scrolls so screen row sits mid-viewport, as far as the scrollback allows.
+///
+/// terminal must be a live libghostty terminal that scrollbar was read from.
+unsafe fn reveal_row(terminal: ptr<u8>, row: i64, scrollbar: Scrollbar) -> void {
+    let visible = cast<i64>(scrollbar.visible);
+    var max_top = cast<i64>(scrollbar.total) - visible;
+    if max_top < 0 {
+        max_top = 0;
+    }
+    var desired = row - visible / 2;
+    if desired < 0 {
+        desired = 0;
+    }
+    if desired > max_top {
+        desired = max_top;
+    }
+    // SAFETY: the caller passes a live terminal.
+    unsafe scroll_viewport_by(terminal, desired - cast<i64>(scrollbar.top));
+    return;
+}
