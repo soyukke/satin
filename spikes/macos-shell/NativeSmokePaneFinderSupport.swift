@@ -10,6 +10,13 @@ import Foundation
                 chrome.actionEnabledForSmoke(.openInFinder),
                 chrome.finderPresentationReadyForSmoke()
             else {
+                let chrome = terminalTextView.paneChromeView(for: paneId)
+                paneFinderSmokeFailure =
+                    "chrome=\(chrome != nil) "
+                    + "enabled=\(chrome?.actionEnabledForSmoke(.openInFinder) == true) "
+                    + "presentation=\(chrome?.finderPresentationReadyForSmoke() == true) "
+                    + "expected=\(expectedCwd) "
+                    + "cwd=\(paneWorkingDirectory(paneId: paneId, logFailure: false) ?? "nil")"
                 return false
             }
 
@@ -30,6 +37,12 @@ import Foundation
                 $0.action == #selector(openPaneDirectoryFromContextMenu(_:))
             }
             let expected = URL(fileURLWithPath: expectedCwd).standardizedFileURL.path
+            paneFinderSmokeFailure =
+                "opened=\(openedURL?.standardizedFileURL.path ?? "nil") expected=\(expected) "
+                + "active=\(activePaneId == activePaneBefore) "
+                + "panes=\(lastSnapshot?.tabs.map(\.panes) == paneIdsBefore) "
+                + "menu=\(finderMenuItem?.representedObject as? Int == paneId) "
+                + "menu-enabled=\(finderMenuItem?.isEnabled == true)"
             return openedURL?.standardizedFileURL.path == expected
                 && activePaneId == activePaneBefore
                 && lastSnapshot?.tabs.map(\.panes) == paneIdsBefore
