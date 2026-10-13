@@ -47,21 +47,7 @@ extern "c" fn posix_spawnattr_init(attributes: &var SpawnHandle) -> i32
 extern "c" fn posix_spawnattr_destroy(attributes: &var SpawnHandle) -> i32
 extern "c" fn posix_spawnattr_setflags(attributes: &var SpawnHandle, flags: i16) -> i32
 extern "c" fn posix_spawnattr_setpgroup(attributes: &var SpawnHandle, group: i32) -> i32
-// `fcntl` is variadic, which Kizu cannot declare. On arm64 Darwin a
-// variadic argument travels on the stack, where a ninth integer argument
-// also goes, so six unused register arguments put the real one there. This
-// declaration is wrong on any other target.
-extern "c" fn fcntl(
-    descriptor: i32,
-    command: i32,
-    unused2: u64,
-    unused3: u64,
-    unused4: u64,
-    unused5: u64,
-    unused6: u64,
-    unused7: u64,
-    argument: i64
-) -> i32
+extern "c" fn fcntl(descriptor: i32, command: i32, ...) -> i32
 extern "c" struct PipeEnds {
     read_end: i32,
     write_end: i32,
@@ -414,7 +400,7 @@ pub fn spawn_process(allocator: Allocator, launch: &Launch) -> ProcessFailure!Pr
     }
     // A write to a Neovim that is gone fails instead of raising SIGPIPE.
     // SAFETY: the descriptor is this process's own; 73 is F_SETNOSIGPIPE.
-    let _ = unsafe fcntl(to_child.write_end, 73, 0, 0, 0, 0, 0, 0, 1);
+    let _ = unsafe fcntl(to_child.write_end, 73, cast<i32>(1));
     return Process {
         child: child,
         input: to_child.write_end,

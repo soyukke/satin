@@ -10,32 +10,8 @@ import std::string;
 
 extern "c" fn malloc(size: usize) -> ?ptr<u8>
 extern "c" fn free(p: ptr<u8>) -> void
-// `open` and `ioctl` are variadic, which Kizu cannot declare. On arm64
-// Darwin a variadic argument travels on the stack, where a ninth integer
-// argument also goes, so six unused register arguments put the real one
-// there. This declaration is wrong on any other target.
-extern "c" fn open(
-    path: ptr<const u8>,
-    flags: i32,
-    unused2: u64,
-    unused3: u64,
-    unused4: u64,
-    unused5: u64,
-    unused6: u64,
-    unused7: u64,
-    mode: i64
-) -> i32
-extern "c" fn ioctl(
-    fd: i32,
-    request: u64,
-    unused2: u64,
-    unused3: u64,
-    unused4: u64,
-    unused5: u64,
-    unused6: u64,
-    unused7: u64,
-    size: &var WindowSize
-) -> i32
+extern "c" fn open(path: ptr<const u8>, flags: i32, ...) -> i32
+extern "c" fn ioctl(fd: i32, request: u64, ...) -> i32
 extern "c" fn close(descriptor: i32) -> i32
 extern "c" fn read(descriptor: i32, buffer: ptr<u8>, count: usize) -> isize
 extern "c" fn write(descriptor: i32, bytes: ptr<const u8>, count: usize) -> isize
@@ -299,7 +275,7 @@ fn open_file(allocator: Allocator, path: []u8, flags: i32) -> mem::Error!i32 {
     defer name.deinit(allocator);
     let name_bytes = name.as_bytes();
     // SAFETY: name ends in NUL; 384 is 0600, read where the variadic mode is.
-    return unsafe open(ptr_of(name_bytes), flags, 0, 0, 0, 0, 0, 0, 384);
+    return unsafe open(ptr_of(name_bytes), flags, cast<i32>(384));
 }
 
 /// Writes all of bytes to an open file; false when the file takes no more.
@@ -460,7 +436,7 @@ fn terminal_size(columns: &var i64, rows: &var i64) -> void {
     rows = -1;
     var size = WindowSize { rows: 0, columns: 0, pixel_width: 0, pixel_height: 0 };
     // SAFETY: size is one writable winsize, where the variadic argument is; 1074295912 is TIOCGWINSZ.
-    if unsafe ioctl(1, 1074295912, 0, 0, 0, 0, 0, 0, &var size) == 0 {
+    if unsafe ioctl(1, 1074295912, &var size) == 0 {
         if size.columns > 0 {
             columns = cast<i64>(size.columns);
         }
