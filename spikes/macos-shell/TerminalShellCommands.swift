@@ -370,7 +370,7 @@ extension TerminalShellViewController {
         optionAsAltEnabled.toggle()
         UserDefaults.standard.set(optionAsAltEnabled, forKey: NativePreferenceKey.optionAsAlt)
         for pane in paneStore.runtimes.values {
-            (pane as? RustTerminalPane)?.setOptionAsAlt(optionAsAltEnabled)
+            (pane as? TerminalPane)?.setOptionAsAlt(optionAsAltEnabled)
         }
     }
 
@@ -475,7 +475,7 @@ extension TerminalShellViewController {
     ) -> NativeSessionPane? {
         if layout.kind == "leaf", let paneId = layout.pane_id {
             let cwd =
-                (paneStore.runtimes[paneId] as? RustTerminalPane)?
+                (paneStore.runtimes[paneId] as? TerminalPane)?
                 .currentWorkingDirectory()
                 ?? paneStore.workingDirectories[paneId]
                 ?? nativeWorkingDirectory()

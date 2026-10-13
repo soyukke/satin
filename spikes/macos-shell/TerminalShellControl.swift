@@ -149,7 +149,7 @@ extension TerminalShellViewController {
     ) {
         guard let paneId = request.pane,
             controlPaneExists(paneId),
-            paneStore.runtimes[paneId] is RustTerminalPane,
+            paneStore.runtimes[paneId] is TerminalPane,
             paneStore.suspendedSessions[paneId] == nil,
             paneStore.artifactSelectors[paneId] == nil
         else {

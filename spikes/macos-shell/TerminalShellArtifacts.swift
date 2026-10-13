@@ -139,14 +139,14 @@ extension TerminalShellViewController {
     ) -> Bool? {
         let cwd =
             paneStore.workingDirectories[sourcePaneId]
-            ?? (paneStore.runtimes[sourcePaneId] as? RustTerminalPane)?.currentWorkingDirectory()
+            ?? (paneStore.runtimes[sourcePaneId] as? TerminalPane)?.currentWorkingDirectory()
             ?? nativeWorkingDirectory()
         let sidebarFrame = artifactSidebarFrames(in: terminalTextView.terminalContentRect()).sidebar
         let grid = terminalTextView.terminalGridSize(
             for: nativePaneContentFrame(sidebarFrame)
         )
         guard
-            let viewer = RustTerminalPane(
+            let viewer = TerminalPane(
                 grid: grid,
                 cwd: cwd,
                 shell: settings.shellPath,

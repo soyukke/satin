@@ -27,7 +27,7 @@ import Foundation
             drainTerminalPanes()
             guard let snapshot = lastSnapshot,
                 let tab = snapshot.tabs.first(where: { $0.index == snapshot.active_tab }),
-                let pane = paneStore.runtimes[tab.active_pane] as? RustTerminalPane
+                let pane = paneStore.runtimes[tab.active_pane] as? TerminalPane
             else {
                 if retries > 0 {
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
@@ -63,9 +63,9 @@ import Foundation
             retries: Int
         ) {
             drainTerminalPanes()
-            let cwd = (paneStore.runtimes[originalPaneId] as? RustTerminalPane)?
+            let cwd = (paneStore.runtimes[originalPaneId] as? TerminalPane)?
                 .currentWorkingDirectory()
-            guard let pane = paneStore.runtimes[originalPaneId] as? RustTerminalPane,
+            guard let pane = paneStore.runtimes[originalPaneId] as? TerminalPane,
                 cwd == expectedCwd,
                 paneStore.workingDirectories[originalPaneId] == expectedCwd,
                 lastSnapshot?.tabs.first(where: { $0.id == originalTabId })?.title
@@ -118,7 +118,7 @@ import Foundation
             drainTerminalPanes()
             let title = lastSnapshot?.tabs.first(where: { $0.id == originalTabId })?.title
             let paneTitle = paneStore.titles[originalPaneId]
-            let cwd = (paneStore.runtimes[originalPaneId] as? RustTerminalPane)?
+            let cwd = (paneStore.runtimes[originalPaneId] as? TerminalPane)?
                 .currentWorkingDirectory()
             let status = paneStatuses.status(for: originalPaneId)?.status
             let activity = tabControl.runningActivityReadyForSmoke(segment: 0)
@@ -193,7 +193,7 @@ import Foundation
                 snapshot.tabs.count == 2,
                 let activeTab = snapshot.tabs.first(where: { $0.index == snapshot.active_tab }),
                 activeTab.id != originalTabId,
-                let newPane = paneStore.runtimes[activeTab.active_pane] as? RustTerminalPane,
+                let newPane = paneStore.runtimes[activeTab.active_pane] as? TerminalPane,
                 newPane.currentWorkingDirectory() == expectedCwd,
                 paneStore.workingDirectories[activeTab.active_pane] == expectedCwd,
                 snapshot.tabs.first(where: { $0.id == originalTabId })?.title

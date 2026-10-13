@@ -177,7 +177,7 @@ import Foundation
             retries: Int
         ) {
             drainTerminalPanes()
-            let pane = activePaneId.flatMap { paneStore.runtimes[$0] as? RustTmuxPane }
+            let pane = activePaneId.flatMap { paneStore.runtimes[$0] as? TmuxPane }
             let commandCount = tmuxConnectionCommandHistory.count
             let ready =
                 tmuxSession?.sessionName == first.name
@@ -230,7 +230,7 @@ import Foundation
 
         private func waitForAttachedTmuxSessionPicker(
             _ resultPath: String,
-            pane: RustTmuxPane,
+            pane: TmuxPane,
             first: NativeTmuxSessionDescriptor,
             second: NativeTmuxSessionDescriptor,
             retries: Int
@@ -328,7 +328,7 @@ import Foundation
 
         private func waitForTmuxCommandTTab(
             _ resultPath: String,
-            pane: RustTmuxPane,
+            pane: TmuxPane,
             first: NativeTmuxSessionDescriptor,
             second: NativeTmuxSessionDescriptor,
             initialTabCount: Int,
@@ -338,7 +338,7 @@ import Foundation
             drainTerminalPanes()
             guard lastSnapshot?.tabs.count == initialTabCount + 1,
                 let newPaneId = activePaneId,
-                let newPane = paneStore.runtimes[newPaneId] as? RustTmuxPane,
+                let newPane = paneStore.runtimes[newPaneId] as? TmuxPane,
                 let newTmuxPaneId = tmuxSession?.tmuxPaneIds[newPaneId],
                 tmuxSession?.latestPanes[newTmuxPaneId]?.current_path == expectedCwd,
                 paneStore.workingDirectories[newPaneId] == expectedCwd
@@ -399,8 +399,8 @@ import Foundation
 
         private func waitForTmuxCommandTContent(
             _ resultPath: String,
-            originalPane: RustTmuxPane,
-            newPane: RustTmuxPane,
+            originalPane: TmuxPane,
+            newPane: TmuxPane,
             first: NativeTmuxSessionDescriptor,
             second: NativeTmuxSessionDescriptor,
             initialTabCount: Int,
@@ -453,7 +453,7 @@ import Foundation
 
         private func waitForTmuxCommandTCleanup(
             _ resultPath: String,
-            pane: RustTmuxPane,
+            pane: TmuxPane,
             first: NativeTmuxSessionDescriptor,
             second: NativeTmuxSessionDescriptor,
             initialTabCount: Int,
@@ -496,7 +496,7 @@ import Foundation
 
         private func waitForTmuxSessionSwitchScrollback(
             _ resultPath: String,
-            pane: RustTmuxPane,
+            pane: TmuxPane,
             first: NativeTmuxSessionDescriptor,
             second: NativeTmuxSessionDescriptor,
             retries: Int
@@ -621,7 +621,7 @@ import Foundation
             drainTerminalPanes()
             let secondVisible =
                 activePaneId
-                .flatMap { paneStore.runtimes[$0] as? RustTmuxPane }?
+                .flatMap { paneStore.runtimes[$0] as? TmuxPane }?
                 .controlScreenText()
                 .contains(tmuxSessionSwitchSecondReady) == true
             let switched =
@@ -818,7 +818,7 @@ import Foundation
             drainTerminalPanes()
             let secondVisible =
                 activePaneId
-                .flatMap { paneStore.runtimes[$0] as? RustTmuxPane }?
+                .flatMap { paneStore.runtimes[$0] as? TmuxPane }?
                 .controlScreenText()
                 .contains(tmuxSessionSwitchSecondReady) == true
             let reattached =
@@ -864,7 +864,7 @@ import Foundation
             _ = tmuxSession?.gateway.tmuxCommand("detach-client")
             let screen =
                 activePaneId
-                .flatMap { paneStore.runtimes[$0] as? RustTerminalPane }?
+                .flatMap { paneStore.runtimes[$0] as? TerminalPane }?
                 .controlScreenText()
                 .suffix(400)
                 .replacingOccurrences(of: "\n", with: "|") ?? "none"

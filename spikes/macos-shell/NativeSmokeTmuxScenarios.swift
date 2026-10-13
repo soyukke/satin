@@ -47,7 +47,7 @@ import Foundation
             guard retries > 0 else {
                 let live =
                     activePaneId
-                    .flatMap { paneStore.runtimes[$0] as? RustTmuxPane }?
+                    .flatMap { paneStore.runtimes[$0] as? TmuxPane }?
                     .cursorPosition()
                 let projected = tmuxSession?.latestPanes.values.first(where: { $0.active })
                 writeSessionSmokeResult(
@@ -70,7 +70,7 @@ import Foundation
                 }
                 return
             }
-            guard let tmuxPane = activePaneId.flatMap({ paneStore.runtimes[$0] as? RustTmuxPane })
+            guard let tmuxPane = activePaneId.flatMap({ paneStore.runtimes[$0] as? TmuxPane })
             else {
                 writeSessionSmokeResult(resultPath, result: "failed tmux-native missing-pane\n")
                 return
@@ -139,7 +139,7 @@ import Foundation
 
         func continueTmuxSmokeAfterAgentStatus(
             _ resultPath: String,
-            pane tmuxPane: RustTmuxPane,
+            pane tmuxPane: TmuxPane,
             start tmuxCursor: (x: Int, y: Int)
         ) {
             tabControl.verifyAsyncCloseForSmoke(
@@ -185,7 +185,7 @@ import Foundation
 
         func waitForTmuxSmokeLiveCursor(
             _ resultPath: String,
-            pane: RustTmuxPane,
+            pane: TmuxPane,
             start: (x: Int, y: Int),
             marker: String,
             retries: Int
@@ -229,7 +229,7 @@ import Foundation
 
         func continueTmuxSmokeIME(
             _ resultPath: String,
-            pane tmuxPane: RustTmuxPane,
+            pane tmuxPane: TmuxPane,
             retries: Int
         ) {
             terminalTextView.setMarkedText(
@@ -288,7 +288,7 @@ import Foundation
         func waitForTmuxSmokeOutput(_ resultPath: String, retries: Int) {
             let screenText =
                 activePaneId
-                .flatMap { paneStore.runtimes[$0] as? RustTmuxPane }?
+                .flatMap { paneStore.runtimes[$0] as? TmuxPane }?
                 .controlScreenText() ?? ""
             if screenText.contains("TMUX_NATIVE_OUTPUT SHELL_MATCH=no") {
                 tmuxSession?.gateway.tmuxCommand("kill-session")
@@ -321,7 +321,7 @@ import Foundation
         }
 
         func beginTmuxSmokeKitty(_ resultPath: String) {
-            guard let pane = activePaneId.flatMap({ paneStore.runtimes[$0] as? RustTmuxPane })
+            guard let pane = activePaneId.flatMap({ paneStore.runtimes[$0] as? TmuxPane })
             else {
                 tmuxSession?.gateway.tmuxCommand("kill-session")
                 writeSessionSmokeResult(resultPath, result: "failed tmux-native kitty-pane=no\n")
@@ -341,7 +341,7 @@ import Foundation
 
         func waitForTmuxSmokeKitty(
             _ resultPath: String,
-            pane: RustTmuxPane,
+            pane: TmuxPane,
             retries: Int
         ) {
             guard pane.controlImageCount() == 1 else {
@@ -376,7 +376,7 @@ import Foundation
         }
 
         func beginTmuxSmokeReturnRepeat(_ resultPath: String) {
-            guard let pane = activePaneId.flatMap({ paneStore.runtimes[$0] as? RustTmuxPane }),
+            guard let pane = activePaneId.flatMap({ paneStore.runtimes[$0] as? TmuxPane }),
                 pane.writeThroughTmux(Data("PS1='TMUX_REPEAT> '\r".utf8))
             else {
                 tmuxSession?.gateway.tmuxCommand("kill-session")
@@ -388,7 +388,7 @@ import Foundation
 
         func waitForTmuxSmokeReturnPrompt(
             _ resultPath: String,
-            pane: RustTmuxPane,
+            pane: TmuxPane,
             retries: Int
         ) {
             let marker = "TMUX_REPEAT>"
@@ -421,7 +421,7 @@ import Foundation
 
         func sendTmuxSmokeReturnRepeat(
             _ resultPath: String,
-            pane: RustTmuxPane,
+            pane: TmuxPane,
             remaining: Int
         ) {
             guard remaining > 0 else {
@@ -465,7 +465,7 @@ import Foundation
 
         func validateTmuxSmokeReturnRepeat(
             _ resultPath: String,
-            pane: RustTmuxPane,
+            pane: TmuxPane,
             retries: Int
         ) {
             let marker = "TMUX_REPEAT>"
@@ -655,7 +655,7 @@ import Foundation
             retries: Int
         ) {
             let focusedInputVisible =
-                (paneStore.runtimes[paneId] as? RustTmuxPane)?
+                (paneStore.runtimes[paneId] as? TmuxPane)?
                 .controlScreenText()
                 .contains("TMUX_FOCUS_COMMITTED") == true
             guard focusedInputVisible, activePaneId == paneId else {
@@ -680,7 +680,7 @@ import Foundation
         func continueTmuxSmokeActions(_ resultPath: String, paneId: Int) {
             guard let session = tmuxSession,
                 let tab = lastSnapshot?.tabs.first,
-                let pane = paneStore.runtimes[paneId] as? RustTmuxPane
+                let pane = paneStore.runtimes[paneId] as? TmuxPane
             else {
                 writeSessionSmokeResult(resultPath, result: "failed tmux-native action-context\n")
                 return
@@ -713,7 +713,7 @@ import Foundation
 
         func waitForTmuxSmokePaste(_ resultPath: String, retries: Int) {
             let pasted = paneStore.runtimes.values.contains { pane in
-                (pane as? RustTmuxPane)?.controlScreenText().contains("TMUX_PASTE_OK") == true
+                (pane as? TmuxPane)?.controlScreenText().contains("TMUX_PASTE_OK") == true
             }
             guard pasted else {
                 if retries > 0 {
@@ -752,7 +752,7 @@ import Foundation
 
         func waitForTmuxSmokeUnzoom(_ resultPath: String, retries: Int) {
             let paneTexts = paneStore.runtimes.values.compactMap { pane in
-                (pane as? RustTmuxPane)?.controlScreenText()
+                (pane as? TmuxPane)?.controlScreenText()
             }
             let screenText = paneTexts.joined(separator: "\n")
             let titleCorrect = lastSnapshot?.tabs.first?.title == "tmux renamed"

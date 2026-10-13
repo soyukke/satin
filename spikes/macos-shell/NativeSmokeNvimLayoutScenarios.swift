@@ -460,7 +460,7 @@ import Foundation
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             let paneId = activePaneId
             let liveCwd = paneId.flatMap {
-                (paneStore.runtimes[$0] as? RustNeovimPane)?.currentWorkingDirectory()
+                (paneStore.runtimes[$0] as? NeovimPane)?.currentWorkingDirectory()
             }
             let cwdReady =
                 activePaneMode() == .neovim
@@ -553,8 +553,8 @@ import Foundation
             _ resultPath: String,
             initialMaxScrollPosition: Double
         ) {
-            guard let pane = activePaneId.flatMap({ paneStore.runtimes[$0] as? RustTerminalPane }),
-                !(pane is RustTmuxPane)
+            guard let pane = activePaneId.flatMap({ paneStore.runtimes[$0] as? TerminalPane }),
+                !(pane is TmuxPane)
             else {
                 writeTerminalReturnRepeatFailure(
                     resultPath,
@@ -583,7 +583,7 @@ import Foundation
 
         func waitForTerminalReturnRepeatPrompt(
             _ resultPath: String,
-            pane: RustTerminalPane,
+            pane: TerminalPane,
             marker: String,
             semanticPromptExpected: Bool,
             retries: Int,
@@ -646,7 +646,7 @@ import Foundation
 
         func sendTerminalReturnRepeat(
             _ resultPath: String,
-            pane: RustTerminalPane,
+            pane: TerminalPane,
             marker: String,
             semanticPromptExpected: Bool,
             remaining: Int,
@@ -713,7 +713,7 @@ import Foundation
 
         func validateTerminalReturnRepeat(
             _ resultPath: String,
-            pane: RustTerminalPane,
+            pane: TerminalPane,
             marker: String,
             semanticPromptExpected: Bool,
             foregroundTransitionObserved: Bool,

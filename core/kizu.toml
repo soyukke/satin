@@ -5,8 +5,7 @@ version = "0.1.0"
 [modules]
 paths = ["src", "shared"]
 
-# libghostty-vt, which `kizu test` links. scripts/build-ghostty builds
-# it there with zig; the Rust app links its own through
-# cargo.
+# libghostty-vt, which `kizu test` and the app link. scripts/build-ghostty
+# builds it there with zig.
 [native]
 library_search = ["target/native"]

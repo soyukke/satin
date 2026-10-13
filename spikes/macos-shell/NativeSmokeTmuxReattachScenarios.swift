@@ -48,7 +48,7 @@ import Foundation
                     }
                 } else {
                     let gateway = activePaneId.flatMap {
-                        paneStore.runtimes[$0] as? RustTerminalPane
+                        paneStore.runtimes[$0] as? TerminalPane
                     }
                     let screen =
                         gateway?.controlScreenText()
@@ -108,7 +108,7 @@ import Foundation
         ) {
             let terminalText =
                 activePaneId
-                .flatMap { paneStore.runtimes[$0] as? RustTerminalPane }?
+                .flatMap { paneStore.runtimes[$0] as? TerminalPane }?
                 .controlScreenText() ?? ""
             let savedAttachment = currentSessionState()?.tmuxAttachment
             let descriptorPreserved =
@@ -269,7 +269,7 @@ import Foundation
         ) {
             drainTerminalPanes()
             let contentVisible = paneStore.runtimes.values.contains { pane in
-                (pane as? RustTmuxPane)?.controlScreenText().contains(expectedContent) == true
+                (pane as? TmuxPane)?.controlScreenText().contains(expectedContent) == true
             }
             let commandTargetsSavedSocket =
                 tmuxConnectionCommandHistory.count == 1
@@ -376,7 +376,7 @@ import Foundation
                 tmuxSession?.sessionName == attachment.sessionName
                 && tmuxSession?.socketPath == attachment.socketPath
             let contentVisible = paneStore.runtimes.values.contains { pane in
-                (pane as? RustTmuxPane)?.controlScreenText().contains(expectedContent) == true
+                (pane as? TmuxPane)?.controlScreenText().contains(expectedContent) == true
             }
             let savedAttachment = currentSessionState()?.tmuxAttachment
             let descriptorSaved =
@@ -490,7 +490,7 @@ import Foundation
                 return
             }
             let existingContentVisible = paneStore.runtimes.values.contains { pane in
-                guard let tmuxPane = pane as? RustTmuxPane else {
+                guard let tmuxPane = pane as? TmuxPane else {
                     return false
                 }
                 return tmuxPane.controlScreenText().contains(expectedContent)
@@ -508,7 +508,7 @@ import Foundation
                 } else {
                     _ = session.gateway.tmuxCommand("detach-client")
                     let detail = paneStore.runtimes.values.compactMap { pane in
-                        (pane as? RustTmuxPane)?.controlScreenText()
+                        (pane as? TmuxPane)?.controlScreenText()
                     }.joined(separator: " | ").prefix(800)
                     writeSessionSmokeResult(
                         resultPath,
@@ -518,7 +518,7 @@ import Foundation
                 return
             }
             guard let paneId = activePaneId,
-                let pane = paneStore.runtimes[paneId] as? RustTmuxPane,
+                let pane = paneStore.runtimes[paneId] as? TmuxPane,
                 let projectedCwd = paneStore.workingDirectories[paneId],
                 nativeNeovimWorkingDirectory(
                     paneId: paneId,
@@ -553,7 +553,7 @@ import Foundation
         func waitForTmuxReattachScroll(
             _ resultPath: String,
             attachment: NativeTmuxAttachment,
-            pane: RustTmuxPane,
+            pane: TmuxPane,
             initialFrames: Int,
             previousScreen: String,
             remainingScrolls: Int,
@@ -624,7 +624,7 @@ import Foundation
         func verifyTmuxReattachScrollProgress(
             _ resultPath: String,
             attachment: NativeTmuxAttachment,
-            pane: RustTmuxPane,
+            pane: TmuxPane,
             initialFrames: Int,
             initialPosition: Double,
             remainingScrolls: Int,
@@ -674,7 +674,7 @@ import Foundation
         func continueAfterTmuxReattachScroll(
             _ resultPath: String,
             attachment: NativeTmuxAttachment,
-            pane: RustTmuxPane,
+            pane: TmuxPane,
             remainingScrolls: Int
         ) {
             if remainingScrolls > 0 {
@@ -698,7 +698,7 @@ import Foundation
         func waitForTmuxReattachScrollIdle(
             _ resultPath: String,
             attachment: NativeTmuxAttachment,
-            pane: RustTmuxPane,
+            pane: TmuxPane,
             remainingScrolls: Int,
             retries: Int
         ) {
@@ -753,7 +753,7 @@ import Foundation
             )
         }
 
-        func sendTmuxReattachControlD(_ pane: RustTmuxPane) -> Bool {
+        func sendTmuxReattachControlD(_ pane: TmuxPane) -> Bool {
             guard let paneId = activePaneId,
                 paneStore.runtimes[paneId] === pane,
                 let pressed = tmuxReattachControlDEvent(released: false),
@@ -794,7 +794,7 @@ import Foundation
         ) {
             let primaryVisible =
                 activePaneId
-                .flatMap { paneStore.runtimes[$0] as? RustTmuxPane }?
+                .flatMap { paneStore.runtimes[$0] as? TmuxPane }?
                 .controlScreenText()
                 .contains("SATIN_TMUX_REATTACH_PRIMARY_CONTENT") == true
             guard primaryVisible else {
@@ -894,7 +894,7 @@ import Foundation
         func waitForMissingTmuxReattach(_ resultPath: String, retries: Int) {
             let terminalText =
                 activePaneId
-                .flatMap { paneStore.runtimes[$0] as? RustTerminalPane }?
+                .flatMap { paneStore.runtimes[$0] as? TerminalPane }?
                 .controlScreenText() ?? ""
             let errorPresented = tmuxSessionErrorHistory.contains {
                 $0.contains("can't find session")

@@ -1,6 +1,6 @@
 import Foundation
 
-extension RustTerminalPane {
+extension TerminalPane {
     func selectionEvent(_ event: NativeTerminalSelectionEvent) -> Int {
         let action: UInt32
         let input: NativeMouseInput?

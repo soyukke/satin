@@ -1,6 +1,6 @@
 import Foundation
 
-final class RustCore {
+final class NativeCore {
     private let handle: UnsafeMutableRawPointer
 
     init?(defaultTheme: String = nativeThemeNames[0]) {

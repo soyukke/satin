@@ -1,4 +1,4 @@
-extension RustTmuxPane {
+extension TmuxPane {
     @discardableResult
     func prepareHydration() -> Bool {
         satinRuntimeTmuxPrepareHydration(handle) != 0

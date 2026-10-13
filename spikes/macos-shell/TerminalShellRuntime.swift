@@ -19,7 +19,7 @@ extension TerminalShellViewController {
         source.resume()
     }
 
-    func installSuspendedPaneWakeup(paneId: Int, pane: RustTerminalPane) {
+    func installSuspendedPaneWakeup(paneId: Int, pane: TerminalPane) {
         paneStore.suspendedWakeupSources.removeValue(forKey: paneId)?.cancel()
         let descriptor = pane.wakeupFD()
         guard descriptor >= 0 else {
@@ -50,8 +50,8 @@ extension TerminalShellViewController {
         }
     }
 
-    func projectedTmuxPane(_ paneId: Int) -> RustTmuxPane? {
-        paneStore.runtimes[paneId] as? RustTmuxPane
+    func projectedTmuxPane(_ paneId: Int) -> TmuxPane? {
+        paneStore.runtimes[paneId] as? TmuxPane
     }
 
     func removePaneRuntime(_ paneId: Int) {
@@ -84,7 +84,7 @@ extension TerminalShellViewController {
         var exitedNvimPanes: [Int] = []
         var artifactSidebarExited = false
         var exitedTerminalPanes: [Int] = []
-        var tmuxEvents: [(paneId: Int, pane: RustTerminalPane, event: TmuxControlEvent)] = []
+        var tmuxEvents: [(paneId: Int, pane: TerminalPane, event: TmuxControlEvent)] = []
         for (paneId, pane) in paneStore.runtimes {
             let paneDrainStartedAt = measurePerformance ? CACurrentMediaTime() : 0
             let changed = pane.drain()
@@ -98,16 +98,16 @@ extension TerminalShellViewController {
             visiblePaneChanged =
                 visiblePaneChanged
                 || (changed && paneStore.visibleFrames[paneId] != nil)
-            if let terminal = pane as? RustTerminalPane {
+            if let terminal = pane as? TerminalPane {
                 while let event = terminal.takeTmuxEvent() {
                     tmuxEvents.append((paneId, terminal, event))
                 }
-                if terminal is RustTmuxPane {
+                if terminal is TmuxPane {
                     updateTerminalBells(terminal)
                 } else if tmuxSession?.gatewayPaneId != paneId {
                     updateTerminalMetadata(terminal, paneId: paneId)
                 }
-            } else if let neovim = pane as? RustNeovimPane {
+            } else if let neovim = pane as? NeovimPane {
                 if let cwd = neovim.takeWorkingDirectoryUpdate() {
                     updateNeovimMetadata(cwd: cwd, paneId: paneId)
                 }
@@ -143,7 +143,7 @@ extension TerminalShellViewController {
     func handleTmuxEvent(
         _ event: TmuxControlEvent,
         gatewayPaneId: Int,
-        gateway: RustTerminalPane
+        gateway: TerminalPane
     ) {
         switch event.kind {
         case "entered":
@@ -211,7 +211,7 @@ extension TerminalShellViewController {
         }
     }
 
-    func beginTmuxSession(gatewayPaneId: Int, gateway: RustTerminalPane) {
+    func beginTmuxSession(gatewayPaneId: Int, gateway: TerminalPane) {
         guard tmuxSession == nil, let workspace = core.snapshot() else {
             return
         }
@@ -298,7 +298,7 @@ extension TerminalShellViewController {
     func applyTmuxSnapshot(
         _ snapshot: TmuxSnapshot,
         gatewayPaneId: Int,
-        gateway: RustTerminalPane
+        gateway: TerminalPane
     ) {
         if tmuxSession == nil {
             beginTmuxSession(gatewayPaneId: gatewayPaneId, gateway: gateway)
@@ -357,7 +357,7 @@ extension TerminalShellViewController {
                 continue
             }
             guard
-                let runtime = RustTmuxPane(
+                let runtime = TmuxPane(
                     grid: grid,
                     paneId: pane.pane_id,
                     gateway: session.gateway
@@ -592,7 +592,7 @@ extension TerminalShellViewController {
     }
 
     func replaceExitedNeovimPane(_ paneId: Int) {
-        let exitCode = (paneStore.runtimes[paneId] as? RustNeovimPane)?.exitCode() ?? 1
+        let exitCode = (paneStore.runtimes[paneId] as? NeovimPane)?.exitCode() ?? 1
         removePaneRuntime(paneId)
         paneStore.suspendedWakeupSources.removeValue(forKey: paneId)?.cancel()
         if let suspended = paneStore.suspendedSessions.removeValue(forKey: paneId) {
@@ -616,7 +616,7 @@ extension TerminalShellViewController {
         }
         let cwd = paneStore.workingDirectories[paneId] ?? nativeWorkingDirectory()
         guard
-            let pane = RustTerminalPane(
+            let pane = TerminalPane(
                 grid: paneGridSize(paneId),
                 cwd: cwd,
                 shell: settings.shellPath,
@@ -633,7 +633,7 @@ extension TerminalShellViewController {
         lastNvimModelScrollShift = nil
     }
 
-    func updateTerminalMetadata(_ pane: RustTerminalPane, paneId: Int) {
+    func updateTerminalMetadata(_ pane: TerminalPane, paneId: Int) {
         if let cwd = pane.currentWorkingDirectory(), paneStore.workingDirectories[paneId] != cwd {
             paneStore.workingDirectories[paneId] = cwd
             terminalTextView.refreshPaneChromeActionAvailability(paneId: paneId)
@@ -673,7 +673,7 @@ extension TerminalShellViewController {
         )
     }
 
-    func updateTerminalBells(_ pane: RustTerminalPane) {
+    func updateTerminalBells(_ pane: TerminalPane) {
         handleTerminalBells(pane.takeBellCount())
     }
 
@@ -696,7 +696,7 @@ extension TerminalShellViewController {
             return
         }
 
-        if let pane = pane as? RustNeovimPane {
+        if let pane = pane as? NeovimPane {
             if capturesNvimRendererModels, let model = pane.rendererModel() {
                 if let scrollHint = model.scroll_hint {
                     lastNvimModelScrollShift = scrollHint.outputShift
@@ -718,7 +718,7 @@ extension TerminalShellViewController {
         }
 
         terminalTextView.setRendererModel(nil)
-        terminalTextView.setTerminalCursor((pane as? RustTerminalPane)?.cursorPosition())
+        terminalTextView.setTerminalCursor((pane as? TerminalPane)?.cursorPosition())
         metalView.requestFrame()
     }
 
@@ -752,7 +752,7 @@ extension TerminalShellViewController {
                 preedit: terminalTextView.rendererMarkedText(for: entry.key)
             )
             #if SATIN_SMOKE_SCENARIOS
-                if ok, entry.key == activePaneId, let pane = pane as? RustTmuxPane {
+                if ok, entry.key == activePaneId, let pane = pane as? TmuxPane {
                     smokeState.tmuxReattachRenderedPeakScrollPosition = max(
                         smokeState.tmuxReattachRenderedPeakScrollPosition,
                         abs(pane.rendererScrollPosition())

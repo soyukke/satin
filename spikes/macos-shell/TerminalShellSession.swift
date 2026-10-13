@@ -171,7 +171,7 @@ extension TerminalShellViewController {
     func discoverPendingTmuxReattach(
         _ attachment: NativeTmuxAttachment,
         executable: NativeTmuxExecutable,
-        gateway: RustTerminalPane,
+        gateway: TerminalPane,
         sequence: Int
     ) {
         NativeTmuxSessionDiscovery.discover(
@@ -229,7 +229,7 @@ extension TerminalShellViewController {
     func retryPendingTmuxReattachDiscovery(
         _ attachment: NativeTmuxAttachment,
         executable: NativeTmuxExecutable,
-        gateway: RustTerminalPane,
+        gateway: TerminalPane,
         message: String,
         sequence: Int
     ) {
@@ -256,9 +256,9 @@ extension TerminalShellViewController {
 
     func scheduleTmuxConnectionWork(
         after delay: TimeInterval,
-        gateway: RustTerminalPane,
+        gateway: TerminalPane,
         sequence: Int,
-        _ work: @escaping (TerminalShellViewController, RustTerminalPane) -> Void
+        _ work: @escaping (TerminalShellViewController, TerminalPane) -> Void
     ) {
         let workItem = DispatchWorkItem { [weak self, weak gateway] in
             guard let self, let gateway,
@@ -277,7 +277,7 @@ extension TerminalShellViewController {
         _ attachment: NativeTmuxAttachment,
         executable: NativeTmuxExecutable,
         descriptor: NativeTmuxSessionDescriptor,
-        gateway: RustTerminalPane,
+        gateway: TerminalPane,
         sequence: Int
     ) {
         NativeTmuxProjectionAdmission.request(
@@ -372,7 +372,7 @@ extension TerminalShellViewController {
     func startTmuxReattach(
         _ attachment: NativeTmuxAttachment,
         executable: NativeTmuxExecutable,
-        gateway: RustTerminalPane,
+        gateway: TerminalPane,
         sequence: Int
     ) {
         guard tmuxAdmissionSequence == sequence,
@@ -446,7 +446,7 @@ extension TerminalShellViewController {
         environment: [String: String] = [:],
         completion: NativeControlReply? = nil
     ) -> Bool {
-        guard let terminal = paneStore.runtimes[paneId] as? RustTerminalPane,
+        guard let terminal = paneStore.runtimes[paneId] as? TerminalPane,
             paneStore.suspendedSessions[paneId] == nil,
             paneStore.artifactSelectors[paneId] == nil
         else {
@@ -462,7 +462,7 @@ extension TerminalShellViewController {
             return false
         }
         guard
-            let pane = RustNeovimPane(
+            let pane = NeovimPane(
                 grid: paneGridSize(paneId),
                 cwd: cwd,
                 executable: executable,
@@ -494,14 +494,14 @@ extension TerminalShellViewController {
 
     func nativeNeovimWorkingDirectory(
         paneId: Int,
-        terminal: RustTerminalPane,
+        terminal: TerminalPane,
         requestedDirectory: String?
     ) -> String? {
         let runtimeDirectory = terminal.currentWorkingDirectory()
         let projectedDirectory = paneStore.workingDirectories[paneId]
         let directory =
             requestedDirectory
-            ?? (terminal is RustTmuxPane
+            ?? (terminal is TmuxPane
                 ? projectedDirectory ?? runtimeDirectory : runtimeDirectory)
             ?? projectedDirectory
             ?? nativeWorkingDirectory()
@@ -520,7 +520,7 @@ extension TerminalShellViewController {
 
     func scrollActivePane(deltaRows: CGFloat) {
         guard let paneId = activePaneId,
-            let pane = terminalPane(for: paneId) as? RustTerminalPane
+            let pane = terminalPane(for: paneId) as? TerminalPane
         else {
             return
         }
