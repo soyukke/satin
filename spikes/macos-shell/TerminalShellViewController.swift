@@ -384,6 +384,9 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
     var pendingPaneMode: NativePaneMode?
     let initialFinderLaunch: NativeFinderEditorLaunch?
     var paneDirectoryOpener: (URL) -> Bool = { NSWorkspace.shared.open($0) }
+    #if SATIN_SMOKE_SCENARIOS
+        var paneFinderSmokeFailure = ""
+    #endif
     var activePaneId: Int?
     var lastSnapshot: TerminalCoreSnapshot?
     var lastNvimModelScrollShift: OutputScrollShift?

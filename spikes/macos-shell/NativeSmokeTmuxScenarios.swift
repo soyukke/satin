@@ -88,10 +88,13 @@ import Foundation
             // The projection cursor belongs to the last topology snapshot and can lag
             // live %output. The retained terminal cursor is the rendering/input source
             // of truth, so do not turn normal control-protocol ordering into a timeout.
+            // tmux reports no working directory for a pane whose shell it has only
+            // just started, and reports it again with the next topology change.
             guard let tmuxCursor = tmuxPane.cursorPosition(),
                 tmuxCursor.x > 0,
                 let projectedPane,
-                gridIsSettled
+                gridIsSettled,
+                !projectedPane.current_path.isEmpty
             else {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
                     self?.waitForTmuxSmokeEntry(resultPath, retries: retries - 1)
@@ -105,7 +108,10 @@ import Foundation
                 )
             else {
                 tmuxSession?.gateway.tmuxCommand("kill-session")
-                writeSessionSmokeResult(resultPath, result: "failed tmux-native finder=no\n")
+                writeSessionSmokeResult(
+                    resultPath,
+                    result: "failed tmux-native finder=no \(paneFinderSmokeFailure)\n"
+                )
                 return
             }
             if tmuxZoomResizeSmokeOnly() {
