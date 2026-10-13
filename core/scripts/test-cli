@@ -106,7 +106,7 @@ out="$(env -u SATIN_PANE_ID -u NVTERM_PANE_ID "$satin" --socket "$socket" read-s
 check "a pane is required" "satin: pass --pane or set SATIN_PANE_ID" "$out"
 out="$("$satin" --socket "$work/absent.sock" list 2>&1 || true)"
 check "a missing socket is reported" "satin: connect $work/absent.sock" "$out"
-check "--version" "satin 0.4.0" "$("$satin" --version)"
+check "--version" "satin 0.4.1" "$("$satin" --version)"
 check "skill starts with its metadata" "---" "$("$satin" skill | head -1)"
 check "help prints the usage" "usage: satin --version" "$("$satin" --help | head -1)"
 
