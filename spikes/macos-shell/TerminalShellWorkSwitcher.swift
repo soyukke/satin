@@ -53,12 +53,6 @@ extension TerminalShellViewController {
     }
 
     func paneStatusDidChange(paneId: Int, status: NativePaneControlStatus?) {
-        if settings.partyFrames, status?.status == "waiting",
-            !paneIsVisibleForAttention(paneId),
-            let tab = lastSnapshot?.tabs.first(where: { $0.panes.contains(paneId) })
-        {
-            raidWarningView.show(tabTitle: tab.title, summary: status?.summary ?? "")
-        }
         if let status {
             workAttentionStore.observe(
                 paneId: paneId,
@@ -95,36 +89,15 @@ extension TerminalShellViewController {
             )
         }
         tabControl.setStatusBadges(badges)
-        refreshPartyFrames(snapshot)
-    }
-
-    func setPartyFramesVisible(_ visible: Bool) {
-        partyFramesView.isHidden = !visible
-        if !visible {
-            raidWarningView.dismiss()
-        }
-        partyFramesWidthConstraint?.constant = visible ? NativePartyFramesView.width : 0
-        if visible, let snapshot = lastSnapshot {
-            refreshPartyFrames(snapshot)
-        }
-    }
-
-    private func refreshPartyFrames(_ snapshot: TerminalCoreSnapshot) {
-        guard !partyFramesView.isHidden else {
-            return
-        }
-        partyFramesView.update(
-            nativePartyMembers(
-                tabs: snapshot.tabs.map(NativePartyTab.init),
-                activeTabIndex: snapshot.active_tab,
-                status: { [paneStatuses] in paneStatuses.status(for: $0) },
-                isUnread: { [workAttentionStore] in workAttentionStore.isUnread(paneId: $0) }
-            )
-        )
+        refreshAttentionHand()
     }
 
     /// Focuses the longest-waiting agent pane, cycling on repeated presses.
     @objc func jumpToWaitingAgent(_ sender: Any?) {
+        if settings.attentionHand {
+            jumpWithAttentionHand()
+            return
+        }
         let attentionStatuses: Set<String> = ["waiting", "blocked", "failed"]
         let candidates = (lastSnapshot?.tabs ?? []).flatMap { tab in
             tab.panes.compactMap { paneId -> NativeAttentionPane? in
@@ -145,14 +118,6 @@ extension TerminalShellViewController {
             return
         }
         dismissWorkSwitcher()
-        refreshWorkSwitcherPresentation()
-        focusTerminal()
-    }
-
-    func selectPartyMember(_ member: NativePartyMember) {
-        guard focusWorkPane(tabId: member.tabId, paneId: member.targetPaneId) else {
-            return
-        }
         refreshWorkSwitcherPresentation()
         focusTerminal()
     }
@@ -184,6 +149,7 @@ extension TerminalShellViewController {
 
     func refreshWorkSwitcherPresentation() {
         workSwitcherButton.setBadgeCount(workAttentionStore.unreadCount)
+        refreshAttentionHand()
         guard workSwitcherPopover?.isShown == true else {
             pendingWorkSwitcherRefresh?.cancel()
             pendingWorkSwitcherRefresh = nil
@@ -273,7 +239,7 @@ extension TerminalShellViewController {
     }
 
     /// Selects the tab and pane together, beeping when either no longer exists.
-    private func focusWorkPane(tabId: Int, paneId: Int) -> Bool {
+    func focusWorkPane(tabId: Int, paneId: Int) -> Bool {
         guard let snapshot = lastSnapshot,
             let tab = snapshot.tabs.first(where: { $0.id == tabId }),
             tab.panes.contains(paneId)

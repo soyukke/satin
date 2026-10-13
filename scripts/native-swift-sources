@@ -9,6 +9,9 @@ native_swift_sources=(
   spikes/macos-shell/ControlHost.swift
   spikes/macos-shell/NativeAgentActivity.swift
   spikes/macos-shell/NativeAppearance.swift
+  spikes/macos-shell/NativeAttentionHand.swift
+  spikes/macos-shell/NativeAttentionHandCards.swift
+  spikes/macos-shell/NativeAttentionHandView.swift
   spikes/macos-shell/NativeCoreRuntime.swift
   spikes/macos-shell/NativeCoreTheme.swift
   spikes/macos-shell/NativeFrameScheduling.swift
@@ -18,8 +21,8 @@ native_swift_sources=(
   spikes/macos-shell/PaneDragInteraction.swift
   spikes/macos-shell/PaneChromeView.swift
   spikes/macos-shell/NativePaneRuntime.swift
-  spikes/macos-shell/NativePartyEffects.swift
-  spikes/macos-shell/NativePartyFrames.swift
+  spikes/macos-shell/NativeHandEffects.swift
+  spikes/macos-shell/NativeTabFuse.swift
   spikes/macos-shell/NativeTmuxScrollMetadata.swift
   spikes/macos-shell/NativeTerminalSelection.swift
   spikes/macos-shell/NativePaneStatusStore.swift
@@ -49,6 +52,7 @@ native_swift_sources=(
   spikes/macos-shell/TerminalShellPaneDrag.swift
   spikes/macos-shell/TerminalShellPresentation.swift
   spikes/macos-shell/TerminalShellRuntime.swift
+  spikes/macos-shell/TerminalShellAttentionHand.swift
   spikes/macos-shell/TerminalShellSession.swift
   spikes/macos-shell/TerminalShellViewController.swift
   spikes/macos-shell/TerminalShellWorkSwitcher.swift

@@ -71,8 +71,9 @@ struct SatinApplication {
                 ("main menu", NativeMainMenuController.runSelfTests),
                 ("agent activity", runNativeAgentActivitySelfTests),
                 ("work switcher", runNativeWorkSwitcherSelfTests),
-                ("party frames", runNativePartyFramesSelfTests),
-                ("party effects", runNativePartyEffectsSelfTests),
+                ("hand effects", runNativeHandEffectsSelfTests),
+                ("attention hand", runNativeAttentionHandSelfTests),
+                ("attention hand view", runNativeAttentionHandViewSelfTests),
             ]
             for test in tests where !test.run() {
                 failDiagnostic("\(test.name) self-test failed")

@@ -71,6 +71,11 @@ and changes across the workspace.
   text preview, and a compact toolbar attention badge. Codex and Claude Code
   lifecycle classification works in local and projected tmux panes without
   scraping terminal screen text.
+- An optional attention hand (Settings › Appearance) that deals each agent
+  waiting on you, failed, or finished unread as a card along the window's lower
+  edge. A fuse runs round the tab, a spark carries the card from it, and a
+  thread ties each card back to its tab. Hold Command-J to look through the
+  hand with a preview of each pane, and let go to jump there.
 - Native copy/paste, IME, terminal rectangular selection, Neovim message-area
   drag selection, scrollback search, clickable links, and a scroll indicator.
 - A native Settings window for appearance, shell, startup directory,
