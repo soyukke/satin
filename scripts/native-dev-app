@@ -7,7 +7,7 @@ fi
 
 ./scripts/native-build
 
-version="$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')"
+version="$(tr -d '[:space:]' <VERSION)"
 build_number="${SATIN_BUILD_NUMBER:-$(git rev-list --count HEAD 2>/dev/null || printf '1')}"
 dev_root="spikes/macos-shell/.build/dev"
 app_path="$dev_root/Satin Dev.app"
@@ -31,8 +31,8 @@ esac
 rm -rf -- "$app_path"
 mkdir -p "$contents/MacOS" "$contents/Resources/Legal"
 /usr/bin/ditto spikes/macos-shell/.build/SatinApplication "$app_binary"
-/usr/bin/ditto target/debug/satin "$control_binary"
-/usr/bin/ditto target/debug/satin-nvim "$nvim_launcher"
+/usr/bin/ditto spikes/macos-shell/.build/satin "$control_binary"
+/usr/bin/ditto spikes/macos-shell/.build/satin-nvim "$nvim_launcher"
 chmod 755 "$app_binary" "$control_binary" "$nvim_launcher"
 
 if [[ ! -s "$icon_cache" || "$icon_source" -nt "$icon_cache" ]]; then

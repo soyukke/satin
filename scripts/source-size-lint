@@ -9,13 +9,6 @@ default_limit=1000
 
 limit_for() {
   case "$1" in
-    src/terminal_runtime.rs) printf '3377\n' ;;
-    src/artifact.rs) printf '2790\n' ;;
-    src/neovim_editor.rs) printf '2731\n' ;;
-    src/tmux_control.rs) printf '1882\n' ;;
-    src/skia_metal.rs) printf '1669\n' ;;
-    src/ffi.rs) printf '1542\n' ;;
-    src/artifact/markdown.rs) printf '1225\n' ;;
     spikes/macos-shell/SettingsWindow.swift) printf '1049\n' ;;
     *) printf '%s\n' "$default_limit" ;;
   esac
@@ -23,7 +16,7 @@ limit_for() {
 
 failures=0
 mapfile -t source_files < <(
-  rg --files src spikes/macos-shell -g '*.rs' -g '*.swift' | sort
+  rg --files spikes/macos-shell -g '*.swift' | sort
 )
 
 for source_file in "${source_files[@]}"; do

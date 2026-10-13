@@ -8,6 +8,9 @@ root="$(cd "$(dirname "$0")/.." && pwd)"
 kizu="${KIZU:-kizu}"
 cd "$root"
 
+# The renderer's tests assume the default fonts, not a developer's override.
+unset SATIN_FONT NVTERM_FONT
+
 scripts/build
 for package in . host cli nvim; do
     echo "== kizu test $package"

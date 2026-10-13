@@ -8,7 +8,7 @@ fi
 # shellcheck source=scripts/native-swift-sources
 source scripts/native-swift-sources
 
-version="$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')"
+version="$(tr -d '[:space:]' <VERSION)"
 build_number="${SATIN_BUILD_NUMBER:-$(git rev-list --count HEAD 2>/dev/null || printf '1')}"
 package_root="spikes/macos-shell/.build/package"
 app_path="$package_root/Satin.app"
@@ -58,17 +58,10 @@ swift_feature_flags=()
 if [[ "$satin_sdk_major" =~ ^[0-9]+$ ]] && ((satin_sdk_major >= 26)); then
   swift_feature_flags=(-D SATIN_HAS_LIQUID_GLASS_SDK)
 fi
-portable_ldflags=("-L$sdk/usr/lib")
-read -r -a inherited_ldflags <<<"${NIX_LDFLAGS:-}"
-for flag in "${inherited_ldflags[@]}"; do
-  case "$flag" in
-    -L/nix/store/*-libiconv-*/lib) ;;
-    *) portable_ldflags+=("$flag") ;;
-  esac
-done
-NIX_LDFLAGS="${portable_ldflags[*]}" \
-  MACOSX_DEPLOYMENT_TARGET="$minimum_macos" \
-  cargo build --release --lib --bin satin --bin satin-nvim
+# The app core, the `satin` command and the nvim launcher are Kizu, built
+# from core/ with the `kizu` the nix shell provides (or the one KIZU names).
+kizu_core="$(cd core && pwd)"
+MACOSX_DEPLOYMENT_TARGET="$minimum_macos" "$kizu_core/scripts/build"
 tmp_binary="$package_root/satin.$$"
 trap 'rm -f "$tmp_binary"' EXIT INT TERM
 
@@ -82,17 +75,23 @@ env -u SDKROOT -u DEVELOPER_DIR \
   -target "$swift_target" \
   "${swift_feature_flags[@]}" \
   "${native_swift_sources[@]}" \
-  target/release/libsatin.a \
+  "$kizu_core/target/host/satin.o" \
+  "$kizu_core/target/native/libghostty-vt.a" \
   -framework AppKit \
   -framework CryptoKit \
   -framework MetalKit \
   -framework Metal \
   -framework QuartzCore \
-  -lc++ \
+  -framework CoreText \
+  -framework CoreGraphics \
+  -framework CoreFoundation \
+  -lobjc \
   -o "$tmp_binary"
 mv -f "$tmp_binary" "$binary"
-/usr/bin/ditto target/release/satin "$control_binary"
-/usr/bin/ditto target/release/satin-nvim "$nvim_launcher"
+/usr/bin/ditto "$kizu_core/target/bin/satin" "$control_binary"
+/usr/bin/ditto "$kizu_core/target/bin/satin-nvim" "$nvim_launcher"
+# The renderer loads its bundled fonts from Resources/fonts.
+/usr/bin/ditto "$kizu_core/assets/fonts" "$contents/Resources/fonts"
 chmod 755 "$control_binary"
 chmod 755 "$nvim_launcher"
 
@@ -128,11 +127,6 @@ mkdir -p "$contents/Resources/ShellIntegration"
 mkdir -p "$contents/Resources/AgentIntegration"
 /usr/bin/ditto scripts/agent-integration/claude-settings.json \
   "$contents/Resources/AgentIntegration/claude-settings.json"
-cargo about generate \
-  --locked \
-  --fail \
-  about.hbs \
-  -o "$legal_resources/RUST_DEPENDENCY_LICENSES.html"
 chmod 755 "$contents/Resources/apply-update"
 
 sed \
@@ -150,7 +144,7 @@ test -s "$contents/Resources/AppIcon.icns"
 test -s "$legal_resources/LICENSE.txt"
 test -s "$legal_resources/THIRD_PARTY_NOTICES.md"
 test -s "$legal_resources/FONT_LICENSE.txt"
-test -s "$legal_resources/RUST_DEPENDENCY_LICENSES.html"
+test -s "$contents/Resources/fonts/FiraCodeNerdFont-Regular.ttf"
 jq -e '
   .schemaVersion == 1
     and .algorithm == "ed25519"

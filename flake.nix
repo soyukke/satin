@@ -3,10 +3,11 @@
 
   inputs = {
     nixpkgs.url = "nixpkgs";
+    kizu.url = "github:kizu-lang/kizu";
   };
 
   outputs =
-    { nixpkgs, ... }:
+    { nixpkgs, kizu, ... }:
     let
       systems = [
         "aarch64-darwin"
@@ -21,10 +22,11 @@
         let
           pkgs = import nixpkgs { inherit system; };
           font = pkgs.nerd-fonts.caskaydia-cove;
+          kizuCompiler = kizu.packages.${system}.default;
           nativeShellHook = ''
             export SATIN_FONT="${font}/share/fonts/truetype/NerdFonts/CaskaydiaCove/CaskaydiaCoveNerdFontMono-Regular.ttf"
             echo "zig: $(zig version)"
-            echo "rustc: $(rustc --version)"
+            echo "kizu: $(kizu version)"
             echo "font: $SATIN_FONT"
           '';
         in
@@ -32,13 +34,10 @@
           default = pkgs.mkShell {
             packages = [
               pkgs.actionlint
-              pkgs.cargo
-              pkgs.cargo-about
-              pkgs.cargo-audit
-              pkgs.clippy
               pkgs.deadnix
               pkgs.git
               pkgs.gitleaks
+              kizuCompiler
               pkgs.just
               pkgs.jq
               pkgs.markdownlint-cli2
@@ -47,9 +46,6 @@
               pkgs.nixfmt
               pkgs.python3
               pkgs.ripgrep
-              pkgs.rust-analyzer
-              pkgs.rustc
-              pkgs.rustfmt
               pkgs.shellcheck
               pkgs.shfmt
               pkgs.swift-format
@@ -65,9 +61,7 @@
           # Keep macOS CI off the much larger formatting and policy-tool closure.
           ci-native = pkgs.mkShell {
             packages = [
-              pkgs.cargo
-              pkgs.cargo-about
-              pkgs.clippy
+              kizuCompiler
               pkgs.git
               pkgs.just
               pkgs.jq
@@ -75,7 +69,6 @@
               pkgs.neovim
               pkgs.python3
               pkgs.ripgrep
-              pkgs.rustc
               pkgs.tmux
               pkgs.zig_0_15
             ];
@@ -86,13 +79,11 @@
           # Release packaging needs neither editor tooling nor repository lints.
           ci-release = pkgs.mkShell {
             packages = [
-              pkgs.cargo
-              pkgs.cargo-about
+              kizuCompiler
               pkgs.git
               pkgs.just
               pkgs.jq
               font
-              pkgs.rustc
               pkgs.zig_0_15
             ];
 
@@ -103,14 +94,12 @@
           ci-static = pkgs.mkShellNoCC {
             packages = [
               pkgs.actionlint
-              pkgs.cargo
               pkgs.deadnix
               pkgs.git
               pkgs.just
               pkgs.markdownlint-cli2
               pkgs.nixfmt
               pkgs.ripgrep
-              pkgs.rustfmt
               pkgs.shellcheck
               pkgs.shfmt
               pkgs.swift-format

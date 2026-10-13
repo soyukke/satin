@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ -z "${IN_NIX_SHELL:-}" ]]; then
+if [[ -z "${IN_NIX_SHELL:-}" && -z "${KIZU:-}" ]]; then
   exec nix develop --command just native-build
 fi
 
@@ -59,17 +59,15 @@ swift_feature_flags=(-D SATIN_SMOKE_SCENARIOS)
 if [[ "$satin_sdk_major" =~ ^[0-9]+$ ]] && ((satin_sdk_major >= 26)); then
   swift_feature_flags+=(-D SATIN_HAS_LIQUID_GLASS_SDK)
 fi
-portable_ldflags=("-L$sdk/usr/lib")
-read -r -a inherited_ldflags <<<"${NIX_LDFLAGS:-}"
-for flag in "${inherited_ldflags[@]}"; do
-  case "$flag" in
-    -L/nix/store/*-libiconv-*/lib) ;;
-    *) portable_ldflags+=("$flag") ;;
-  esac
-done
-NIX_LDFLAGS="${portable_ldflags[*]}" \
-  MACOSX_DEPLOYMENT_TARGET="$minimum_macos" \
-  cargo build --lib --bin satin --bin satin-nvim
+# The app core, the `satin` command and the nvim launcher are Kizu, built
+# from core/ with the `kizu` the nix shell provides (or the one KIZU names).
+kizu_core="$(cd core && pwd)"
+MACOSX_DEPLOYMENT_TARGET="$minimum_macos" "$kizu_core/scripts/build"
+# The app looks for the two commands beside itself.
+cp -f "$kizu_core/target/bin/satin" "$kizu_core/target/bin/satin-nvim" "$build_dir/"
+# The renderer loads its bundled fonts from `fonts` beside the executable.
+rm -rf "$build_dir/fonts"
+cp -R "$kizu_core/assets/fonts" "$build_dir/fonts"
 env -u SDKROOT -u DEVELOPER_DIR \
   /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc \
   -O \
@@ -81,12 +79,16 @@ env -u SDKROOT -u DEVELOPER_DIR \
   "${swift_feature_flags[@]}" \
   "${native_swift_sources[@]}" \
   "${native_smoke_swift_sources[@]}" \
-  target/debug/libsatin.a \
+  "$kizu_core/target/host/satin.o" \
+  "$kizu_core/target/native/libghostty-vt.a" \
   -framework AppKit \
   -framework CryptoKit \
   -framework MetalKit \
   -framework Metal \
   -framework QuartzCore \
-  -lc++ \
+  -framework CoreText \
+  -framework CoreGraphics \
+  -framework CoreFoundation \
+  -lobjc \
   -o "$tmp_output"
 mv -f "$tmp_output" "$output"

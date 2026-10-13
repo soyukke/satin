@@ -10,7 +10,7 @@ rm -f "$result_file"
 env -u TMUX -u TMUX_PANE -u STY -u SSH_TTY -u SSH_CONNECTION \
   SATIN_NATIVE_SMOKE_SCENARIO=shell-nvim-native \
   SATIN_NATIVE_SMOKE_RESULT="$result_file" \
-  SATIN_NATIVE_SMOKE_NVIM_LAUNCHER="$repo_root/target/debug/satin-nvim" \
+  SATIN_NATIVE_SMOKE_NVIM_LAUNCHER="$repo_root/spikes/macos-shell/.build/satin-nvim" \
   SATIN_NATIVE_SMOKE_ZSH_INTEGRATION="$repo_root/scripts/shell-integration/zsh" \
   "$app" >"/tmp/satin-shell-nvim.log" 2>&1
 

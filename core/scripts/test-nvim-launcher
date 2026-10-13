@@ -7,6 +7,8 @@
 set -eu
 launcher="$(cd "$(dirname "$1")" && pwd)/$(basename "$1")"
 on_terminal="$(cd "$(dirname "$0")" && pwd)/on-terminal"
+# The launches below run with a short PATH; keep the python found here.
+python="$(command -v python3)"
 work="$(mktemp -d /tmp/satin-nvim-test.XXXXXX)"
 trap '{ kill "$server"; wait "$server"; } 2>/dev/null || true; rm -rf "$work"' EXIT
 socket="$work/control.sock"
@@ -68,7 +70,7 @@ status=0
 (cd "$work/project" && env -u TMUX -u STY -u SSH_TTY -u SSH_CONNECTION -u SATIN_NVIM_TUI \
     PATH="$work/bin:/usr/bin:/bin" SATIN_PANE_ID=4 SATIN_SOCKET="$socket" \
     LAUNCH_MARK=here \
-    "$on_terminal" "$launcher" -u NONE "file name" > "$work/native.out" 2>&1) || status=$?
+    "$python" "$on_terminal" "$launcher" -u NONE "file name" > "$work/native.out" 2>&1) || status=$?
 check "the app's exit code is the launcher's" "7" "$status"
 check "the real nvim did not run" "" "$(grep -c 'real nvim' "$work/native.out" | grep -v '^0$' || true)"
 [ "$status" = 7 ] || { echo "native launch printed:"; cat "$work/native.out"; }
@@ -89,21 +91,21 @@ here 4" "$(cat "$work/request.summary")"
 printf '{"ok":false,"error":{"code":"no_pane","message":"gone"}}' > "$work/answer"
 (cd "$work/project" && env -u TMUX -u STY -u SSH_TTY -u SSH_CONNECTION -u SATIN_NVIM_TUI \
     PATH="$work/bin:/usr/bin:/bin" SATIN_PANE_ID=4 SATIN_SOCKET="$socket" \
-    "$on_terminal" "$launcher" file > "$work/fallback.out" 2>&1) || true
+    "$python" "$on_terminal" "$launcher" file > "$work/fallback.out" 2>&1) || true
 check "a refusal runs the real nvim" "real nvim: [file]" "$(cat "$work/fallback.out")"
 
 # Arguments that are not the UI never ask the app.
 rm -f "$work/request"
 (cd "$work/project" && env -u TMUX -u STY -u SSH_TTY -u SSH_CONNECTION -u SATIN_NVIM_TUI \
     PATH="$work/bin:/usr/bin:/bin" SATIN_PANE_ID=4 SATIN_SOCKET="$socket" \
-    "$on_terminal" "$launcher" --headless > "$work/headless.out" 2>&1) || true
+    "$python" "$on_terminal" "$launcher" --headless > "$work/headless.out" 2>&1) || true
 check "--headless runs the real nvim" "real nvim: [--headless]" "$(cat "$work/headless.out")"
 check "--headless sends no request" "absent" "$([ -e "$work/request" ] && echo present || echo absent)"
 
 # Inside tmux a terminal nvim gets the bridge preloaded.
 (cd "$work/project" && env -u STY -u SSH_TTY -u SSH_CONNECTION TMUX=1 \
     PATH="$work/bin:/usr/bin:/bin" \
-    "$on_terminal" "$launcher" file > "$work/tmux.out" 2>&1) || true
+    "$python" "$on_terminal" "$launcher" file > "$work/tmux.out" 2>&1) || true
 check "inside tmux the bridge is preloaded" "1" "$(grep -c 'real nvim: \[--cmd\] \[lua assert(load("' "$work/tmux.out")"
 check "the bridge is one quoted Lua string" "1" "$(grep -c '777;SatinScroll;1' "$work/tmux.out")"
 check "the bridge command ends the call" "1" "$(grep -c '"))()\] \[file\]$' "$work/tmux.out")"

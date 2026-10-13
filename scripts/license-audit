@@ -15,9 +15,9 @@ test "$actual_fira_hash" = "$expected_fira_hash"
 test "$actual_last_resort_hash" = "$expected_last_resort_hash"
 
 grep -F "Copyright (c) 2023 Neovide Contributors" THIRD_PARTY_NOTICES.md >/dev/null
-grep -F "Copyright (c) 2023 Neovide Contributors" src/neovide_render.rs >/dev/null
-grep -F "Copyright (c) 2023 Neovide Contributors" src/neovide_text.rs >/dev/null
-grep -F "Copyright (c) 2023 Neovide Contributors" src/skia_metal.rs >/dev/null
+grep -F "Copyright (c) 2023 Neovide Contributors" core/src/term/render.kizu >/dev/null
+cmp -s assets/fonts/FiraCodeNerdFont-Regular.ttf core/assets/fonts/FiraCodeNerdFont-Regular.ttf
+cmp -s assets/fonts/LastResort-Regular.ttf core/assets/fonts/LastResort-Regular.ttf
 grep -F "$expected_neovide_revision" THIRD_PARTY_NOTICES.md >/dev/null
 grep -F "$expected_message_selection_revision" THIRD_PARTY_NOTICES.md >/dev/null
 grep -F "$expected_fira_hash" THIRD_PARTY_NOTICES.md >/dev/null
@@ -30,20 +30,7 @@ grep -F "Copyright © 2020 Unicode, Inc." assets/fonts/LICENSE >/dev/null
 grep -F "SIL OPEN FONT LICENSE Version 1.1" assets/fonts/LICENSE >/dev/null
 grep -F "Copyright (c) 2014 Ryan L McIntyre" THIRD_PARTY_NOTICES.md >/dev/null
 
-license_report="$(mktemp "${TMPDIR:-/tmp}/satin-license-audit.XXXXXX.html")"
-case "$license_report" in
-  "${TMPDIR:-/tmp}"/satin-license-audit.*.html) ;;
-  *)
-    echo "refusing unexpected license audit path: $license_report" >&2
-    exit 70
-    ;;
-esac
-trap 'rm -f -- "$license_report"' EXIT INT TERM
-
-cargo about generate --locked --fail about.hbs -o "$license_report"
-test -s "$license_report"
-grep -F "Third Party Licenses" "$license_report" >/dev/null
-grep -F "libghostty-vt" "$license_report" >/dev/null
-grep -F "skia-safe" "$license_report" >/dev/null
-grep -F "swash" "$license_report" >/dev/null
+grep -F "Copyright (c) 2024 Mitchell Hashimoto, Ghostty contributors" THIRD_PARTY_NOTICES.md >/dev/null
+grep -F "a887df42c56f6de86c0fe6da9c4eeca37931e083" THIRD_PARTY_NOTICES.md >/dev/null
+grep -F "a887df42c56f6de86c0fe6da9c4eeca37931e083" core/scripts/build-ghostty >/dev/null
 printf 'license audit passed\n'

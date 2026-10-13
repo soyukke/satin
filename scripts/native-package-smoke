@@ -17,10 +17,7 @@ app_path="spikes/macos-shell/.build/package/Satin.app"
 executable="$app_path/Contents/MacOS/satin-app"
 control_executable="$app_path/Contents/MacOS/satin"
 nvim_launcher="$app_path/Contents/MacOS/satin-nvim"
-package_version="$(
-  sed -nE 's/^version = "([^"]+)"$/\1/p' Cargo.toml |
-    head -n 1
-)"
+package_version="$(tr -d '[:space:]' <VERSION)"
 test -n "$package_version"
 test "$(
   /usr/libexec/PlistBuddy -c 'Print :CFBundleDisplayName' \
@@ -75,15 +72,13 @@ test -s "$app_path/Contents/Resources/update-signing-public-key.json"
 test -s "$app_path/Contents/Resources/Legal/LICENSE.txt"
 test -s "$app_path/Contents/Resources/Legal/THIRD_PARTY_NOTICES.md"
 test -s "$app_path/Contents/Resources/Legal/FONT_LICENSE.txt"
-test -s "$app_path/Contents/Resources/Legal/RUST_DEPENDENCY_LICENSES.html"
+test -s "$app_path/Contents/Resources/fonts/FiraCodeNerdFont-Regular.ttf"
 grep -F "Copyright (c) 2023 Neovide Contributors" \
   "$app_path/Contents/Resources/Legal/THIRD_PARTY_NOTICES.md" >/dev/null
 grep -F "SIL OPEN FONT LICENSE Version 1.1" \
   "$app_path/Contents/Resources/Legal/FONT_LICENSE.txt" >/dev/null
 grep -F "Copyright (c) 2014 Ryan L McIntyre" \
   "$app_path/Contents/Resources/Legal/FONT_LICENSE.txt" >/dev/null
-grep -F "Third Party Licenses" \
-  "$app_path/Contents/Resources/Legal/RUST_DEPENDENCY_LICENSES.html" >/dev/null
 test -x "$app_path/Contents/Resources/apply-update"
 test -x "$control_executable"
 test -x "$nvim_launcher"

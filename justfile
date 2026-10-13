@@ -9,7 +9,7 @@ shell:
 
 # Show tool versions from the flake shell.
 doctor:
-    @if [[ -z "${IN_NIX_SHELL:-}" ]]; then exec nix develop --command just doctor; else echo "zig:  $(zig version)"; echo "rust: $(rustc --version)"; echo "just: $(just --version)"; echo "font: ${SATIN_FONT:-unset}"; fi
+    @if [[ -z "${IN_NIX_SHELL:-}" ]]; then exec nix develop --command just doctor; else echo "zig:  $(zig version)"; echo "kizu: $(kizu version)"; echo "just: $(just --version)"; echo "font: ${SATIN_FONT:-unset}"; fi
 
 # List Architecture Decision Records.
 adr:
@@ -151,7 +151,7 @@ native-update-test:
 
 # Verify the production update endpoint without consuming GitHub API quota.
 native-update-live-smoke:
-    @if [[ -z "${IN_NIX_SHELL:-}" ]]; then exec nix develop --command just native-update-live-smoke; else version=$(sed -nE 's/^version = "([^"]+)"/\1/p' Cargo.toml | head -1); just native-build && SATIN_UPDATE_LIVE_CHECK_VERSION="$version" SATIN_UPDATE_LIVE_CHECK_EXPECTED=current spikes/macos-shell/.build/SatinApplication; fi
+    @if [[ -z "${IN_NIX_SHELL:-}" ]]; then exec nix develop --command just native-update-live-smoke; else version=$(tr -d '[:space:]' <VERSION); just native-build && SATIN_UPDATE_LIVE_CHECK_VERSION="$version" SATIN_UPDATE_LIVE_CHECK_EXPECTED=current spikes/macos-shell/.build/SatinApplication; fi
 
 # Verify the external updater swaps, validates, and preserves the previous app.
 native-update-install-smoke:
@@ -506,17 +506,17 @@ _nvim-smoke scenario:
     echo "$result"; \
     [[ "$result" == ok* ]]
 
-# Check the Rust crate.
+# Type-check the Kizu core.
 check:
-    @if [[ -z "${IN_NIX_SHELL:-}" ]]; then exec nix develop --command just check; else cargo check; fi
+    @if [[ -z "${IN_NIX_SHELL:-}" ]]; then exec nix develop --command just check; else for package in core core/host core/cli core/nvim; do kizu check "$package"; done; fi
 
 # Run tests.
 test:
-    @if [[ -z "${IN_NIX_SHELL:-}" ]]; then exec nix develop --command just test; else cargo test; fi
+    @if [[ -z "${IN_NIX_SHELL:-}" ]]; then exec nix develop --command just test; else ./core/scripts/test; fi
 
 # Run every formatting, source, repository, and operations lint gate.
 lint:
-    @if [[ -z "${IN_NIX_SHELL:-}" ]]; then exec nix develop --command just lint; else just ci-static && cargo clippy --all-targets --all-features -- -D warnings; fi
+    @if [[ -z "${IN_NIX_SHELL:-}" ]]; then exec nix develop --command just lint; else just ci-static; fi
 
 # Run platform-independent formatting and repository policy checks.
 ci-static:
@@ -526,9 +526,9 @@ ci-static:
 ci-scope base head:
     @./scripts/ci-change-scope "{{base}}" "{{head}}"
 
-# Run Rust compile, lint, test, and license checks used by native CI.
-ci-rust:
-    @if [[ -z "${IN_NIX_SHELL:-}" ]]; then exec nix develop .#ci-native --command just ci-rust; else cargo check && cargo clippy --all-targets --all-features -- -D warnings && cargo test && just license-audit; fi
+# Build and test the Kizu core, and check licenses, as native CI does.
+ci-core:
+    @if [[ -z "${IN_NIX_SHELL:-}" ]]; then exec nix develop .#ci-native --command just ci-core; else ./core/scripts/test && just license-audit; fi
 
 # Lint Swift formatting, naming, safety, and language idioms.
 swift-lint:
@@ -571,24 +571,19 @@ install-hooks:
 
 # Format Rust, Swift, shell, and Nix sources.
 fmt:
-    @if [[ -z "${IN_NIX_SHELL:-}" ]]; then exec nix develop --command just fmt; else cargo fmt; swift-format format --in-place --recursive --configuration .swift-format spikes/macos-shell scripts/native-window-record.swift; mapfile -t shell_scripts < <(rg -l '^#!.*(bash|/sh)' scripts --glob '*' | sort); shfmt -w -i 2 -ci "${shell_scripts[@]}"; nixfmt flake.nix; fi
+    @if [[ -z "${IN_NIX_SHELL:-}" ]]; then exec nix develop --command just fmt; else swift-format format --in-place --recursive --configuration .swift-format spikes/macos-shell scripts/native-window-record.swift; mapfile -t shell_scripts < <(rg -l '^#!.*(bash|/sh)' scripts --glob '*' | sort); shfmt -w -i 2 -ci "${shell_scripts[@]}"; nixfmt flake.nix; fi
 
 # Verify formatting without changing files.
 fmt-check:
-    @if [[ -z "${IN_NIX_SHELL:-}" ]]; then exec nix develop --command just fmt-check; else cargo fmt -- --check; just swift-lint; mapfile -t shell_scripts < <(rg -l '^#!.*(bash|/sh)' scripts --glob '*' | sort); shfmt -d -i 2 -ci "${shell_scripts[@]}"; nixfmt --check flake.nix; fi
+    @if [[ -z "${IN_NIX_SHELL:-}" ]]; then exec nix develop --command just fmt-check; else just swift-lint; mapfile -t shell_scripts < <(rg -l '^#!.*(bash|/sh)' scripts --glob '*' | sort); shfmt -d -i 2 -ci "${shell_scripts[@]}"; nixfmt --check flake.nix; fi
 
 # Verify formatting, type checking, linting, and tests.
 verify:
-    @if [[ -z "${IN_NIX_SHELL:-}" ]]; then exec nix develop --command just verify; else just ci-static && just ci-rust; fi
-
-# Check Rust dependencies against the current RustSec advisory database.
-audit:
-    @if [[ -z "${IN_NIX_SHELL:-}" ]]; then exec nix develop --command just audit; else cargo audit; fi
+    @if [[ -z "${IN_NIX_SHELL:-}" ]]; then exec nix develop --command just verify; else just ci-static && just ci-core; fi
 
 # Run the publication-grade local quality gate, including native behavior.
 quality:
     @just verify
-    @just audit
     @just secrets-worktree
     @just native-build
     @just native-update-test
@@ -596,10 +591,10 @@ quality:
     @just terminal-nvim-cwd-smoke
     @just pane-grid-smoke
 
-# Verify third-party attribution, exact bundled font provenance, and Cargo licenses.
+# Verify third-party attribution, and exact bundled font provenance.
 license-audit:
     @./scripts/license-audit
 
-# Remove Rust build artifacts.
+# Remove build artifacts.
 clean:
-    @if [[ -z "${IN_NIX_SHELL:-}" ]]; then exec nix develop --command just clean; else cargo clean; fi
+    @rm -rf core/target spikes/macos-shell/.build

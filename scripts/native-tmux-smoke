@@ -25,7 +25,7 @@ restart_bundle_id="dev.soyukke.satin.tmuxrestartsmoke.$$"
 restart_app="$preferences_root/Satin Tmux Restart Smoke.app"
 restart_contents="$restart_app/Contents"
 restart_binary="$restart_contents/MacOS/satin-tmux-restart-smoke"
-nvim_launcher="$(pwd)/target/debug/satin-nvim"
+nvim_launcher="$(pwd)/spikes/macos-shell/.build/satin-nvim"
 lease_holder_pid=""
 delayed_app_pid=""
 
