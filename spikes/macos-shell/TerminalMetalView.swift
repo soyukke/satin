@@ -42,7 +42,7 @@ final class TerminalMetalView: MTKView, CAMetalDisplayLinkDelegate, MTKViewDeleg
                 metalObjectPointer(commandQueue)
             )
         else {
-            fatalError("Metal/Skia initialization failed after capability preflight")
+            fatalError("Metal renderer initialization failed after capability preflight")
         }
 
         self.commandQueue = commandQueue
