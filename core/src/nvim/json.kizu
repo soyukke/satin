@@ -184,10 +184,8 @@ pub fn append_renderer_model_json(
 }
 
 /// How the host asks for Neovim: a JSON object of which every key may be
-/// left out. reserved comes first: std::json::decode does not compile for
-/// a struct whose first field is an optional owner (gaps/README.md).
+/// left out.
 pub struct LaunchDocument {
-    pub reserved: ?bool,
     pub cwd: ?string::String,
     pub executable: ?string::String,
     pub arguments: ?array::Array<string::String>,

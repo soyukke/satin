@@ -75,32 +75,8 @@ extern "c" fn stat(path: ptr<const u8>, out: ptr<u8>) -> i32
 extern "c" fn strlen(text: ptr<const u8>) -> usize
 extern "c" fn __error() -> ptr<i32>
 extern "c" fn _NSGetEnviron() -> ptr<usize>
-// `ioctl` and `fcntl` are variadic, which Kizu cannot declare. On arm64
-// Darwin a variadic argument travels on the stack, where a ninth integer
-// argument also goes, so six unused register arguments put the real one
-// there. This declaration is wrong on any other target.
-extern "c" fn ioctl(
-    fd: i32,
-    request: u64,
-    unused2: u64,
-    unused3: u64,
-    unused4: u64,
-    unused5: u64,
-    unused6: u64,
-    unused7: u64,
-    size: &Winsize
-) -> i32
-extern "c" fn fcntl(
-    fd: i32,
-    command: i32,
-    unused2: u64,
-    unused3: u64,
-    unused4: u64,
-    unused5: u64,
-    unused6: u64,
-    unused7: u64,
-    argument: i64
-) -> i32
+extern "c" fn ioctl(fd: i32, request: u64, ...) -> i32
+extern "c" fn fcntl(fd: i32, command: i32, ...) -> i32
 fn errno() -> i32 {
     // SAFETY: __error returns this thread's errno, which is always readable.
     return unsafe ptr_read(__error());
@@ -536,7 +512,7 @@ pub fn spawn_pty(
         return SpawnError::Unavailable;
     }
     // SAFETY: master.value is the PTY forkpty opened; 2 is F_SETFD and 1 FD_CLOEXEC.
-    let _ = unsafe fcntl(master.value, 2, 0, 0, 0, 0, 0, 0, 1);
+    let _ = unsafe fcntl(master.value, 2, cast<i32>(1));
     var pty = Pty {
         master: master.value,
         child: child,
@@ -598,7 +574,7 @@ pub fn (self: &Pty) resize(cols: u16, rows: u16, pixel_width: u16, pixel_height:
     }
     let size = Winsize { rows: rows, cols: cols, pixel_width: pixel_width, pixel_height: pixel_height };
     // SAFETY: master is the live PTY; the request is TIOCSWINSZ, which reads a winsize.
-    let result = unsafe ioctl(self.master, 2148037735, 0, 0, 0, 0, 0, 0, &size);
+    let result = unsafe ioctl(self.master, 2148037735, &size);
     if result != 0 {
         return SpawnError::Unavailable;
     }

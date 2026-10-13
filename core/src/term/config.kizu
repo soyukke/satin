@@ -5,8 +5,8 @@ import std::json;
 import std::map;
 import std::string;
 
-/// direct_startup comes first: std::json::decode does not compile for a
-/// struct whose first field is an optional owner (gaps/README.md).
+/// How the host asks for a shell: a JSON object of which every key may be
+/// left out.
 pub struct SpawnDocument {
     pub direct_startup: ?bool,
     pub cwd: ?string::String,

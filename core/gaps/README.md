@@ -40,13 +40,11 @@ where a `?ptr<T>` is expected.
 | `p == null` does not compile for `?ptr<T>` | test asserts | `if p \|_\| { return true; }` |
 | `[N]u8` has no mutable view, so a byte buffer cannot be written by index | escape bytes in tests | build a `String` |
 | `kizu test` links every C export, so a package calling a C library needs that library to test | `satin_vt_*` | `[native] library_search` + a symlink to the archive (`scripts/build-ghostty`, which builds it with zig) |
-| A variadic C function cannot be declared | `ioctl(TIOCSWINSZ)`, `fcntl(F_SETFD)` on the PTY | six unused register arguments, which puts the real one on the stack where arm64 Darwin reads a variadic argument; wrong on any other target |
 | No threads outside `thread::each` | the PTY reader thread | the host waits on the PTY itself; a pipe replaces it at its end so the wait goes quiet |
 | A C out parameter of a scalar needs storage with an address | every libghostty `*_get` | a malloc "slot" read back with `ptr_read`, or a one-field `extern "c" struct` passed as `&var` |
 | An `extern "c" struct` holding a pointer is not copy | `GridRef`, `Selection` | `move` at every use |
 | A `?[]u8` parameter is refused | `resolve_user_zdotdir` | an empty view for "unset" |
 | A field of a field cannot be deinitialized | a struct nested in the query state | flatten the fields into the owner |
-| `std::json::decode<T>` does not compile when `T`'s first field is an optional owner (`?String`, `?Array<..>`, `?Map<..>`): `decode_optional` returns `held` without `move` | the spawn configuration | declare a `?bool` or a required field first |
 | A value carrying views (`KeyInput` with `[]u8` fields) built from `view_from_ptr` views cannot be passed to a method of a `&var` read out of a raw pointer: "borrowed value cannot escape" | `satin_runtime_key` | `write_key_of` / `encode_key_of`, which take the parts and build the value inside |
 | A view cannot be returned from a helper or assigned to an outer `var` | C string helpers at the host boundary | `strlen` + `view_from_ptr` inline in every export |
 | No bare `{ }` block to end a borrow early | two runtimes borrowed in turn | straight-line code, or a helper per borrow |
@@ -59,8 +57,6 @@ where a `?ptr<T>` is expected.
 | A local cannot hold an error union to `try` later | freeing malloc storage before propagating a failure | a `failed` flag, and `return mem::Error::OutOfMemory` after the free |
 | `std::process` starts a child only to wait for it, with no pipes | the embedded editor's RPC | `posix_spawnp` with file actions, declared by hand |
 | `std::net` has no Unix sockets and no readiness queue for foreign descriptors | the control socket | `socket` / `bind` / `kqueue` / `kevent`, declared by hand |
-| A loop variable and an owned local of the same name in one function pass `check` and then emit invalid IR | the editor's grid rows | distinct names |
-| Struct `==` passes `check` and fails in codegen | artifact model comparisons | a function comparing the fields |
 | `kizu check` does not check `_test.kizu` files | every module | `kizu test` is the check for tests |
 | A `let`-bound view used inside a loop stays borrowed to the end of the function | deferred `deinit` after a send loop | move the loop into a helper taking the view |
 | `&self.field` cannot be returned as `?&T` | the popup menu's window | a one-element `Array` and `at(0)` |
