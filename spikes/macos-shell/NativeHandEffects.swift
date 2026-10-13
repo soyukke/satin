@@ -6,6 +6,9 @@ import QuartzCore
 enum NativeHandEffects {
     private static let pulseKey = "satin.hand.pulse"
     private static let flashKey = "satin.hand.flash"
+    /// Marks that run for as long as a pane waits are drawn at half the rate
+    /// of a display or less, which is all a slow pulse needs.
+    static let ambientFrameRate = CAFrameRateRange(minimum: 15, maximum: 30, preferred: 30)
 
     static var reducesMotion: Bool {
         NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
@@ -33,6 +36,7 @@ enum NativeHandEffects {
         pulse.duration = duration
         pulse.autoreverses = true
         pulse.repeatCount = .infinity
+        pulse.preferredFrameRateRange = ambientFrameRate
         pulse.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
         layer.add(pulse, forKey: pulseKey)
     }

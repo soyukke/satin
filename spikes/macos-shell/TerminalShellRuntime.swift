@@ -723,7 +723,7 @@ extension TerminalShellViewController {
     }
 
     func renderActiveMetalFrame(
-        texture: MTLTexture,
+        texture: NativeFrameBuffer,
         renderer: UnsafeMutableRawPointer?
     ) -> Bool {
         guard let renderer else {
@@ -767,7 +767,7 @@ extension TerminalShellViewController {
     private func renderPaneFrame(
         _ pane: NativePane,
         renderHandle: UnsafeMutableRawPointer,
-        texture: MTLTexture,
+        texture: NativeFrameBuffer,
         renderer: UnsafeMutableRawPointer,
         geometry: SkiaRenderGeometry,
         clear: UInt8,
