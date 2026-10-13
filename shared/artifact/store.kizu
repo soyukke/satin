@@ -1,0 +1,1759 @@
+// The artifact store: a directory beside the control socket's that keeps
+// each artifact as `<slug>--<id>/` with its `metadata.json`, one
+// `versions/vNNN/` a version, and `current.md` and `README.md` for a
+// reader; `.index/<id>` names an artifact's directory, `.policy.json` is
+// the policy, and `INDEX.md` lists what is there.
+import std::array;
+import std::fmt;
+import std::fs;
+import std::io;
+import std::json;
+import std::mem;
+import std::process;
+import std::string;
+
+/// The policy as `.policy.json` holds it; a key left out keeps its default.
+pub struct PolicyDocument {
+    pub max_columns: ?i64,
+    pub max_rows: ?i64,
+    pub language: ?string::String,
+    pub overflow: ?string::String,
+}
+
+fn (self: PolicyDocument) deinit(allocator: Allocator) -> void {
+    if self.language |held| {
+        held.deinit(allocator);
+    }
+    if self.overflow |held| {
+        held.deinit(allocator);
+    }
+    return;
+}
+
+pub struct StoredPreview {
+    pub status: string::String,
+    pub source_lines: i64,
+    pub omitted_items: i64,
+}
+
+fn (self: StoredPreview) deinit(allocator: Allocator) -> void {
+    self.status.deinit(allocator);
+    return;
+}
+
+/// One version as `metadata.json` holds it; its paths are relative to the
+/// artifact's directory.
+pub struct StoredVersion {
+    pub version: i64,
+    pub created_at_ms: i64,
+    pub document: string::String,
+    pub source: string::String,
+    pub assets: ?array::Array<string::String>,
+    pub origin: string::String,
+    pub source_bytes: i64,
+    pub preview: StoredPreview,
+}
+
+fn (self: StoredVersion) deinit(allocator: Allocator) -> void {
+    self.document.deinit(allocator);
+    self.source.deinit(allocator);
+    if self.assets |held| {
+        held.deinit(allocator);
+    }
+    self.origin.deinit(allocator);
+    self.preview.deinit(allocator);
+    return;
+}
+
+/// An artifact as `metadata.json` holds it.
+pub struct StoredArtifact {
+    pub format_version: i64,
+    pub id: string::String,
+    pub slug: string::String,
+    pub title: string::String,
+    pub kind: string::String,
+    pub language: string::String,
+    pub created_at_ms: i64,
+    pub updated_at_ms: i64,
+    pub owner_tab: ?i64,
+    pub owner_pane: ?i64,
+    pub versions: array::Array<StoredVersion>,
+}
+
+fn (self: StoredArtifact) deinit(allocator: Allocator) -> void {
+    self.id.deinit(allocator);
+    self.slug.deinit(allocator);
+    self.title.deinit(allocator);
+    self.kind.deinit(allocator);
+    self.language.deinit(allocator);
+    self.versions.deinit(allocator);
+    return;
+}
+
+/// A file a Markdown artifact shows, kept beside each version's document.
+struct ArtifactAsset {
+    relative_path: string::String,
+    bytes: string::String,
+}
+
+fn (self: ArtifactAsset) deinit(allocator: Allocator) -> void {
+    self.relative_path.deinit(allocator);
+    self.bytes.deinit(allocator);
+    return;
+}
+
+/// A source read for registration: its bytes, the Markdown document made
+/// of it, and the name its copy takes in a version's directory.
+struct ArtifactSource {
+    canonical_path: string::String,
+    bytes: string::String,
+    document: string::String,
+    source_name: string::String,
+    assets: array::Array<ArtifactAsset>,
+}
+
+fn (self: ArtifactSource) deinit(allocator: Allocator) -> void {
+    self.canonical_path.deinit(allocator);
+    self.bytes.deinit(allocator);
+    self.document.deinit(allocator);
+    self.source_name.deinit(allocator);
+    self.assets.deinit(allocator);
+    return;
+}
+
+/// Appends the three parts and a line feed to out.
+fn append_line(
+    allocator: Allocator,
+    out: &var string::String,
+    first: []u8,
+    second: []u8,
+    third: []u8
+) -> mem::Error!void {
+    try out.append_bytes(allocator, first);
+    try out.append_bytes(allocator, second);
+    try out.append_bytes(allocator, third);
+    try out.append_byte(allocator, 10);
+    return;
+}
+
+/// Appends path to out as its names with one `/` before each: the empty
+/// names and the `.` names between them say nothing and are left out.
+fn append_names(allocator: Allocator, out: &var string::String, path: []u8) -> mem::Error!void {
+    var start: i64 = 0;
+    for 0..mem::len(path) + 1 |index| {
+        if index < mem::len(path) and path[index] != cast<u8>(47) {
+            continue;
+        }
+        let name = path[start..index];
+        if mem::len(name) > 0 and !mem::equal_bytes(name, ".") {
+            try out.append_byte(allocator, 47);
+            try out.append_bytes(allocator, name);
+        }
+        start = index + 1;
+    }
+    return;
+}
+
+/// The store's directory for the app whose control socket is at socket:
+/// `artifacts` beside the socket's `run` directory, or beside the socket
+/// when it is not in one.
+pub fn artifact_root(
+    allocator: Allocator,
+    message: &var string::String,
+    socket: []u8
+) -> ArtifactFailure!string::String {
+    if mem::len(socket) == 0 or socket[0] != cast<u8>(47) {
+        explain(allocator, message, "control socket path must be absolute", "", "");
+        return ArtifactError::Failed;
+    }
+    var names = string::new(allocator);
+    defer names.deinit(allocator);
+    try append_names(allocator, &var names, socket);
+    let path = names.as_bytes();
+    let parent_end = parent_length(path);
+    if parent_end == 0 {
+        explain(allocator, message, "control socket path has no parent", "", "");
+        return ArtifactError::Failed;
+    }
+    let parent = path[0..parent_end];
+    if mem::equal_bytes(parent[name_start(parent)..parent_end], "run") {
+        return joined(allocator, parent[0..parent_length(parent)], "artifacts");
+    }
+    return joined(allocator, parent, "artifacts");
+}
+
+fn policy_path(allocator: Allocator, message: &var string::String, socket: []u8) -> ArtifactFailure!string::String {
+    let root = try artifact_root(allocator, message, socket);
+    defer root.deinit(allocator);
+    let bytes = root.as_bytes();
+    return joined(allocator, bytes, ".policy.json");
+}
+
+/// Copies what a policy document sets into policy; false when it sets
+/// something no policy can hold.
+fn apply_policy_document(
+    allocator: Allocator,
+    document: &PolicyDocument,
+    policy: &var ArtifactPolicy
+) -> mem::Error!bool {
+    if document.max_columns |columns| {
+        if columns < 0 or columns > 65535 {
+            return false;
+        }
+        policy.max_columns = columns;
+    }
+    if document.max_rows |rows| {
+        if rows < 0 or rows > 65535 {
+            return false;
+        }
+        policy.max_rows = rows;
+    }
+    if document.language |language| {
+        policy.language.clear();
+        try policy.language.append_string(allocator, language);
+    }
+    if document.overflow |overflow| {
+        let name = overflow.as_bytes();
+        if mem::equal_bytes(name, "compact") {
+            policy.overflow = ArtifactOverflow::Compact;
+        } else if mem::equal_bytes(name, "defer") {
+            policy.overflow = ArtifactOverflow::Defer;
+        } else if mem::equal_bytes(name, "reject") {
+            policy.overflow = ArtifactOverflow::Reject;
+        } else {
+            return false;
+        }
+    }
+    return true;
+}
+
+/// The policy of the store beside socket; the default one when none was
+/// saved.
+pub fn load_policy(
+    allocator: Allocator,
+    message: &var string::String,
+    socket: []u8
+) -> ArtifactFailure!ArtifactPolicy {
+    let path = try policy_path(allocator, message, socket);
+    defer path.deinit(allocator);
+    let name = path.as_bytes();
+    var content = string::new(allocator);
+    defer content.deinit(allocator);
+    if fs::read_file_into(io::blocking(), allocator, name, &var content) {} else |err| {
+        if err == fs::Error::NotFound {
+            return default_policy(allocator);
+        }
+        explain(allocator, message, "open artifact policy ", name, "");
+        return ArtifactError::Failed;
+    }
+    let bytes = content.as_bytes();
+    var policy = try default_policy(allocator);
+    errdefer policy.deinit(allocator);
+    var decoded = false;
+    if json::decode_ignore_unknown<PolicyDocument>(allocator, bytes) |document| {
+        defer document.deinit(allocator);
+        decoded = try apply_policy_document(allocator, &document, &var policy);
+    } else |_| {}
+    if !decoded {
+        explain(allocator, message, "decode artifact policy ", name, "");
+        return ArtifactError::Failed;
+    }
+    try policy.validate(allocator, message);
+    return move policy;
+}
+
+/// Saves policy for the store beside socket. The path of its file.
+pub fn save_policy(
+    allocator: Allocator,
+    message: &var string::String,
+    socket: []u8,
+    policy: &ArtifactPolicy
+) -> ArtifactFailure!string::String {
+    try policy.validate(allocator, message);
+    let path = try policy_path(allocator, message, socket);
+    defer path.deinit(allocator);
+    let name = path.as_bytes();
+    try ensure_owner_only_directory(allocator, message, name[0..parent_length(name)]);
+    let language = policy.language.as_bytes();
+    var encoder = json::encoder_with_spaces(allocator, 2);
+    defer encoder.deinit(allocator);
+    try encoder.begin_object();
+    try encoder.write_i64_field("max_columns", policy.max_columns);
+    try encoder.write_i64_field("max_rows", policy.max_rows);
+    try encoder.write_bytes_field("language", language);
+    try encoder.write_bytes_field("overflow", overflow_name(policy.overflow));
+    try encoder.end_object();
+    var text = string::new(allocator);
+    defer text.deinit(allocator);
+    try encoder.finish_into(allocator, &var text);
+    try text.append_byte(allocator, 10);
+    let bytes = text.as_bytes();
+    try replace_file(allocator, message, name, bytes);
+    return string::from_bytes(allocator, name);
+}
+
+/// Fails unless value is a path that stays inside the directory it is
+/// joined to: not empty, not absolute, and without a `..`.
+fn validate_relative_artifact_path(
+    allocator: Allocator,
+    message: &var string::String,
+    value: []u8
+) -> ArtifactFailure!void {
+    var safe = mem::len(value) > 0 and value[0] != cast<u8>(47);
+    var start: i64 = 0;
+    var first = true;
+    for 0..mem::len(value) + 1 |index| {
+        if index < mem::len(value) and value[index] != cast<u8>(47) {
+            continue;
+        }
+        let component = value[start..index];
+        if mem::equal_bytes(component, "..") or first and mem::equal_bytes(component, ".") {
+            safe = false;
+        }
+        if mem::len(component) > 0 {
+            first = false;
+        }
+        start = index + 1;
+    }
+    if !safe {
+        explain(allocator, message, "artifact metadata contains an unsafe relative path", "", "");
+        return ArtifactError::Failed;
+    }
+    return;
+}
+
+/// directory and relative joined, once relative is known to stay inside.
+fn safe_artifact_join(
+    allocator: Allocator,
+    message: &var string::String,
+    directory: []u8,
+    relative: []u8
+) -> ArtifactFailure!string::String {
+    try validate_relative_artifact_path(allocator, message, relative);
+    return joined(allocator, directory, relative);
+}
+
+/// Whether path is root or a path under it.
+fn is_under(path: []u8, root: []u8) -> bool {
+    let length = mem::len(root);
+    if length == 0 {
+        return true;
+    }
+    if !mem::starts_with(path, root) {
+        return false;
+    }
+    return mem::len(path) == length or path[length] == cast<u8>(47);
+}
+
+fn ends_with(text: []u8, suffix: []u8) -> bool {
+    let offset = mem::len(text) - mem::len(suffix);
+    return offset >= 0 and mem::equal_bytes(text[offset..mem::len(text)], suffix);
+}
+
+/// Fails unless name is the name of one directory that ends in `--<id>`.
+fn validate_artifact_directory_name(
+    allocator: Allocator,
+    message: &var string::String,
+    name: []u8,
+    id: []u8
+) -> ArtifactFailure!void {
+    var valid = mem::len(name) > 0 and name[0] != cast<u8>(46);
+    for 0..mem::len(name) |index| {
+        if name[index] == cast<u8>(47) {
+            valid = false;
+        }
+    }
+    var suffix = try string::from_bytes(allocator, "--");
+    defer suffix.deinit(allocator);
+    try suffix.append_bytes(allocator, id);
+    let bytes = suffix.as_bytes();
+    if !valid or !ends_with(name, bytes) {
+        explain(allocator, message, "artifact index entry is invalid", "", "");
+        return ArtifactError::Failed;
+    }
+    return;
+}
+
+/// The directory of the artifact id in the store beside socket: the one
+/// `.index/<id>` names, or else the one directory whose name ends in
+/// `--<id>`.
+fn resolve_artifact_directory(
+    allocator: Allocator,
+    message: &var string::String,
+    socket: []u8,
+    id: []u8
+) -> ArtifactFailure!string::String {
+    try validate_artifact_id(allocator, message, id);
+    let root = try artifact_root(allocator, message, socket);
+    defer root.deinit(allocator);
+    let root_bytes = root.as_bytes();
+    let index = try joined(allocator, root_bytes, ".index");
+    defer index.deinit(allocator);
+    let index_bytes = index.as_bytes();
+    let marker = try joined(allocator, index_bytes, id);
+    defer marker.deinit(allocator);
+    let marker_bytes = marker.as_bytes();
+    var named = string::new(allocator);
+    defer named.deinit(allocator);
+    if read_whole(allocator, marker_bytes, &var named) {
+        string::trim_space_in_place(&var named);
+        let name = named.as_bytes();
+        try validate_artifact_directory_name(allocator, message, name, id);
+        let directory = try joined(allocator, root_bytes, name);
+        defer directory.deinit(allocator);
+        let directory_bytes = directory.as_bytes();
+        try validate_existing_artifact_directory(allocator, message, directory_bytes);
+        return string::from_bytes(allocator, directory_bytes);
+    }
+    var suffix = try string::from_bytes(allocator, "--");
+    defer suffix.deinit(allocator);
+    try suffix.append_bytes(allocator, id);
+    let suffix_bytes = suffix.as_bytes();
+    var found = string::new(allocator);
+    errdefer found.deinit(allocator);
+    var count: i64 = 0;
+    if fs::read_dir(io::blocking(), allocator, root_bytes) |entries| {
+        defer entries.deinit(allocator);
+        for 0..entries.len() |entry_index| {
+            if entries.at(entry_index) |entry| {
+                let name = entry.name.as_bytes();
+                let path = entry.path.as_bytes();
+                var status = no_status();
+                if ends_with(name, suffix_bytes) and try path_status(allocator, path, false, &var status)
+                    and status.is_directory() {
+                    count = count + 1;
+                    found.clear();
+                    try found.append_bytes(allocator, path);
+                }
+            }
+        }
+    } else |_| {
+        explain(allocator, message, "open artifact store ", root_bytes, "");
+        return ArtifactError::Failed;
+    }
+    if count > 1 {
+        explain(allocator, message, "artifact ID ", id, " resolves to more than one directory");
+        return ArtifactError::Failed;
+    }
+    if count == 0 {
+        explain(allocator, message, "artifact ", id, " does not exist");
+        return ArtifactError::Failed;
+    }
+    return move found;
+}
+
+/// The path of the `metadata.json` of the artifact id.
+pub fn manifest_path(
+    allocator: Allocator,
+    message: &var string::String,
+    socket: []u8,
+    id: []u8
+) -> ArtifactFailure!string::String {
+    let directory = try resolve_artifact_directory(allocator, message, socket, id);
+    defer directory.deinit(allocator);
+    let bytes = directory.as_bytes();
+    return joined(allocator, bytes, "metadata.json");
+}
+
+/// Reads an artifact from the text of the `metadata.json` at path.
+fn parse_stored_artifact(
+    allocator: Allocator,
+    message: &var string::String,
+    path: []u8,
+    text: []u8
+) -> ArtifactFailure!StoredArtifact {
+    if json::decode_ignore_unknown<StoredArtifact>(allocator, text) |stored| {
+        return move stored;
+    } else |_| {}
+    explain(allocator, message, "decode artifact metadata ", path, "");
+    return ArtifactError::Failed;
+}
+
+/// Fails unless the artifact is one this store wrote: its version, names
+/// and numbering in order, and every path inside its directory.
+fn validate_stored_artifact(
+    allocator: Allocator,
+    message: &var string::String,
+    artifact: &StoredArtifact
+) -> ArtifactFailure!void {
+    if artifact.format_version != store_version() {
+        explain(allocator, message, "artifact metadata is incompatible", "", "");
+        return ArtifactError::Failed;
+    }
+    let id = artifact.id.as_bytes();
+    try validate_artifact_id(allocator, message, id);
+    let title = artifact.title.as_bytes();
+    try validate_title(allocator, message, title);
+    let language = artifact.language.as_bytes();
+    try validate_language(allocator, message, language);
+    let kind = artifact.kind.as_bytes();
+    var known = false;
+    if kind_from_name(kind) |_| {
+        known = true;
+    }
+    if !known {
+        explain(allocator, message, "artifact metadata names an unknown kind", "", "");
+        return ArtifactError::Failed;
+    }
+    if artifact.versions.len() == 0 {
+        explain(allocator, message, "artifact metadata contains no versions", "", "");
+        return ArtifactError::Failed;
+    }
+    for 0..artifact.versions.len() |index| {
+        if artifact.versions.at(index) |version| {
+            if version.version != index + 1 {
+                explain(allocator, message, "artifact versions must be contiguous and start at 1", "", "");
+                return ArtifactError::Failed;
+            }
+            let status = version.preview.status.as_bytes();
+            var understood = false;
+            if preview_status_from_name(status) |_| {
+                understood = true;
+            }
+            if !understood {
+                explain(allocator, message, "artifact metadata names an unknown preview status", "", "");
+                return ArtifactError::Failed;
+            }
+            let document = version.document.as_bytes();
+            try validate_relative_artifact_path(allocator, message, document);
+            let source = version.source.as_bytes();
+            try validate_relative_artifact_path(allocator, message, source);
+            let version_root = document[0..parent_length(document)];
+            if version.assets |assets| {
+                for 0..assets.len() |asset_index| {
+                    if assets.at(asset_index) |asset| {
+                        let bytes = asset.as_bytes();
+                        try validate_relative_artifact_path(allocator, message, bytes);
+                        if !is_under(bytes, version_root) {
+                            explain(allocator, message, "artifact asset is outside its version directory", "", "");
+                            return ArtifactError::Failed;
+                        }
+                    }
+                }
+            }
+            let origin = version.origin.as_bytes();
+            if mem::len(origin) == 0 or origin[0] != cast<u8>(47) {
+                explain(allocator, message, "artifact metadata contains a non-absolute origin path", "", "");
+                return ArtifactError::Failed;
+            }
+        }
+    }
+    return;
+}
+
+fn load_stored_artifact(
+    allocator: Allocator,
+    message: &var string::String,
+    socket: []u8,
+    id: []u8
+) -> ArtifactFailure!StoredArtifact {
+    let path = try manifest_path(allocator, message, socket, id);
+    defer path.deinit(allocator);
+    let name = path.as_bytes();
+    var content = string::new(allocator);
+    defer content.deinit(allocator);
+    if !read_whole(allocator, name, &var content) {
+        explain(allocator, message, "open artifact metadata ", name, "");
+        return ArtifactError::Failed;
+    }
+    let text = content.as_bytes();
+    var artifact = try parse_stored_artifact(allocator, message, name, text);
+    errdefer artifact.deinit(allocator);
+    try validate_stored_artifact(allocator, message, &artifact);
+    let stored_id = artifact.id.as_bytes();
+    let named = mem::equal_bytes(stored_id, id);
+    if !named {
+        explain(allocator, message, "artifact metadata has the wrong ID", "", "");
+        return ArtifactError::Failed;
+    }
+    return move artifact;
+}
+
+/// A manifest of kind with nothing else in it yet.
+fn new_manifest(allocator: Allocator, kind: ArtifactKind) -> ArtifactManifest {
+    return ArtifactManifest {
+        format_version: store_version(),
+        id: string::new(allocator),
+        version: 1,
+        kind: kind,
+        title: string::new(allocator),
+        language: string::new(allocator),
+        document: string::new(allocator),
+        source: string::new(allocator),
+        assets: array::new<string::String>(allocator),
+        origin: string::new(allocator),
+        source_bytes: 0,
+        created_at_ms: 0,
+        created_at: string::new(allocator),
+        owner_tab: null,
+        owner_pane: null,
+        preview: ArtifactPreviewSummary { status: ArtifactPreviewStatus::Ready, source_lines: 0, omitted_items: 0 }
+    };
+}
+
+/// The manifest of one version of a stored artifact: requested_version,
+/// or the latest when that is 0.
+fn manifest_from_stored(
+    allocator: Allocator,
+    message: &var string::String,
+    socket: []u8,
+    artifact: &StoredArtifact,
+    requested_version: i64
+) -> ArtifactFailure!ArtifactManifest {
+    try validate_stored_artifact(allocator, message, artifact);
+    let id = artifact.id.as_bytes();
+    let kind_text = artifact.kind.as_bytes();
+    var position = artifact.versions.len() - 1;
+    if requested_version != 0 {
+        position = requested_version - 1;
+    }
+    if position < 0 or position >= artifact.versions.len() {
+        explain(allocator, message, "artifact ", id, " has no version ");
+        if fmt::append_i64(allocator, message, requested_version) {} else |_| {}
+        return ArtifactError::Failed;
+    }
+    let directory = try resolve_artifact_directory(allocator, message, socket, id);
+    defer directory.deinit(allocator);
+    let directory_bytes = directory.as_bytes();
+    var manifest = new_manifest(allocator, kind_from_name(kind_text) orelse ArtifactKind::Text);
+    errdefer manifest.deinit(allocator);
+    try manifest.id.append_bytes(allocator, id);
+    try manifest.title.append_string(allocator, &artifact.title);
+    try manifest.language.append_string(allocator, &artifact.language);
+    manifest.owner_tab = artifact.owner_tab;
+    manifest.owner_pane = artifact.owner_pane;
+    if artifact.versions.at(position) |version| {
+        manifest.version = version.version;
+        let document = version.document.as_bytes();
+        let document_path = try safe_artifact_join(allocator, message, directory_bytes, document);
+        defer document_path.deinit(allocator);
+        try manifest.document.append_string(allocator, &document_path);
+        let source = version.source.as_bytes();
+        let source_path = try safe_artifact_join(allocator, message, directory_bytes, source);
+        defer source_path.deinit(allocator);
+        try manifest.source.append_string(allocator, &source_path);
+        if version.assets |assets| {
+            for 0..assets.len() |index| {
+                if assets.at(index) |asset| {
+                    let bytes = asset.as_bytes();
+                    var asset_path = try safe_artifact_join(allocator, message, directory_bytes, bytes);
+                    errdefer asset_path.deinit(allocator);
+                    try manifest.assets.append(allocator, move asset_path);
+                }
+            }
+        }
+        try manifest.origin.append_string(allocator, &version.origin);
+        manifest.source_bytes = version.source_bytes;
+        manifest.created_at_ms = version.created_at_ms;
+        try append_timestamp(allocator, &var manifest.created_at, version.created_at_ms);
+        let status = version.preview.status.as_bytes();
+        manifest.preview = ArtifactPreviewSummary {
+            status: preview_status_from_name(status) orelse ArtifactPreviewStatus::Ready,
+            source_lines: version.preview.source_lines,
+            omitted_items: version.preview.omitted_items
+        };
+    }
+    return move manifest;
+}
+
+/// Reads `ID`, `ID@3` or `ID@v3`: where the id ends in selector, and the
+/// version through the out, 0 when none is named.
+fn parse_artifact_selector(
+    allocator: Allocator,
+    message: &var string::String,
+    selector: []u8,
+    version: &var i64
+) -> ArtifactFailure!i64 {
+    version = 0;
+    var at: i64 = 0;
+    while at < mem::len(selector) and selector[at] != cast<u8>(64) {
+        at = at + 1;
+    }
+    try validate_artifact_id(allocator, message, selector[0..at]);
+    if at == mem::len(selector) {
+        return at;
+    }
+    var first = at + 1;
+    if first < mem::len(selector) and selector[first] == cast<u8>(118) {
+        first = first + 1;
+    }
+    let digits = selector[first..mem::len(selector)];
+    var number: i64 = 0;
+    var valid = mem::len(digits) > 0 and mem::len(digits) <= 10;
+    for 0..mem::len(digits) |index| {
+        let digit = cast<i64>(digits[index]) - 48;
+        if digit < 0 or digit > 9 {
+            valid = false;
+        }
+        number = number * 10 + digit;
+    }
+    if !valid or number > 4294967295 {
+        explain(allocator, message, "invalid artifact version in ", "", "");
+        if fmt::append_bytes_literal(allocator, message, selector) {} else |_| {}
+        return ArtifactError::Failed;
+    }
+    if number == 0 {
+        explain(allocator, message, "artifact versions start at 1", "", "");
+        return ArtifactError::Failed;
+    }
+    version = number;
+    return at;
+}
+
+/// The manifest selector names in the store beside socket: `ID` is the
+/// artifact's latest version, `ID@3` or `ID@v3` its third.
+pub fn load_manifest(
+    allocator: Allocator,
+    message: &var string::String,
+    socket: []u8,
+    selector: []u8
+) -> ArtifactFailure!ArtifactManifest {
+    var version: i64 = 0;
+    let id_end = try parse_artifact_selector(allocator, message, selector, &var version);
+    let stored = try load_stored_artifact(allocator, message, socket, selector[0..id_end]);
+    defer stored.deinit(allocator);
+    return manifest_from_stored(allocator, message, socket, &stored, version);
+}
+
+/// The first two lines of a stored document that say something, joined
+/// and cut to 120 cells: front matter, headings, table rules, code fences
+/// and blank lines say nothing.
+fn artifact_document_preview(
+    allocator: Allocator,
+    message: &var string::String,
+    path: []u8
+) -> ArtifactFailure!string::String {
+    var content = string::new(allocator);
+    defer content.deinit(allocator);
+    if !read_whole(allocator, path, &var content) {
+        explain(allocator, message, "read artifact document ", path, "");
+        return ArtifactError::Failed;
+    }
+    let text = content.as_bytes();
+    var preview = string::new(allocator);
+    defer preview.deinit(allocator);
+    var kept: i64 = 0;
+    var frontmatter = false;
+    var line_index: i64 = 0;
+    var cursor: i64 = 0;
+    var start: i64 = 0;
+    var end: i64 = 0;
+    while kept < 2 and next_line(text, &var cursor, &var start, &var end) {
+        let line = text[start..end];
+        let line_end = trimmed_end(line);
+        let trimmed = line[trimmed_start(line[0..line_end])..line_end];
+        let rule = mem::equal_bytes(trimmed, "---");
+        if line_index == 0 and rule {
+            frontmatter = true;
+        } else if frontmatter and rule {
+            frontmatter = false;
+            line_index = line_index + 1;
+            continue;
+        }
+        line_index = line_index + 1;
+        if frontmatter or mem::len(trimmed) == 0 or mem::starts_with(trimmed, "# ")
+            or mem::starts_with(trimmed, "| ---") or mem::starts_with(trimmed, "```") {
+            continue;
+        }
+        if kept > 0 {
+            try preview.append_bytes(allocator, " · ");
+        }
+        if mem::starts_with(trimmed, "![") {
+            var alt_end: i64 = 2;
+            while alt_end < mem::len(trimmed) and trimmed[alt_end] != cast<u8>(93) {
+                alt_end = alt_end + 1;
+            }
+            try preview.append_bytes(allocator, "Image · ");
+            try preview.append_bytes(allocator, trimmed[2..alt_end]);
+        } else {
+            var first: i64 = 0;
+            var last = mem::len(trimmed);
+            while first < last and trimmed[first] == cast<u8>(96) {
+                first = first + 1;
+            }
+            while last > first and trimmed[last - 1] == cast<u8>(96) {
+                last = last - 1;
+            }
+            try preview.append_bytes(allocator, trimmed[first..last]);
+        }
+        kept = kept + 1;
+    }
+    let whole = preview.as_bytes();
+    var cut = string::new(allocator);
+    errdefer cut.deinit(allocator);
+    let _ = try append_truncated(allocator, &var cut, whole, 120);
+    return move cut;
+}
+
+/// Appends the artifact in the directory at path to items; a directory
+/// without a `metadata.json` holds none.
+fn append_list_item(
+    allocator: Allocator,
+    message: &var string::String,
+    path: []u8,
+    items: &var array::Array<ArtifactListItem>
+) -> ArtifactFailure!void {
+    let metadata_path = try joined(allocator, path, "metadata.json");
+    defer metadata_path.deinit(allocator);
+    let metadata_name = metadata_path.as_bytes();
+    var content = string::new(allocator);
+    defer content.deinit(allocator);
+    if fs::read_file_into(io::blocking(), allocator, metadata_name, &var content) {} else |err| {
+        if err == fs::Error::NotFound {
+            return;
+        }
+        explain(allocator, message, "open artifact metadata ", metadata_name, "");
+        return ArtifactError::Failed;
+    }
+    let text = content.as_bytes();
+    let stored = try parse_stored_artifact(allocator, message, metadata_name, text);
+    defer stored.deinit(allocator);
+    try validate_stored_artifact(allocator, message, &stored);
+    let kind_text = stored.kind.as_bytes();
+    var item = ArtifactListItem {
+        id: string::new(allocator),
+        title: string::new(allocator),
+        kind: kind_from_name(kind_text) orelse ArtifactKind::Text,
+        language: string::new(allocator),
+        version: 0,
+        version_count: stored.versions.len(),
+        updated_at_ms: stored.updated_at_ms,
+        updated_at: string::new(allocator),
+        preview: string::new(allocator),
+        directory: string::new(allocator)
+    };
+    errdefer item.deinit(allocator);
+    try item.id.append_string(allocator, &stored.id);
+    try item.title.append_string(allocator, &stored.title);
+    try item.language.append_string(allocator, &stored.language);
+    try append_timestamp(allocator, &var item.updated_at, stored.updated_at_ms);
+    try item.directory.append_bytes(allocator, path);
+    if stored.versions.at(stored.versions.len() - 1) |latest| {
+        item.version = latest.version;
+        let relative = latest.document.as_bytes();
+        let document = try joined(allocator, path, relative);
+        defer document.deinit(allocator);
+        let document_bytes = document.as_bytes();
+        let preview = try artifact_document_preview(allocator, message, document_bytes);
+        defer preview.deinit(allocator);
+        try item.preview.append_string(allocator, &preview);
+    }
+    try items.append(allocator, move item);
+    return;
+}
+
+/// Whether the item at left lists before the one at right: the later
+/// update first, and of two at one time the lesser title.
+fn lists_before(items: &array::Array<ArtifactListItem>, left: i64, right: i64) -> bool {
+    if items.at(left) |first| {
+        if items.at(right) |second| {
+            if first.updated_at_ms != second.updated_at_ms {
+                return first.updated_at_ms > second.updated_at_ms;
+            }
+            let first_title = first.title.as_bytes();
+            let second_title = second.title.as_bytes();
+            return mem::compare(first_title, second_title) < 0;
+        }
+    }
+    return false;
+}
+
+/// The artifacts of the store beside socket, the latest update first; at
+/// most limit of them, and all of them when limit is below zero.
+pub fn list_artifacts(
+    allocator: Allocator,
+    message: &var string::String,
+    socket: []u8,
+    limit: i64
+) -> ArtifactFailure!array::Array<ArtifactListItem> {
+    let root = try artifact_root(allocator, message, socket);
+    defer root.deinit(allocator);
+    let root_bytes = root.as_bytes();
+    var items = array::new<ArtifactListItem>(allocator);
+    errdefer items.deinit(allocator);
+    if fs::read_dir(io::blocking(), allocator, root_bytes) |entries| {
+        defer entries.deinit(allocator);
+        for 0..entries.len() |index| {
+            if entries.at(index) |entry| {
+                let name = entry.name.as_bytes();
+                let path = entry.path.as_bytes();
+                var status = no_status();
+                if !mem::starts_with(name, ".") and try path_status(allocator, path, false, &var status)
+                    and status.is_directory() {
+                    try append_list_item(allocator, message, path, &var items);
+                }
+            }
+        }
+    } else |err| {
+        if err != fs::Error::NotFound {
+            explain(allocator, message, "open artifact store ", root_bytes, "");
+            return ArtifactError::Failed;
+        }
+    }
+    for 1..items.len() |index| {
+        var position = index;
+        while position > 0 and lists_before(&items, position, position - 1) {
+            if items.swap(position, position - 1) {} else |_| {}
+            position = position - 1;
+        }
+    }
+    if limit >= 0 and items.len() > limit {
+        if items.truncate(allocator, limit) {} else |_| {}
+    }
+    return move items;
+}
+
+/// The name a kind's source takes in a version's directory.
+fn stored_source_name(kind: ArtifactKind, source: []u8) -> []u8 {
+    if kind == ArtifactKind::Table {
+        if has_lowered_extension(source, "json") {
+            return "source.json";
+        }
+        if has_lowered_extension(source, "csv") {
+            return "source.csv";
+        }
+        if has_lowered_extension(source, "tsv") {
+            return "source.tsv";
+        }
+        return "source.txt";
+    }
+    return match kind {
+        Markdown => "artifact.md",
+        Image => "image.png",
+        Diff => "source.diff",
+        _ => "source.txt",
+    };
+}
+
+/// Appends the Markdown document a version keeps of content to out: a
+/// heading of the title, and the content in the form its kind reads as.
+fn append_artifact_markdown(
+    allocator: Allocator,
+    message: &var string::String,
+    out: &var string::String,
+    kind: ArtifactKind,
+    title: []u8,
+    whole: []u8,
+    source: []u8
+) -> ArtifactFailure!void {
+    let content = whole[0..trimmed_end(whole)];
+    if kind == ArtifactKind::Markdown {
+        try append_line(allocator, out, content, "", "");
+        return;
+    }
+    try append_line(allocator, out, "# ", title, "");
+    try out.append_byte(allocator, 10);
+    if kind == ArtifactKind::Diff or kind == ArtifactKind::Tree {
+        if kind == ArtifactKind::Diff {
+            try append_line(allocator, out, "```diff", "", "");
+        } else {
+            try append_line(allocator, out, "```text", "", "");
+        }
+        try append_line(allocator, out, content, "", "");
+        try append_line(allocator, out, "```", "", "");
+        return;
+    }
+    if kind == ArtifactKind::Timeline {
+        var cursor: i64 = 0;
+        var start: i64 = 0;
+        var end: i64 = 0;
+        while next_line(content, &var cursor, &var start, &var end) {
+            let line = content[start..end];
+            let line_end = trimmed_end(line);
+            try append_line(allocator, out, "- ", line[trimmed_start(line[0..line_end])..line_end], "");
+        }
+        if mem::len(content) == 0 {
+            try out.append_byte(allocator, 10);
+        }
+        return;
+    }
+    if kind == ArtifactKind::Table {
+        let table = try parse_table(allocator, message, content, source);
+        defer table.deinit(allocator);
+        try append_markdown_table(allocator, out, &table);
+        return;
+    }
+    try append_line(allocator, out, content, "", "");
+    return;
+}
+
+/// What registration stores of the file at path, whose content is bytes.
+fn prepare_source_content(
+    allocator: Allocator,
+    message: &var string::String,
+    kind: ArtifactKind,
+    title: []u8,
+    path: []u8,
+    bytes: []u8
+) -> ArtifactFailure!ArtifactSource {
+    var prepared = ArtifactSource {
+        canonical_path: string::new(allocator),
+        bytes: string::new(allocator),
+        document: string::new(allocator),
+        source_name: string::new(allocator),
+        assets: array::new<ArtifactAsset>(allocator)
+    };
+    errdefer prepared.deinit(allocator);
+    try prepared.canonical_path.append_bytes(allocator, path);
+    try prepared.bytes.append_bytes(allocator, bytes);
+    let source_name = stored_source_name(kind, path);
+    try prepared.source_name.append_bytes(allocator, source_name);
+    if kind == ArtifactKind::Image {
+        var width: i64 = 0;
+        var height: i64 = 0;
+        if !png_size(bytes, &var width, &var height) {
+            explain(allocator, message, "decode PNG header ", path, "");
+            return ArtifactError::Failed;
+        }
+        try append_line(allocator, &var prepared.document, "# ", title, "");
+        try prepared.document.append_byte(allocator, 10);
+        try prepared.document.append_bytes(allocator, "![");
+        try prepared.document.append_bytes(allocator, title);
+        try prepared.document.append_bytes(allocator, "](");
+        try append_line(allocator, &var prepared.document, source_name, ")", "");
+        return move prepared;
+    }
+    if !is_valid_utf8(bytes) {
+        explain(allocator, message, "artifact source is not UTF-8: ", path, "");
+        return ArtifactError::Failed;
+    }
+    if kind == ArtifactKind::Markdown {
+        try snapshot_local_pngs(allocator, message, bytes, path, &var prepared.assets);
+    }
+    try append_artifact_markdown(allocator, message, &var prepared.document, kind, title, bytes, path);
+    return move prepared;
+}
+
+/// Reads the file at source for registration as kind.
+fn prepare_artifact_source(
+    allocator: Allocator,
+    message: &var string::String,
+    kind: ArtifactKind,
+    title: []u8,
+    source: []u8
+) -> ArtifactFailure!ArtifactSource {
+    var canonical = string::new(allocator);
+    defer canonical.deinit(allocator);
+    if fs::real_path(io::blocking(), allocator, source) |resolved| {
+        defer resolved.deinit(allocator);
+        try canonical.append_string(allocator, &resolved);
+    } else |_| {
+        explain(allocator, message, "resolve artifact source ", source, "");
+        return ArtifactError::Failed;
+    }
+    let path = canonical.as_bytes();
+    var maximum = max_text_bytes();
+    if kind == ArtifactKind::Image {
+        maximum = max_image_bytes();
+    }
+    var content = string::new(allocator);
+    defer content.deinit(allocator);
+    try read_bounded_source(allocator, message, path, maximum, "artifact", &var content);
+    let bytes = content.as_bytes();
+    return prepare_source_content(allocator, message, kind, title, path, bytes);
+}
+
+/// Whether the file at path holds exactly expected.
+fn file_holds(
+    allocator: Allocator,
+    message: &var string::String,
+    path: []u8,
+    expected: []u8
+) -> ArtifactFailure!bool {
+    var content = string::new(allocator);
+    defer content.deinit(allocator);
+    if !read_whole(allocator, path, &var content) {
+        explain(allocator, message, "read artifact file ", path, "");
+        return ArtifactError::Failed;
+    }
+    let bytes = content.as_bytes();
+    return mem::equal_bytes(bytes, expected);
+}
+
+/// Whether the artifact's latest version already is what prepared would
+/// store under title and language.
+fn stored_artifact_matches(
+    allocator: Allocator,
+    message: &var string::String,
+    socket: []u8,
+    artifact: &StoredArtifact,
+    title: []u8,
+    language: []u8,
+    prepared: &ArtifactSource
+) -> ArtifactFailure!bool {
+    let stored_title = artifact.title.as_bytes();
+    let stored_language = artifact.language.as_bytes();
+    if !mem::equal_bytes(stored_title, title) or !mem::equal_bytes(stored_language, language) {
+        return false;
+    }
+    let id = artifact.id.as_bytes();
+    let directory = try resolve_artifact_directory(allocator, message, socket, id);
+    defer directory.deinit(allocator);
+    let directory_bytes = directory.as_bytes();
+    if artifact.versions.at(artifact.versions.len() - 1) |latest| {
+        let relative = latest.document.as_bytes();
+        let document = try safe_artifact_join(allocator, message, directory_bytes, relative);
+        defer document.deinit(allocator);
+        let document_bytes = document.as_bytes();
+        let expected = prepared.document.as_bytes();
+        if !try file_holds(allocator, message, document_bytes, expected) {
+            return false;
+        }
+        let source_name = prepared.source_name.as_bytes();
+        if !mem::equal_bytes(source_name, "artifact.md") {
+            let relative_source = latest.source.as_bytes();
+            let source = try safe_artifact_join(allocator, message, directory_bytes, relative_source);
+            defer source.deinit(allocator);
+            let source_bytes = source.as_bytes();
+            let raw = prepared.bytes.as_bytes();
+            if !try file_holds(allocator, message, source_bytes, raw) {
+                return false;
+            }
+        }
+        var stored_assets: i64 = 0;
+        if latest.assets |assets| {
+            stored_assets = assets.len();
+        }
+        if stored_assets != prepared.assets.len() {
+            return false;
+        }
+        if latest.assets |assets| {
+            for 0..assets.len() |index| {
+                if assets.at(index) |stored_asset| {
+                    if prepared.assets.at(index) |asset| {
+                        let relative_asset = stored_asset.as_bytes();
+                        let asset_path = try safe_artifact_join(allocator, message, directory_bytes, relative_asset);
+                        defer asset_path.deinit(allocator);
+                        let asset_bytes = asset_path.as_bytes();
+                        let held = asset.bytes.as_bytes();
+                        if !try file_holds(allocator, message, asset_bytes, held) {
+                            return false;
+                        }
+                    }
+                }
+            }
+        }
+        return true;
+    }
+    return false;
+}
+
+/// The directory name a title gives an artifact: its letters and digits
+/// in lower case, a hyphen for each run of anything else, at most 48
+/// scalars; `artifact` when nothing is left.
+fn append_artifact_slug(allocator: Allocator, out: &var string::String, title: []u8) -> mem::Error!void {
+    let before = out.len();
+    var separator = false;
+    var count: i64 = 0;
+    var index: i64 = 0;
+    while index < mem::len(title) and count < 48 {
+        var scalar: i64 = 0;
+        index = index + decode_scalar(title, index, &var scalar);
+        if !is_alphanumeric(scalar) {
+            separator = true;
+            continue;
+        }
+        if separator and count > 0 {
+            try out.append_byte(allocator, 45);
+            count = count + 1;
+        }
+        separator = false;
+        if scalar < 128 {
+            try out.append_byte(allocator, lowered(cast<u8>(scalar)));
+        } else {
+            try append_scalar(allocator, out, scalar);
+        }
+        count = count + 1;
+    }
+    if out.len() == before {
+        try out.append_bytes(allocator, "artifact");
+    }
+    return;
+}
+
+/// Appends value to out as twelve lower-case hexadecimal digits.
+fn append_hex12(allocator: Allocator, out: &var string::String, value: i64) -> mem::Error!void {
+    let digits = "0123456789abcdef";
+    for 0..12 |index| {
+        try out.append_byte(allocator, digits[value >> (11 - index) * 4 & 15]);
+    }
+    return;
+}
+
+/// An id no artifact of the store beside socket has: `a` and twelve
+/// hexadecimal digits of the clock and the process.
+fn new_artifact_id(
+    allocator: Allocator,
+    message: &var string::String,
+    socket: []u8
+) -> ArtifactFailure!string::String {
+    var id = string::new(allocator);
+    errdefer id.deinit(allocator);
+    for 0..32 |attempt| {
+        let value = unix_nanos() ^ process_id() << 17 ^ attempt << 31;
+        id.clear();
+        try id.append_byte(allocator, 97);
+        try append_hex12(allocator, &var id, value & 281474976710655);
+        let bytes = id.as_bytes();
+        var taken = false;
+        if resolve_artifact_directory(allocator, message, socket, bytes) |directory| {
+            directory.deinit(allocator);
+            taken = true;
+        } else |_| {}
+        if !taken {
+            message.clear();
+            return move id;
+        }
+    }
+    explain(allocator, message, "could not allocate a unique artifact ID", "", "");
+    return ArtifactError::Failed;
+}
+
+/// The preview of a registration at the policy's bounds, rendered from
+/// the source where it is now.
+fn registration_preview(
+    allocator: Allocator,
+    message: &var string::String,
+    policy: &ArtifactPolicy,
+    request: &RegisterArtifact,
+    prepared: &ArtifactSource,
+    language: []u8
+) -> ArtifactFailure!ArtifactPreviewSummary {
+    var manifest = new_manifest(allocator, request.kind);
+    defer manifest.deinit(allocator);
+    try manifest.id.append_bytes(allocator, "preview");
+    try manifest.title.append_string(allocator, &request.title);
+    try manifest.language.append_bytes(allocator, language);
+    try manifest.document.append_string(allocator, &prepared.canonical_path);
+    try manifest.source.append_string(allocator, &prepared.canonical_path);
+    try manifest.origin.append_string(allocator, &prepared.canonical_path);
+    manifest.source_bytes = prepared.bytes.len();
+    let body = try render_body(allocator, message, &manifest, policy.max_columns, policy.max_rows);
+    defer body.deinit(allocator);
+    return preview_summary(allocator, message, policy.overflow, &body);
+}
+
+/// Appends `versions/v007` to out.
+fn append_version_directory(allocator: Allocator, out: &var string::String, version: i64) -> mem::Error!void {
+    try out.append_bytes(allocator, "versions/v");
+    try append_padded_number(allocator, out, version, 3);
+    return;
+}
+
+/// Writes one version's files under directory and describes them.
+fn store_artifact_version(
+    allocator: Allocator,
+    message: &var string::String,
+    directory: []u8,
+    version: i64,
+    created_at_ms: i64,
+    prepared: &ArtifactSource,
+    preview: ArtifactPreviewSummary
+) -> ArtifactFailure!StoredVersion {
+    let versions_directory = try joined(allocator, directory, "versions");
+    defer versions_directory.deinit(allocator);
+    let versions_bytes = versions_directory.as_bytes();
+    try ensure_owner_only_directory(allocator, message, versions_bytes);
+    var relative = string::new(allocator);
+    defer relative.deinit(allocator);
+    try append_version_directory(allocator, &var relative, version);
+    let relative_bytes = relative.as_bytes();
+    let version_directory = try joined(allocator, directory, relative_bytes);
+    defer version_directory.deinit(allocator);
+    let version_bytes = version_directory.as_bytes();
+    if create_owner_only_directory(allocator, message, version_bytes) {} else |err| {
+        if err == mem::Error::OutOfMemory {
+            return mem::Error::OutOfMemory;
+        }
+        explain_number(allocator, message, "create artifact version ", version, "");
+        return ArtifactError::Failed;
+    }
+    let document_path = try joined(allocator, version_bytes, "artifact.md");
+    defer document_path.deinit(allocator);
+    let document_bytes = document_path.as_bytes();
+    let document = prepared.document.as_bytes();
+    try write_bytes_atomically(allocator, message, document_bytes, document);
+    let source_name = prepared.source_name.as_bytes();
+    if !mem::equal_bytes(source_name, "artifact.md") {
+        let source_path = try joined(allocator, version_bytes, source_name);
+        defer source_path.deinit(allocator);
+        let source_bytes = source_path.as_bytes();
+        let raw = prepared.bytes.as_bytes();
+        try write_bytes_atomically(allocator, message, source_bytes, raw);
+    }
+    var assets = array::new<string::String>(allocator);
+    errdefer assets.deinit(allocator);
+    for 0..prepared.assets.len() |index| {
+        if prepared.assets.at(index) |asset| {
+            let name = asset.relative_path.as_bytes();
+            let asset_relative = try joined(allocator, relative_bytes, name);
+            defer asset_relative.deinit(allocator);
+            let asset_relative_bytes = asset_relative.as_bytes();
+            let asset_path = try safe_artifact_join(allocator, message, directory, asset_relative_bytes);
+            defer asset_path.deinit(allocator);
+            let asset_bytes = asset_path.as_bytes();
+            let held = asset.bytes.as_bytes();
+            try write_bytes_atomically(allocator, message, asset_bytes, held);
+            try append_text(allocator, &var assets, asset_relative_bytes);
+        }
+    }
+    var stored_document = try joined(allocator, relative_bytes, "artifact.md");
+    errdefer stored_document.deinit(allocator);
+    var stored_source = try joined(allocator, relative_bytes, source_name);
+    errdefer stored_source.deinit(allocator);
+    var origin = string::new(allocator);
+    errdefer origin.deinit(allocator);
+    try origin.append_string(allocator, &prepared.canonical_path);
+    var status = try string::from_bytes(allocator, preview_status_name(preview.status));
+    errdefer status.deinit(allocator);
+    return StoredVersion {
+        version: version,
+        created_at_ms: created_at_ms,
+        document: move stored_document,
+        source: move stored_source,
+        assets: move assets,
+        origin: move origin,
+        source_bytes: prepared.bytes.len(),
+        preview: StoredPreview {
+            status: move status,
+            source_lines: preview.source_lines,
+            omitted_items: preview.omitted_items
+        }
+    };
+}
+
+/// Writes the members of a version's object in `metadata.json`.
+fn write_stored_version(encoder: &var json::Encoder, version: &StoredVersion) -> mem::Error!void {
+    let document = version.document.as_bytes();
+    let source = version.source.as_bytes();
+    let origin = version.origin.as_bytes();
+    let status = version.preview.status.as_bytes();
+    try encoder.write_i64_field("version", version.version);
+    try encoder.write_i64_field("created_at_ms", version.created_at_ms);
+    try encoder.write_bytes_field("document", document);
+    try encoder.write_bytes_field("source", source);
+    if version.assets |assets| {
+        if assets.len() > 0 {
+            try encoder.begin_array_field("assets");
+            for 0..assets.len() |index| {
+                if assets.at(index) |asset| {
+                    let bytes = asset.as_bytes();
+                    try encoder.write_bytes(bytes);
+                }
+            }
+            try encoder.end_array();
+        }
+    }
+    try encoder.write_bytes_field("origin", origin);
+    try encoder.write_i64_field("source_bytes", version.source_bytes);
+    try encoder.begin_object_field("preview");
+    try encoder.write_bytes_field("status", status);
+    try encoder.write_i64_field("source_lines", version.preview.source_lines);
+    try encoder.write_i64_field("omitted_items", version.preview.omitted_items);
+    try encoder.end_object();
+    return;
+}
+
+/// Appends the text of the artifact's `metadata.json` to out.
+fn append_stored_artifact(allocator: Allocator, out: &var string::String, artifact: &StoredArtifact) -> mem::Error!void {
+    let id = artifact.id.as_bytes();
+    let slug = artifact.slug.as_bytes();
+    let title = artifact.title.as_bytes();
+    let kind = artifact.kind.as_bytes();
+    let language = artifact.language.as_bytes();
+    var encoder = json::encoder_with_spaces(allocator, 2);
+    defer encoder.deinit(allocator);
+    try encoder.begin_object();
+    try encoder.write_i64_field("format_version", artifact.format_version);
+    try encoder.write_bytes_field("id", id);
+    try encoder.write_bytes_field("slug", slug);
+    try encoder.write_bytes_field("title", title);
+    try encoder.write_bytes_field("kind", kind);
+    try encoder.write_bytes_field("language", language);
+    try encoder.write_i64_field("created_at_ms", artifact.created_at_ms);
+    try encoder.write_i64_field("updated_at_ms", artifact.updated_at_ms);
+    if artifact.owner_tab |tab| {
+        try encoder.write_i64_field("owner_tab", tab);
+    }
+    if artifact.owner_pane |pane| {
+        try encoder.write_i64_field("owner_pane", pane);
+    }
+    try encoder.begin_array_field("versions");
+    for 0..artifact.versions.len() |index| {
+        if artifact.versions.at(index) |version| {
+            try encoder.begin_object();
+            try write_stored_version(&var encoder, version);
+            try encoder.end_object();
+        }
+    }
+    try encoder.end_array();
+    try encoder.end_object();
+    try encoder.finish_into(allocator, out);
+    try out.append_byte(allocator, 10);
+    return;
+}
+
+/// Writes `.index/<id>`, which names the artifact's directory.
+fn write_marker(
+    allocator: Allocator,
+    message: &var string::String,
+    socket: []u8,
+    id: []u8,
+    directory: []u8
+) -> ArtifactFailure!void {
+    let name = directory[name_start(directory)..mem::len(directory)];
+    try validate_artifact_directory_name(allocator, message, name, id);
+    let root = try artifact_root(allocator, message, socket);
+    defer root.deinit(allocator);
+    let root_bytes = root.as_bytes();
+    let index = try joined(allocator, root_bytes, ".index");
+    defer index.deinit(allocator);
+    let index_bytes = index.as_bytes();
+    try ensure_owner_only_directory(allocator, message, index_bytes);
+    let marker = try joined(allocator, index_bytes, id);
+    defer marker.deinit(allocator);
+    let marker_bytes = marker.as_bytes();
+    var line = string::new(allocator);
+    defer line.deinit(allocator);
+    try append_line(allocator, &var line, name, "", "");
+    let bytes = line.as_bytes();
+    try write_bytes_atomically(allocator, message, marker_bytes, bytes);
+    return;
+}
+
+/// Copies the file at from to the path to, replacing it in one step.
+fn copy_file(allocator: Allocator, message: &var string::String, from: []u8, to: []u8) -> ArtifactFailure!void {
+    var content = string::new(allocator);
+    defer content.deinit(allocator);
+    if !read_whole(allocator, from, &var content) {
+        explain(allocator, message, "read artifact file ", from, "");
+        return ArtifactError::Failed;
+    }
+    let bytes = content.as_bytes();
+    try write_bytes_atomically(allocator, message, to, bytes);
+    return;
+}
+
+/// Copies a version's assets beside `current.md`, where its links find
+/// them.
+fn mirror_current_assets(
+    allocator: Allocator,
+    message: &var string::String,
+    directory: []u8,
+    version: &StoredVersion
+) -> ArtifactFailure!void {
+    let document = version.document.as_bytes();
+    let version_root = document[0..parent_length(document)];
+    if version.assets |assets| {
+        for 0..assets.len() |index| {
+            if assets.at(index) |asset| {
+                let bytes = asset.as_bytes();
+                if !is_under(bytes, version_root) or mem::len(bytes) <= mem::len(version_root) + 1 {
+                    explain(allocator, message, "artifact asset ", bytes, " is outside its version");
+                    return ArtifactError::Failed;
+                }
+                var skip = mem::len(version_root);
+                if skip > 0 {
+                    skip = skip + 1;
+                }
+                let relative = bytes[skip..mem::len(bytes)];
+                let target = try safe_artifact_join(allocator, message, directory, relative);
+                defer target.deinit(allocator);
+                let target_bytes = target.as_bytes();
+                let source = try safe_artifact_join(allocator, message, directory, bytes);
+                defer source.deinit(allocator);
+                let source_bytes = source.as_bytes();
+                try copy_file(allocator, message, source_bytes, target_bytes);
+            }
+        }
+    }
+    return;
+}
+
+/// Appends value to out for a Markdown code span: controls as spaces and
+/// backticks as apostrophes.
+fn append_inline_metadata(allocator: Allocator, out: &var string::String, value: []u8) -> mem::Error!void {
+    var index: i64 = 0;
+    while index < mem::len(value) {
+        var scalar: i64 = 0;
+        let length = decode_scalar(value, index, &var scalar);
+        if is_control(scalar) {
+            try out.append_byte(allocator, 32);
+        } else if scalar == 96 {
+            try out.append_byte(allocator, 39);
+        } else {
+            try out.append_bytes(allocator, value[index..index + length]);
+        }
+        index = index + length;
+    }
+    return;
+}
+
+/// Appends `[v3](versions/v003/artifact.md)` to out.
+fn append_version_link(allocator: Allocator, out: &var string::String, version: &StoredVersion) -> mem::Error!void {
+    try out.append_bytes(allocator, "[v");
+    try fmt::append_i64(allocator, out, version.version);
+    try out.append_bytes(allocator, "](");
+    try out.append_string(allocator, &version.document);
+    try out.append_byte(allocator, 41);
+    return;
+}
+
+/// Writes what a reader opens in an artifact's directory: `current.md`,
+/// the latest version's document with its assets, and `README.md`, which
+/// lists the versions.
+fn write_artifact_documents(
+    allocator: Allocator,
+    message: &var string::String,
+    directory: []u8,
+    artifact: &StoredArtifact
+) -> ArtifactFailure!void {
+    let id = artifact.id.as_bytes();
+    let title = artifact.title.as_bytes();
+    let kind = artifact.kind.as_bytes();
+    let language = artifact.language.as_bytes();
+    var readme = string::new(allocator);
+    defer readme.deinit(allocator);
+    if artifact.versions.len() == 0 {
+        explain(allocator, message, "artifact contains no versions", "", "");
+        return ArtifactError::Failed;
+    }
+    if artifact.versions.at(artifact.versions.len() - 1) |latest| {
+        let relative = latest.document.as_bytes();
+        let latest_document = try safe_artifact_join(allocator, message, directory, relative);
+        defer latest_document.deinit(allocator);
+        let latest_bytes = latest_document.as_bytes();
+        let current = try joined(allocator, directory, "current.md");
+        defer current.deinit(allocator);
+        let current_bytes = current.as_bytes();
+        try copy_file(allocator, message, latest_bytes, current_bytes);
+        try mirror_current_assets(allocator, message, directory, latest);
+        let origin = latest.origin.as_bytes();
+        try append_line(allocator, &var readme, "# ", title, "");
+        try readme.append_byte(allocator, 10);
+        try append_line(allocator, &var readme, "- ID: `", id, "`");
+        try append_line(allocator, &var readme, "- Kind: `", kind, "`");
+        try append_line(allocator, &var readme, "- Language: `", language, "`");
+        try readme.append_bytes(allocator, "- Current: ");
+        try append_version_link(allocator, &var readme, latest);
+        try readme.append_byte(allocator, 10);
+        try readme.append_bytes(allocator, "- Updated: ");
+        try append_timestamp(allocator, &var readme, artifact.updated_at_ms);
+        try readme.append_byte(allocator, 10);
+        try readme.append_bytes(allocator, "- Origin: `");
+        try append_inline_metadata(allocator, &var readme, origin);
+        try append_line(allocator, &var readme, "`", "", "");
+        try readme.append_byte(allocator, 10);
+        try append_line(allocator, &var readme, "## Versions", "", "");
+        try readme.append_byte(allocator, 10);
+        try append_line(allocator, &var readme, "| Version | Created | Preview |", "", "");
+        try append_line(allocator, &var readme, "| --- | --- | --- |", "", "");
+    }
+    for 0..artifact.versions.len() |index| {
+        if artifact.versions.at(artifact.versions.len() - 1 - index) |version| {
+            let relative = version.document.as_bytes();
+            let document = try safe_artifact_join(allocator, message, directory, relative);
+            defer document.deinit(allocator);
+            let document_bytes = document.as_bytes();
+            let preview = try artifact_document_preview(allocator, message, document_bytes);
+            defer preview.deinit(allocator);
+            let preview_bytes = preview.as_bytes();
+            try readme.append_bytes(allocator, "| ");
+            try append_version_link(allocator, &var readme, version);
+            try readme.append_bytes(allocator, " | ");
+            try append_timestamp(allocator, &var readme, version.created_at_ms);
+            try readme.append_bytes(allocator, " | ");
+            try append_escaped_bars(allocator, &var readme, preview_bytes);
+            try append_line(allocator, &var readme, " |", "", "");
+        }
+    }
+    let path = try joined(allocator, directory, "README.md");
+    defer path.deinit(allocator);
+    let path_bytes = path.as_bytes();
+    let bytes = readme.as_bytes();
+    try write_bytes_atomically(allocator, message, path_bytes, bytes);
+    return;
+}
+
+/// Writes `INDEX.md`, which lists every artifact of the store beside
+/// socket.
+fn write_artifact_index(allocator: Allocator, message: &var string::String, socket: []u8) -> ArtifactFailure!void {
+    let artifacts = try list_artifacts(allocator, message, socket, -1);
+    defer artifacts.deinit(allocator);
+    var index = string::new(allocator);
+    defer index.deinit(allocator);
+    try append_line(allocator, &var index, "# Satin Artifacts", "", "");
+    try index.append_byte(allocator, 10);
+    try append_line(allocator, &var index, "| Artifact | Kind | Version | Updated | Preview |", "", "");
+    try append_line(allocator, &var index, "| --- | --- | --- | --- | --- |", "", "");
+    for 0..artifacts.len() |position| {
+        if artifacts.at(position) |artifact| {
+            let title = artifact.title.as_bytes();
+            let directory = artifact.directory.as_bytes();
+            let preview = artifact.preview.as_bytes();
+            try index.append_bytes(allocator, "| [");
+            try append_escaped_bars(allocator, &var index, title);
+            try index.append_bytes(allocator, "](");
+            try index.append_bytes(allocator, directory[name_start(directory)..mem::len(directory)]);
+            try index.append_bytes(allocator, "/current.md) | ");
+            try index.append_bytes(allocator, kind_name(artifact.kind));
+            try index.append_bytes(allocator, " | v");
+            try fmt::append_i64(allocator, &var index, artifact.version);
+            try index.append_bytes(allocator, " | ");
+            try append_timestamp(allocator, &var index, artifact.updated_at_ms);
+            try index.append_bytes(allocator, " | ");
+            try append_escaped_bars(allocator, &var index, preview);
+            try append_line(allocator, &var index, " |", "", "");
+        }
+    }
+    let root = try artifact_root(allocator, message, socket);
+    defer root.deinit(allocator);
+    let root_bytes = root.as_bytes();
+    let path = try joined(allocator, root_bytes, "INDEX.md");
+    defer path.deinit(allocator);
+    let path_bytes = path.as_bytes();
+    let bytes = index.as_bytes();
+    try write_bytes_atomically(allocator, message, path_bytes, bytes);
+    return;
+}
+
+/// Stores prepared as the artifact's next version under directory, and
+/// rewrites everything that describes the artifact. The new version's
+/// manifest.
+fn commit_version(
+    allocator: Allocator,
+    message: &var string::String,
+    socket: []u8,
+    artifact: &var StoredArtifact,
+    directory: []u8,
+    request: &RegisterArtifact,
+    language: []u8,
+    created_at_ms: i64,
+    prepared: &ArtifactSource,
+    preview: ArtifactPreviewSummary
+) -> ArtifactFailure!ArtifactManifest {
+    var next_version: i64 = 1;
+    if artifact.versions.len() > 0 {
+        if artifact.versions.at(artifact.versions.len() - 1) |last| {
+            next_version = last.version + 1;
+        }
+    }
+    var version = try store_artifact_version(
+        allocator, message, directory, next_version, created_at_ms, prepared, preview);
+    errdefer version.deinit(allocator);
+    artifact.title.clear();
+    try artifact.title.append_string(allocator, &request.title);
+    artifact.language.clear();
+    try artifact.language.append_bytes(allocator, language);
+    artifact.updated_at_ms = created_at_ms;
+    if request.owner_tab |tab| {
+        artifact.owner_tab = tab;
+    }
+    if request.owner_pane |pane| {
+        artifact.owner_pane = pane;
+    }
+    try artifact.versions.append(allocator, move version);
+    var metadata = string::new(allocator);
+    defer metadata.deinit(allocator);
+    try append_stored_artifact(allocator, &var metadata, artifact);
+    let metadata_bytes = metadata.as_bytes();
+    let metadata_path = try joined(allocator, directory, "metadata.json");
+    defer metadata_path.deinit(allocator);
+    let metadata_name = metadata_path.as_bytes();
+    try replace_file(allocator, message, metadata_name, metadata_bytes);
+    var id = string::new(allocator);
+    defer id.deinit(allocator);
+    try id.append_string(allocator, &artifact.id);
+    let id_bytes = id.as_bytes();
+    try write_marker(allocator, message, socket, id_bytes, directory);
+    try write_artifact_documents(allocator, message, directory, artifact);
+    try write_artifact_index(allocator, message, socket);
+    return manifest_from_stored(allocator, message, socket, artifact, 0);
+}
+
+/// Stores the request's source in the store beside socket: as a new
+/// artifact, or as the next version of the one the request names. A
+/// version that changes nothing is not stored again; the latest is
+/// answered. One registration runs at a time.
+pub fn register_artifact(
+    allocator: Allocator,
+    message: &var string::String,
+    socket: []u8,
+    policy: &ArtifactPolicy,
+    request: &RegisterArtifact
+) -> ArtifactFailure!ArtifactManifest {
+    try policy.validate(allocator, message);
+    let title = request.title.as_bytes();
+    try validate_title(allocator, message, title);
+    var language = string::new(allocator);
+    defer language.deinit(allocator);
+    if request.has_language {
+        try language.append_string(allocator, &request.language);
+    } else {
+        try policy.append_resolved_language(allocator, &var language);
+    }
+    let language_bytes = language.as_bytes();
+    try validate_language(allocator, message, language_bytes);
+    let source = request.source.as_bytes();
+    let prepared = try prepare_artifact_source(allocator, message, request.kind, title, source);
+    defer prepared.deinit(allocator);
+    let created_at_ms = process::unix_millis();
+    let preview = try registration_preview(allocator, message, policy, request, &prepared, language_bytes);
+    let root = try artifact_root(allocator, message, socket);
+    defer root.deinit(allocator);
+    let root_bytes = root.as_bytes();
+    let lock = try lock_artifact_store(allocator, message, root_bytes);
+    defer close_descriptor(lock);
+    if request.has_id {
+        let id = request.id.as_bytes();
+        try validate_artifact_id(allocator, message, id);
+        var stored = try load_stored_artifact(allocator, message, socket, id);
+        defer stored.deinit(allocator);
+        let stored_kind = stored.kind.as_bytes();
+        if !mem::equal_bytes(stored_kind, kind_name(request.kind)) {
+            explain(allocator, message, "an artifact version cannot change its kind", "", "");
+            return ArtifactError::Failed;
+        }
+        if try stored_artifact_matches(allocator, message, socket, &stored, title, language_bytes, &prepared) {
+            return manifest_from_stored(allocator, message, socket, &stored, 0);
+        }
+        let directory = try resolve_artifact_directory(allocator, message, socket, id);
+        defer directory.deinit(allocator);
+        let directory_bytes = directory.as_bytes();
+        return commit_version(allocator, message, socket, &var stored, directory_bytes, request, language_bytes,
+            created_at_ms, &prepared, preview);
+    }
+    let id = try new_artifact_id(allocator, message, socket);
+    defer id.deinit(allocator);
+    let id_bytes = id.as_bytes();
+    var stored = StoredArtifact {
+        format_version: store_version(),
+        id: string::new(allocator),
+        slug: string::new(allocator),
+        title: string::new(allocator),
+        kind: string::new(allocator),
+        language: string::new(allocator),
+        created_at_ms: created_at_ms,
+        updated_at_ms: created_at_ms,
+        owner_tab: request.owner_tab,
+        owner_pane: request.owner_pane,
+        versions: array::new<StoredVersion>(allocator)
+    };
+    defer stored.deinit(allocator);
+    try stored.id.append_bytes(allocator, id_bytes);
+    try append_artifact_slug(allocator, &var stored.slug, title);
+    try stored.kind.append_bytes(allocator, kind_name(request.kind));
+    try ensure_owner_only_directory(allocator, message, root_bytes);
+    var name = string::new(allocator);
+    defer name.deinit(allocator);
+    try name.append_string(allocator, &stored.slug);
+    try name.append_bytes(allocator, "--");
+    try name.append_bytes(allocator, id_bytes);
+    let name_bytes = name.as_bytes();
+    let directory = try joined(allocator, root_bytes, name_bytes);
+    defer directory.deinit(allocator);
+    let directory_bytes = directory.as_bytes();
+    try ensure_owner_only_directory(allocator, message, directory_bytes);
+    return commit_version(allocator, message, socket, &var stored, directory_bytes, request, language_bytes,
+        created_at_ms, &prepared, preview);
+}

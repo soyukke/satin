@@ -1,0 +1,718 @@
+import std::fmt;
+import std::fs;
+import std::io;
+import std::mem;
+import std::string;
+import std::testing;
+
+extern "c" struct WaitStatus {
+    value: i32,
+}
+
+extern "c" fn fork() -> i32
+extern "c" fn _exit(status: i32) -> void
+extern "c" fn waitpid(process: i32, status: &var WaitStatus, options: i32) -> i32
+
+/// A new directory under /tmp for one test, its owner's alone.
+fn test_directory(allocator: Allocator, label: []u8) -> ArtifactFailure!string::String {
+    var path = try string::from_bytes(allocator, "/tmp/satin-artifact-");
+    errdefer path.deinit(allocator);
+    try path.append_bytes(allocator, label);
+    try path.append_byte(allocator, 45);
+    try fmt::append_i64(allocator, &var path, process_id());
+    try path.append_byte(allocator, 45);
+    try fmt::append_i64(allocator, &var path, unix_nanos());
+    var message = string::new(allocator);
+    defer message.deinit(allocator);
+    try make_test_directory(allocator, &var message, &path);
+    return move path;
+}
+
+fn make_test_directory(
+    allocator: Allocator,
+    message: &var string::String,
+    path: &string::String
+) -> ArtifactFailure!void {
+    let bytes = path.as_bytes();
+    try ensure_owner_only_directory(allocator, message, bytes);
+    return;
+}
+
+/// Removes path and everything under it.
+fn remove_tree(allocator: Allocator, path: []u8) -> void {
+    if fs::read_dir(io::blocking(), allocator, path) |entries| {
+        defer entries.deinit(allocator);
+        for 0..entries.len() |index| {
+            if entries.at(index) |entry| {
+                let child = entry.path.as_bytes();
+                var status = no_status();
+                var found = false;
+                if path_status(allocator, child, false, &var status) |read| {
+                    found = read;
+                } else |_| {}
+                if found and status.is_directory() {
+                    remove_tree(allocator, child);
+                } else if fs::remove_file(io::blocking(), child) {} else |_| {}
+            }
+        }
+    } else |_| {}
+    if fs::remove_dir(io::blocking(), path) {} else |_| {}
+    return;
+}
+
+fn contains(text: []u8, needle: []u8) -> bool {
+    for 0..mem::len(text) - mem::len(needle) + 1 |index| {
+        if mem::equal_bytes(text[index..index + mem::len(needle)], needle) {
+            return true;
+        }
+    }
+    return false;
+}
+
+fn exists(allocator: Allocator, path: []u8) -> bool {
+    var status = no_status();
+    if path_status(allocator, path, false, &var status) |found| {
+        return found;
+    } else |_| {}
+    return false;
+}
+
+/// Whether the file at path holds needle somewhere.
+fn file_contains(allocator: Allocator, path: []u8, needle: []u8) -> bool {
+    var content = string::new(allocator);
+    defer content.deinit(allocator);
+    if !read_whole(allocator, path, &var content) {
+        return false;
+    }
+    let bytes = content.as_bytes();
+    return contains(bytes, needle);
+}
+
+/// Registers the file at source as kind under title, in English: a new
+/// artifact, or a version of id when id is not empty.
+fn register_test(
+    allocator: Allocator,
+    message: &var string::String,
+    socket: []u8,
+    policy: &ArtifactPolicy,
+    kind: ArtifactKind,
+    title: []u8,
+    source: []u8,
+    id: []u8
+) -> ArtifactFailure!ArtifactManifest {
+    var request = new_register_artifact(allocator, kind);
+    defer request.deinit(allocator);
+    try request.title.append_bytes(allocator, title);
+    try request.source.append_bytes(allocator, source);
+    request.has_language = true;
+    try request.language.append_bytes(allocator, "en-US");
+    request.has_id = mem::len(id) > 0;
+    try request.id.append_bytes(allocator, id);
+    request.owner_tab = 1;
+    request.owner_pane = 2;
+    return register_artifact(allocator, message, socket, policy, &request);
+}
+
+/// Registers in a child process, which exits with 0 when it stored a
+/// version. The child's process id.
+fn register_in_child(allocator: Allocator, socket: []u8, source: []u8, id: []u8) -> i32 {
+    // SAFETY: the test process runs one thread, so the child is whole.
+    let child = unsafe fork();
+    if child != 0 {
+        return child;
+    }
+    var message = string::new(allocator);
+    var status: i32 = 1;
+    if default_policy(allocator) |policy| {
+        if register_test(allocator, &var message, socket, &policy, ArtifactKind::Markdown, "Concurrent notes", source,
+            id) |manifest| {
+            manifest.deinit(allocator);
+            status = 0;
+        } else |_| {}
+        policy.deinit(allocator);
+    } else |_| {}
+    message.deinit(allocator);
+    // SAFETY: the child ends here without running the parent's tests.
+    unsafe _exit(status);
+    return 0;
+}
+
+fn child_succeeded(child: i32) -> bool {
+    var status = WaitStatus { value: -1 };
+    // SAFETY: status is one writable int.
+    let waited = unsafe waitpid(child, &var status, 0);
+    return waited == child and status.value == 0;
+}
+
+test "a policy round trips next to the socket" {
+    let allocator = mem::page_allocator();
+    let root = try test_directory(allocator, "policy");
+    defer root.deinit(allocator);
+    let root_bytes = root.as_bytes();
+    defer remove_tree(allocator, root_bytes);
+    let socket = try joined(allocator, root_bytes, "control.sock");
+    defer socket.deinit(allocator);
+    let socket_bytes = socket.as_bytes();
+    var message = string::new(allocator);
+    defer message.deinit(allocator);
+    var policy = try default_policy(allocator);
+    defer policy.deinit(allocator);
+    policy.max_columns = 96;
+    policy.max_rows = 40;
+    policy.language.clear();
+    try policy.language.append_bytes(allocator, "ja-JP");
+    policy.overflow = ArtifactOverflow::Reject;
+    let unset = try load_policy(allocator, &var message, socket_bytes);
+    defer unset.deinit(allocator);
+    testing::expect(unset.max_columns == 80 and unset.max_rows == 32);
+    let path = try save_policy(allocator, &var message, socket_bytes, &policy);
+    defer path.deinit(allocator);
+    let path_bytes = path.as_bytes();
+    testing::expect(file_contains(allocator, path_bytes,
+        \\  "max_columns": 96,
+    ));
+    testing::expect(file_contains(allocator, path_bytes,
+        \\  "overflow": "reject"
+    ));
+    var status = no_status();
+    testing::expect(try path_status(allocator, path_bytes, false, &var status));
+    testing::expect(status.mode & 511 == 384);
+    let loaded = try load_policy(allocator, &var message, socket_bytes);
+    defer loaded.deinit(allocator);
+    let language = loaded.language.as_bytes();
+    testing::expect(loaded.max_columns == 96);
+    testing::expect(loaded.max_rows == 40);
+    testing::expect(mem::equal_bytes(language, "ja-JP"));
+    testing::expect(loaded.overflow == ArtifactOverflow::Reject);
+}
+
+test "a policy outside its bounds is refused" {
+    let allocator = mem::page_allocator();
+    var message = string::new(allocator);
+    defer message.deinit(allocator);
+    var policy = try default_policy(allocator);
+    defer policy.deinit(allocator);
+    policy.max_columns = 39;
+    var refused = false;
+    if policy.validate(allocator, &var message) {} else |_| {
+        refused = true;
+    }
+    let why = message.as_bytes();
+    testing::expect(refused);
+    testing::expect(mem::equal_bytes(why, "max columns must be between 40 and 240"));
+}
+
+test "a bounded source read enforces the limit" {
+    let allocator = mem::page_allocator();
+    let root = try test_directory(allocator, "bounded-read");
+    defer root.deinit(allocator);
+    let root_bytes = root.as_bytes();
+    defer remove_tree(allocator, root_bytes);
+    let source = try joined(allocator, root_bytes, "source.txt");
+    defer source.deinit(allocator);
+    let source_bytes = source.as_bytes();
+    try fs::write_file(io::blocking(), source_bytes, "1234");
+    var message = string::new(allocator);
+    defer message.deinit(allocator);
+    var content = string::new(allocator);
+    defer content.deinit(allocator);
+    try read_bounded_source(allocator, &var message, source_bytes, 4, "test", &var content);
+    let read = content.as_bytes();
+    testing::expect(mem::equal_bytes(read, "1234"));
+    var rest = string::new(allocator);
+    defer rest.deinit(allocator);
+    var refused = false;
+    if read_bounded_source(allocator, &var message, source_bytes, 3, "test", &var rest) {} else |_| {
+        refused = true;
+    }
+    let why = message.as_bytes();
+    testing::expect(refused);
+    testing::expect(mem::equal_bytes(why, "test source exceeds the 3-byte preview limit"));
+}
+
+test "an artifact listing reports an unreadable store" {
+    let allocator = mem::page_allocator();
+    let root = try test_directory(allocator, "invalid-store");
+    defer root.deinit(allocator);
+    let root_bytes = root.as_bytes();
+    defer remove_tree(allocator, root_bytes);
+    let socket = try joined(allocator, root_bytes, "control.sock");
+    defer socket.deinit(allocator);
+    let socket_bytes = socket.as_bytes();
+    let store = try joined(allocator, root_bytes, "artifacts");
+    defer store.deinit(allocator);
+    let store_bytes = store.as_bytes();
+    var message = string::new(allocator);
+    defer message.deinit(allocator);
+    let none = try list_artifacts(allocator, &var message, socket_bytes, -1);
+    testing::expect(none.len() == 0);
+    none.deinit(allocator);
+    try fs::write_file(io::blocking(), store_bytes, "not a directory");
+    var refused = false;
+    if list_artifacts(allocator, &var message, socket_bytes, -1) |items| {
+        items.deinit(allocator);
+    } else |_| {
+        refused = true;
+    }
+    let why = message.as_bytes();
+    testing::expect(refused);
+    testing::expect(contains(why, "open artifact store"));
+}
+
+test "versions are snapshotted and listed in human readable directories" {
+    let allocator = mem::page_allocator();
+    let root = try test_directory(allocator, "versions");
+    defer root.deinit(allocator);
+    let root_bytes = root.as_bytes();
+    defer remove_tree(allocator, root_bytes);
+    let socket = try joined(allocator, root_bytes, "control.sock");
+    defer socket.deinit(allocator);
+    let socket_bytes = socket.as_bytes();
+    let source = try joined(allocator, root_bytes, "report.md");
+    defer source.deinit(allocator);
+    let source_bytes = source.as_bytes();
+    var message = string::new(allocator);
+    defer message.deinit(allocator);
+    let policy = try default_policy(allocator);
+    defer policy.deinit(allocator);
+    try fs::write_file(io::blocking(), source_bytes,
+        \\# Result
+        \\
+        \\First version.
+        \\
+    );
+    let first = try register_test(allocator, &var message, socket_bytes, &policy, ArtifactKind::Markdown,
+        "Renderer Notes", source_bytes, "");
+    defer first.deinit(allocator);
+    let id = first.id.as_bytes();
+    try fs::write_file(io::blocking(), source_bytes,
+        \\# Result
+        \\
+        \\Second version.
+        \\
+    );
+    let second = try register_test(allocator, &var message, socket_bytes, &policy, ArtifactKind::Markdown,
+        "Renderer Notes", source_bytes, id);
+    defer second.deinit(allocator);
+    let unchanged = try register_test(allocator, &var message, socket_bytes, &policy, ArtifactKind::Markdown,
+        "Renderer Notes", source_bytes, id);
+    defer unchanged.deinit(allocator);
+    testing::expect(first.version == 1);
+    testing::expect(second.version == 2);
+    testing::expect(unchanged.version == 2);
+    testing::expect(mem::len(id) == 13 and id[0] == cast<u8>(97));
+    let first_document = first.document.as_bytes();
+    let second_document = second.document.as_bytes();
+    testing::expect(file_contains(allocator, first_document, "First version"));
+    testing::expect(file_contains(allocator, second_document, "Second version"));
+    testing::expect(ends_with(second_document, "/versions/v002/artifact.md"));
+    var owner: i64 = -1;
+    if second.owner_pane |pane| {
+        owner = pane;
+    }
+    testing::expect(owner == 2);
+    let artifacts = try list_artifacts(allocator, &var message, socket_bytes, -1);
+    defer artifacts.deinit(allocator);
+    testing::expect(artifacts.len() == 1);
+    if artifacts.at(0) |artifact| {
+        let directory = artifact.directory.as_bytes();
+        let preview = artifact.preview.as_bytes();
+        testing::expect(artifact.version_count == 2);
+        testing::expect(artifact.version == 2);
+        testing::expect(mem::equal_bytes(preview, "Second version."));
+        testing::expect(mem::starts_with(directory[name_start(directory)..mem::len(directory)], "renderer-notes--"));
+        let readme = try joined(allocator, directory, "README.md");
+        defer readme.deinit(allocator);
+        let readme_bytes = readme.as_bytes();
+        testing::expect(file_contains(allocator, readme_bytes, "[v2](versions/v002/artifact.md)"));
+        testing::expect(file_contains(allocator, readme_bytes, "- Kind: `markdown`"));
+        let current = try joined(allocator, directory, "current.md");
+        defer current.deinit(allocator);
+        let current_bytes = current.as_bytes();
+        testing::expect(file_contains(allocator, current_bytes, "Second version"));
+        let metadata = try joined(allocator, directory, "metadata.json");
+        defer metadata.deinit(allocator);
+        let metadata_bytes = metadata.as_bytes();
+        testing::expect(file_contains(allocator, metadata_bytes,
+            \\  "kind": "markdown",
+        ));
+        testing::expect(file_contains(allocator, metadata_bytes,
+            \\      "document": "versions/v002/artifact.md",
+        ));
+        testing::expect(!file_contains(allocator, metadata_bytes, "assets"));
+        var status = no_status();
+        testing::expect(try path_status(allocator, directory, false, &var status));
+        testing::expect(status.mode & 511 == 448);
+    }
+    let store = try artifact_root(allocator, &var message, socket_bytes);
+    defer store.deinit(allocator);
+    let store_bytes = store.as_bytes();
+    let index = try joined(allocator, store_bytes, "INDEX.md");
+    defer index.deinit(allocator);
+    let index_bytes = index.as_bytes();
+    testing::expect(file_contains(allocator, index_bytes, "Renderer Notes"));
+    var selector = try string::from_bytes(allocator, id);
+    defer selector.deinit(allocator);
+    try selector.append_bytes(allocator, "@v1");
+    let selector_bytes = selector.as_bytes();
+    let earlier = try load_manifest(allocator, &var message, socket_bytes, selector_bytes);
+    defer earlier.deinit(allocator);
+    testing::expect(earlier.version == 1);
+    var missing = try string::from_bytes(allocator, id);
+    defer missing.deinit(allocator);
+    try missing.append_bytes(allocator, "@7");
+    let missing_bytes = missing.as_bytes();
+    var refused = false;
+    if load_manifest(allocator, &var message, socket_bytes, missing_bytes) |manifest| {
+        manifest.deinit(allocator);
+    } else |_| {
+        refused = true;
+    }
+    let why = message.as_bytes();
+    testing::expect(refused);
+    testing::expect(contains(why, "has no version 7"));
+}
+
+test "a version cannot change its artifact's kind" {
+    let allocator = mem::page_allocator();
+    let root = try test_directory(allocator, "kind");
+    defer root.deinit(allocator);
+    let root_bytes = root.as_bytes();
+    defer remove_tree(allocator, root_bytes);
+    let socket = try joined(allocator, root_bytes, "control.sock");
+    defer socket.deinit(allocator);
+    let socket_bytes = socket.as_bytes();
+    let source = try joined(allocator, root_bytes, "notes.txt");
+    defer source.deinit(allocator);
+    let source_bytes = source.as_bytes();
+    try fs::write_file(io::blocking(), source_bytes, "notes");
+    var message = string::new(allocator);
+    defer message.deinit(allocator);
+    let policy = try default_policy(allocator);
+    defer policy.deinit(allocator);
+    let first = try register_test(allocator, &var message, socket_bytes, &policy, ArtifactKind::Text, "Notes",
+        source_bytes, "");
+    defer first.deinit(allocator);
+    let id = first.id.as_bytes();
+    var refused = false;
+    if register_test(allocator, &var message, socket_bytes, &policy, ArtifactKind::Diff, "Notes", source_bytes,
+        id) |manifest| {
+        manifest.deinit(allocator);
+    } else |_| {
+        refused = true;
+    }
+    let why = message.as_bytes();
+    testing::expect(refused);
+    testing::expect(mem::equal_bytes(why, "an artifact version cannot change its kind"));
+}
+
+test "concurrent updates receive distinct versions" {
+    let allocator = mem::page_allocator();
+    let root = try test_directory(allocator, "concurrent-versions");
+    defer root.deinit(allocator);
+    let root_bytes = root.as_bytes();
+    defer remove_tree(allocator, root_bytes);
+    let socket = try joined(allocator, root_bytes, "control.sock");
+    defer socket.deinit(allocator);
+    let socket_bytes = socket.as_bytes();
+    let initial_source = try joined(allocator, root_bytes, "initial.md");
+    defer initial_source.deinit(allocator);
+    let initial_bytes = initial_source.as_bytes();
+    let first_source = try joined(allocator, root_bytes, "first.md");
+    defer first_source.deinit(allocator);
+    let first_bytes = first_source.as_bytes();
+    let second_source = try joined(allocator, root_bytes, "second.md");
+    defer second_source.deinit(allocator);
+    let second_bytes = second_source.as_bytes();
+    try fs::write_file(io::blocking(), initial_bytes,
+        \\# Initial
+        \\
+    );
+    try fs::write_file(io::blocking(), first_bytes,
+        \\# First update
+        \\
+    );
+    try fs::write_file(io::blocking(), second_bytes,
+        \\# Second update
+        \\
+    );
+    var message = string::new(allocator);
+    defer message.deinit(allocator);
+    let policy = try default_policy(allocator);
+    defer policy.deinit(allocator);
+    let initial = try register_test(allocator, &var message, socket_bytes, &policy, ArtifactKind::Markdown,
+        "Concurrent notes", initial_bytes, "");
+    defer initial.deinit(allocator);
+    let id = initial.id.as_bytes();
+    let first = register_in_child(allocator, socket_bytes, first_bytes, id);
+    let second = register_in_child(allocator, socket_bytes, second_bytes, id);
+    testing::expect(child_succeeded(first));
+    testing::expect(child_succeeded(second));
+    let stored = try load_stored_artifact(allocator, &var message, socket_bytes, id);
+    defer stored.deinit(allocator);
+    testing::expect(stored.versions.len() == 3);
+}
+
+test "a table snapshot keeps Markdown and the raw source" {
+    let allocator = mem::page_allocator();
+    let root = try test_directory(allocator, "table-markdown");
+    defer root.deinit(allocator);
+    let root_bytes = root.as_bytes();
+    defer remove_tree(allocator, root_bytes);
+    let socket = try joined(allocator, root_bytes, "control.sock");
+    defer socket.deinit(allocator);
+    let socket_bytes = socket.as_bytes();
+    let source = try joined(allocator, root_bytes, "results.json");
+    defer source.deinit(allocator);
+    let source_bytes = source.as_bytes();
+    try fs::write_file(io::blocking(), source_bytes,
+        \\[{"status":"passed","name":"smoke"}]
+    );
+    var message = string::new(allocator);
+    defer message.deinit(allocator);
+    let policy = try default_policy(allocator);
+    defer policy.deinit(allocator);
+    let manifest = try register_test(allocator, &var message, socket_bytes, &policy, ArtifactKind::Table,
+        "Test Results", source_bytes, "");
+    defer manifest.deinit(allocator);
+    try fs::remove_file(io::blocking(), source_bytes);
+    let document = manifest.document.as_bytes();
+    let stored_source = manifest.source.as_bytes();
+    testing::expect(file_contains(allocator, document, "| name | status |"));
+    testing::expect(file_contains(allocator, document, "| smoke | passed |"));
+    testing::expect(ends_with(stored_source, "/versions/v001/source.json"));
+    testing::expect(exists(allocator, stored_source));
+    let rendered = try render_artifact(allocator, &var message, &manifest, &policy, -1, -1);
+    defer rendered.deinit(allocator);
+    testing::expect(rendered.plain_lines.len() == 32);
+}
+
+test "a table preview reports omitted rows" {
+    let allocator = mem::page_allocator();
+    let root = try test_directory(allocator, "table");
+    defer root.deinit(allocator);
+    let root_bytes = root.as_bytes();
+    defer remove_tree(allocator, root_bytes);
+    let socket = try joined(allocator, root_bytes, "control.sock");
+    defer socket.deinit(allocator);
+    let socket_bytes = socket.as_bytes();
+    let source = try joined(allocator, root_bytes, "results.json");
+    defer source.deinit(allocator);
+    let source_bytes = source.as_bytes();
+    var rows = try string::from_bytes(allocator, "[");
+    defer rows.deinit(allocator);
+    for 0..40 |index| {
+        if index > 0 {
+            try rows.append_byte(allocator, 44);
+        }
+        try rows.append_bytes(allocator,
+            \\{"test":"case-
+        );
+        try fmt::append_i64(allocator, &var rows, index);
+        try rows.append_bytes(allocator,
+            \\","status":"passed"}
+        );
+    }
+    try rows.append_byte(allocator, 93);
+    let json = rows.as_bytes();
+    try fs::write_file(io::blocking(), source_bytes, json);
+    var message = string::new(allocator);
+    defer message.deinit(allocator);
+    let policy = try default_policy(allocator);
+    defer policy.deinit(allocator);
+    let manifest = try register_test(allocator, &var message, socket_bytes, &policy, ArtifactKind::Table, "Tests",
+        source_bytes, "");
+    defer manifest.deinit(allocator);
+    testing::expect(manifest.preview.status == ArtifactPreviewStatus::Compacted);
+    testing::expect(manifest.preview.omitted_items == 14);
+}
+
+test "a table preview reports cells that do not fit" {
+    let allocator = mem::page_allocator();
+    let root = try test_directory(allocator, "wide-table");
+    defer root.deinit(allocator);
+    let root_bytes = root.as_bytes();
+    defer remove_tree(allocator, root_bytes);
+    let socket = try joined(allocator, root_bytes, "control.sock");
+    defer socket.deinit(allocator);
+    let socket_bytes = socket.as_bytes();
+    let source = try joined(allocator, root_bytes, "results.json");
+    defer source.deinit(allocator);
+    let source_bytes = source.as_bytes();
+    var rows = try string::from_bytes(allocator,
+        \\[{"message":"
+    );
+    defer rows.deinit(allocator);
+    for 0..200 |_| {
+        try rows.append_byte(allocator, 120);
+    }
+    try rows.append_bytes(allocator,
+        \\"}]
+    );
+    let json = rows.as_bytes();
+    try fs::write_file(io::blocking(), source_bytes, json);
+    var message = string::new(allocator);
+    defer message.deinit(allocator);
+    let policy = try default_policy(allocator);
+    defer policy.deinit(allocator);
+    let manifest = try register_test(allocator, &var message, socket_bytes, &policy, ArtifactKind::Table,
+        "Wide cell", source_bytes, "");
+    defer manifest.deinit(allocator);
+    testing::expect(manifest.preview.status == ArtifactPreviewStatus::Compacted);
+    testing::expect(manifest.preview.omitted_items == 1);
+}
+
+test "the reject policy does not register an oversized preview" {
+    let allocator = mem::page_allocator();
+    let root = try test_directory(allocator, "reject");
+    defer root.deinit(allocator);
+    let root_bytes = root.as_bytes();
+    defer remove_tree(allocator, root_bytes);
+    let socket = try joined(allocator, root_bytes, "control.sock");
+    defer socket.deinit(allocator);
+    let socket_bytes = socket.as_bytes();
+    let source = try joined(allocator, root_bytes, "long.txt");
+    defer source.deinit(allocator);
+    let source_bytes = source.as_bytes();
+    var lines = string::new(allocator);
+    defer lines.deinit(allocator);
+    for 0..100 |_| {
+        try append_line(allocator, &var lines, "line", "", "");
+    }
+    let text = lines.as_bytes();
+    try fs::write_file(io::blocking(), source_bytes, text);
+    var message = string::new(allocator);
+    defer message.deinit(allocator);
+    var policy = try default_policy(allocator);
+    defer policy.deinit(allocator);
+    policy.overflow = ArtifactOverflow::Reject;
+    var refused = false;
+    if register_test(allocator, &var message, socket_bytes, &policy, ArtifactKind::Text, "Long", source_bytes,
+        "") |manifest| {
+        manifest.deinit(allocator);
+    } else |_| {
+        refused = true;
+    }
+    let why = message.as_bytes();
+    testing::expect(refused);
+    testing::expect(contains(why, "exceeds the configured bounds"));
+    let store = try joined(allocator, root_bytes, "artifacts");
+    defer store.deinit(allocator);
+    let store_bytes = store.as_bytes();
+    testing::expect(!exists(allocator, store_bytes));
+}
+
+test "the store is beside the run directory of the socket" {
+    let allocator = mem::page_allocator();
+    var message = string::new(allocator);
+    defer message.deinit(allocator);
+    let beside_run = try artifact_root(allocator, &var message, "/home/alice/Satin/run/control.sock");
+    defer beside_run.deinit(allocator);
+    let first = beside_run.as_bytes();
+    testing::expect(mem::equal_bytes(first, "/home/alice/Satin/artifacts"));
+    let beside_socket = try artifact_root(allocator, &var message, "/tmp//work/./control.sock");
+    defer beside_socket.deinit(allocator);
+    let second = beside_socket.as_bytes();
+    testing::expect(mem::equal_bytes(second, "/tmp/work/artifacts"));
+    var refused = false;
+    if artifact_root(allocator, &var message, "control.sock") |root| {
+        root.deinit(allocator);
+    } else |_| {
+        refused = true;
+    }
+    testing::expect(refused);
+    let in_root = try artifact_root(allocator, &var message, "/control.sock");
+    defer in_root.deinit(allocator);
+    let third = in_root.as_bytes();
+    testing::expect(mem::equal_bytes(third, "/artifacts"));
+    let under_run = try artifact_root(allocator, &var message, "/run/control.sock");
+    defer under_run.deinit(allocator);
+    let fourth = under_run.as_bytes();
+    testing::expect(mem::equal_bytes(fourth, "/artifacts"));
+}
+
+test "a title names its directory" {
+    let allocator = mem::page_allocator();
+    var slug = string::new(allocator);
+    defer slug.deinit(allocator);
+    try append_artifact_slug(allocator, &var slug, "  Renderer Notes: v2!  ");
+    try slug.append_byte(allocator, 32);
+    try append_artifact_slug(allocator, &var slug, "調査 結果");
+    try slug.append_byte(allocator, 32);
+    try append_artifact_slug(allocator, &var slug, "!!!");
+    let bytes = slug.as_bytes();
+    testing::expect(mem::equal_bytes(bytes, "renderer-notes-v2 調査-結果 artifact"));
+}
+
+test "a selector names an artifact and a version" {
+    let allocator = mem::page_allocator();
+    var message = string::new(allocator);
+    defer message.deinit(allocator);
+    var version: i64 = -1;
+    testing::expect(try parse_artifact_selector(allocator, &var message, "a12", &var version) == 3);
+    testing::expect(version == 0);
+    testing::expect(try parse_artifact_selector(allocator, &var message, "a12@v3", &var version) == 3);
+    testing::expect(version == 3);
+    testing::expect(try parse_artifact_selector(allocator, &var message, "a12@12", &var version) == 3);
+    testing::expect(version == 12);
+    var refused: i64 = 0;
+    if parse_artifact_selector(allocator, &var message, "a12@0", &var version) |_| {} else |_| {
+        refused = refused + 1;
+    }
+    if parse_artifact_selector(allocator, &var message, "a12@x", &var version) |_| {} else |_| {
+        refused = refused + 1;
+    }
+    if parse_artifact_selector(allocator, &var message, "A12", &var version) |_| {} else |_| {
+        refused = refused + 1;
+    }
+    testing::expect(refused == 3);
+}
+
+test "a relative path stays inside its directory" {
+    let allocator = mem::page_allocator();
+    var message = string::new(allocator);
+    defer message.deinit(allocator);
+    try validate_relative_artifact_path(allocator, &var message, "versions/v001/artifact.md");
+    var refused: i64 = 0;
+    if validate_relative_artifact_path(allocator, &var message, "") {} else |_| {
+        refused = refused + 1;
+    }
+    if validate_relative_artifact_path(allocator, &var message, "/etc/passwd") {} else |_| {
+        refused = refused + 1;
+    }
+    if validate_relative_artifact_path(allocator, &var message, "versions/../../outside") {} else |_| {
+        refused = refused + 1;
+    }
+    testing::expect(refused == 3);
+    testing::expect(is_under("versions/v001/images/a.png", "versions/v001"));
+    testing::expect(!is_under("versions/v0011/a.png", "versions/v001"));
+}
+
+test "a document previews as its first two lines of text" {
+    let allocator = mem::page_allocator();
+    let root = try test_directory(allocator, "preview");
+    defer root.deinit(allocator);
+    let root_bytes = root.as_bytes();
+    defer remove_tree(allocator, root_bytes);
+    let document = try joined(allocator, root_bytes, "artifact.md");
+    defer document.deinit(allocator);
+    let document_bytes = document.as_bytes();
+    try fs::write_file(io::blocking(), document_bytes,
+        \\---
+        \\title: hidden
+        \\---
+        \\# Heading
+        \\
+        \\![Trend](images/chart.png)
+        \\```text
+        \\`cargo test`
+        \\third
+        \\
+    );
+    var message = string::new(allocator);
+    defer message.deinit(allocator);
+    let preview = try artifact_document_preview(allocator, &var message, document_bytes);
+    defer preview.deinit(allocator);
+    let bytes = preview.as_bytes();
+    testing::expect(mem::equal_bytes(bytes, "Image · Trend · cargo test"));
+}

@@ -1,0 +1,425 @@
+import std::array;
+import std::fs;
+import std::io;
+import std::mem;
+import std::string;
+import std::testing;
+
+fn array_of_spans(allocator: Allocator) -> array::Array<StyledSpan> {
+    return array::new<StyledSpan>(allocator);
+}
+
+fn array_of_lines(allocator: Allocator) -> array::Array<string::String> {
+    return array::new<string::String>(allocator);
+}
+
+/// Whether every row of the screen is exactly width cells, or at most
+/// width when exact is not set.
+fn rows_fit(rendered: &RenderedArtifact, width: i64, exact: bool) -> bool {
+    for 0..rendered.plain_lines.len() |index| {
+        if rendered.plain_lines.at(index) |line| {
+            let bytes = line.as_bytes();
+            let cells = display_width(bytes);
+            if cells > width or exact and cells != width {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+/// Whether some row of the screen holds needle.
+fn screen_contains(rendered: &RenderedArtifact, needle: []u8) -> bool {
+    for 0..rendered.plain_lines.len() |index| {
+        if rendered.plain_lines.at(index) |line| {
+            let bytes = line.as_bytes();
+            if contains(bytes, needle) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+/// The first bytes of a PNG that is 8 by 4 pixels.
+fn test_png(allocator: Allocator) -> mem::Error!string::String {
+    var png = string::new(allocator);
+    errdefer png.deinit(allocator);
+    try png.append_byte(allocator, 137);
+    try png.append_bytes(allocator, "PNG");
+    try png.append_byte(allocator, 13);
+    try png.append_byte(allocator, 10);
+    try png.append_byte(allocator, 26);
+    try png.append_byte(allocator, 10);
+    for 0..3 |_| {
+        try png.append_byte(allocator, 0);
+    }
+    try png.append_byte(allocator, 13);
+    try png.append_bytes(allocator, "IHDR");
+    for 0..3 |_| {
+        try png.append_byte(allocator, 0);
+    }
+    try png.append_byte(allocator, 8);
+    for 0..3 |_| {
+        try png.append_byte(allocator, 0);
+    }
+    try png.append_byte(allocator, 4);
+    try png.append_byte(allocator, 8);
+    try png.append_byte(allocator, 6);
+    for 0..7 |_| {
+        try png.append_byte(allocator, 0);
+    }
+    return move png;
+}
+
+test "a Markdown preview obeys cell and row bounds" {
+    let allocator = mem::page_allocator();
+    let root = try test_directory(allocator, "markdown");
+    defer root.deinit(allocator);
+    let root_bytes = root.as_bytes();
+    defer remove_tree(allocator, root_bytes);
+    let socket = try joined(allocator, root_bytes, "control.sock");
+    defer socket.deinit(allocator);
+    let socket_bytes = socket.as_bytes();
+    let source = try joined(allocator, root_bytes, "report.md");
+    defer source.deinit(allocator);
+    let source_bytes = source.as_bytes();
+    try fs::write_file(io::blocking(), source_bytes,
+        \\# 結論
+        \\日本語の文章を一画面に収めて表示します。
+        \\- 次の操作を確認
+        \\
+    );
+    var message = string::new(allocator);
+    defer message.deinit(allocator);
+    var policy = try default_policy(allocator);
+    defer policy.deinit(allocator);
+    policy.language.clear();
+    try policy.language.append_bytes(allocator, "ja-JP");
+    var request = new_register_artifact(allocator, ArtifactKind::Markdown);
+    defer request.deinit(allocator);
+    try request.title.append_bytes(allocator, "調査結果");
+    try request.source.append_bytes(allocator, source_bytes);
+    let manifest = try register_artifact(allocator, &var message, socket_bytes, &policy, &request);
+    defer manifest.deinit(allocator);
+    let language = manifest.language.as_bytes();
+    testing::expect(mem::equal_bytes(language, "ja-JP"));
+    let rendered = try render_artifact(allocator, &var message, &manifest, &policy, 40, 12);
+    defer rendered.deinit(allocator);
+    testing::expect(rendered.plain_lines.len() == 12);
+    testing::expect(screen_contains(&rendered, "調査結果"));
+    testing::expect(rows_fit(&rendered, 40, false));
+}
+
+test "a viewer uses the pane's dimensions without card chrome" {
+    let allocator = mem::page_allocator();
+    let root = try test_directory(allocator, "pane-width");
+    defer root.deinit(allocator);
+    let root_bytes = root.as_bytes();
+    defer remove_tree(allocator, root_bytes);
+    let socket = try joined(allocator, root_bytes, "control.sock");
+    defer socket.deinit(allocator);
+    let socket_bytes = socket.as_bytes();
+    let source = try joined(allocator, root_bytes, "wide.txt");
+    defer source.deinit(allocator);
+    let source_bytes = source.as_bytes();
+    var wide = string::new(allocator);
+    defer wide.deinit(allocator);
+    for 0..100 |_| {
+        try wide.append_byte(allocator, 120);
+    }
+    let run = wide.as_bytes();
+    var content = string::new(allocator);
+    defer content.deinit(allocator);
+    try append_line(allocator, &var content, run, "", "");
+    let text = content.as_bytes();
+    try fs::write_file(io::blocking(), source_bytes, text);
+    var message = string::new(allocator);
+    defer message.deinit(allocator);
+    let policy = try default_policy(allocator);
+    defer policy.deinit(allocator);
+    let manifest = try register_test(allocator, &var message, socket_bytes, &policy, ArtifactKind::Text,
+        "Wide artifact", source_bytes, "");
+    defer manifest.deinit(allocator);
+    testing::expect(manifest.preview.status == ArtifactPreviewStatus::Ready);
+    let rendered = try render_artifact(allocator, &var message, &manifest, &policy, 120, 20);
+    defer rendered.deinit(allocator);
+    testing::expect(rendered.plain_lines.len() == 20);
+    testing::expect(rows_fit(&rendered, 120, true));
+    testing::expect(screen_contains(&rendered, run));
+    testing::expect(screen_contains(&rendered, "text · v1 · en-US · 101 B"));
+    testing::expect(!screen_contains(&rendered, "q close"));
+    testing::expect(!screen_contains(&rendered, "╭"));
+    testing::expect(!screen_contains(&rendered, "╰"));
+    testing::expect(!screen_contains(&rendered, "│"));
+    var narrow = false;
+    if render_artifact(allocator, &var message, &manifest, &policy, 19, 20) |screen| {
+        screen.deinit(allocator);
+    } else |_| {
+        narrow = true;
+    }
+    testing::expect(narrow);
+}
+
+test "a full height viewer does not write the line end that scrolls its heading away" {
+    let allocator = mem::page_allocator();
+    var ansi = try string::from_bytes(allocator, "Persistent heading");
+    defer ansi.deinit(allocator);
+    for 0..12 |_| {
+        try ansi.append_byte(allocator, 13);
+        try ansi.append_byte(allocator, 10);
+    }
+    let bytes = ansi.as_bytes();
+    testing::expect(viewer_output_length(bytes) + 2 == mem::len(bytes));
+    testing::expect(viewer_output_length("no line end") == 11);
+}
+
+test "a diff is colored by line and reports what it cut" {
+    let allocator = mem::page_allocator();
+    let root = try test_directory(allocator, "diff");
+    defer root.deinit(allocator);
+    let root_bytes = root.as_bytes();
+    defer remove_tree(allocator, root_bytes);
+    let socket = try joined(allocator, root_bytes, "control.sock");
+    defer socket.deinit(allocator);
+    let socket_bytes = socket.as_bytes();
+    let source = try joined(allocator, root_bytes, "change.diff");
+    defer source.deinit(allocator);
+    let source_bytes = source.as_bytes();
+    try fs::write_file(io::blocking(), source_bytes,
+        \\diff --git a/notes b/notes
+        \\--- a/notes
+        \\+++ b/notes
+        \\@@ -1 +1 @@
+        \\-old line that is much longer than the forty columns this pane has
+        \\+new
+        \\
+    );
+    var message = string::new(allocator);
+    defer message.deinit(allocator);
+    let policy = try default_policy(allocator);
+    defer policy.deinit(allocator);
+    let manifest = try register_test(allocator, &var message, socket_bytes, &policy, ArtifactKind::Diff, "Change",
+        source_bytes, "");
+    defer manifest.deinit(allocator);
+    let document = manifest.document.as_bytes();
+    testing::expect(file_contains(allocator, document,
+        \\```diff
+        \\diff --git
+    ));
+    let rendered = try render_artifact(allocator, &var message, &manifest, &policy, 40, 12);
+    defer rendered.deinit(allocator);
+    let ansi = rendered.ansi.as_bytes();
+    testing::expect(rendered.compacted and rendered.omitted_items == 1);
+    testing::expect(screen_contains(&rendered, "· +1 omitted"));
+    testing::expect(contains(ansi, "[38;2;126;211;154m+new"));
+    testing::expect(contains(ansi, "[38;2;242;139;130m-old line"));
+    testing::expect(contains(ansi, "[38;2;91;192;235m@@ -1 +1 @@"));
+    testing::expect(contains(ansi, "[1;38;2;244;247;252mdiff --git"));
+    testing::expect(contains(ansi, "[38;2;220;224;230m--- a/notes"));
+    testing::expect(rows_fit(&rendered, 40, true));
+}
+
+test "a timeline marks each line and a deferred preview shows none" {
+    let allocator = mem::page_allocator();
+    let root = try test_directory(allocator, "timeline");
+    defer root.deinit(allocator);
+    let root_bytes = root.as_bytes();
+    defer remove_tree(allocator, root_bytes);
+    let socket = try joined(allocator, root_bytes, "control.sock");
+    defer socket.deinit(allocator);
+    let socket_bytes = socket.as_bytes();
+    let source = try joined(allocator, root_bytes, "steps.txt");
+    defer source.deinit(allocator);
+    let source_bytes = source.as_bytes();
+    try fs::write_file(io::blocking(), source_bytes,
+        \\build
+        \\test
+        \\
+    );
+    var message = string::new(allocator);
+    defer message.deinit(allocator);
+    var policy = try default_policy(allocator);
+    defer policy.deinit(allocator);
+    let manifest = try register_test(allocator, &var message, socket_bytes, &policy, ArtifactKind::Timeline, "Steps",
+        source_bytes, "");
+    defer manifest.deinit(allocator);
+    let document = manifest.document.as_bytes();
+    testing::expect(file_contains(allocator, document,
+        \\# Steps
+        \\
+        \\- build
+        \\- test
+        \\
+    ));
+    let rendered = try render_artifact(allocator, &var message, &manifest, &policy, -1, -1);
+    defer rendered.deinit(allocator);
+    testing::expect(screen_contains(&rendered, "● build"));
+    testing::expect(screen_contains(&rendered, "● test"));
+    policy.overflow = ArtifactOverflow::Defer;
+    let deferred = try render_artifact(allocator, &var message, &manifest, &policy, -1, -1);
+    defer deferred.deinit(allocator);
+    testing::expect(deferred.compacted);
+    testing::expect(screen_contains(&deferred, "Preview generation is deferred by policy."));
+    testing::expect(screen_contains(&deferred, "Source: 11 bytes"));
+    testing::expect(!screen_contains(&deferred, "● build"));
+}
+
+test "a table is drawn in a box" {
+    let allocator = mem::page_allocator();
+    let root = try test_directory(allocator, "table-box");
+    defer root.deinit(allocator);
+    let root_bytes = root.as_bytes();
+    defer remove_tree(allocator, root_bytes);
+    let socket = try joined(allocator, root_bytes, "control.sock");
+    defer socket.deinit(allocator);
+    let socket_bytes = socket.as_bytes();
+    let source = try joined(allocator, root_bytes, "visits.csv");
+    defer source.deinit(allocator);
+    let source_bytes = source.as_bytes();
+    try fs::write_file(io::blocking(), source_bytes,
+        \\user, visits
+        \\"alice", 3
+        \\
+        \\bob,12
+    );
+    var message = string::new(allocator);
+    defer message.deinit(allocator);
+    let policy = try default_policy(allocator);
+    defer policy.deinit(allocator);
+    let manifest = try register_test(allocator, &var message, socket_bytes, &policy, ArtifactKind::Table, "Visits",
+        source_bytes, "");
+    defer manifest.deinit(allocator);
+    let stored_source = manifest.source.as_bytes();
+    testing::expect(ends_with(stored_source, "/source.csv"));
+    let rendered = try render_artifact(allocator, &var message, &manifest, &policy, 21, 8);
+    defer rendered.deinit(allocator);
+    var screen = string::new(allocator);
+    defer screen.deinit(allocator);
+    for 3..8 |index| {
+        if rendered.plain_lines.at(index) |line| {
+            let bytes = line.as_bytes();
+            try append_line(allocator, &var screen, bytes, "", "");
+        }
+    }
+    let drawn = screen.as_bytes();
+    testing::expect(mem::equal_bytes(drawn,
+        \\┌─────────┬─────────┐
+        \\│user     │visits   │
+        \\├─────────┼─────────┤
+        \\│alice    │3        │
+        \\│bob      │12       │
+        \\
+    ));
+    testing::expect(!rendered.compacted);
+}
+
+test "an image is one Kitty picture under its heading" {
+    let allocator = mem::page_allocator();
+    let root = try test_directory(allocator, "image");
+    defer root.deinit(allocator);
+    let root_bytes = root.as_bytes();
+    defer remove_tree(allocator, root_bytes);
+    let socket = try joined(allocator, root_bytes, "control.sock");
+    defer socket.deinit(allocator);
+    let socket_bytes = socket.as_bytes();
+    let source = try joined(allocator, root_bytes, "chart.png");
+    defer source.deinit(allocator);
+    let source_bytes = source.as_bytes();
+    let png = try test_png(allocator);
+    defer png.deinit(allocator);
+    let png_bytes = png.as_bytes();
+    var width: i64 = 0;
+    var height: i64 = 0;
+    testing::expect(png_size(png_bytes, &var width, &var height));
+    testing::expect(width == 8 and height == 4);
+    testing::expect(!png_size(png_bytes[0..23], &var width, &var height));
+    testing::expect(!png_size("not a picture, whatever its name says", &var width, &var height));
+    try fs::write_file(io::blocking(), source_bytes, png_bytes);
+    var message = string::new(allocator);
+    defer message.deinit(allocator);
+    let policy = try default_policy(allocator);
+    defer policy.deinit(allocator);
+    let manifest = try register_test(allocator, &var message, socket_bytes, &policy, ArtifactKind::Image, "Chart",
+        source_bytes, "");
+    defer manifest.deinit(allocator);
+    let document = manifest.document.as_bytes();
+    let stored_source = manifest.source.as_bytes();
+    testing::expect(file_contains(allocator, document,
+        \\# Chart
+        \\
+        \\![Chart](image.png)
+        \\
+    ));
+    testing::expect(ends_with(stored_source, "/versions/v001/image.png"));
+    let rendered = try render_artifact(allocator, &var message, &manifest, &policy, 40, 12);
+    defer rendered.deinit(allocator);
+    let ansi = rendered.ansi.as_bytes();
+    testing::expect(rendered.plain_lines.len() == 12);
+    testing::expect(contains(ansi, "_Ga=T,f=100,q=2,C=1,c=40,r=10,m=0;iVBORw0KGgoAAAANSUhEUgAAAAgAAAAECAYAAAAAAAAA"));
+    testing::expect(cast<i64>(ansi[mem::len(ansi) - 1]) == 92);
+    let text = try joined(allocator, root_bytes, "fake.png");
+    defer text.deinit(allocator);
+    let text_bytes = text.as_bytes();
+    try fs::write_file(io::blocking(), text_bytes, "not a picture, whatever its name says");
+    var refused = false;
+    if register_test(allocator, &var message, socket_bytes, &policy, ArtifactKind::Image, "Fake", text_bytes,
+        "") |fake| {
+        fake.deinit(allocator);
+    } else |_| {
+        refused = true;
+    }
+    let why = message.as_bytes();
+    testing::expect(refused);
+    testing::expect(contains(why, "decode PNG header"));
+}
+
+test "styled spans are cut together and merged by style" {
+    let allocator = mem::page_allocator();
+    var bold = span_style(LineStyle::Normal);
+    bold.bold = true;
+    var line = StyledLine { style: LineStyle::Normal, spans: array_of_spans(allocator) };
+    defer line.deinit(allocator);
+    try append_styled_scalar(allocator, &var line.spans, 97, span_style(LineStyle::Normal));
+    try append_styled_scalar(allocator, &var line.spans, 98, span_style(LineStyle::Normal));
+    try append_styled_scalar(allocator, &var line.spans, 99, bold);
+    try append_styled_scalar(allocator, &var line.spans, 100, bold);
+    testing::expect(line.spans.len() == 2);
+    testing::expect(spans_width(&line.spans) == 4);
+    let cut = try truncate_styled_spans(allocator, &line.spans, 4, LineStyle::Normal);
+    defer cut.deinit(allocator);
+    testing::expect(cut.len() == 2);
+    if cut.at(1) |last| {
+        let text = last.text.as_bytes();
+        testing::expect(mem::equal_bytes(text, "c…"));
+        testing::expect(last.style.bold);
+    }
+    var rendered = RenderedArtifact {
+        ansi: string::new(allocator),
+        plain_lines: array_of_lines(allocator),
+        compacted: false,
+        omitted_items: 0
+    };
+    defer rendered.deinit(allocator);
+    try push_document_styled_line(allocator, &var rendered, &line, 6);
+    let ansi = rendered.ansi.as_bytes();
+    testing::expect(contains(ansi, "[1mcd"));
+    if rendered.plain_lines.at(0) |plain| {
+        let text = plain.as_bytes();
+        testing::expect(mem::equal_bytes(text, "abcd  "));
+    }
+}
+
+test "bytes are written in base64" {
+    let allocator = mem::page_allocator();
+    var out = string::new(allocator);
+    defer out.deinit(allocator);
+    try append_base64(allocator, &var out, "");
+    try append_base64(allocator, &var out, "f");
+    try out.append_byte(allocator, 32);
+    try append_base64(allocator, &var out, "fo");
+    try out.append_byte(allocator, 32);
+    try append_base64(allocator, &var out, "foobar");
+    let bytes = out.as_bytes();
+    testing::expect(mem::equal_bytes(bytes, "Zg== Zm8= Zm9vYmFy"));
+}

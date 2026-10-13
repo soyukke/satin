@@ -1,0 +1,571 @@
+// The blocks a Markdown document is drawn as, and the builder that makes
+// them out of what a parser reads: the Rust renderer's handler of
+// `pulldown-cmark` events, with a method an event.
+import std::array;
+import std::fmt;
+import std::mem;
+import std::string;
+
+enum MarkdownBlockKind {
+    Text,
+    Code,
+    Table,
+    Image,
+    Rule,
+}
+
+/// One block of a document. `text` is a Text block's words, a Code
+/// block's source or an Image's caption; `label` is the prefix of a Text
+/// block's first line, a Code block's language or an Image's destination.
+struct MarkdownBlock {
+    kind: MarkdownBlockKind,
+    style: LineStyle,
+    text: string::String,
+    label: string::String,
+    spans: array::Array<StyledSpan>,
+    table: Table,
+}
+
+fn (self: MarkdownBlock) deinit(allocator: Allocator) -> void {
+    self.text.deinit(allocator);
+    self.label.deinit(allocator);
+    self.spans.deinit(allocator);
+    self.table.deinit(allocator);
+    return;
+}
+
+fn new_markdown_block(allocator: Allocator, kind: MarkdownBlockKind, style: LineStyle) -> MarkdownBlock {
+    return MarkdownBlock {
+        kind: kind,
+        style: style,
+        text: string::new(allocator),
+        label: string::new(allocator),
+        spans: array::new<StyledSpan>(allocator),
+        table: new_table(allocator)
+    };
+}
+
+/// The blocks read so far and what is open: the text, code or table
+/// being filled is the last block, and the lists, items and quotes
+/// around it give the next text its prefix.
+struct MarkdownBuilder {
+    blocks: array::Array<MarkdownBlock>,
+    /// Every image's destination, in the order they were read.
+    destinations: array::Array<string::String>,
+    has_text: bool,
+    text_style: LineStyle,
+    has_code: bool,
+    has_table: bool,
+    table_in_head: bool,
+    table_cell: string::String,
+    has_image: bool,
+    image_in_table: bool,
+    image_alt: string::String,
+    image_destination: string::String,
+    /// The next number of each open list; -1 for a list of bullets.
+    lists: array::Array<i64>,
+    items: array::Array<string::String>,
+    /// The alert kind of each open quote; 0 for a plain one.
+    quotes: array::Array<i64>,
+    strong: i64,
+    emphasis: i64,
+    strikethrough: i64,
+    link: i64,
+    metadata_depth: i64,
+    html_depth: i64,
+}
+
+fn (self: MarkdownBuilder) deinit(allocator: Allocator) -> void {
+    self.blocks.deinit(allocator);
+    self.destinations.deinit(allocator);
+    self.table_cell.deinit(allocator);
+    self.image_alt.deinit(allocator);
+    self.image_destination.deinit(allocator);
+    self.lists.deinit(allocator);
+    self.items.deinit(allocator);
+    self.quotes.deinit(allocator);
+    return;
+}
+
+fn new_markdown_builder(allocator: Allocator) -> MarkdownBuilder {
+    return MarkdownBuilder {
+        blocks: array::new<MarkdownBlock>(allocator),
+        destinations: array::new<string::String>(allocator),
+        has_text: false,
+        text_style: LineStyle::Normal,
+        has_code: false,
+        has_table: false,
+        table_in_head: false,
+        table_cell: string::new(allocator),
+        has_image: false,
+        image_in_table: false,
+        image_alt: string::new(allocator),
+        image_destination: string::new(allocator),
+        lists: array::new<i64>(allocator),
+        items: array::new<string::String>(allocator),
+        quotes: array::new<i64>(allocator),
+        strong: 0,
+        emphasis: 0,
+        strikethrough: 0,
+        link: 0,
+        metadata_depth: 0,
+        html_depth: 0
+    };
+}
+
+/// Appends value to spans: to the last span when it has the style, and as
+/// a span of its own otherwise. Nothing for an empty value.
+fn append_span(
+    allocator: Allocator,
+    spans: &var array::Array<StyledSpan>,
+    value: []u8,
+    style: SpanStyle
+) -> mem::Error!void {
+    if mem::len(value) == 0 {
+        return;
+    }
+    if spans.len() > 0 {
+        if spans.at_mut(spans.len() - 1) |last| {
+            if same_span_style(last.style, style) {
+                return last.text.append_bytes(allocator, value);
+            }
+        }
+    }
+    var text = try string::from_bytes(allocator, value);
+    errdefer text.deinit(allocator);
+    try spans.append(allocator, StyledSpan { text: move text, style: style });
+    return;
+}
+
+/// Drops the first start bytes of text.
+fn drop_prefix(allocator: Allocator, text: &var string::String, start: i64) -> mem::Error!void {
+    var kept = string::new(allocator);
+    defer kept.deinit(allocator);
+    try append_tail(allocator, &var kept, text, start);
+    text.clear();
+    try text.append_string(allocator, &kept);
+    return;
+}
+
+fn append_tail(allocator: Allocator, out: &var string::String, text: &string::String, start: i64) -> mem::Error!void {
+    let bytes = text.as_bytes();
+    try out.append_bytes(allocator, bytes[start..mem::len(bytes)]);
+    return;
+}
+
+/// The bytes of white space at the start of the first span; -1 when
+/// there is no span.
+fn first_span_space(spans: &array::Array<StyledSpan>, length: &var i64) -> i64 {
+    if spans.at(0) |first| {
+        let bytes = first.text.as_bytes();
+        length = mem::len(bytes);
+        return trimmed_start(bytes);
+    }
+    return -1;
+}
+
+/// Where the last span ends without the white space after it; -1 when
+/// there is no span.
+fn last_span_end(spans: &array::Array<StyledSpan>) -> i64 {
+    if spans.at(spans.len() - 1) |last| {
+        let bytes = last.text.as_bytes();
+        return trimmed_end(bytes);
+    }
+    return -1;
+}
+
+/// Drops the white space before the first word of spans and after the
+/// last, and the spans that held nothing else.
+fn trim_spans(allocator: Allocator, spans: &var array::Array<StyledSpan>) -> mem::Error!void {
+    while spans.len() > 0 {
+        var length: i64 = 0;
+        let start = first_span_space(spans, &var length);
+        if start < length {
+            if start > 0 {
+                if spans.at_mut(0) |first| {
+                    try drop_prefix(allocator, &var first.text, start);
+                }
+            }
+            break;
+        }
+        if spans.remove(0) |dropped| {
+            dropped.deinit(allocator);
+        } else |_| {}
+    }
+    while spans.len() > 0 {
+        let end = last_span_end(spans);
+        if end > 0 {
+            if spans.at_mut(spans.len() - 1) |last| {
+                if last.text.truncate(end) {} else |_| {}
+            }
+            break;
+        }
+        if spans.pop() |dropped| {
+            dropped.deinit(allocator);
+        }
+    }
+    return;
+}
+
+/// Appends the text of every span to out.
+fn append_plain_text(
+    allocator: Allocator,
+    out: &var string::String,
+    spans: &array::Array<StyledSpan>
+) -> mem::Error!void {
+    for 0..spans.len() |index| {
+        if spans.at(index) |span| {
+            try out.append_string(allocator, &span.text);
+        }
+    }
+    return;
+}
+
+/// Appends the sign before the lines of a quote of an alert kind.
+fn append_quote_marker(allocator: Allocator, out: &var string::String, kind: i64) -> mem::Error!void {
+    if kind == 1 {
+        try out.append_bytes(allocator, "NOTE ");
+    } else if kind == 2 {
+        try out.append_bytes(allocator, "TIP ");
+    } else if kind == 3 {
+        try out.append_bytes(allocator, "IMPORTANT ");
+    } else if kind == 4 {
+        try out.append_bytes(allocator, "WARNING ");
+    } else if kind == 5 {
+        try out.append_bytes(allocator, "CAUTION ");
+    }
+    try out.append_bytes(allocator, "│ ");
+    return;
+}
+
+/// The sign before a heading of a level.
+fn heading_prefix(level: i64) -> []u8 {
+    if level <= 2 {
+        return "▌ ";
+    }
+    if level == 3 {
+        return "› ";
+    }
+    return "· ";
+}
+
+/// Starts a text block of a style. Its prefix is the open quotes' signs,
+/// the open item's marker, and extra.
+fn (self: &var MarkdownBuilder) begin_text(allocator: Allocator, style: LineStyle, extra: []u8) -> mem::Error!void {
+    try self.flush_text(allocator);
+    var block = new_markdown_block(allocator, MarkdownBlockKind::Text, style);
+    errdefer block.deinit(allocator);
+    for 0..self.quotes.len() |index| {
+        try append_quote_marker(allocator, &var block.label, self.quotes.get(index) orelse 0);
+    }
+    if self.items.at(self.items.len() - 1) |item| {
+        try block.label.append_string(allocator, item);
+    }
+    try block.label.append_bytes(allocator, extra);
+    try self.blocks.append(allocator, move block);
+    self.has_text = true;
+    self.text_style = style;
+    return;
+}
+
+/// Ends the open text block, and drops it when it says nothing.
+fn (self: &var MarkdownBuilder) flush_text(allocator: Allocator) -> mem::Error!void {
+    if !self.has_text {
+        return;
+    }
+    self.has_text = false;
+    var empty = true;
+    if self.blocks.at_mut(self.blocks.len() - 1) |block| {
+        try trim_spans(allocator, &var block.spans);
+        try append_plain_text(allocator, &var block.text, &block.spans);
+        empty = block.text.len() == 0;
+    }
+    if empty {
+        if self.blocks.pop() |dropped| {
+            dropped.deinit(allocator);
+        }
+    }
+    return;
+}
+
+/// How text is drawn inside the open emphasis, links and strikes.
+fn (self: &MarkdownBuilder) inline_style(inline_code: bool) -> SpanStyle {
+    var style = span_style(self.text_style);
+    if inline_code or self.link > 0 {
+        style.base = LineStyle::Accent;
+    }
+    style.bold = self.strong > 0;
+    style.italic = self.emphasis > 0;
+    style.underline = self.link > 0;
+    style.strikethrough = self.strikethrough > 0;
+    if inline_code {
+        style.has_background = true;
+        style.background = RgbColor { red: 38, green: 48, blue: 61 };
+    }
+    return style;
+}
+
+/// Appends value to the last block's text.
+fn (self: &var MarkdownBuilder) append_to_block(allocator: Allocator, value: []u8) -> mem::Error!void {
+    if self.blocks.at_mut(self.blocks.len() - 1) |block| {
+        try block.text.append_bytes(allocator, value);
+    }
+    return;
+}
+
+fn (self: &var MarkdownBuilder) append_text_span(
+    allocator: Allocator,
+    value: []u8,
+    inline_code: bool
+) -> mem::Error!void {
+    if !self.has_text {
+        try self.begin_text(allocator, LineStyle::Normal, "");
+    }
+    let style = self.inline_style(inline_code);
+    if self.blocks.at_mut(self.blocks.len() - 1) |block| {
+        try append_span(allocator, &var block.spans, value, style);
+    }
+    return;
+}
+
+/// Text: into the open code, caption or table cell, or the open text
+/// block, which it starts when there is none.
+fn (self: &var MarkdownBuilder) append(allocator: Allocator, value: []u8) -> mem::Error!void {
+    if self.metadata_depth > 0 or self.html_depth > 0 {
+        return;
+    }
+    if self.has_code {
+        try self.append_to_block(allocator, value);
+    } else if self.has_image {
+        try self.image_alt.append_bytes(allocator, value);
+    } else if self.has_table {
+        try self.table_cell.append_bytes(allocator, value);
+    } else {
+        try self.append_text_span(allocator, value, false);
+    }
+    return;
+}
+
+/// A code span. A table cell keeps it between angle quotes.
+fn (self: &var MarkdownBuilder) append_inline_code(allocator: Allocator, value: []u8) -> mem::Error!void {
+    if self.metadata_depth > 0 or self.html_depth > 0 {
+        return;
+    }
+    if self.has_code {
+        try self.append_to_block(allocator, value);
+    } else if self.has_image {
+        try self.image_alt.append_bytes(allocator, value);
+    } else if self.has_table {
+        try self.table_cell.append_bytes(allocator, "‹");
+        try self.table_cell.append_bytes(allocator, value);
+        try self.table_cell.append_bytes(allocator, "›");
+    } else {
+        try self.append_text_span(allocator, value, true);
+    }
+    return;
+}
+
+/// Starts a code block of a language, which is empty for an indented one.
+fn (self: &var MarkdownBuilder) begin_code(allocator: Allocator, language: []u8) -> mem::Error!void {
+    try self.flush_text(allocator);
+    var block = new_markdown_block(allocator, MarkdownBlockKind::Code, LineStyle::Normal);
+    errdefer block.deinit(allocator);
+    try block.label.append_bytes(allocator, language);
+    try self.blocks.append(allocator, move block);
+    self.has_code = true;
+    return;
+}
+
+fn (self: &var MarkdownBuilder) finish_code() -> void {
+    self.has_code = false;
+    return;
+}
+
+fn (self: &var MarkdownBuilder) begin_table(allocator: Allocator) -> mem::Error!void {
+    try self.flush_text(allocator);
+    var block = new_markdown_block(allocator, MarkdownBlockKind::Table, LineStyle::Normal);
+    errdefer block.deinit(allocator);
+    try self.blocks.append(allocator, move block);
+    self.has_table = true;
+    self.table_in_head = true;
+    return;
+}
+
+/// Starts a row under the head.
+fn (self: &var MarkdownBuilder) begin_table_row(allocator: Allocator) -> mem::Error!void {
+    self.table_in_head = false;
+    if self.blocks.at_mut(self.blocks.len() - 1) |block| {
+        var row = array::new<string::String>(allocator);
+        errdefer row.deinit(allocator);
+        try block.table.rows.append(allocator, move row);
+    }
+    return;
+}
+
+fn (self: &var MarkdownBuilder) begin_table_cell() -> void {
+    self.table_cell.clear();
+    return;
+}
+
+/// Ends a cell: its text, without the white space around it, joins the
+/// head or the last row.
+fn (self: &var MarkdownBuilder) finish_table_cell(allocator: Allocator) -> mem::Error!void {
+    var cell = string::new(allocator);
+    errdefer cell.deinit(allocator);
+    try append_trimmed(allocator, &var cell, &self.table_cell);
+    self.table_cell.clear();
+    let in_head = self.table_in_head;
+    if self.blocks.at_mut(self.blocks.len() - 1) |block| {
+        if in_head {
+            try block.table.headers.append(allocator, move cell);
+        } else if block.table.rows.at_mut(block.table.rows.len() - 1) |row| {
+            try row.append(allocator, move cell);
+        } else {
+            cell.deinit(allocator);
+        }
+    } else {
+        cell.deinit(allocator);
+    }
+    return;
+}
+
+fn (self: &var MarkdownBuilder) finish_table() -> void {
+    self.has_table = false;
+    self.table_in_head = false;
+    return;
+}
+
+/// Appends text to out without the white space around it.
+fn append_trimmed(allocator: Allocator, out: &var string::String, text: &string::String) -> mem::Error!void {
+    let bytes = text.as_bytes();
+    let start = trimmed_start(bytes);
+    if start < mem::len(bytes) {
+        let rest = bytes[start..mem::len(bytes)];
+        try out.append_bytes(allocator, rest[0..trimmed_end(rest)]);
+    }
+    return;
+}
+
+/// Starts an image, which outside a table ends the text before it. An
+/// image inside the caption of another takes its place.
+fn (self: &var MarkdownBuilder) begin_image(allocator: Allocator, destination: []u8) -> mem::Error!void {
+    try append_text(allocator, &var self.destinations, destination);
+    self.image_in_table = self.has_table;
+    if !self.has_table {
+        try self.flush_text(allocator);
+    }
+    self.image_alt.clear();
+    self.image_destination.clear();
+    try self.image_destination.append_bytes(allocator, destination);
+    self.has_image = true;
+    return;
+}
+
+/// Ends an image: a block of its own, or a note of its caption in the
+/// cell of the table it is in.
+fn (self: &var MarkdownBuilder) finish_image(allocator: Allocator) -> mem::Error!void {
+    if !self.has_image {
+        return;
+    }
+    self.has_image = false;
+    if self.image_in_table {
+        if self.has_table {
+            try self.table_cell.append_bytes(allocator, "[Image: ");
+            try append_trimmed(allocator, &var self.table_cell, &self.image_alt);
+            try self.table_cell.append_byte(allocator, 93);
+        }
+        return;
+    }
+    var block = new_markdown_block(allocator, MarkdownBlockKind::Image, LineStyle::Normal);
+    errdefer block.deinit(allocator);
+    try append_trimmed(allocator, &var block.text, &self.image_alt);
+    try block.label.append_string(allocator, &self.image_destination);
+    try self.blocks.append(allocator, move block);
+    return;
+}
+
+/// Opens a list that counts from start; -1 for a list of bullets.
+fn (self: &var MarkdownBuilder) begin_list(allocator: Allocator, start: i64) -> mem::Error!void {
+    try self.lists.append(allocator, start);
+    return;
+}
+
+fn (self: &var MarkdownBuilder) finish_list(allocator: Allocator) -> mem::Error!void {
+    try self.flush_text(allocator);
+    if self.lists.pop() |_| {}
+    return;
+}
+
+/// Opens an item of the innermost list: two spaces a list around it, and
+/// its bullet or number.
+fn (self: &var MarkdownBuilder) begin_item(allocator: Allocator) -> mem::Error!void {
+    try self.flush_text(allocator);
+    var marker = string::new(allocator);
+    errdefer marker.deinit(allocator);
+    try append_spaces(allocator, &var marker, (self.lists.len() - 1) * 2);
+    let last = self.lists.len() - 1;
+    let number = self.lists.get(last) orelse -1;
+    if number < 0 {
+        try marker.append_bytes(allocator, "• ");
+    } else {
+        try fmt::append_i64(allocator, &var marker, number);
+        try marker.append_bytes(allocator, ". ");
+        if self.lists.set(last, number + 1) {} else |_| {}
+    }
+    try self.items.append(allocator, move marker);
+    return;
+}
+
+fn (self: &var MarkdownBuilder) finish_item(allocator: Allocator) -> mem::Error!void {
+    try self.flush_text(allocator);
+    if self.items.pop() |dropped| {
+        dropped.deinit(allocator);
+    }
+    return;
+}
+
+/// A task's box, after the prefix of the open text block. An item whose
+/// text has not started loses it, as it does in the Rust renderer.
+fn (self: &var MarkdownBuilder) task_marker(allocator: Allocator, checked: bool) -> mem::Error!void {
+    if !self.has_text {
+        return;
+    }
+    if self.blocks.at_mut(self.blocks.len() - 1) |block| {
+        if checked {
+            try block.label.append_bytes(allocator, "☑ ");
+        } else {
+            try block.label.append_bytes(allocator, "☐ ");
+        }
+    }
+    return;
+}
+
+fn (self: &var MarkdownBuilder) begin_quote(allocator: Allocator, kind: i64) -> mem::Error!void {
+    try self.quotes.append(allocator, kind);
+    return;
+}
+
+fn (self: &var MarkdownBuilder) finish_quote(allocator: Allocator) -> mem::Error!void {
+    try self.flush_text(allocator);
+    if self.quotes.pop() |_| {}
+    return;
+}
+
+fn (self: &var MarkdownBuilder) push_rule(allocator: Allocator) -> mem::Error!void {
+    try self.flush_text(allocator);
+    var block = new_markdown_block(allocator, MarkdownBlockKind::Rule, LineStyle::Muted);
+    errdefer block.deinit(allocator);
+    try self.blocks.append(allocator, move block);
+    return;
+}
+
+/// An HTML block, which is drawn as a note that it was left out.
+fn (self: &var MarkdownBuilder) push_html(allocator: Allocator) -> mem::Error!void {
+    try self.flush_text(allocator);
+    var block = new_markdown_block(allocator, MarkdownBlockKind::Text, LineStyle::Muted);
+    errdefer block.deinit(allocator);
+    try block.text.append_bytes(allocator, "HTML block omitted");
+    try append_span(allocator, &var block.spans, "HTML block omitted", span_style(LineStyle::Muted));
+    try self.blocks.append(allocator, move block);
+    return;
+}

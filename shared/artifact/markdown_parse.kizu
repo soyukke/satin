@@ -1,0 +1,2096 @@
+// The block pass of the Markdown reader: a document's lines as a tree of
+// paragraphs, headings, quotes, lists, code, tables and the rest, read the
+// way `pulldown-cmark` reads them with tables, strikethrough, task lists,
+// footnotes, alert quotes and YAML metadata blocks turned on. A quote, a
+// list item and a footnote hold the lines under their markers, which are
+// read as a document of their own.
+import std::array;
+import std::mem;
+import std::string;
+
+enum MdKind {
+    Paragraph,
+    Heading,
+    Quote,
+    Code,
+    Html,
+    List,
+    Item,
+    Footnote,
+    Table,
+    Rule,
+    Metadata,
+}
+
+/// One block. `number` is a heading's level, a list's first number (-1
+/// for bullets), a quote's alert kind or a table's columns; `task` is 1
+/// for a paragraph after an empty task box and 2 after a checked one;
+/// `text` is the source of a paragraph, heading, code block or table, and
+/// `label` a code block's language or a footnote's name.
+struct MdNode {
+    kind: MdKind,
+    number: i64,
+    task: i64,
+    tight: bool,
+    text: string::String,
+    label: string::String,
+    children: array::Array<MdNode>,
+}
+
+fn (self: MdNode) deinit(allocator: Allocator) -> void {
+    self.text.deinit(allocator);
+    self.label.deinit(allocator);
+    self.children.deinit(allocator);
+    return;
+}
+
+fn md_new_node(allocator: Allocator, kind: MdKind) -> MdNode {
+    return MdNode {
+        kind: kind,
+        number: 0,
+        task: 0,
+        tight: true,
+        text: string::new(allocator),
+        label: string::new(allocator),
+        children: array::new<MdNode>(allocator)
+    };
+}
+
+/// What a document defines for its links: the label of each link
+/// reference definition with its destination, and the label of each
+/// footnote. Labels are kept as md_append_label folds them. reread is
+/// the bytes the block pass may still read a second time to tell
+/// whether a line continues a paragraph.
+struct MdDefinitions {
+    links: array::Array<string::String>,
+    destinations: array::Array<string::String>,
+    footnotes: array::Array<string::String>,
+    reread: i64,
+}
+
+fn (self: MdDefinitions) deinit(allocator: Allocator) -> void {
+    self.links.deinit(allocator);
+    self.destinations.deinit(allocator);
+    self.footnotes.deinit(allocator);
+    return;
+}
+
+fn md_new_definitions(allocator: Allocator) -> MdDefinitions {
+    return MdDefinitions {
+        links: array::new<string::String>(allocator),
+        destinations: array::new<string::String>(allocator),
+        footnotes: array::new<string::String>(allocator),
+        reread: 16777216
+    };
+}
+
+/// The byte that starts a line a container took without its marker,
+/// because the line continues the paragraph the container ends in: a
+/// unit separator, which no document has reason to hold. Such a line is
+/// paragraph text whatever it looks like.
+fn md_lazy_mark() -> i64 {
+    return 31;
+}
+
+/// The byte at index; -1 outside src.
+fn md_at(src: []u8, index: i64) -> i64 {
+    if index < 0 or index >= mem::len(src) {
+        return -1;
+    }
+    return cast<i64>(src[index]);
+}
+
+/// Where the line that starts at pos ends: its line feed, or the end.
+fn md_line_end(src: []u8, pos: i64) -> i64 {
+    var index = pos;
+    while index < mem::len(src) and src[index] != cast<u8>(10) {
+        index = index + 1;
+    }
+    return index;
+}
+
+/// A space, a tab, a vertical tab or a form feed.
+fn md_is_space(byte: i64) -> bool {
+    return byte == 32 or byte == 9 or byte == 11 or byte == 12;
+}
+
+fn md_is_ascii_space(byte: i64) -> bool {
+    return byte == 32 or byte >= 9 and byte <= 13;
+}
+
+fn md_is_ascii_punctuation(byte: i64) -> bool {
+    return byte >= 33 and byte <= 47 or byte >= 58 and byte <= 64 or byte >= 91 and byte <= 96
+        or byte >= 123 and byte <= 126;
+}
+
+fn md_is_alpha(byte: i64) -> bool {
+    return byte >= 65 and byte <= 90 or byte >= 97 and byte <= 122;
+}
+
+fn md_is_digit(byte: i64) -> bool {
+    return byte >= 48 and byte <= 57;
+}
+
+fn md_is_alphanumeric(byte: i64) -> bool {
+    return md_is_alpha(byte) or md_is_digit(byte);
+}
+
+fn md_is_blank(src: []u8, start: i64, end: i64) -> bool {
+    for start..end |index| {
+        if !md_is_space(cast<i64>(src[index])) {
+            return false;
+        }
+    }
+    return true;
+}
+
+/// The first index from start that holds no space or tab.
+fn md_skip_spaces(src: []u8, start: i64, end: i64) -> i64 {
+    var index = start;
+    while index < end and (src[index] == cast<u8>(32) or src[index] == cast<u8>(9)) {
+        index = index + 1;
+    }
+    return index;
+}
+
+/// The columns of spaces and tabs a line starts with, a tab reaching the
+/// next multiple of four; content is where they end. base is the column
+/// the line starts at in its document, which is what tabs count from.
+fn md_indent(src: []u8, start: i64, end: i64, base: i64, content: &var i64) -> i64 {
+    var column = base;
+    var index = start;
+    while index < end {
+        if src[index] == cast<u8>(32) {
+            column = column + 1;
+        } else if src[index] == cast<u8>(9) {
+            column = column + 4 - column % 4;
+        } else {
+            break;
+        }
+        index = index + 1;
+    }
+    content = index;
+    return column - base;
+}
+
+/// Where a line continues after columns of its indentation. A tab that
+/// reaches past them is skipped whole.
+fn md_skip_columns(src: []u8, start: i64, end: i64, base: i64, columns: i64) -> i64 {
+    var column = base;
+    var index = start;
+    while index < end and column < base + columns {
+        if src[index] == cast<u8>(32) {
+            column = column + 1;
+        } else if src[index] == cast<u8>(9) {
+            column = column + 4 - column % 4;
+        } else {
+            break;
+        }
+        index = index + 1;
+    }
+    return index;
+}
+
+/// Appends a line to out without columns of its indentation; what a tab
+/// reaches past them stays as spaces.
+fn md_append_stripped(
+    allocator: Allocator,
+    out: &var string::String,
+    src: []u8,
+    start: i64,
+    end: i64,
+    base: i64,
+    columns: i64
+) -> mem::Error!void {
+    var column = base;
+    var index = start;
+    while index < end and column < base + columns {
+        if src[index] == cast<u8>(32) {
+            column = column + 1;
+        } else if src[index] == cast<u8>(9) {
+            column = column + 4 - column % 4;
+        } else {
+            break;
+        }
+        index = index + 1;
+    }
+    try append_spaces(allocator, out, column - base - columns);
+    try out.append_bytes(allocator, src[index..end]);
+    return;
+}
+
+/// A thematic break: three or more of one of `*`, `-` and `_`, with
+/// nothing but spaces and tabs between them.
+fn md_is_rule(src: []u8, start: i64, end: i64) -> bool {
+    let mark = md_at(src, start);
+    if start >= end or mark != 42 and mark != 45 and mark != 95 {
+        return false;
+    }
+    var count: i64 = 0;
+    for start..end |index| {
+        let byte = cast<i64>(src[index]);
+        if byte == mark {
+            count = count + 1;
+        } else if byte != 32 and byte != 9 {
+            return false;
+        }
+    }
+    return count >= 3;
+}
+
+/// The level of the ATX heading a line is: one to six `#` and then white
+/// space or the end. 0 for any other line.
+fn md_atx_level(src: []u8, start: i64, end: i64) -> i64 {
+    var level: i64 = 0;
+    while start + level < end and src[start + level] == cast<u8>(35) {
+        level = level + 1;
+    }
+    if level < 1 or level > 6 {
+        return 0;
+    }
+    if start + level < end and !md_is_ascii_space(cast<i64>(src[start + level])) {
+        return 0;
+    }
+    return level;
+}
+
+/// Finds the words of an ATX heading of a level: without the white space
+/// before them, and without the `#` that close the line when a space
+/// comes before those.
+fn md_atx_content(src: []u8, start: i64, end: i64, level: i64, first: &var i64, last: &var i64) -> void {
+    var from = start + level;
+    while from < end and md_is_space(cast<i64>(src[from])) {
+        from = from + 1;
+    }
+    var limit = end;
+    while limit > from and src[limit - 1] == cast<u8>(32) {
+        limit = limit - 1;
+    }
+    var closer = limit;
+    while closer > from and src[closer - 1] == cast<u8>(35) {
+        closer = closer - 1;
+    }
+    if closer == from {
+        limit = from;
+    } else {
+        var spaces: i64 = 0;
+        while closer - spaces > from and src[closer - spaces - 1] == cast<u8>(32) {
+            spaces = spaces + 1;
+        }
+        if spaces > 0 {
+            limit = closer - spaces;
+        }
+    }
+    first = from;
+    last = limit;
+    return;
+}
+
+/// The length of the code fence a line opens with, and its character in
+/// mark: three or more backticks or tildes. A backtick fence has no
+/// backtick after it. 0 for any other line.
+fn md_fence(src: []u8, start: i64, end: i64, mark: &var i64) -> i64 {
+    let byte = md_at(src, start);
+    if start >= end or byte != 96 and byte != 126 {
+        return 0;
+    }
+    var count: i64 = 0;
+    while start + count < end and cast<i64>(src[start + count]) == byte {
+        count = count + 1;
+    }
+    if count < 3 {
+        return 0;
+    }
+    if byte == 96 {
+        for start + count..end |index| {
+            if src[index] == cast<u8>(96) {
+                return 0;
+            }
+        }
+    }
+    mark = byte;
+    return count;
+}
+
+/// Whether a line closes a fence of count marks: as many or more, and
+/// only spaces after them.
+fn md_closes_fence(src: []u8, start: i64, end: i64, mark: i64, count: i64) -> bool {
+    var index = start;
+    while index < end and cast<i64>(src[index]) == mark {
+        index = index + 1;
+    }
+    if index - start < count {
+        return false;
+    }
+    while index < end and src[index] == cast<u8>(32) {
+        index = index + 1;
+    }
+    return index == end;
+}
+
+/// The level of the heading a line underlines: 1 for `=` and 2 for `-`,
+/// with only white space after them. 0 for any other line.
+fn md_setext_level(src: []u8, start: i64, end: i64) -> i64 {
+    let mark = md_at(src, start);
+    if start >= end or mark != 61 and mark != 45 {
+        return 0;
+    }
+    var index = start;
+    while index < end and cast<i64>(src[index]) == mark {
+        index = index + 1;
+    }
+    if !md_is_blank(src, index, end) {
+        return 0;
+    }
+    if mark == 61 {
+        return 1;
+    }
+    return 2;
+}
+
+/// The bytes of the list marker a line starts with: a bullet, or up to
+/// nine digits and `.` or `)`, before a space or the end. first is the
+/// number of an ordered item and -1 for a bullet, and mark what tells one
+/// list from the next. 0 for a line that starts no item. With rules set,
+/// a line that is a thematic break starts none.
+fn md_list_marker(src: []u8, start: i64, end: i64, rules: bool, first: &var i64, mark: &var i64) -> i64 {
+    let byte = md_at(src, start);
+    if start >= end {
+        return 0;
+    }
+    if byte == 45 or byte == 43 or byte == 42 {
+        if rules and md_is_rule(src, start, end) {
+            return 0;
+        }
+        let next = md_at(src, start + 1);
+        if start + 1 == end or next == 32 or next == 9 {
+            first = -1;
+            mark = byte;
+            return 1;
+        }
+        return 0;
+    }
+    var index = start;
+    var value: i64 = 0;
+    while index < end and index - start < 9 and md_is_digit(cast<i64>(src[index])) {
+        value = value * 10 + cast<i64>(src[index]) - 48;
+        index = index + 1;
+    }
+    let delimiter = md_at(src, index);
+    if index == start or index >= end or delimiter != 46 and delimiter != 41 {
+        return 0;
+    }
+    let next = md_at(src, index + 1);
+    if index + 1 == end or next == 32 or next == 9 {
+        first = value;
+        mark = delimiter;
+        return index + 1 - start;
+    }
+    return 0;
+}
+
+/// A task box at the start of an item: 1 for `[ ]` and 2 for `[x]`,
+/// before white space; after is where it ends. 0 when there is none.
+fn md_task_marker(src: []u8, start: i64, end: i64, after: &var i64) -> i64 {
+    var index = start;
+    while index < end and index - start < 3 and src[index] == cast<u8>(32) {
+        index = index + 1;
+    }
+    if md_at(src, index) != 91 or index + 2 >= end {
+        return 0;
+    }
+    let inside = cast<i64>(src[index + 1]);
+    var marker: i64 = 0;
+    if md_is_space(inside) {
+        marker = 1;
+    } else if inside == 120 or inside == 88 {
+        marker = 2;
+    }
+    if marker == 0 or src[index + 2] != cast<u8>(93) {
+        return 0;
+    }
+    if index + 3 < end and !md_is_ascii_space(cast<i64>(src[index + 3])) {
+        return 0;
+    }
+    after = index + 3;
+    return marker;
+}
+
+/// Scans a link label from start, which is after its `[`: close is where
+/// its `]` is. False for a label that holds a `[`, nothing but white
+/// space, or no end before limit.
+fn md_scan_label(src: []u8, start: i64, limit: i64, close: &var i64) -> bool {
+    var index = start;
+    var only_space = true;
+    var scalars: i64 = 0;
+    while true {
+        if scalars >= 1000 or index >= limit {
+            return false;
+        }
+        let byte = cast<i64>(src[index]);
+        if byte == 91 {
+            return false;
+        }
+        if byte == 93 {
+            break;
+        }
+        if byte == 92 and index + 1 < limit and md_is_ascii_punctuation(cast<i64>(src[index + 1])) {
+            index = index + 2;
+            scalars = scalars + 2;
+            only_space = false;
+            continue;
+        }
+        if !md_is_ascii_space(byte) {
+            only_space = false;
+        }
+        if byte & 192 != 128 {
+            scalars = scalars + 1;
+        }
+        index = index + 1;
+    }
+    close = index;
+    return !only_space;
+}
+
+/// Appends a label to out: each run of white space one space, with none
+/// at either end. With fold set its ASCII letters are lowered, which is
+/// how labels are compared.
+fn md_append_label(
+    allocator: Allocator,
+    out: &var string::String,
+    src: []u8,
+    start: i64,
+    end: i64,
+    fold: bool
+) -> mem::Error!void {
+    var pending = false;
+    var written = false;
+    for start..end |index| {
+        if md_is_ascii_space(cast<i64>(src[index])) {
+            pending = written;
+            continue;
+        }
+        if pending {
+            try out.append_byte(allocator, 32);
+            pending = false;
+        }
+        if fold {
+            try out.append_byte(allocator, lowered(src[index]));
+        } else {
+            try out.append_byte(allocator, src[index]);
+        }
+        written = true;
+    }
+    return;
+}
+
+/// The index of label among labels; -1 when it is not one of them.
+fn md_find_label(labels: &array::Array<string::String>, label: []u8) -> i64 {
+    for 0..labels.len() |index| {
+        if labels.at(index) |held| {
+            let bytes = held.as_bytes();
+            if mem::equal_bytes(bytes, label) {
+                return index;
+            }
+        }
+    }
+    return -1;
+}
+
+/// A footnote definition's start, `[^name]:`. name_start and name_end
+/// bound the name, and the answer is where the text after the colon
+/// begins; -1 for any other line.
+fn md_footnote_definition(src: []u8, start: i64, end: i64, name_start: &var i64, name_end: &var i64) -> i64 {
+    if md_at(src, start) != 91 or md_at(src, start + 1) != 94 or start + 2 >= end {
+        return -1;
+    }
+    var close: i64 = 0;
+    if !md_scan_label(src, start + 2, end, &var close) {
+        return -1;
+    }
+    if close + 1 >= end or src[close + 1] != cast<u8>(58) {
+        return -1;
+    }
+    name_start = start + 2;
+    name_end = close;
+    var body = close + 2;
+    while body < end and md_is_space(cast<i64>(src[body])) {
+        body = body + 1;
+    }
+    return body;
+}
+
+/// The columns a table's delimiter row gives: cells of hyphens and
+/// colons between pipes, at least one pipe among them. 0 for any other
+/// line. start is the start of the line.
+fn md_table_columns(src: []u8, start: i64, end: i64, base: i64) -> i64 {
+    var index: i64 = 0;
+    if md_indent(src, start, end, base, &var index) > 3 or index >= end {
+        return 0;
+    }
+    var columns: i64 = 0;
+    var at_start = true;
+    var found_pipe = false;
+    var found_hyphen = false;
+    var hyphen_in_column = false;
+    if src[index] == cast<u8>(124) {
+        index = index + 1;
+        found_pipe = true;
+    }
+    while index < end {
+        let byte = cast<i64>(src[index]);
+        if byte == 58 {
+            at_start = false;
+        } else if byte == 45 {
+            at_start = false;
+            found_hyphen = true;
+            hyphen_in_column = true;
+        } else if byte == 124 {
+            at_start = true;
+            found_pipe = true;
+            columns = columns + 1;
+            if !hyphen_in_column {
+                return 0;
+            }
+            hyphen_in_column = false;
+        } else if byte != 32 {
+            return 0;
+        }
+        index = index + 1;
+    }
+    if !at_start {
+        columns = columns + 1;
+    }
+    if !found_pipe or !found_hyphen {
+        return 0;
+    }
+    return columns;
+}
+
+/// The cells a line would have as a table's head: one more than its
+/// pipes, less the pipes at its ends. A pipe after a backslash is none.
+fn md_header_columns(src: []u8, start: i64, end: i64) -> i64 {
+    var pipes: i64 = 0;
+    var last: i64 = start;
+    for start..end |index| {
+        if src[index] == cast<u8>(124) and (index == start or src[index - 1] != cast<u8>(92)) {
+            pipes = pipes + 1;
+            last = index;
+        }
+    }
+    if pipes == 0 {
+        return 0;
+    }
+    var first = start;
+    while first < end and md_is_space(cast<i64>(src[first])) {
+        first = first + 1;
+    }
+    if md_at(src, first) == 124 {
+        pipes = pipes - 1;
+    }
+    if md_is_blank(src, last + 1, end) {
+        return pipes;
+    }
+    return pipes + 1;
+}
+
+/// Whether the line at start, which has pipes, is a table's head: the
+/// line after it is a delimiter row of as many columns. The columns, or
+/// 0.
+fn md_table_start(src: []u8, start: i64, end: i64, base: i64) -> i64 {
+    if end + 1 >= mem::len(src) {
+        return 0;
+    }
+    let columns = md_header_columns(src, start, end);
+    if columns == 0 {
+        return 0;
+    }
+    let next_end = md_line_end(src, end + 1);
+    if md_table_columns(src, end + 1, next_end, base) != columns {
+        return 0;
+    }
+    return columns;
+}
+
+/// Whether name, in any case, is one of the tags that start an HTML
+/// block whatever follows them.
+fn md_is_block_tag(name: []u8) -> bool {
+    return equal_lowered(name, "address") or equal_lowered(name, "article") or equal_lowered(name, "aside")
+        or equal_lowered(name, "base") or equal_lowered(name, "basefont") or equal_lowered(name, "blockquote")
+        or equal_lowered(name, "body") or equal_lowered(name, "caption") or equal_lowered(name, "center")
+        or equal_lowered(name, "col") or equal_lowered(name, "colgroup") or equal_lowered(name, "dd")
+        or equal_lowered(name, "details") or equal_lowered(name, "dialog") or equal_lowered(name, "dir")
+        or equal_lowered(name, "div") or equal_lowered(name, "dl") or equal_lowered(name, "dt")
+        or equal_lowered(name, "fieldset") or equal_lowered(name, "figcaption") or equal_lowered(name, "figure")
+        or equal_lowered(name, "footer") or equal_lowered(name, "form") or equal_lowered(name, "frame")
+        or equal_lowered(name, "frameset") or equal_lowered(name, "h1") or equal_lowered(name, "h2")
+        or equal_lowered(name, "h3") or equal_lowered(name, "h4") or equal_lowered(name, "h5")
+        or equal_lowered(name, "h6") or equal_lowered(name, "head") or equal_lowered(name, "header")
+        or equal_lowered(name, "hr") or equal_lowered(name, "html") or equal_lowered(name, "iframe")
+        or equal_lowered(name, "legend") or equal_lowered(name, "li") or equal_lowered(name, "link")
+        or equal_lowered(name, "main") or equal_lowered(name, "menu") or equal_lowered(name, "menuitem")
+        or equal_lowered(name, "nav") or equal_lowered(name, "noframes") or equal_lowered(name, "ol")
+        or equal_lowered(name, "optgroup") or equal_lowered(name, "option") or equal_lowered(name, "p")
+        or equal_lowered(name, "param") or equal_lowered(name, "search") or equal_lowered(name, "section")
+        or equal_lowered(name, "summary") or equal_lowered(name, "table") or equal_lowered(name, "tbody")
+        or equal_lowered(name, "td") or equal_lowered(name, "tfoot") or equal_lowered(name, "th")
+        or equal_lowered(name, "thead") or equal_lowered(name, "title") or equal_lowered(name, "tr")
+        or equal_lowered(name, "track") or equal_lowered(name, "ul");
+}
+
+/// Whether the bytes from start are tag in any case, before white space,
+/// a `>` or the end of the line.
+fn md_starts_tag(src: []u8, start: i64, end: i64, tag: []u8) -> bool {
+    let length = mem::len(tag);
+    if start + length > end or !equal_lowered(src[start..start + length], tag) {
+        return false;
+    }
+    if start + length == end {
+        return true;
+    }
+    let next = cast<i64>(src[start + length]);
+    return md_is_ascii_space(next) or next == 62;
+}
+
+/// Scans an attribute of an HTML tag from start: a name, and a value
+/// after an equals sign. Where it ends, or -1. Line feeds count as white
+/// space when lines is set.
+fn md_scan_attribute(src: []u8, start: i64, limit: i64, lines: bool) -> i64 {
+    let first = md_at(src, start);
+    if start >= limit or !md_is_alpha(first) and first != 95 and first != 58 {
+        return -1;
+    }
+    var index = start + 1;
+    while index < limit {
+        let byte = cast<i64>(src[index]);
+        if !md_is_alphanumeric(byte) and byte != 95 and byte != 46 and byte != 58 and byte != 45 {
+            break;
+        }
+        index = index + 1;
+    }
+    let name_end = index;
+    index = md_skip_tag_space(src, index, limit, lines);
+    if index < 0 or md_at(src, index) != 61 or index >= limit {
+        return name_end;
+    }
+    index = md_skip_tag_space(src, index + 1, limit, lines);
+    if index < 0 or index >= limit {
+        return -1;
+    }
+    let quote = cast<i64>(src[index]);
+    if quote == 34 or quote == 39 {
+        index = index + 1;
+        while index < limit {
+            let byte = cast<i64>(src[index]);
+            if byte == quote {
+                return index + 1;
+            }
+            if byte == 10 and !lines {
+                return -1;
+            }
+            index = index + 1;
+        }
+        return -1;
+    }
+    if quote == 32 or quote == 61 or quote == 62 or quote == 60 or quote == 96 or quote == 10 {
+        return -1;
+    }
+    while index < limit {
+        let byte = cast<i64>(src[index]);
+        if byte == 39 or byte == 34 or byte == 32 or byte == 61 or byte == 62 or byte == 60 or byte == 96
+            or byte == 10 {
+            break;
+        }
+        index = index + 1;
+    }
+    return index;
+}
+
+/// The first index from start that holds no white space; -1 when a line
+/// feed is in the way and lines is not set.
+fn md_skip_tag_space(src: []u8, start: i64, limit: i64, lines: bool) -> i64 {
+    var index = start;
+    while index < limit and md_is_ascii_space(cast<i64>(src[index])) {
+        if src[index] == cast<u8>(10) and !lines {
+            return -1;
+        }
+        index = index + 1;
+    }
+    return index;
+}
+
+/// Scans an HTML open or closing tag from its `<` at start. Where it
+/// ends, or -1 when the bytes are no whole tag. A tag may run over line
+/// feeds when lines is set.
+fn md_scan_html_tag(src: []u8, start: i64, limit: i64, lines: bool) -> i64 {
+    var index = start + 1;
+    var closing = false;
+    if md_at(src, index) == 47 and index < limit {
+        closing = true;
+        index = index + 1;
+    }
+    let name = index;
+    while index < limit and md_is_alpha(cast<i64>(src[index])) {
+        index = index + 1;
+    }
+    if index == name {
+        return -1;
+    }
+    while index < limit and (md_is_alphanumeric(cast<i64>(src[index])) or src[index] == cast<u8>(45)) {
+        index = index + 1;
+    }
+    if !closing {
+        while true {
+            let before = index;
+            while index < limit and md_is_space(cast<i64>(src[index])) {
+                index = index + 1;
+            }
+            while index < limit and src[index] == cast<u8>(10) {
+                if !lines {
+                    return -1;
+                }
+                index = index + 1;
+                while index < limit and md_is_space(cast<i64>(src[index])) {
+                    index = index + 1;
+                }
+            }
+            if index >= limit {
+                return -1;
+            }
+            if src[index] == cast<u8>(47) or src[index] == cast<u8>(62) {
+                break;
+            }
+            if before == index {
+                return -1;
+            }
+            index = md_scan_attribute(src, index, limit, lines);
+            if index < 0 {
+                return -1;
+            }
+        }
+    }
+    while index < limit and md_is_space(cast<i64>(src[index])) {
+        index = index + 1;
+    }
+    if !closing and md_at(src, index) == 47 and index < limit {
+        index = index + 1;
+    }
+    if index >= limit or src[index] != cast<u8>(62) {
+        return -1;
+    }
+    return index + 1;
+}
+
+/// The kind of HTML block a line starts: 1 to 4 for `<pre`, `<style`,
+/// `<script` and `<textarea`, 5 for a comment, 6 for a processing
+/// instruction, 7 for CDATA, 8 for a declaration, 9 for one of the block
+/// tags, and 10 for any other tag alone on its line. 0 for no HTML.
+fn md_html_start(src: []u8, start: i64, end: i64) -> i64 {
+    if start >= end or src[start] != cast<u8>(60) {
+        return 0;
+    }
+    let after = start + 1;
+    if md_starts_tag(src, after, end, "pre") {
+        return 1;
+    }
+    if md_starts_tag(src, after, end, "style") {
+        return 2;
+    }
+    if md_starts_tag(src, after, end, "script") {
+        return 3;
+    }
+    if md_starts_tag(src, after, end, "textarea") {
+        return 4;
+    }
+    let rest = src[after..end];
+    if mem::starts_with(rest, "!--") {
+        return 5;
+    }
+    if mem::starts_with(rest, "?") {
+        return 6;
+    }
+    if mem::starts_with(rest, "![CDATA[") {
+        return 7;
+    }
+    if md_at(src, after) == 33 and after + 1 < end and md_is_alpha(cast<i64>(src[after + 1])) {
+        return 8;
+    }
+    var name = after;
+    if md_at(src, name) == 47 and name < end {
+        name = name + 1;
+    }
+    var name_end = name;
+    while name_end < end and md_is_alphanumeric(cast<i64>(src[name_end])) {
+        name_end = name_end + 1;
+    }
+    if md_is_block_tag(src[name..name_end]) {
+        let next = md_at(src, name_end);
+        if name_end == end or next == 32 or next == 9 or next == 62
+            or next == 47 and md_at(src, name_end + 1) == 62 and name_end + 1 < end {
+            return 9;
+        }
+    }
+    let tag_end = md_scan_html_tag(src, start, end, false);
+    if tag_end > 0 and md_is_blank(src, tag_end, end) {
+        return 10;
+    }
+    return 0;
+}
+
+/// What ends an HTML block of a kind below 9 on the line that holds it.
+fn md_html_end(kind: i64) -> []u8 {
+    if kind == 1 {
+        return "</pre>";
+    }
+    if kind == 2 {
+        return "</style>";
+    }
+    if kind == 3 {
+        return "</script>";
+    }
+    if kind == 4 {
+        return "</textarea>";
+    }
+    if kind == 5 {
+        return "-->";
+    }
+    if kind == 6 {
+        return "?>";
+    }
+    if kind == 7 {
+        return "]]>";
+    }
+    return ">";
+}
+
+fn md_contains(text: []u8, needle: []u8) -> bool {
+    for 0..mem::len(text) - mem::len(needle) + 1 |index| {
+        if mem::equal_bytes(text[index..index + mem::len(needle)], needle) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/// Whether a line, whose words start at start, ends the paragraph before
+/// it. Outside the paragraph's container, which is what lazy says, any
+/// list item does; inside it only a bullet or a `1.` with words after it.
+/// With tables set, so does the head of a table.
+fn md_interrupts(src: []u8, start: i64, end: i64, base: i64, lazy: bool, tables: bool) -> bool {
+    if start >= end {
+        return true;
+    }
+    var mark: i64 = 0;
+    if md_is_rule(src, start, end) or md_atx_level(src, start, end) > 0 or md_fence(src, start, end, &var mark) > 0
+        or src[start] == cast<u8>(62) {
+        return true;
+    }
+    var first: i64 = 0;
+    let width = md_list_marker(src, start, end, false, &var first, &var mark);
+    if width > 0 and (lazy or (first < 0 or first == 1) and !md_is_blank(src, start + width, end)) {
+        return true;
+    }
+    let html = md_html_start(src, start, end);
+    if html > 0 and html < 10 {
+        return true;
+    }
+    var name_start: i64 = 0;
+    var name_end: i64 = 0;
+    if md_footnote_definition(src, start, end, &var name_start, &var name_end) >= 0 {
+        return true;
+    }
+    return tables and src[start] == cast<u8>(124) and md_table_start(src, start, end, base) > 0;
+}
+
+/// Whether the line at start may continue a paragraph inside a container
+/// it has no marker of.
+fn md_is_lazy(src: []u8, start: i64, end: i64, base: i64) -> bool {
+    var content: i64 = 0;
+    if md_indent(src, start, end, base, &var content) >= 4 {
+        return true;
+    }
+    return !md_interrupts(src, content, end, base, true, false);
+}
+
+/// Appends a lazy line to a container's lines, after the mark of one.
+fn md_append_lazy(allocator: Allocator, out: &var string::String, src: []u8, start: i64, end: i64) -> mem::Error!void {
+    try out.append_byte(allocator, cast<u8>(md_lazy_mark()));
+    try out.append_bytes(allocator, src[start..end]);
+    try out.append_byte(allocator, 10);
+    return;
+}
+
+/// What the lines a container has taken end in: 1 inside a paragraph,
+/// which a line without the container's marker may continue; 2 after an
+/// alert's name or a link reference definition, which such a line may
+/// follow as if they were a paragraph; 3 inside a code fence or an HTML
+/// block that nothing has closed; 0 anything else. The lines are
+/// read as the document they will be; past the bytes that may be read
+/// twice the answer is 0.
+fn md_ends_in_paragraph(
+    allocator: Allocator,
+    defs: &var MdDefinitions,
+    inner: &string::String,
+    base: i64,
+    task: i64
+) -> mem::Error!i64 {
+    let bytes = inner.as_bytes();
+    if defs.reread < mem::len(bytes) {
+        return 0;
+    }
+    defs.reread = defs.reread - mem::len(bytes);
+    var nodes = array::new<MdNode>(allocator);
+    defer nodes.deinit(allocator);
+    var open: i64 = 0;
+    let _ = try md_parse_blocks(allocator, defs, bytes, base, task, &var nodes, &var open);
+    return open;
+}
+
+/// The alert kind a quote's first line names, `[!NOTE]` and its like in
+/// any case with nothing after it: 1 note, 2 tip, 3 important, 4 warning,
+/// 5 caution. 0 for any other line.
+fn md_alert_kind(src: []u8, start: i64, end: i64) -> i64 {
+    if md_at(src, start) != 91 or md_at(src, start + 1) != 33 or start + 2 >= end {
+        return 0;
+    }
+    var close = start + 2;
+    while close < end and src[close] != cast<u8>(93) {
+        close = close + 1;
+    }
+    if close >= end or !md_is_blank(src, close + 1, end) {
+        return 0;
+    }
+    let name = src[start + 2..close];
+    if equal_lowered(name, "note") {
+        return 1;
+    }
+    if equal_lowered(name, "tip") {
+        return 2;
+    }
+    if equal_lowered(name, "important") {
+        return 3;
+    }
+    if equal_lowered(name, "warning") {
+        return 4;
+    }
+    if equal_lowered(name, "caution") {
+        return 5;
+    }
+    return 0;
+}
+
+/// Finds the `>` a quote's line starts with. Its first line has it
+/// after fewer than four columns; a later line after at most three, of
+/// which a tab may give some and keep the rest. rest is where the line
+/// goes on after the marker and the one column of space it takes,
+/// padding the columns a tab there reaches past that one, and column
+/// where rest is in the document.
+fn md_quote_marker(
+    src: []u8,
+    start: i64,
+    end: i64,
+    base: i64,
+    first: bool,
+    rest: &var i64,
+    padding: &var i64,
+    column: &var i64
+) -> bool {
+    var index = start;
+    var at = base;
+    var kept: i64 = 0;
+    if first {
+        let indent = md_indent(src, start, end, base, &var index);
+        if indent >= 4 {
+            return false;
+        }
+        at = base + indent;
+    } else {
+        var taken: i64 = 0;
+        while taken < 3 and index < end {
+            if src[index] == cast<u8>(32) {
+                taken = taken + 1;
+                at = at + 1;
+            } else if src[index] == cast<u8>(9) {
+                let width = 4 - at % 4;
+                at = at + width;
+                taken = taken + width;
+                if taken > 3 {
+                    kept = taken - 3;
+                }
+            } else {
+                break;
+            }
+            index = index + 1;
+        }
+    }
+    if index >= end or src[index] != cast<u8>(62) {
+        return false;
+    }
+    index = index + 1;
+    at = at + 1;
+    padding = 0;
+    if kept > 0 {
+        // What the tab before the marker kept is the marker's space.
+        kept = 0;
+    } else if index < end and src[index] == cast<u8>(32) {
+        index = index + 1;
+        at = at + 1;
+    } else if index < end and src[index] == cast<u8>(9) {
+        let width = 4 - at % 4;
+        index = index + 1;
+        at = at + width;
+        padding = width - 1;
+    }
+    rest = index;
+    column = at;
+    return true;
+}
+
+/// Appends what a quote's line holds after its marker to out. A line
+/// whose words do not start two columns after the quote's does not have
+/// its tabs where the lines inside the quote are counted from, so the
+/// tabs among the white space and markers it starts with become the
+/// spaces they stand for.
+fn md_append_quoted(
+    allocator: Allocator,
+    out: &var string::String,
+    src: []u8,
+    rest: i64,
+    end: i64,
+    padding: i64,
+    column: i64,
+    nominal: i64
+) -> mem::Error!void {
+    try append_spaces(allocator, out, padding);
+    var index = rest;
+    var at = column;
+    if (column - padding - nominal) % 4 != 0 {
+        while index < end {
+            var first: i64 = 0;
+            var mark: i64 = 0;
+            let width = md_list_marker(src, index, end, false, &var first, &var mark);
+            if src[index] == cast<u8>(9) {
+                try append_spaces(allocator, out, 4 - at % 4);
+                at = at + 4 - at % 4;
+                index = index + 1;
+            } else if src[index] == cast<u8>(32) or src[index] == cast<u8>(62) {
+                try out.append_byte(allocator, src[index]);
+                at = at + 1;
+                index = index + 1;
+            } else if width > 0 {
+                try out.append_bytes(allocator, src[index..index + width]);
+                at = at + width;
+                index = index + width;
+            } else {
+                break;
+            }
+        }
+    }
+    try out.append_bytes(allocator, src[index..end]);
+    try out.append_byte(allocator, 10);
+    return;
+}
+
+/// Reads the quote that starts on the line at pos: the lines after a `>`
+/// and the lines that lazily continue its last paragraph. Where the
+/// quote ends; open is what it ends in, as md_ends_in_paragraph tells.
+fn md_parse_quote(
+    allocator: Allocator,
+    defs: &var MdDefinitions,
+    src: []u8,
+    pos: i64,
+    base: i64,
+    out: &var array::Array<MdNode>,
+    open: &var i64
+) -> mem::Error!i64 {
+    var inner = string::new(allocator);
+    defer inner.deinit(allocator);
+    var cursor = pos;
+    var kind: i64 = 0;
+    var first = true;
+    var after_lazy = false;
+    while cursor < mem::len(src) {
+        let end = md_line_end(src, cursor);
+        var rest: i64 = 0;
+        var padding: i64 = 0;
+        var column: i64 = 0;
+        if cursor < end and md_at(src, cursor) == md_lazy_mark() {
+            try inner.append_bytes(allocator, src[cursor..end]);
+            try inner.append_byte(allocator, 10);
+            after_lazy = false;
+        } else if md_quote_marker(src, cursor, end, base, first, &var rest, &var padding, &var column) {
+            if first {
+                kind = md_alert_kind(src, rest, end);
+            }
+            if !first or kind == 0 {
+                // The line after an alert's name goes on as if the name
+                // were a paragraph: unless it would end one, it starts no
+                // container and is no indented code.
+                var content: i64 = 0;
+                let indent = padding + md_indent(src, rest, end, column, &var content);
+                if kind > 0 and inner.len() == 0 and content < end
+                    and (indent >= 4 or !md_interrupts(src, content, end, column, false, true)) {
+                    try inner.append_byte(allocator, cast<u8>(md_lazy_mark()));
+                }
+                try md_append_quoted(allocator, &var inner, src, rest, end, padding, column, base + 2);
+            }
+            after_lazy = false;
+        } else if md_is_blank(src, cursor, end) or !md_is_lazy(src, cursor, end, base) {
+            break;
+        } else {
+            // An alert's name is as good as a paragraph to the line after.
+            var state: i64 = 1;
+            if kind > 0 and inner.len() == 0 {
+                state = 2;
+            } else if !after_lazy {
+                state = try md_ends_in_paragraph(allocator, defs, &inner, base + 2, 0);
+            }
+            if state != 1 and state != 2 {
+                break;
+            }
+            try md_append_lazy(allocator, &var inner, src, cursor, end);
+            after_lazy = state == 1;
+        }
+        first = false;
+        cursor = end + 1;
+    }
+    var node = md_new_node(allocator, MdKind::Quote);
+    errdefer node.deinit(allocator);
+    node.number = kind;
+    let bytes = inner.as_bytes();
+    var inner_open: i64 = 0;
+    let _ = try md_parse_blocks(allocator, defs, bytes, base + 2, 0, &var node.children, &var inner_open);
+    if kind > 0 and mem::len(bytes) == 0 {
+        inner_open = 2;
+    }
+    try out.append(allocator, move node);
+    // A blank line ends a quote, and so whatever is open inside it.
+    open = 0;
+    if cursor >= mem::len(src) and inner_open != 3 {
+        open = inner_open;
+    }
+    return cursor;
+}
+
+/// Whether some line of inner from the byte from on starts with a
+/// backtick, a tilde or a `<`, without which no code fence and no HTML
+/// block starts there.
+fn md_may_hold_block(inner: &string::String, from: i64) -> bool {
+    let bytes = inner.as_bytes();
+    var at_start = true;
+    for from..mem::len(bytes) |index| {
+        let byte = cast<i64>(bytes[index]);
+        if at_start and (byte == 96 or byte == 126 or byte == 60) {
+            return true;
+        }
+        if byte == 10 {
+            at_start = true;
+        } else if byte != 32 and byte != 9 and byte != 62 and byte != md_lazy_mark() {
+            at_start = false;
+        }
+    }
+    return false;
+}
+
+/// Takes the lines under a marker from from into inner: those indented
+/// columns or more, without that indentation, the blank lines between
+/// them, and the lines that lazily continue a paragraph. Where the first
+/// line it leaves starts; blank is where the blank lines before that one
+/// start, or -1. With empty set, the lines are those of an item that
+/// started with nothing, which a blank line ends. task is the task box
+/// the lines in inner start after.
+fn md_collect_indented(
+    allocator: Allocator,
+    defs: &var MdDefinitions,
+    inner: &var string::String,
+    src: []u8,
+    from: i64,
+    base: i64,
+    columns: i64,
+    task: i64,
+    empty: bool,
+    blank: &var i64
+) -> mem::Error!i64 {
+    var cursor = from;
+    var pending: i64 = 0;
+    var pending_start: i64 = -1;
+    var taken = false;
+    var after_lazy = false;
+    // The bytes of inner that were looked at for a code fence or an HTML
+    // block, and whether the lines end inside one that is still open: a
+    // blank line there is one of its lines.
+    var looked: i64 = 0;
+    var inside = false;
+    while cursor < mem::len(src) {
+        let end = md_line_end(src, cursor);
+        var content: i64 = 0;
+        let indent = md_indent(src, cursor, end, base, &var content);
+        if content >= end and pending == 0 and !inside and md_may_hold_block(inner, looked) {
+            let state = try md_ends_in_paragraph(allocator, defs, inner, base + columns, task);
+            inside = state == 3;
+        }
+        if content >= end and pending == 0 {
+            looked = inner.len();
+        }
+        if content >= end and inside {
+            try inner.append_byte(allocator, 10);
+            cursor = end + 1;
+            continue;
+        }
+        inside = false;
+        if content >= end {
+            if pending == 0 {
+                pending_start = cursor;
+            }
+            pending = pending + 1;
+            after_lazy = false;
+            cursor = end + 1;
+            if empty and !taken {
+                break;
+            }
+            continue;
+        }
+        if md_at(src, cursor) == md_lazy_mark() and pending == 0 {
+            try inner.append_bytes(allocator, src[cursor..end]);
+            try inner.append_byte(allocator, 10);
+            after_lazy = false;
+        } else if indent >= columns {
+            for 0..pending |_| {
+                try inner.append_byte(allocator, 10);
+            }
+            pending = 0;
+            try md_append_stripped(allocator, inner, src, cursor, end, base, columns);
+            try inner.append_byte(allocator, 10);
+            after_lazy = false;
+        } else if pending > 0 or !md_is_lazy(src, cursor, end, base) {
+            break;
+        } else {
+            var state: i64 = 1;
+            if !after_lazy {
+                state = try md_ends_in_paragraph(allocator, defs, inner, base + columns, task);
+            }
+            if state != 1 and state != 2 {
+                break;
+            }
+            try md_append_lazy(allocator, inner, src, cursor, end);
+            after_lazy = state == 1;
+        }
+        taken = true;
+        cursor = end + 1;
+    }
+    while cursor < mem::len(src) {
+        let end = md_line_end(src, cursor);
+        if !md_is_blank(src, cursor, end) {
+            break;
+        }
+        if pending == 0 {
+            pending_start = cursor;
+        }
+        pending = pending + 1;
+        cursor = end + 1;
+    }
+    if pending > 0 {
+        blank = pending_start;
+    } else {
+        blank = -1;
+    }
+    return cursor;
+}
+
+/// Reads the list item whose marker ends at marker_end, in a line that
+/// starts at line_start; marker_columns are the columns up to there.
+/// next is where the first line after the item starts, and blank where
+/// the blank lines before that one start, or -1; open is whether the
+/// item ends inside a paragraph. Whether a blank line lies between two
+/// of the item's blocks.
+fn md_parse_item(
+    allocator: Allocator,
+    defs: &var MdDefinitions,
+    src: []u8,
+    line_start: i64,
+    marker_end: i64,
+    base: i64,
+    marker_columns: i64,
+    next: &var i64,
+    blank: &var i64,
+    open: &var i64,
+    items: &var array::Array<MdNode>
+) -> mem::Error!bool {
+    let end = md_line_end(src, line_start);
+    var inner = string::new(allocator);
+    defer inner.deinit(allocator);
+    var columns = marker_columns + 1;
+    var task: i64 = 0;
+    var empty = md_is_blank(src, marker_end, end);
+    if !empty {
+        var content: i64 = 0;
+        var extra = md_indent(src, marker_end, end, base + marker_columns, &var content) - 1;
+        if extra >= 4 {
+            extra = 0;
+        }
+        columns = columns + extra;
+        var body = md_skip_columns(src, marker_end, end, base + marker_columns, 1 + extra);
+        if body > marker_end and src[body - 1] == cast<u8>(9) {
+            // What the tab after the marker reaches past the item's
+            // column is the line's.
+            var reached: i64 = 0;
+            let taken = md_indent(src, marker_end, body, base + marker_columns, &var reached);
+            try append_spaces(allocator, &var inner, taken - 1 - extra);
+        }
+        var after: i64 = 0;
+        let marker = md_task_marker(src, body, end, &var after);
+        if marker > 0 and md_is_blank(src, after, end) {
+            // A task box and nothing else starts the item with nothing.
+            inner.clear();
+            body = end;
+            empty = true;
+        } else if marker > 0 {
+            inner.clear();
+            task = marker;
+            body = md_skip_spaces(src, after, end);
+        }
+        try inner.append_bytes(allocator, src[body..end]);
+    }
+    try inner.append_byte(allocator, 10);
+    next = try md_collect_indented(allocator, defs, &var inner, src, end + 1, base, columns, task, empty, blank);
+    var node = md_new_node(allocator, MdKind::Item);
+    errdefer node.deinit(allocator);
+    let bytes = inner.as_bytes();
+    let loose = try md_parse_blocks(allocator, defs, bytes, base + columns, task, &var node.children, open);
+    try items.append(allocator, move node);
+    return loose;
+}
+
+/// Reads the list that starts on the line at pos: its items, as long as
+/// their markers are of one kind. Where the list ends, which is before
+/// the blank lines after its last item; open is whether it ends inside
+/// a paragraph.
+fn md_parse_list(
+    allocator: Allocator,
+    defs: &var MdDefinitions,
+    src: []u8,
+    pos: i64,
+    base: i64,
+    out: &var array::Array<MdNode>,
+    open: &var i64
+) -> mem::Error!i64 {
+    var list = md_new_node(allocator, MdKind::List);
+    errdefer list.deinit(allocator);
+    var cursor = pos;
+    var resume = pos;
+    var list_mark: i64 = 0;
+    var blank_between = false;
+    var first_item = true;
+    while cursor < mem::len(src) {
+        let end = md_line_end(src, cursor);
+        var content: i64 = 0;
+        let indent = md_indent(src, cursor, end, base, &var content);
+        var first: i64 = -1;
+        var mark: i64 = 0;
+        var width: i64 = 0;
+        if indent < 4 {
+            width = md_list_marker(src, content, end, true, &var first, &var mark);
+        }
+        if width == 0 or !first_item and mark != list_mark {
+            break;
+        }
+        if first_item {
+            list_mark = mark;
+            list.number = first;
+        } else if blank_between {
+            list.tight = false;
+        }
+        first_item = false;
+        var next: i64 = 0;
+        var blank: i64 = -1;
+        var item_open: i64 = 0;
+        let loose = try md_parse_item(allocator, defs, src, cursor, content + width, base, indent + width, &var next,
+            &var blank, &var item_open, &var list.children);
+        if loose {
+            list.tight = false;
+        }
+        cursor = next;
+        blank_between = blank >= 0;
+        resume = next;
+        if blank_between {
+            resume = blank;
+        }
+        open = 0;
+        if blank < 0 and next >= mem::len(src) {
+            open = item_open;
+        }
+    }
+    try out.append(allocator, move list);
+    return resume;
+}
+
+/// Reads the footnote definition on the line at pos, whose text starts
+/// at body: that text and the lines indented four columns under it.
+/// Where the definition ends; open is whether it ends inside a
+/// paragraph.
+fn md_parse_footnote(
+    allocator: Allocator,
+    defs: &var MdDefinitions,
+    src: []u8,
+    pos: i64,
+    base: i64,
+    body: i64,
+    name_start: i64,
+    name_end: i64,
+    out: &var array::Array<MdNode>,
+    open: &var i64
+) -> mem::Error!i64 {
+    let end = md_line_end(src, pos);
+    var node = md_new_node(allocator, MdKind::Footnote);
+    errdefer node.deinit(allocator);
+    try md_append_label(allocator, &var node.label, src, name_start, name_end, false);
+    try md_define_footnote(allocator, defs, src, name_start, name_end);
+    var inner = string::new(allocator);
+    defer inner.deinit(allocator);
+    try inner.append_bytes(allocator, src[body..end]);
+    try inner.append_byte(allocator, 10);
+    var blank: i64 = -1;
+    let next = try md_collect_indented(allocator, defs, &var inner, src, end + 1, base, 4, 0, false, &var blank);
+    let bytes = inner.as_bytes();
+    var inner_open: i64 = 0;
+    let _ = try md_parse_blocks(allocator, defs, bytes, base + 4, 0, &var node.children, &var inner_open);
+    try out.append(allocator, move node);
+    open = 0;
+    if blank < 0 and next >= mem::len(src) {
+        open = inner_open;
+    }
+    if blank >= 0 {
+        return blank;
+    }
+    return next;
+}
+
+fn md_define_footnote(
+    allocator: Allocator,
+    defs: &var MdDefinitions,
+    src: []u8,
+    start: i64,
+    end: i64
+) -> mem::Error!void {
+    var folded = string::new(allocator);
+    defer folded.deinit(allocator);
+    try md_append_label(allocator, &var folded, src, start, end, true);
+    let bytes = folded.as_bytes();
+    if md_find_label(&defs.footnotes, bytes) < 0 {
+        try append_text(allocator, &var defs.footnotes, bytes);
+    }
+    return;
+}
+
+/// Reads the indented code block that starts on the line at pos: the
+/// lines indented four columns, and the blank lines between them. Where
+/// it ends.
+fn md_parse_indented_code(
+    allocator: Allocator,
+    src: []u8,
+    pos: i64,
+    base: i64,
+    out: &var array::Array<MdNode>
+) -> mem::Error!i64 {
+    var node = md_new_node(allocator, MdKind::Code);
+    errdefer node.deinit(allocator);
+    var cursor = pos;
+    var blank: i64 = -1;
+    while cursor < mem::len(src) {
+        let end = md_line_end(src, cursor);
+        var content: i64 = 0;
+        let indent = md_indent(src, cursor, end, base, &var content);
+        if content >= end {
+            if blank < 0 {
+                blank = cursor;
+            }
+            cursor = end + 1;
+            continue;
+        }
+        if indent < 4 {
+            break;
+        }
+        while blank >= 0 and blank < cursor {
+            let blank_end = md_line_end(src, blank);
+            try md_append_stripped(allocator, &var node.text, src, blank, blank_end, base, 4);
+            try node.text.append_byte(allocator, 10);
+            blank = blank_end + 1;
+        }
+        blank = -1;
+        try md_append_stripped(allocator, &var node.text, src, cursor, end, base, 4);
+        try node.text.append_byte(allocator, 10);
+        cursor = end + 1;
+    }
+    try out.append(allocator, move node);
+    if blank >= 0 {
+        return blank;
+    }
+    return cursor;
+}
+
+/// Appends the first word of a fence's info string, its backslashes and
+/// entities read, to out.
+fn md_append_language(
+    allocator: Allocator,
+    out: &var string::String,
+    src: []u8,
+    start: i64,
+    end: i64
+) -> mem::Error!void {
+    var info = string::new(allocator);
+    defer info.deinit(allocator);
+    try md_append_unescaped(allocator, &var info, src, start, end);
+    let bytes = info.as_bytes();
+    try md_append_first_word(allocator, out, bytes);
+    return;
+}
+
+/// Appends text to out from its first scalar that is no white space up
+/// to the next that is.
+fn md_append_first_word(allocator: Allocator, out: &var string::String, text: []u8) -> mem::Error!void {
+    var index = trimmed_start(text);
+    while index < mem::len(text) {
+        var scalar: i64 = 0;
+        let length = decode_scalar(text, index, &var scalar);
+        if is_white_space(scalar) {
+            break;
+        }
+        try out.append_bytes(allocator, text[index..index + length]);
+        index = index + length;
+    }
+    return;
+}
+
+/// Reads the fenced code block whose fence, of count marks, starts at
+/// content on the line at pos, indent columns in. Where it ends: after
+/// the fence that closes it, or with the lines, which leaves open 3.
+fn md_parse_fence(
+    allocator: Allocator,
+    src: []u8,
+    pos: i64,
+    base: i64,
+    content: i64,
+    indent: i64,
+    mark: i64,
+    count: i64,
+    out: &var array::Array<MdNode>,
+    open: &var i64
+) -> mem::Error!i64 {
+    let end = md_line_end(src, pos);
+    var node = md_new_node(allocator, MdKind::Code);
+    errdefer node.deinit(allocator);
+    try md_append_language(allocator, &var node.label, src, content + count, end);
+    var cursor = end + 1;
+    open = 3;
+    while cursor < mem::len(src) {
+        let line_end = md_line_end(src, cursor);
+        var line_content: i64 = 0;
+        let line_indent = md_indent(src, cursor, line_end, base, &var line_content);
+        if line_indent < 4 and md_closes_fence(src, line_content, line_end, mark, count) {
+            cursor = line_end + 1;
+            open = 0;
+            break;
+        }
+        try md_append_stripped(allocator, &var node.text, src, cursor, line_end, base, indent);
+        try node.text.append_byte(allocator, 10);
+        cursor = line_end + 1;
+    }
+    try out.append(allocator, move node);
+    return cursor;
+}
+
+/// Reads the HTML block of a kind that starts on the line at pos. Where
+/// it ends: after the line that holds its end, or before a blank line.
+/// A block that only a line may end and none does leaves open 3.
+fn md_parse_html(
+    allocator: Allocator,
+    src: []u8,
+    pos: i64,
+    kind: i64,
+    out: &var array::Array<MdNode>,
+    open: &var i64
+) -> mem::Error!i64 {
+    var cursor = pos;
+    if kind < 9 {
+        open = 3;
+    }
+    while cursor < mem::len(src) {
+        let end = md_line_end(src, cursor);
+        let line = src[cursor..end];
+        cursor = end + 1;
+        if kind < 9 and md_contains(line, md_html_end(kind)) {
+            open = 0;
+            break;
+        }
+        if kind >= 9 and cursor < mem::len(src) and md_is_blank(src, cursor, md_line_end(src, cursor)) {
+            break;
+        }
+    }
+    var node = md_new_node(allocator, MdKind::Html);
+    errdefer node.deinit(allocator);
+    try out.append(allocator, move node);
+    return cursor;
+}
+
+/// Whether a line closes a metadata block: three hyphens or three full
+/// stops, and only spaces after them.
+fn md_closes_metadata(src: []u8, start: i64, end: i64) -> bool {
+    let mark = md_at(src, start);
+    if start >= end or mark != 45 and mark != 46 {
+        return false;
+    }
+    var index = start;
+    while index < end and cast<i64>(src[index]) == mark {
+        index = index + 1;
+    }
+    if index - start != 3 {
+        return false;
+    }
+    while index < end and src[index] == cast<u8>(32) {
+        index = index + 1;
+    }
+    return index == end;
+}
+
+/// Where the YAML metadata block that starts on the line at pos ends: a
+/// line of three hyphens, a line after it that is neither blank nor the
+/// end, and a line that closes it. -1 when the line starts none.
+fn md_metadata_end(src: []u8, pos: i64) -> i64 {
+    let end = md_line_end(src, pos);
+    if end - pos < 3 or !mem::equal_bytes(src[pos..pos + 3], "---") or !md_is_blank(src, pos + 3, end) {
+        return -1;
+    }
+    var cursor = end + 1;
+    var first = true;
+    while cursor < mem::len(src) {
+        let line_end = md_line_end(src, cursor);
+        let closed = md_closes_metadata(src, cursor, line_end);
+        if first and (closed or md_is_blank(src, cursor, line_end)) {
+            return -1;
+        }
+        first = false;
+        if closed {
+            return line_end + 1;
+        }
+        cursor = line_end + 1;
+    }
+    return -1;
+}
+
+/// Scans a link destination from start: between angle brackets, or up to
+/// white space or a parenthesis that closes none of its own. first and
+/// last bound it; the answer is where the scan ends, or -1.
+fn md_scan_destination(src: []u8, start: i64, limit: i64, first: &var i64, last: &var i64) -> i64 {
+    var index = start;
+    if md_at(src, start) == 60 and start < limit {
+        index = start + 1;
+        while index < limit {
+            let byte = cast<i64>(src[index]);
+            if byte == 10 or byte == 60 {
+                return -1;
+            }
+            if byte == 62 {
+                first = start + 1;
+                last = index;
+                return index + 1;
+            }
+            if byte == 92 and index + 1 < limit and md_is_ascii_punctuation(cast<i64>(src[index + 1])) {
+                index = index + 1;
+            }
+            index = index + 1;
+        }
+        return -1;
+    }
+    var nest: i64 = 0;
+    while index < limit {
+        let byte = cast<i64>(src[index]);
+        if byte <= 32 {
+            break;
+        }
+        if byte == 40 {
+            if nest > 32 {
+                return -1;
+            }
+            nest = nest + 1;
+        } else if byte == 41 {
+            if nest == 0 {
+                break;
+            }
+            nest = nest - 1;
+        } else if byte == 92 and index + 1 < limit and md_is_ascii_punctuation(cast<i64>(src[index + 1])) {
+            index = index + 1;
+        }
+        index = index + 1;
+    }
+    if nest != 0 {
+        return -1;
+    }
+    if index > limit {
+        index = limit;
+    }
+    first = start;
+    last = index;
+    return index;
+}
+
+/// Scans a link title from its quote or parenthesis at start. Where it
+/// ends, or -1 when the bytes are no title.
+fn md_scan_title(src: []u8, start: i64, limit: i64) -> i64 {
+    let open = md_at(src, start);
+    if start >= limit or open != 34 and open != 39 and open != 40 {
+        return -1;
+    }
+    var close = open;
+    if open == 40 {
+        close = 41;
+    }
+    var index = start + 1;
+    while index < limit {
+        let byte = cast<i64>(src[index]);
+        if byte == close {
+            return index + 1;
+        }
+        if byte == open {
+            return -1;
+        }
+        if byte == 92 and index + 1 < limit and md_is_ascii_punctuation(cast<i64>(src[index + 1])) {
+            index = index + 1;
+        }
+        index = index + 1;
+    }
+    return -1;
+}
+
+/// Reads the link reference definition that starts at start, whose line
+/// ends at end: `[label]: destination "title"`, where the destination
+/// and the title may each be on a line of their own. Keeps the first of
+/// a label. Where the definition's last line ends; -1 when the bytes
+/// are no definition.
+fn md_parse_reference(
+    allocator: Allocator,
+    defs: &var MdDefinitions,
+    src: []u8,
+    start: i64,
+    end: i64
+) -> mem::Error!i64 {
+    var close: i64 = 0;
+    if md_at(src, start) != 91 or !md_scan_label(src, start + 1, end, &var close) {
+        return -1;
+    }
+    if close + 1 >= end or src[close + 1] != cast<u8>(58) {
+        return -1;
+    }
+    var index = close + 2;
+    var line_end = end;
+    if md_is_blank(src, index, end) and end + 1 < mem::len(src) {
+        index = end + 1;
+        line_end = md_line_end(src, index);
+    }
+    while index < line_end and md_is_space(cast<i64>(src[index])) {
+        index = index + 1;
+    }
+    var first: i64 = 0;
+    var last: i64 = 0;
+    let after = md_scan_destination(src, index, line_end, &var first, &var last);
+    if after < 0 or after == index {
+        return -1;
+    }
+    var last_end = line_end;
+    if md_is_blank(src, after, line_end) {
+        // A title alone on the next line belongs to the definition.
+        if line_end + 1 < mem::len(src) {
+            let next_end = md_line_end(src, line_end + 1);
+            let title = md_skip_spaces(src, line_end + 1, next_end);
+            let title_end = md_scan_title(src, title, next_end);
+            if title_end > 0 and md_is_blank(src, title_end, next_end) {
+                last_end = next_end;
+            }
+        }
+    } else {
+        if !md_is_space(cast<i64>(src[after])) {
+            return -1;
+        }
+        var title = after;
+        while title < line_end and md_is_space(cast<i64>(src[title])) {
+            title = title + 1;
+        }
+        let title_end = md_scan_title(src, title, line_end);
+        if title_end < 0 or !md_is_blank(src, title_end, line_end) {
+            return -1;
+        }
+    }
+    var label = string::new(allocator);
+    defer label.deinit(allocator);
+    try md_append_label(allocator, &var label, src, start + 1, close, true);
+    let folded = label.as_bytes();
+    if md_find_label(&defs.links, folded) >= 0 {
+        return last_end;
+    }
+    var destination = string::new(allocator);
+    defer destination.deinit(allocator);
+    try md_append_unescaped(allocator, &var destination, src, first, last);
+    let target = destination.as_bytes();
+    try append_text(allocator, &var defs.links, folded);
+    try append_text(allocator, &var defs.destinations, target);
+    return last_end;
+}
+
+/// Reads the table whose head is the line at start: that line, and the
+/// lines after the delimiter row up to a blank line or a line that
+/// starts another block. Where the table ends.
+fn md_parse_table(
+    allocator: Allocator,
+    src: []u8,
+    start: i64,
+    end: i64,
+    columns: i64,
+    out: &var array::Array<MdNode>
+) -> mem::Error!i64 {
+    var node = md_new_node(allocator, MdKind::Table);
+    errdefer node.deinit(allocator);
+    node.number = columns;
+    try node.text.append_bytes(allocator, src[start..end]);
+    var cursor = md_line_end(src, end + 1) + 1;
+    while cursor < mem::len(src) {
+        let line_end = md_line_end(src, cursor);
+        var content = cursor;
+        while content < line_end and md_is_space(cast<i64>(src[content])) {
+            content = content + 1;
+        }
+        if src[cursor] == cast<u8>(md_lazy_mark()) or md_interrupts(src, content, line_end, 0, true, false)
+            or md_row_is_empty(src, content, line_end) {
+            break;
+        }
+        try node.text.append_byte(allocator, 10);
+        try node.text.append_bytes(allocator, src[content..line_end]);
+        cursor = line_end + 1;
+    }
+    try out.append(allocator, move node);
+    return cursor;
+}
+
+/// Reads the paragraph whose words start at start: its lines up to a
+/// blank line or a line that starts another block. A line of `=` or `-`
+/// under it makes it a heading, and a delimiter row under its first line
+/// a table. task is the task box before it. Where it ends; open is
+/// whether it is a paragraph that the lines end in.
+fn md_parse_paragraph(
+    allocator: Allocator,
+    src: []u8,
+    start: i64,
+    base: i64,
+    task: i64,
+    out: &var array::Array<MdNode>,
+    open: &var i64
+) -> mem::Error!i64 {
+    let end = md_line_end(src, start);
+    let columns = md_table_start(src, start, end, base);
+    open = 0;
+    if columns > 0 {
+        return md_parse_table(allocator, src, start, end, columns, out);
+    }
+    var node = md_new_node(allocator, MdKind::Paragraph);
+    errdefer node.deinit(allocator);
+    node.task = task;
+    try node.text.append_bytes(allocator, src[start..end]);
+    var cursor = end + 1;
+    var ended = false;
+    while cursor < mem::len(src) {
+        let line_end = md_line_end(src, cursor);
+        var content: i64 = 0;
+        let indent = md_indent(src, cursor, line_end, base, &var content);
+        if content >= line_end {
+            ended = true;
+            break;
+        }
+        var from = cursor;
+        if src[cursor] == cast<u8>(md_lazy_mark()) {
+            from = cursor + 1;
+        } else if indent < 4 {
+            let level = md_setext_level(src, content, line_end);
+            if level > 0 {
+                node.kind = MdKind::Heading;
+                node.number = level;
+                cursor = line_end + 1;
+                ended = true;
+                break;
+            }
+            if md_interrupts(src, content, line_end, base, false, true) {
+                ended = true;
+                break;
+            }
+        }
+        try node.text.append_byte(allocator, 10);
+        try node.text.append_bytes(allocator, src[from..line_end]);
+        cursor = line_end + 1;
+    }
+    try out.append(allocator, move node);
+    if !ended {
+        open = 1;
+    }
+    return cursor;
+}
+
+/// Appends a block that holds nothing but its kind.
+fn md_append_leaf(allocator: Allocator, out: &var array::Array<MdNode>, kind: MdKind) -> mem::Error!void {
+    var node = md_new_node(allocator, kind);
+    errdefer node.deinit(allocator);
+    try out.append(allocator, move node);
+    return;
+}
+
+/// Appends an ATX heading of a level, whose `#` start at start.
+fn md_append_heading(
+    allocator: Allocator,
+    out: &var array::Array<MdNode>,
+    src: []u8,
+    start: i64,
+    end: i64,
+    level: i64
+) -> mem::Error!void {
+    var node = md_new_node(allocator, MdKind::Heading);
+    errdefer node.deinit(allocator);
+    node.number = level;
+    var first: i64 = 0;
+    var last: i64 = 0;
+    md_atx_content(src, start, end, level, &var first, &var last);
+    try node.text.append_bytes(allocator, src[first..last]);
+    try out.append(allocator, move node);
+    return;
+}
+
+/// Reads the blocks of src into out. base is the column the lines start
+/// at in their document, and task the task box before the first line,
+/// which then starts a paragraph whatever it holds. open is whether the
+/// lines end inside a paragraph. Whether a blank line lies between two
+/// of the blocks, which makes the list around them a loose one.
+fn md_parse_blocks(
+    allocator: Allocator,
+    defs: &var MdDefinitions,
+    src: []u8,
+    base: i64,
+    task: i64,
+    out: &var array::Array<MdNode>,
+    open: &var i64
+) -> mem::Error!bool {
+    var pos: i64 = 0;
+    var blank_before = false;
+    var seen = false;
+    var loose = false;
+    var pending_task = task;
+    var after_reference = false;
+    while pos < mem::len(src) {
+        let end = md_line_end(src, pos);
+        var content: i64 = 0;
+        let indent = md_indent(src, pos, end, base, &var content);
+        open = 0;
+        if md_is_blank(src, pos, end) {
+            blank_before = true;
+            pending_task = 0;
+            after_reference = false;
+            pos = end + 1;
+            continue;
+        }
+        if blank_before and seen {
+            loose = true;
+        }
+        blank_before = false;
+        seen = true;
+        // A line a container took lazily starts no container and is no
+        // indented code, whatever is before its words.
+        let lazy = src[pos] == cast<u8>(md_lazy_mark());
+        if lazy {
+            content = md_skip_spaces(src, pos + 1, end);
+            pending_task = 0;
+        }
+        // The line after a link reference definition goes on as if the
+        // definition were a paragraph: unless it would end one, it is
+        // another definition or the start of a paragraph.
+        let continues = after_reference
+            and (lazy or indent >= 4 or !md_interrupts(src, content, end, base, false, true));
+        after_reference = false;
+        if continues {
+            let defined = try md_parse_reference(allocator, defs, src, content, end);
+            if defined >= 0 {
+                pos = defined + 1;
+                if pos >= mem::len(src) {
+                    open = 2;
+                }
+                after_reference = true;
+            } else {
+                pos = try md_parse_paragraph(allocator, src, content, base, 0, out, open);
+            }
+            continue;
+        }
+        if pending_task > 0 {
+            pos = try md_parse_paragraph(allocator, src, content, base, pending_task, out, open);
+            pending_task = 0;
+            continue;
+        }
+        if indent >= 4 and !lazy {
+            pos = try md_parse_indented_code(allocator, src, pos, base, out);
+            continue;
+        }
+        var name_start: i64 = 0;
+        var name_end: i64 = 0;
+        var body: i64 = -1;
+        if !lazy {
+            body = md_footnote_definition(src, content, end, &var name_start, &var name_end);
+        }
+        if body >= 0 {
+            pos = try md_parse_footnote(allocator, defs, src, pos, base, body, name_start, name_end, out, open);
+            continue;
+        }
+        var first: i64 = 0;
+        var mark: i64 = 0;
+        if !lazy and md_list_marker(src, content, end, true, &var first, &var mark) > 0 {
+            pos = try md_parse_list(allocator, defs, src, pos, base, out, open);
+            continue;
+        }
+        if !lazy and indent < 4 and src[content] == cast<u8>(62) {
+            pos = try md_parse_quote(allocator, defs, src, pos, base, out, open);
+            continue;
+        }
+        if indent == 0 and !lazy {
+            let metadata_end = md_metadata_end(src, pos);
+            if metadata_end > 0 {
+                try md_append_leaf(allocator, out, MdKind::Metadata);
+                pos = metadata_end;
+                continue;
+            }
+        }
+        let html = md_html_start(src, content, end);
+        if html > 0 {
+            pos = try md_parse_html(allocator, src, pos, html, out, open);
+            continue;
+        }
+        if md_is_rule(src, content, end) {
+            try md_append_leaf(allocator, out, MdKind::Rule);
+            pos = end + 1;
+            continue;
+        }
+        let level = md_atx_level(src, content, end);
+        if level > 0 {
+            try md_append_heading(allocator, out, src, content, end, level);
+            pos = end + 1;
+            continue;
+        }
+        let count = md_fence(src, content, end, &var mark);
+        if count > 0 {
+            pos = try md_parse_fence(allocator, src, pos, base, content, indent, mark, count, out, open);
+            continue;
+        }
+        let defined = try md_parse_reference(allocator, defs, src, content, end);
+        if defined >= 0 {
+            // A definition is as good as a paragraph to the line after it.
+            pos = defined + 1;
+            if pos >= mem::len(src) {
+                open = 2;
+            }
+            after_reference = true;
+            continue;
+        }
+        pos = try md_parse_paragraph(allocator, src, content, base, 0, out, open);
+    }
+    return loose;
+}

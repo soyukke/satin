@@ -1,0 +1,1366 @@
+// The inline pass of the Markdown reader: the words of a paragraph, a
+// heading or a table cell as tokens, with code spans, links, images,
+// autolinks, footnote references, entities and breaks found from left to
+// right and emphasis matched afterwards, and the blocks of a document
+// handed to the builder in the order `pulldown-cmark` reports them.
+import std::array;
+import std::mem;
+import std::string;
+
+enum MdTokenKind {
+    Text,
+    Code,
+    SoftBreak,
+    HardBreak,
+    Delimiter,
+    Bracket,
+    ImageBracket,
+    LinkStart,
+    LinkEnd,
+    ImageStart,
+    ImageEnd,
+    Footnote,
+    Dropped,
+}
+
+/// One piece of a line. start and end bound its bytes, in the source or,
+/// with scratch set, in the text the pass wrote itself. A delimiter run
+/// keeps how many of its marks are still text, and how many spans of
+/// strong, emphasized and struck text start after it and end before it.
+struct MdToken {
+    kind: MdTokenKind,
+    start: i64,
+    end: i64,
+    scratch: bool,
+    count: i64,
+    run: i64,
+    can_open: bool,
+    can_close: bool,
+    active: bool,
+    strong_after: i64,
+    emphasis_after: i64,
+    strike_after: i64,
+    strong_before: i64,
+    emphasis_before: i64,
+    strike_before: i64,
+}
+
+fn md_token(kind: MdTokenKind, start: i64, end: i64) -> MdToken {
+    return MdToken {
+        kind: kind,
+        start: start,
+        end: end,
+        scratch: false,
+        count: 0,
+        run: 0,
+        can_open: false,
+        can_close: false,
+        active: true,
+        strong_after: 0,
+        emphasis_after: 0,
+        strike_after: 0,
+        strong_before: 0,
+        emphasis_before: 0,
+        strike_before: 0
+    };
+}
+
+/// The tokens of one run of inline text, the brackets among them that
+/// may still open a link, and the text the pass wrote: decoded entities,
+/// code spans, labels and destinations.
+struct MdInline {
+    tokens: array::Array<MdToken>,
+    brackets: array::Array<i64>,
+    scratch: string::String,
+}
+
+fn (self: MdInline) deinit(allocator: Allocator) -> void {
+    self.tokens.deinit(allocator);
+    self.brackets.deinit(allocator);
+    self.scratch.deinit(allocator);
+    return;
+}
+
+/// The token at index; a dropped one outside the tokens.
+fn md_token_at(tokens: &array::Array<MdToken>, index: i64) -> MdToken {
+    return tokens.get(index) orelse md_token(MdTokenKind::Dropped, 0, 0);
+}
+
+fn md_set_token(tokens: &var array::Array<MdToken>, index: i64, token: MdToken) -> void {
+    if tokens.set(index, token) {} else |_| {}
+    return;
+}
+
+/// ASCII punctuation, and outside ASCII whatever is no letter, digit,
+/// white space or mark: near enough to Unicode's punctuation and symbols.
+fn md_is_punctuation(scalar: i64) -> bool {
+    if scalar < 128 {
+        return md_is_ascii_punctuation(scalar);
+    }
+    return !is_alphanumeric(scalar) and !is_white_space(scalar) and !is_control(scalar) and !is_zero_width(scalar);
+}
+
+/// The code point a named entity stands for; 0 for a name this reader
+/// does not know.
+fn md_entity(name: []u8) -> i64 {
+    if mem::equal_bytes(name, "amp") {
+        return 38;
+    }
+    if mem::equal_bytes(name, "lt") {
+        return 60;
+    }
+    if mem::equal_bytes(name, "gt") {
+        return 62;
+    }
+    if mem::equal_bytes(name, "quot") {
+        return 34;
+    }
+    if mem::equal_bytes(name, "apos") {
+        return 39;
+    }
+    if mem::equal_bytes(name, "nbsp") {
+        return 160;
+    }
+    if mem::equal_bytes(name, "copy") {
+        return 169;
+    }
+    if mem::equal_bytes(name, "reg") {
+        return 174;
+    }
+    if mem::equal_bytes(name, "trade") {
+        return 8482;
+    }
+    if mem::equal_bytes(name, "mdash") {
+        return 8212;
+    }
+    if mem::equal_bytes(name, "ndash") {
+        return 8211;
+    }
+    if mem::equal_bytes(name, "hellip") {
+        return 8230;
+    }
+    if mem::equal_bytes(name, "laquo") {
+        return 171;
+    }
+    if mem::equal_bytes(name, "raquo") {
+        return 187;
+    }
+    if mem::equal_bytes(name, "lsquo") {
+        return 8216;
+    }
+    if mem::equal_bytes(name, "rsquo") {
+        return 8217;
+    }
+    if mem::equal_bytes(name, "ldquo") {
+        return 8220;
+    }
+    if mem::equal_bytes(name, "rdquo") {
+        return 8221;
+    }
+    if mem::equal_bytes(name, "bull") {
+        return 8226;
+    }
+    if mem::equal_bytes(name, "middot") {
+        return 183;
+    }
+    if mem::equal_bytes(name, "times") {
+        return 215;
+    }
+    if mem::equal_bytes(name, "divide") {
+        return 247;
+    }
+    if mem::equal_bytes(name, "larr") {
+        return 8592;
+    }
+    if mem::equal_bytes(name, "uarr") {
+        return 8593;
+    }
+    if mem::equal_bytes(name, "rarr") {
+        return 8594;
+    }
+    if mem::equal_bytes(name, "darr") {
+        return 8595;
+    }
+    if mem::equal_bytes(name, "le") {
+        return 8804;
+    }
+    if mem::equal_bytes(name, "ge") {
+        return 8805;
+    }
+    if mem::equal_bytes(name, "ne") {
+        return 8800;
+    }
+    if mem::equal_bytes(name, "deg") {
+        return 176;
+    }
+    if mem::equal_bytes(name, "plusmn") {
+        return 177;
+    }
+    if mem::equal_bytes(name, "euro") {
+        return 8364;
+    }
+    if mem::equal_bytes(name, "pound") {
+        return 163;
+    }
+    if mem::equal_bytes(name, "yen") {
+        return 165;
+    }
+    if mem::equal_bytes(name, "AMP") {
+        return 38;
+    }
+    if mem::equal_bytes(name, "LT") {
+        return 60;
+    }
+    if mem::equal_bytes(name, "GT") {
+        return 62;
+    }
+    if mem::equal_bytes(name, "QUOT") {
+        return 34;
+    }
+    if mem::equal_bytes(name, "cent") {
+        return 162;
+    }
+    if mem::equal_bytes(name, "sect") {
+        return 167;
+    }
+    if mem::equal_bytes(name, "para") {
+        return 182;
+    }
+    if mem::equal_bytes(name, "micro") {
+        return 181;
+    }
+    if mem::equal_bytes(name, "frac12") {
+        return 189;
+    }
+    if mem::equal_bytes(name, "frac14") {
+        return 188;
+    }
+    if mem::equal_bytes(name, "frac34") {
+        return 190;
+    }
+    if mem::equal_bytes(name, "harr") {
+        return 8596;
+    }
+    if mem::equal_bytes(name, "lArr") {
+        return 8656;
+    }
+    if mem::equal_bytes(name, "rArr") {
+        return 8658;
+    }
+    if mem::equal_bytes(name, "check") {
+        return 10003;
+    }
+    if mem::equal_bytes(name, "cross") {
+        return 10007;
+    }
+    if mem::equal_bytes(name, "infin") {
+        return 8734;
+    }
+    if mem::equal_bytes(name, "ensp") {
+        return 8194;
+    }
+    if mem::equal_bytes(name, "emsp") {
+        return 8195;
+    }
+    if mem::equal_bytes(name, "thinsp") {
+        return 8201;
+    }
+    if mem::equal_bytes(name, "minus") {
+        return 8722;
+    }
+    if mem::equal_bytes(name, "asymp") {
+        return 8776;
+    }
+    if mem::equal_bytes(name, "star") {
+        return 9734;
+    }
+    if mem::equal_bytes(name, "hearts") {
+        return 9829;
+    }
+    return 0;
+}
+
+/// The value of the hex digit byte; -1 for any other byte.
+fn md_hex_digit(byte: i64) -> i64 {
+    if md_is_digit(byte) {
+        return byte - 48;
+    }
+    let folded = byte | 32;
+    if folded >= 97 and folded <= 102 {
+        return folded - 87;
+    }
+    return -1;
+}
+
+/// Reads the entity that starts with the `&` at pos, `&name;`, `&#12;`
+/// or `&#x1f;`, and appends what it stands for to out. The bytes it
+/// takes; 0 when there is no entity there.
+fn md_scan_entity(
+    allocator: Allocator,
+    out: &var string::String,
+    src: []u8,
+    pos: i64,
+    limit: i64
+) -> mem::Error!i64 {
+    var index = pos + 1;
+    if md_at(src, index) == 35 and index < limit {
+        index = index + 1;
+        var value: i64 = 0;
+        var digits: i64 = 0;
+        if index < limit and cast<i64>(src[index]) | 32 == 120 {
+            index = index + 1;
+            while index < limit and digits < 6 and md_hex_digit(cast<i64>(src[index])) >= 0 {
+                value = value * 16 + md_hex_digit(cast<i64>(src[index]));
+                digits = digits + 1;
+                index = index + 1;
+            }
+        } else {
+            while index < limit and digits < 7 and md_is_digit(cast<i64>(src[index])) {
+                value = value * 10 + cast<i64>(src[index]) - 48;
+                digits = digits + 1;
+                index = index + 1;
+            }
+        }
+        if digits == 0 or index >= limit or src[index] != cast<u8>(59) {
+            return 0;
+        }
+        if value == 0 or value > 1114111 or value >= 55296 and value <= 57343 {
+            // U+FFFD.
+            value = 65533;
+        }
+        try append_scalar(allocator, out, value);
+        return index + 1 - pos;
+    }
+    while index < limit and md_is_alphanumeric(cast<i64>(src[index])) {
+        index = index + 1;
+    }
+    if index >= limit or src[index] != cast<u8>(59) {
+        return 0;
+    }
+    let scalar = md_entity(src[pos + 1..index]);
+    if scalar == 0 {
+        return 0;
+    }
+    try append_scalar(allocator, out, scalar);
+    return index + 1 - pos;
+}
+
+/// Appends src[start..end] to out with its backslash escapes and
+/// entities read.
+fn md_append_unescaped(
+    allocator: Allocator,
+    out: &var string::String,
+    src: []u8,
+    start: i64,
+    end: i64
+) -> mem::Error!void {
+    var index = start;
+    while index < end {
+        let byte = cast<i64>(src[index]);
+        if byte == 92 and index + 1 < end and md_is_ascii_punctuation(cast<i64>(src[index + 1])) {
+            try out.append_byte(allocator, src[index + 1]);
+            index = index + 2;
+            continue;
+        }
+        if byte == 38 {
+            let length = try md_scan_entity(allocator, out, src, index, end);
+            if length > 0 {
+                index = index + length;
+                continue;
+            }
+        }
+        try out.append_byte(allocator, src[index]);
+        index = index + 1;
+    }
+    return;
+}
+
+/// The scalar before pos, which is after from.
+fn md_scalar_before(src: []u8, pos: i64, from: i64) -> i64 {
+    var start = pos - 1;
+    while start > from and cast<i64>(src[start]) & 192 == 128 {
+        start = start - 1;
+    }
+    var scalar: i64 = 0;
+    let _ = decode_scalar(src, start, &var scalar);
+    return scalar;
+}
+
+/// The scalar at pos; -1 at the end.
+fn md_scalar_at(src: []u8, pos: i64) -> i64 {
+    if pos >= mem::len(src) {
+        return -1;
+    }
+    var scalar: i64 = 0;
+    let _ = decode_scalar(src, pos, &var scalar);
+    return scalar;
+}
+
+/// Whether a run of count marks may start emphasis: before something
+/// that is no white space, and at the start of its line or after white
+/// space or punctuation. Asterisks and paired tildes need less.
+fn md_can_open(mark: i64, count: i64, at_start: bool, before: i64, after: i64) -> bool {
+    if after < 0 or is_white_space(after) {
+        return false;
+    }
+    if at_start {
+        return true;
+    }
+    if mark == 42 and !md_is_punctuation(after) {
+        return true;
+    }
+    if mark == 126 and count > 1 {
+        return true;
+    }
+    return is_white_space(before) or md_is_punctuation(before);
+}
+
+/// Whether a run of count marks may end emphasis: after something that
+/// is no white space, and at the end or before white space or
+/// punctuation.
+fn md_can_close(mark: i64, count: i64, at_start: bool, before: i64, after: i64) -> bool {
+    if at_start or is_white_space(before) {
+        return false;
+    }
+    if after < 0 {
+        return true;
+    }
+    if (mark == 42 or mark == 126 and count > 1) and !md_is_punctuation(before) {
+        return true;
+    }
+    return is_white_space(after) or md_is_punctuation(after);
+}
+
+fn md_push_token(allocator: Allocator, state: &var MdInline, token: MdToken) -> mem::Error!void {
+    try state.tokens.append(allocator, token);
+    return;
+}
+
+fn md_push_text(allocator: Allocator, state: &var MdInline, start: i64, end: i64) -> mem::Error!void {
+    if end > start {
+        try state.tokens.append(allocator, md_token(MdTokenKind::Text, start, end));
+    }
+    return;
+}
+
+/// Appends a token of a kind whose bytes are what the scratch text has
+/// gained since from.
+fn md_push_scratch(allocator: Allocator, state: &var MdInline, kind: MdTokenKind, from: i64) -> mem::Error!void {
+    var token = md_token(kind, from, state.scratch.len());
+    token.scratch = true;
+    try state.tokens.append(allocator, token);
+    return;
+}
+
+/// Where the run of backticks that closes a code span opened by count
+/// of them starts, looking from from; -1 when no run is as long.
+fn md_code_close(src: []u8, from: i64, count: i64) -> i64 {
+    var index = from;
+    while index < mem::len(src) {
+        if src[index] != cast<u8>(96) {
+            index = index + 1;
+            continue;
+        }
+        var run: i64 = 0;
+        while index + run < mem::len(src) and src[index + run] == cast<u8>(96) {
+            run = run + 1;
+        }
+        if run == count {
+            return index;
+        }
+        index = index + run;
+    }
+    return -1;
+}
+
+/// Appends a code span's text to out: a line feed is a space, a table
+/// cell's `\|` a pipe, and one space at each end goes when both are
+/// there around something else.
+fn md_append_code(
+    allocator: Allocator,
+    out: &var string::String,
+    src: []u8,
+    start: i64,
+    end: i64,
+    in_table: bool
+) -> mem::Error!void {
+    var text = string::new(allocator);
+    defer text.deinit(allocator);
+    var index = start;
+    while index < end {
+        if src[index] == cast<u8>(10) {
+            try text.append_byte(allocator, 32);
+        } else if in_table and src[index] == cast<u8>(92) and md_at(src, index + 1) == 124 and index + 1 < end {
+            try text.append_byte(allocator, 124);
+            index = index + 1;
+        } else {
+            try text.append_byte(allocator, src[index]);
+        }
+        index = index + 1;
+    }
+    let bytes = text.as_bytes();
+    try md_append_unpadded(allocator, out, bytes);
+    return;
+}
+
+/// Appends a code span's text to out without one space at each end,
+/// when both are there around something else.
+fn md_append_unpadded(allocator: Allocator, out: &var string::String, text: []u8) -> mem::Error!void {
+    let length = mem::len(text);
+    var blank = true;
+    for 0..length |offset| {
+        if text[offset] != cast<u8>(32) {
+            blank = false;
+        }
+    }
+    if !blank and length >= 2 and text[0] == cast<u8>(32) and text[length - 1] == cast<u8>(32) {
+        return out.append_bytes(allocator, text[1..length - 1]);
+    }
+    return out.append_bytes(allocator, text);
+}
+
+/// Scans an autolink from start, which is after its `<`: a scheme of two
+/// to thirty-two letters, digits and `+.-`, a colon, and no white space
+/// or `<` up to the `>`; or a mail address. Where it ends, after the
+/// `>`; -1 when the bytes are none.
+fn md_scan_autolink(src: []u8, start: i64) -> i64 {
+    let length = mem::len(src);
+    var index = start;
+    if index < length and md_is_alpha(cast<i64>(src[index])) {
+        index = index + 1;
+        var colon = false;
+        while index < length {
+            let byte = cast<i64>(src[index]);
+            index = index + 1;
+            if byte == 58 {
+                colon = true;
+                break;
+            }
+            if !md_is_alphanumeric(byte) and byte != 46 and byte != 45 and byte != 43 {
+                break;
+            }
+        }
+        if colon and index - start >= 3 and index - start <= 33 {
+            while index < length {
+                let byte = cast<i64>(src[index]);
+                if byte == 62 {
+                    return index + 1;
+                }
+                if byte <= 32 or byte == 60 {
+                    break;
+                }
+                index = index + 1;
+            }
+        }
+    }
+    return md_scan_mail(src, start);
+}
+
+fn md_is_mail_name(byte: i64) -> bool {
+    return md_is_alphanumeric(byte) or byte == 46 or byte == 33 or byte >= 35 and byte <= 39 or byte == 42
+        or byte == 43 or byte == 47 or byte == 61 or byte == 63 or byte >= 94 and byte <= 96
+        or byte >= 123 and byte <= 126 or byte == 45;
+}
+
+/// Scans a mail address from start, up to the `>` after it. Where that
+/// ends; -1 when the bytes are no address.
+fn md_scan_mail(src: []u8, start: i64) -> i64 {
+    let length = mem::len(src);
+    var index = start;
+    while index < length and md_is_mail_name(cast<i64>(src[index])) {
+        index = index + 1;
+    }
+    if index == start or index >= length or src[index] != cast<u8>(64) {
+        return -1;
+    }
+    index = index + 1;
+    while true {
+        let label = index;
+        while index < length and (md_is_alphanumeric(cast<i64>(src[index])) or src[index] == cast<u8>(45)) {
+            index = index + 1;
+        }
+        if index == label or index - label > 63 or src[label] == cast<u8>(45) or src[index - 1] == cast<u8>(45) {
+            return -1;
+        }
+        if index >= length or src[index] != cast<u8>(46) {
+            break;
+        }
+        index = index + 1;
+    }
+    if index >= length or src[index] != cast<u8>(62) {
+        return -1;
+    }
+    return index + 1;
+}
+
+/// Where needle first starts in src from from; -1 when it does not.
+fn md_find(src: []u8, from: i64, needle: []u8) -> i64 {
+    var index = from;
+    while index + mem::len(needle) <= mem::len(src) {
+        if mem::equal_bytes(src[index..index + mem::len(needle)], needle) {
+            return index;
+        }
+        index = index + 1;
+    }
+    return -1;
+}
+
+/// Scans inline HTML from its `<` at pos: a tag, a comment, a processing
+/// instruction, a declaration or CDATA. Where it ends; -1 when the bytes
+/// are none of them.
+fn md_scan_inline_html(src: []u8, pos: i64) -> i64 {
+    let length = mem::len(src);
+    let next = md_at(src, pos + 1);
+    if next == 33 {
+        let third = md_at(src, pos + 2);
+        if third == 45 {
+            if md_at(src, pos + 3) != 45 {
+                return -1;
+            }
+            let close = md_find(src, pos + 2, "-->");
+            if close < 0 {
+                return -1;
+            }
+            return close + 3;
+        }
+        if third == 91 {
+            if !mem::starts_with(src[pos + 3..length], "CDATA[") {
+                return -1;
+            }
+            var index = pos + 9;
+            while index < length and src[index] != cast<u8>(93) {
+                index = index + 1;
+            }
+            let brackets = index;
+            while index < length and src[index] == cast<u8>(93) {
+                index = index + 1;
+            }
+            if index == brackets or index >= length or src[index] != cast<u8>(62) {
+                return -1;
+            }
+            return index + 1;
+        }
+        if md_is_alpha(third) {
+            let close = md_find(src, pos + 3, ">");
+            if close < 0 {
+                return -1;
+            }
+            return close + 1;
+        }
+        return -1;
+    }
+    if next == 63 {
+        let close = md_find(src, pos + 2, "?>");
+        if close < 0 {
+            return -1;
+        }
+        return close + 2;
+    }
+    return md_scan_html_tag(src, pos, length, true);
+}
+
+/// Scans the rest of an inline link from its `(` at pos: a destination,
+/// a title, and the `)`. first and last bound the destination. Where the
+/// link ends; -1 when the bytes are no such thing.
+fn md_scan_inline_link(src: []u8, pos: i64, first: &var i64, last: &var i64) -> i64 {
+    let length = mem::len(src);
+    var index = md_skip_link_space(src, pos + 1);
+    index = md_scan_destination(src, index, length, first, last);
+    if index < 0 {
+        return -1;
+    }
+    index = md_skip_link_space(src, index);
+    let title_end = md_scan_title(src, index, length);
+    if title_end > 0 {
+        index = md_skip_link_space(src, title_end);
+    }
+    if index >= length or src[index] != cast<u8>(41) {
+        return -1;
+    }
+    return index + 1;
+}
+
+/// The first index from start after white space that holds at most one
+/// line feed.
+fn md_skip_link_space(src: []u8, start: i64) -> i64 {
+    var index = start;
+    while index < mem::len(src) and md_is_space(cast<i64>(src[index])) {
+        index = index + 1;
+    }
+    if index < mem::len(src) and src[index] == cast<u8>(10) {
+        index = index + 1;
+    }
+    while index < mem::len(src) and md_is_space(cast<i64>(src[index])) {
+        index = index + 1;
+    }
+    return index;
+}
+
+/// Matches the delimiter runs among the tokens from first on: each run
+/// that may close takes the nearest run before it that may open with the
+/// same mark, and the text between them is strong for two marks and
+/// emphasized for one, or struck for tildes. What a run has left is text.
+fn md_resolve_emphasis(allocator: Allocator, state: &var MdInline, src: []u8, first: i64) -> mem::Error!void {
+    var openers = array::new<i64>(allocator);
+    defer openers.deinit(allocator);
+    // The openers below this one are closed to tildes: a run of them that
+    // found no opener of its length shuts out the runs after it too.
+    var tilde_bound: i64 = 0;
+    for first..state.tokens.len() |index| {
+        var closer = md_token_at(&state.tokens, index);
+        if closer.kind != MdTokenKind::Delimiter or !closer.active {
+            continue;
+        }
+        let mark = cast<i64>(src[closer.start]);
+        let both = closer.can_open and closer.can_close;
+        while closer.can_close and closer.count > 0 {
+            var found: i64 = -1;
+            var depth = openers.len() - 1;
+            var bound: i64 = 0;
+            if mark == 126 {
+                bound = tilde_bound;
+            }
+            while depth >= bound {
+                let candidate = md_token_at(&state.tokens, openers.get(depth) orelse -1);
+                let candidate_both = candidate.can_open and candidate.can_close;
+                if cast<i64>(src[candidate.start]) == mark and (mark != 126 or candidate.run == closer.run)
+                    and (!both and !candidate_both or (closer.run + candidate.run) % 3 != 0 or closer.run % 3 == 0) {
+                    found = depth;
+                    break;
+                }
+                depth = depth - 1;
+            }
+            if found < 0 {
+                if mark == 126 {
+                    tilde_bound = openers.len();
+                }
+                break;
+            }
+            let opener_index = openers.get(found) orelse -1;
+            if openers.truncate(allocator, found) {} else |_| {}
+            if tilde_bound > found {
+                tilde_bound = found;
+            }
+            var opener = md_token_at(&state.tokens, opener_index);
+            var used = closer.count;
+            if opener.count < used {
+                used = opener.count;
+            }
+            if mark == 126 {
+                opener.strike_after = opener.strike_after + 1;
+                closer.strike_before = closer.strike_before + 1;
+            } else {
+                opener.strong_after = opener.strong_after + used / 2;
+                closer.strong_before = closer.strong_before + used / 2;
+                opener.emphasis_after = opener.emphasis_after + used % 2;
+                closer.emphasis_before = closer.emphasis_before + used % 2;
+            }
+            opener.count = opener.count - used;
+            closer.count = closer.count - used;
+            md_set_token(&var state.tokens, opener_index, opener);
+            if opener.count > 0 {
+                try openers.append(allocator, opener_index);
+            }
+        }
+        // A run is matched once: inside a link it is done before the
+        // runs around the link are.
+        closer.active = false;
+        md_set_token(&var state.tokens, index, closer);
+        if closer.count > 0 and closer.can_open {
+            try openers.append(allocator, index);
+        }
+    }
+    return;
+}
+
+/// Makes the bracket at opener and everything up to here a link or an
+/// image to what the scratch text has gained since from.
+fn md_make_link(
+    allocator: Allocator,
+    state: &var MdInline,
+    src: []u8,
+    opener: i64,
+    image: bool,
+    from: i64
+) -> mem::Error!void {
+    try md_resolve_emphasis(allocator, state, src, opener + 1);
+    var start = md_token(MdTokenKind::LinkStart, from, state.scratch.len());
+    var end = md_token(MdTokenKind::LinkEnd, 0, 0);
+    if image {
+        start.kind = MdTokenKind::ImageStart;
+        end.kind = MdTokenKind::ImageEnd;
+    }
+    start.scratch = true;
+    md_set_token(&var state.tokens, opener, start);
+    try state.tokens.append(allocator, end);
+    if !image {
+        // A link holds no link: the brackets still open start none.
+        for 0..state.brackets.len() |index| {
+            let held = state.brackets.get(index) orelse -1;
+            var bracket = md_token_at(&state.tokens, held);
+            if bracket.kind == MdTokenKind::Bracket {
+                bracket.active = false;
+                md_set_token(&var state.tokens, held, bracket);
+            }
+        }
+    }
+    return;
+}
+
+/// Whether the label src[start..end] is one of labels once folded.
+fn md_label_index(
+    allocator: Allocator,
+    labels: &array::Array<string::String>,
+    src: []u8,
+    start: i64,
+    end: i64
+) -> mem::Error!i64 {
+    var folded = string::new(allocator);
+    defer folded.deinit(allocator);
+    try md_append_label(allocator, &var folded, src, start, end, true);
+    let bytes = folded.as_bytes();
+    return md_find_label(labels, bytes);
+}
+
+/// Appends the destination of the link definition at index to out.
+fn md_append_destination(
+    allocator: Allocator,
+    out: &var string::String,
+    defs: &MdDefinitions,
+    index: i64
+) -> mem::Error!void {
+    if defs.destinations.at(index) |destination| {
+        try out.append_string(allocator, destination);
+    }
+    return;
+}
+
+/// Handles the `]` at pos: with the bracket it closes it is an inline
+/// link or image, a reference to a link definition, or a footnote
+/// reference. Where the scan goes on; the `]` is text when that is pos.
+fn md_close_bracket(
+    allocator: Allocator,
+    state: &var MdInline,
+    defs: &MdDefinitions,
+    src: []u8,
+    pos: i64
+) -> mem::Error!i64 {
+    let length = mem::len(src);
+    let opener = state.brackets.pop() orelse -1;
+    if opener < 0 {
+        return pos;
+    }
+    let bracket = md_token_at(&state.tokens, opener);
+    if !bracket.active {
+        return pos;
+    }
+    let image = bracket.kind == MdTokenKind::ImageBracket;
+    let from = state.scratch.len();
+    if md_at(src, pos + 1) == 40 {
+        var first: i64 = 0;
+        var last: i64 = 0;
+        let after = md_scan_inline_link(src, pos + 1, &var first, &var last);
+        if after > 0 {
+            try md_append_unescaped(allocator, &var state.scratch, src, first, last);
+            try md_make_link(allocator, state, src, opener, image, from);
+            return after;
+        }
+    }
+    // The label is the one in brackets after this one, or else the text
+    // between the brackets themselves.
+    let own_start = bracket.end;
+    var label_start = own_start;
+    var label_end = pos;
+    var after = pos + 1;
+    var own = true;
+    var close: i64 = 0;
+    if md_at(src, pos + 1) == 91 and md_at(src, pos + 2) == 93 {
+        after = pos + 3;
+    } else if md_at(src, pos + 1) == 91 {
+        let footnote = md_at(src, pos + 2) == 94 and md_at(src, pos + 3) != 93
+            and md_scan_label(src, pos + 3, length, &var close);
+        if !footnote and md_scan_label(src, pos + 2, length, &var close) {
+            label_start = pos + 2;
+            label_end = close;
+            after = close + 1;
+            own = false;
+        }
+    }
+    if own and (!md_scan_label(src, own_start, pos + 1, &var close) or close != pos) {
+        return pos;
+    }
+    if own and md_at(src, own_start) == 94 and own_start + 1 < pos {
+        var name_end: i64 = 0;
+        if md_scan_label(src, own_start + 1, pos + 1, &var name_end) and name_end == pos
+            and md_line_end(src, own_start) >= pos {
+            let known = try md_label_index(allocator, &defs.footnotes, src, own_start + 1, pos);
+            if known < 0 {
+                return pos;
+            }
+            for opener..state.tokens.len() |index| {
+                var dropped = md_token_at(&state.tokens, index);
+                dropped.kind = MdTokenKind::Dropped;
+                md_set_token(&var state.tokens, index, dropped);
+            }
+            if image {
+                md_set_token(&var state.tokens, opener, md_token(MdTokenKind::Text, bracket.start, bracket.start + 1));
+            }
+            try md_append_label(allocator, &var state.scratch, src, own_start + 1, pos, false);
+            try md_push_scratch(allocator, state, MdTokenKind::Footnote, from);
+            state.brackets.clear(allocator);
+            return pos + 1;
+        }
+    }
+    let known = try md_label_index(allocator, &defs.links, src, label_start, label_end);
+    if known < 0 {
+        return pos;
+    }
+    try md_append_destination(allocator, &var state.scratch, defs, known);
+    try md_make_link(allocator, state, src, opener, image, from);
+    return after;
+}
+
+/// Reads src into the tokens of state. A table cell, which in_table
+/// says, reads `\|` as a pipe.
+fn md_scan_inlines(
+    allocator: Allocator,
+    state: &var MdInline,
+    defs: &MdDefinitions,
+    src: []u8,
+    in_table: bool
+) -> mem::Error!void {
+    let length = mem::len(src);
+    var pos: i64 = 0;
+    var text_start: i64 = 0;
+    var line_start: i64 = 0;
+    while pos < length {
+        let byte = cast<i64>(src[pos]);
+        if byte == 10 {
+            // Two spaces or a backslash before the line's end break the
+            // line there; any other end is a space.
+            var spaces: i64 = 0;
+            while pos - spaces > text_start and md_is_space(cast<i64>(src[pos - spaces - 1])) {
+                spaces = spaces + 1;
+            }
+            var backslashes: i64 = 0;
+            while pos - backslashes > 0 and src[pos - backslashes - 1] == cast<u8>(92) {
+                backslashes = backslashes + 1;
+            }
+            var kind = MdTokenKind::SoftBreak;
+            var text_end = pos - spaces;
+            if backslashes % 2 == 1 and pos > text_start {
+                kind = MdTokenKind::HardBreak;
+                text_end = pos - 1;
+            } else if spaces >= 2 {
+                kind = MdTokenKind::HardBreak;
+            }
+            try md_push_text(allocator, state, text_start, text_end);
+            try md_push_token(allocator, state, md_token(kind, pos, pos + 1));
+            pos = md_skip_spaces(src, pos + 1, length);
+            text_start = pos;
+            line_start = pos;
+        } else if byte == 92 {
+            let next = md_at(src, pos + 1);
+            if !md_is_ascii_punctuation(next) {
+                pos = pos + 1;
+            } else if in_table and next == 92 and md_at(src, pos + 2) == 124 {
+                try md_push_text(allocator, state, text_start, pos);
+                text_start = pos + 2;
+                pos = pos + 3;
+            } else {
+                try md_push_text(allocator, state, text_start, pos);
+                text_start = pos + 1;
+                pos = pos + 2;
+            }
+        } else if byte == 42 or byte == 95 or byte == 126 {
+            var count: i64 = 1;
+            while pos + count < length and cast<i64>(src[pos + count]) == byte {
+                count = count + 1;
+            }
+            let at_start = pos == line_start;
+            var before: i64 = 32;
+            if !at_start {
+                before = md_scalar_before(src, pos, line_start);
+            }
+            let after = md_scalar_at(src, pos + count);
+            let can_open = md_can_open(byte, count, at_start, before, after);
+            let can_close = md_can_close(byte, count, at_start, before, after);
+            if (can_open or can_close) and (byte != 126 or count <= 2) {
+                try md_push_text(allocator, state, text_start, pos);
+                var token = md_token(MdTokenKind::Delimiter, pos, pos + count);
+                token.count = count;
+                token.run = count;
+                token.can_open = can_open;
+                token.can_close = can_close;
+                try md_push_token(allocator, state, token);
+                text_start = pos + count;
+            }
+            pos = pos + count;
+        } else if byte == 96 {
+            var count: i64 = 1;
+            while pos + count < length and src[pos + count] == cast<u8>(96) {
+                count = count + 1;
+            }
+            let close = md_code_close(src, pos + count, count);
+            if close < 0 {
+                pos = pos + count;
+            } else {
+                try md_push_text(allocator, state, text_start, pos);
+                let from = state.scratch.len();
+                try md_append_code(allocator, &var state.scratch, src, pos + count, close, in_table);
+                try md_push_scratch(allocator, state, MdTokenKind::Code, from);
+                pos = close + count;
+                text_start = pos;
+            }
+        } else if byte == 60 {
+            var after: i64 = -1;
+            if md_at(src, pos + 1) != 92 {
+                after = md_scan_autolink(src, pos + 1);
+            }
+            if after > 0 {
+                try md_push_text(allocator, state, text_start, pos);
+                try md_push_token(allocator, state, md_token(MdTokenKind::LinkStart, 0, 0));
+                try md_push_text(allocator, state, pos + 1, after - 1);
+                try md_push_token(allocator, state, md_token(MdTokenKind::LinkEnd, 0, 0));
+                pos = after;
+                text_start = pos;
+            } else if md_at(src, pos + 1) != 92 and md_scan_inline_html(src, pos) > 0 {
+                try md_push_text(allocator, state, text_start, pos);
+                pos = md_scan_inline_html(src, pos);
+                text_start = pos;
+            } else {
+                pos = pos + 1;
+            }
+        } else if byte == 33 and md_at(src, pos + 1) == 91 {
+            try md_push_text(allocator, state, text_start, pos);
+            try state.brackets.append(allocator, state.tokens.len());
+            try md_push_token(allocator, state, md_token(MdTokenKind::ImageBracket, pos, pos + 2));
+            pos = pos + 2;
+            text_start = pos;
+        } else if byte == 91 {
+            try md_push_text(allocator, state, text_start, pos);
+            try state.brackets.append(allocator, state.tokens.len());
+            try md_push_token(allocator, state, md_token(MdTokenKind::Bracket, pos, pos + 1));
+            pos = pos + 1;
+            text_start = pos;
+        } else if byte == 93 {
+            try md_push_text(allocator, state, text_start, pos);
+            text_start = pos;
+            let after = try md_close_bracket(allocator, state, defs, src, pos);
+            if after > pos {
+                text_start = after;
+                pos = after;
+            } else {
+                pos = pos + 1;
+            }
+        } else if byte == 38 {
+            let from = state.scratch.len();
+            let taken = try md_scan_entity(allocator, &var state.scratch, src, pos, length);
+            if taken > 0 {
+                try md_push_text(allocator, state, text_start, pos);
+                try md_push_scratch(allocator, state, MdTokenKind::Text, from);
+                pos = pos + taken;
+                text_start = pos;
+            } else {
+                pos = pos + 1;
+            }
+        } else {
+            pos = pos + 1;
+        }
+    }
+    var tail = length;
+    while tail > text_start and md_is_space(cast<i64>(src[tail - 1])) {
+        tail = tail - 1;
+    }
+    try md_push_text(allocator, state, text_start, tail);
+    try md_resolve_emphasis(allocator, state, src, 0);
+    return;
+}
+
+/// Hands the tokens to the builder: text and code as they are, a break
+/// as a space or a line feed, and the spans around them as the styles
+/// they turn on and off.
+fn md_emit_tokens(
+    allocator: Allocator,
+    builder: &var MarkdownBuilder,
+    tokens: &array::Array<MdToken>,
+    src: []u8,
+    scratch: []u8
+) -> mem::Error!void {
+    for 0..tokens.len() |index| {
+        let token = md_token_at(tokens, index);
+        if token.scratch {
+            try md_emit_token(allocator, builder, token, scratch[token.start..token.end]);
+        } else {
+            try md_emit_token(allocator, builder, token, src[token.start..token.end]);
+        }
+    }
+    return;
+}
+
+/// Hands one token, whose bytes are bytes, to the builder.
+fn md_emit_token(
+    allocator: Allocator,
+    builder: &var MarkdownBuilder,
+    token: MdToken,
+    bytes: []u8
+) -> mem::Error!void {
+    if token.kind == MdTokenKind::Text or token.kind == MdTokenKind::Bracket
+        or token.kind == MdTokenKind::ImageBracket {
+        try builder.append(allocator, bytes);
+    } else if token.kind == MdTokenKind::Code {
+        try builder.append_inline_code(allocator, bytes);
+    } else if token.kind == MdTokenKind::SoftBreak {
+        try builder.append(allocator, " ");
+    } else if token.kind == MdTokenKind::HardBreak {
+        try builder.append(allocator, bytes);
+    } else if token.kind == MdTokenKind::Delimiter {
+        builder.strong = builder.strong - token.strong_before;
+        builder.emphasis = builder.emphasis - token.emphasis_before;
+        builder.strikethrough = builder.strikethrough - token.strike_before;
+        try builder.append(allocator, bytes[0..token.count]);
+        builder.strong = builder.strong + token.strong_after;
+        builder.emphasis = builder.emphasis + token.emphasis_after;
+        builder.strikethrough = builder.strikethrough + token.strike_after;
+    } else if token.kind == MdTokenKind::LinkStart {
+        builder.link = builder.link + 1;
+    } else if token.kind == MdTokenKind::LinkEnd {
+        builder.link = builder.link - 1;
+    } else if token.kind == MdTokenKind::ImageStart {
+        try builder.begin_image(allocator, bytes);
+    } else if token.kind == MdTokenKind::ImageEnd {
+        try builder.finish_image(allocator);
+    } else if token.kind == MdTokenKind::Footnote {
+        try builder.append(allocator, "[");
+        try builder.append(allocator, bytes);
+        try builder.append(allocator, "]");
+    }
+    return;
+}
+
+/// Reads src as inline text and hands it to the builder.
+fn md_emit_inlines(
+    allocator: Allocator,
+    builder: &var MarkdownBuilder,
+    defs: &MdDefinitions,
+    src: []u8,
+    in_table: bool
+) -> mem::Error!void {
+    var state = MdInline {
+        tokens: array::new<MdToken>(allocator),
+        brackets: array::new<i64>(allocator),
+        scratch: string::new(allocator)
+    };
+    defer state.deinit(allocator);
+    try md_scan_inlines(allocator, &var state, defs, src, in_table);
+    let scratch = state.scratch.as_bytes();
+    try md_emit_tokens(allocator, builder, &state.tokens, src, scratch);
+    return;
+}
+
+/// Whether a table row holds no cell: nothing but a pipe and white
+/// space.
+fn md_row_is_empty(src: []u8, start: i64, end: i64) -> bool {
+    var index = start;
+    if index < end and src[index] == cast<u8>(124) {
+        index = index + 1;
+    }
+    return md_is_blank(src, index, end);
+}
+
+/// Hands the cells of the table row text[start..end] to the builder:
+/// columns of them, the cells past that dropped and the missing ones
+/// empty. A pipe after a backslash ends no cell.
+fn md_emit_row(
+    allocator: Allocator,
+    builder: &var MarkdownBuilder,
+    defs: &MdDefinitions,
+    text: []u8,
+    start: i64,
+    end: i64,
+    columns: i64
+) -> mem::Error!void {
+    var index = start;
+    var cells: i64 = 0;
+    while true {
+        if index < end and text[index] == cast<u8>(124) {
+            index = index + 1;
+        }
+        while index < end and md_is_space(cast<i64>(text[index])) {
+            index = index + 1;
+        }
+        if index >= end {
+            break;
+        }
+        let cell = index;
+        while index < end and (text[index] != cast<u8>(124) or index > start and text[index - 1] == cast<u8>(92)) {
+            index = index + 1;
+        }
+        cells = cells + 1;
+        if cells <= columns {
+            builder.begin_table_cell();
+            try md_emit_inlines(allocator, builder, defs, text[cell..index], true);
+            try builder.finish_table_cell(allocator);
+        }
+    }
+    for cells..columns |_| {
+        builder.begin_table_cell();
+        try builder.finish_table_cell(allocator);
+    }
+    return;
+}
+
+fn md_emit_table(
+    allocator: Allocator,
+    builder: &var MarkdownBuilder,
+    defs: &MdDefinitions,
+    node: &MdNode
+) -> mem::Error!void {
+    let text = node.text.as_bytes();
+    try builder.begin_table(allocator);
+    var cursor: i64 = 0;
+    while cursor < mem::len(text) {
+        let end = md_line_end(text, cursor);
+        if cursor > 0 {
+            try builder.begin_table_row(allocator);
+        }
+        try md_emit_row(allocator, builder, defs, text, cursor, end, node.number);
+        cursor = end + 1;
+    }
+    builder.finish_table();
+    return;
+}
+
+/// Hands a block and the blocks inside it to the builder. tight is set
+/// for the blocks of an item of a tight list, whose paragraphs are text
+/// without a start or an end.
+fn md_emit_node(
+    allocator: Allocator,
+    builder: &var MarkdownBuilder,
+    defs: &MdDefinitions,
+    node: &MdNode,
+    tight: bool
+) -> mem::Error!void {
+    let text = node.text.as_bytes();
+    if node.kind == MdKind::Paragraph {
+        if !tight {
+            try builder.begin_text(allocator, LineStyle::Normal, "");
+        }
+        if node.task > 0 {
+            try builder.task_marker(allocator, node.task == 2);
+        }
+        try md_emit_inlines(allocator, builder, defs, text, false);
+        if !tight {
+            try builder.flush_text(allocator);
+        }
+    } else if node.kind == MdKind::Heading {
+        try builder.begin_text(allocator, LineStyle::Heading, heading_prefix(node.number));
+        if node.task > 0 {
+            try builder.task_marker(allocator, node.task == 2);
+        }
+        try md_emit_inlines(allocator, builder, defs, text, false);
+        try builder.flush_text(allocator);
+    } else if node.kind == MdKind::Quote {
+        try builder.begin_quote(allocator, node.number);
+        try md_emit_nodes(allocator, builder, defs, &node.children, false);
+        try builder.finish_quote(allocator);
+    } else if node.kind == MdKind::Code {
+        let language = node.label.as_bytes();
+        try builder.begin_code(allocator, language);
+        try builder.append(allocator, text);
+        builder.finish_code();
+    } else if node.kind == MdKind::Html {
+        try builder.push_html(allocator);
+    } else if node.kind == MdKind::List {
+        try builder.begin_list(allocator, node.number);
+        for 0..node.children.len() |index| {
+            if node.children.at(index) |item| {
+                try builder.begin_item(allocator);
+                try md_emit_nodes(allocator, builder, defs, &item.children, node.tight);
+                try builder.finish_item(allocator);
+            }
+        }
+        try builder.finish_list(allocator);
+    } else if node.kind == MdKind::Footnote {
+        var prefix = try string::from_bytes(allocator, "[");
+        defer prefix.deinit(allocator);
+        try prefix.append_string(allocator, &node.label);
+        try prefix.append_bytes(allocator, "] ");
+        try md_begin_footnote(allocator, builder, &prefix);
+        try md_emit_nodes(allocator, builder, defs, &node.children, false);
+        try builder.flush_text(allocator);
+    } else if node.kind == MdKind::Table {
+        try md_emit_table(allocator, builder, defs, node);
+    } else if node.kind == MdKind::Rule {
+        try builder.push_rule(allocator);
+    } else {
+        // A metadata block: nothing of it is drawn.
+        try builder.flush_text(allocator);
+    }
+    return;
+}
+
+fn md_begin_footnote(
+    allocator: Allocator,
+    builder: &var MarkdownBuilder,
+    prefix: &string::String
+) -> mem::Error!void {
+    let bytes = prefix.as_bytes();
+    try builder.begin_text(allocator, LineStyle::Muted, bytes);
+    return;
+}
+
+fn md_emit_nodes(
+    allocator: Allocator,
+    builder: &var MarkdownBuilder,
+    defs: &MdDefinitions,
+    nodes: &array::Array<MdNode>,
+    tight: bool
+) -> mem::Error!void {
+    for 0..nodes.len() |index| {
+        if nodes.at(index) |node| {
+            try md_emit_node(allocator, builder, defs, node, tight);
+        }
+    }
+    return;
+}
+
+/// Appends content to out with every line ending a line feed.
+fn md_append_lines(allocator: Allocator, out: &var string::String, content: []u8) -> mem::Error!void {
+    for 0..mem::len(content) |index| {
+        if content[index] == cast<u8>(13) {
+            if md_at(content, index + 1) != 10 {
+                try out.append_byte(allocator, 10);
+            }
+        } else {
+            try out.append_byte(allocator, content[index]);
+        }
+    }
+    return;
+}
+
+fn md_parse_document(
+    allocator: Allocator,
+    builder: &var MarkdownBuilder,
+    source: &string::String
+) -> mem::Error!void {
+    let bytes = source.as_bytes();
+    var defs = md_new_definitions(allocator);
+    defer defs.deinit(allocator);
+    var nodes = array::new<MdNode>(allocator);
+    defer nodes.deinit(allocator);
+    var open: i64 = 0;
+    let _ = try md_parse_blocks(allocator, &var defs, bytes, 0, 0, &var nodes, &var open);
+    try md_emit_nodes(allocator, builder, &defs, &nodes, false);
+    try builder.flush_text(allocator);
+    return;
+}
+
+/// Reads the Markdown in content into the blocks of builder.
+fn parse_markdown(allocator: Allocator, builder: &var MarkdownBuilder, content: []u8) -> mem::Error!void {
+    var source = string::new(allocator);
+    defer source.deinit(allocator);
+    try md_append_lines(allocator, &var source, content);
+    try md_parse_document(allocator, builder, &source);
+    return;
+}

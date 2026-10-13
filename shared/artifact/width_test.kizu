@@ -1,0 +1,95 @@
+import std::array;
+import std::mem;
+import std::string;
+import std::testing;
+
+test "wide and combining scalars are counted in cells" {
+    testing::expect(display_width("plain") == 5);
+    testing::expect(display_width("日本語") == 6);
+    testing::expect(display_width("ｶﾅ") == 2);
+    testing::expect(display_width("한글") == 4);
+    testing::expect(display_width("ＡＢ") == 4);
+    testing::expect(display_width("🚀") == 2);
+    // A combining acute accent, a zero width joiner, a variation selector.
+    testing::expect(scalar_width(769) == 0 and scalar_width(8205) == 0 and scalar_width(65039) == 0);
+    testing::expect(display_width("─│●…·—") == 6);
+    testing::expect(scalar_width(9) == 0);
+}
+
+test "text that is not UTF-8 is told from text that is" {
+    let allocator = mem::page_allocator();
+    var bytes = try string::from_bytes(allocator, "ab");
+    defer bytes.deinit(allocator);
+    try bytes.append_byte(allocator, 255);
+    try bytes.append_byte(allocator, 99);
+    let broken = bytes.as_bytes();
+    testing::expect(is_valid_utf8("日本語 ok 🚀"));
+    testing::expect(!is_valid_utf8(broken));
+    testing::expect(!is_valid_utf8(broken[0..3]));
+    var repaired = string::new(allocator);
+    defer repaired.deinit(allocator);
+    try append_lossy(allocator, &var repaired, broken);
+    let text = repaired.as_bytes();
+    testing::expect(mem::equal_bytes(text, "ab�c"));
+}
+
+test "text is cut with an ellipsis and padded to its cells" {
+    let allocator = mem::page_allocator();
+    var out = string::new(allocator);
+    defer out.deinit(allocator);
+    testing::expect(try append_truncated(allocator, &var out, "abcdef", 4) == 4);
+    try out.append_byte(allocator, 124);
+    // A wide scalar that would straddle the last cell is left out.
+    testing::expect(try append_truncated(allocator, &var out, "日本語", 4) == 3);
+    try out.append_byte(allocator, 124);
+    try append_fitted(allocator, &var out, "ab", 4);
+    try out.append_byte(allocator, 124);
+    try append_fitted(allocator, &var out, "日本語", 5);
+    try out.append_byte(allocator, 124);
+    let bytes = out.as_bytes();
+    testing::expect(mem::equal_bytes(bytes, "abc…|日…|ab  |日本…|"));
+}
+
+test "text wraps at the cell width" {
+    let allocator = mem::page_allocator();
+    var lines = array::new<string::String>(allocator);
+    defer lines.deinit(allocator);
+    try wrap_display(allocator, &var lines, "", 10);
+    try wrap_display(allocator, &var lines, "abcd efgh", 5);
+    try wrap_display(allocator, &var lines, "日本語の文", 4);
+    let joined_lines = try string::join(allocator, &lines, "|");
+    defer joined_lines.deinit(allocator);
+    let bytes = joined_lines.as_bytes();
+    testing::expect(mem::equal_bytes(bytes, "|abcd|efgh|日本|語の|文"));
+}
+
+test "lines end at a line feed, with or without a carriage return" {
+    let allocator = mem::page_allocator();
+    var text = try string::from_bytes(allocator, "one");
+    defer text.deinit(allocator);
+    try text.append_byte(allocator, 13);
+    try text.append_byte(allocator, 10);
+    try text.append_byte(allocator, 10);
+    try text.append_bytes(allocator, "three");
+    try text.append_byte(allocator, 13);
+    let bytes = text.as_bytes();
+    var cursor: i64 = 0;
+    var start: i64 = 0;
+    var end: i64 = 0;
+    testing::expect(count_lines(bytes) == 3);
+    testing::expect(count_lines(
+        \\one
+        \\
+    ) == 1);
+    testing::expect(count_lines("") == 0);
+    testing::expect(next_line(bytes, &var cursor, &var start, &var end));
+    testing::expect(mem::equal_bytes(bytes[start..end], "one"));
+    testing::expect(next_line(bytes, &var cursor, &var start, &var end));
+    testing::expect(start == end);
+    testing::expect(next_line(bytes, &var cursor, &var start, &var end));
+    // A carriage return that no line feed follows stays in its line.
+    testing::expect(end - start == 6);
+    testing::expect(!next_line(bytes, &var cursor, &var start, &var end));
+    testing::expect(trimmed_end("a 　 ") == 1);
+    testing::expect(trimmed_start(" 	a") == 2);
+}

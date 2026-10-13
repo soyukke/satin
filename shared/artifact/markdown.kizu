@@ -1,0 +1,890 @@
+// A Markdown artifact drawn for a pane: its blocks wrapped, boxed and
+// cut to the rows there are, and the local PNGs it links to, which are
+// kept with each version and drawn where the document shows them. Code
+// is not highlighted: a fenced block is drawn in one style.
+import std::array;
+import std::fs;
+import std::io;
+import std::mem;
+import std::string;
+
+fn max_embedded_images() -> i64 {
+    return 4;
+}
+
+fn max_embedded_image_bytes() -> i64 {
+    return 33554432;
+}
+
+fn min_image_rows() -> i64 {
+    return 3;
+}
+
+fn max_image_rows() -> i64 {
+    return 10;
+}
+
+/// The bytes of a code line that are drawn before it is cut short.
+fn max_code_line_bytes() -> i64 {
+    return 4096;
+}
+
+/// Writes the path an image destination names beside its document into
+/// out: without `.` names and what follows a `?` or `#`. False for a
+/// destination that is remote, absolute, no PNG, climbs out with `..`, or
+/// starts with a dot or a name the artifact's own files take.
+fn safe_local_png_destination(
+    allocator: Allocator,
+    destination: []u8,
+    out: &var string::String
+) -> mem::Error!bool {
+    out.clear();
+    if md_find(destination, 0, "://") >= 0 or mem::starts_with(destination, "data:")
+        or mem::starts_with(destination, "#") {
+        return false;
+    }
+    var cut: i64 = 0;
+    while cut < mem::len(destination) and destination[cut] != cast<u8>(63) and destination[cut] != cast<u8>(35) {
+        cut = cut + 1;
+    }
+    let start = trimmed_start(destination[0..cut]);
+    if start >= cut {
+        return false;
+    }
+    let untrimmed = destination[start..cut];
+    let raw = untrimmed[0..trimmed_end(untrimmed)];
+    if raw[0] == cast<u8>(47) or !has_lowered_extension(raw, "png") {
+        return false;
+    }
+    var from: i64 = 0;
+    var first = true;
+    for 0..mem::len(raw) + 1 |index| {
+        if index < mem::len(raw) and raw[index] != cast<u8>(47) {
+            continue;
+        }
+        let name = raw[from..index];
+        from = index + 1;
+        if mem::len(name) == 0 or mem::equal_bytes(name, ".") {
+            continue;
+        }
+        if mem::equal_bytes(name, "..") {
+            return false;
+        }
+        if first and (name[0] == cast<u8>(46) or equal_lowered(name, "versions")
+            or equal_lowered(name, "metadata.json") or equal_lowered(name, "readme.md")
+            or equal_lowered(name, "current.md") or equal_lowered(name, "index.md")) {
+            return false;
+        }
+        if !first {
+            try out.append_byte(allocator, 47);
+        }
+        try out.append_bytes(allocator, name);
+        first = false;
+    }
+    return !first;
+}
+
+/// The real path of relative under parent, which is a real path itself.
+/// Fails for a file that is not there or that a link takes outside
+/// parent.
+fn resolve_source_asset(
+    allocator: Allocator,
+    message: &var string::String,
+    parent: []u8,
+    relative: []u8
+) -> ArtifactFailure!string::String {
+    let path = try joined(allocator, parent, relative);
+    defer path.deinit(allocator);
+    let bytes = path.as_bytes();
+    var resolved = string::new(allocator);
+    errdefer resolved.deinit(allocator);
+    var found = false;
+    if fs::real_path(io::blocking(), allocator, bytes) |real| {
+        defer real.deinit(allocator);
+        try resolved.append_string(allocator, &real);
+        found = true;
+    } else |_| {}
+    if !found {
+        explain(allocator, message, "resolve Markdown image ", bytes, "");
+        return ArtifactError::Failed;
+    }
+    let inside = path_is_under(&resolved, parent);
+    if !inside {
+        explain(allocator, message, "Markdown image resolves outside the source directory", "", "");
+        return ArtifactError::Failed;
+    }
+    return move resolved;
+}
+
+fn path_is_under(path: &string::String, root: []u8) -> bool {
+    let bytes = path.as_bytes();
+    return is_under(bytes, root);
+}
+
+/// Reads the PNG named relative under parent into out. Fails for a file
+/// that is no PNG or is larger than an image may be.
+fn read_markdown_png(
+    allocator: Allocator,
+    message: &var string::String,
+    parent: []u8,
+    relative: []u8,
+    out: &var string::String
+) -> ArtifactFailure!void {
+    let path = try resolve_source_asset(allocator, message, parent, relative);
+    defer path.deinit(allocator);
+    let bytes = path.as_bytes();
+    try read_bounded_source(allocator, message, bytes, max_image_bytes(), "Markdown image", out);
+    var width: i64 = 0;
+    var height: i64 = 0;
+    let image = out.as_bytes();
+    let decoded = png_size(image, &var width, &var height);
+    if !decoded {
+        explain(allocator, message, "decode PNG header ", bytes, "");
+        return ArtifactError::Failed;
+    }
+    return;
+}
+
+/// The real path of the directory the file at path is in.
+fn real_parent(
+    allocator: Allocator,
+    message: &var string::String,
+    path: []u8,
+    missing: []u8,
+    unresolved: []u8
+) -> ArtifactFailure!string::String {
+    let length = parent_length(path);
+    if length == 0 {
+        explain(allocator, message, missing, "", "");
+        return ArtifactError::Failed;
+    }
+    var parent = string::new(allocator);
+    errdefer parent.deinit(allocator);
+    var found = false;
+    if fs::real_path(io::blocking(), allocator, path[0..length]) |real| {
+        defer real.deinit(allocator);
+        try parent.append_string(allocator, &real);
+        found = true;
+    } else |_| {}
+    if !found {
+        explain(allocator, message, unresolved, path, "");
+        return ArtifactError::Failed;
+    }
+    return move parent;
+}
+
+fn has_asset(assets: &array::Array<ArtifactAsset>, relative: []u8) -> bool {
+    for 0..assets.len() |index| {
+        if assets.at(index) |asset| {
+            let bytes = asset.relative_path.as_bytes();
+            if mem::equal_bytes(bytes, relative) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+/// Appends the PNG under parent that destination names to assets, unless
+/// it names none or one that is there already. total counts the bytes
+/// of all of them.
+fn snapshot_destination(
+    allocator: Allocator,
+    message: &var string::String,
+    destination: []u8,
+    parent: []u8,
+    total: &var i64,
+    assets: &var array::Array<ArtifactAsset>
+) -> ArtifactFailure!void {
+    var relative = string::new(allocator);
+    defer relative.deinit(allocator);
+    let safe = try safe_local_png_destination(allocator, destination, &var relative);
+    let name = relative.as_bytes();
+    if !safe or has_asset(assets, name) {
+        return;
+    }
+    if assets.len() == max_embedded_images() {
+        explain(allocator, message, "Markdown artifacts support at most 4 local PNG images", "", "");
+        return ArtifactError::Failed;
+    }
+    var asset = ArtifactAsset { relative_path: string::new(allocator), bytes: string::new(allocator) };
+    errdefer asset.deinit(allocator);
+    try asset.relative_path.append_bytes(allocator, name);
+    try read_markdown_png(allocator, message, parent, name, &var asset.bytes);
+    total = total + asset.bytes.len();
+    let exceeded = total > max_embedded_image_bytes();
+    if exceeded {
+        explain(allocator, message, "Markdown image snapshots exceed the 32 MiB combined limit", "", "");
+        return ArtifactError::Failed;
+    }
+    try assets.append(allocator, move asset);
+    return;
+}
+
+/// Appends the PNGs under parent that destinations name to assets, each
+/// once: at most four, and 32 MiB between them.
+fn snapshot_destinations(
+    allocator: Allocator,
+    message: &var string::String,
+    destinations: &array::Array<string::String>,
+    parent: []u8,
+    assets: &var array::Array<ArtifactAsset>
+) -> ArtifactFailure!void {
+    var total: i64 = 0;
+    for 0..destinations.len() |index| {
+        if destinations.at(index) |destination| {
+            let bytes = destination.as_bytes();
+            try snapshot_destination(allocator, message, bytes, parent, &var total, assets);
+        }
+    }
+    return;
+}
+
+/// Appends the local PNGs the Markdown in content links to, read from
+/// beside its file at source, to assets.
+fn snapshot_local_pngs(
+    allocator: Allocator,
+    message: &var string::String,
+    content: []u8,
+    source: []u8,
+    assets: &var array::Array<ArtifactAsset>
+) -> ArtifactFailure!void {
+    let parent = try real_parent(allocator, message, source, "Markdown source has no parent directory",
+        "resolve Markdown directory for ");
+    defer parent.deinit(allocator);
+    let parent_bytes = parent.as_bytes();
+    var builder = new_markdown_builder(allocator);
+    defer builder.deinit(allocator);
+    try parse_markdown(allocator, &var builder, content);
+    try snapshot_destinations(allocator, message, &builder.destinations, parent_bytes, assets);
+    return;
+}
+
+/// The rows a document has taken of the pane: `limit` of them at most,
+/// each `width` cells.
+struct MarkdownLayout {
+    width: i64,
+    limit: i64,
+    used_rows: i64,
+    has_content: bool,
+    last_blank: bool,
+}
+
+/// Counts count things the body leaves out.
+fn layout_omit(body: &var BodyRender, count: i64) -> void {
+    if count > 0 {
+        body.omitted_items = body.omitted_items + count;
+        body.compacted = true;
+    }
+    return;
+}
+
+/// Appends a line of spans when a row is left for it, and counts it as
+/// left out when none is, or when it is wider than the pane.
+fn layout_push_spans(
+    allocator: Allocator,
+    layout: &var MarkdownLayout,
+    body: &var BodyRender,
+    spans: array::Array<StyledSpan>,
+    style: LineStyle
+) -> mem::Error!void {
+    errdefer spans.deinit(allocator);
+    let cells = spans_width(&spans);
+    if cells > layout.width {
+        layout_omit(body, 1);
+    }
+    if layout.used_rows >= layout.limit {
+        layout_omit(body, 1);
+        spans.deinit(allocator);
+        return;
+    }
+    layout.last_blank = spans_are_empty(&spans);
+    try body.lines.append(allocator, StyledLine { style: style, spans: move spans });
+    layout.used_rows = layout.used_rows + 1;
+    layout.has_content = true;
+    return;
+}
+
+fn spans_are_empty(spans: &array::Array<StyledSpan>) -> bool {
+    for 0..spans.len() |index| {
+        if spans.at(index) |span| {
+            if span.text.len() > 0 {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+/// Appends a line of one run of text.
+fn layout_push_line(
+    allocator: Allocator,
+    layout: &var MarkdownLayout,
+    body: &var BodyRender,
+    text: []u8,
+    style: LineStyle
+) -> mem::Error!void {
+    var spans = array::new<StyledSpan>(allocator);
+    errdefer spans.deinit(allocator);
+    var owned = try string::from_bytes(allocator, text);
+    errdefer owned.deinit(allocator);
+    try spans.append(allocator, StyledSpan { text: move owned, style: span_style(style) });
+    try layout_push_spans(allocator, layout, body, move spans, style);
+    return;
+}
+
+/// An empty line between two blocks.
+fn layout_separate(allocator: Allocator, layout: &var MarkdownLayout, body: &var BodyRender) -> mem::Error!void {
+    if layout.has_content and !layout.last_blank {
+        try layout_push_line(allocator, layout, body, "", LineStyle::Normal);
+    }
+    return;
+}
+
+/// Appends one wrapped line: lead, and the spans of content without the
+/// white space around them. content is left empty.
+fn layout_push_wrapped_line(
+    allocator: Allocator,
+    layout: &var MarkdownLayout,
+    body: &var BodyRender,
+    content: &var array::Array<StyledSpan>,
+    lead: []u8,
+    style: LineStyle
+) -> mem::Error!void {
+    try trim_spans(allocator, content);
+    var line = array::new<StyledSpan>(allocator);
+    errdefer line.deinit(allocator);
+    try append_span(allocator, &var line, lead, span_style(style));
+    for 0..content.len() |index| {
+        if content.at(index) |span| {
+            let bytes = span.text.as_bytes();
+            try append_span(allocator, &var line, bytes, span.style);
+        }
+    }
+    content.clear(allocator);
+    try layout_push_spans(allocator, layout, body, move line, style);
+    return;
+}
+
+/// Appends the scalars of text to content in a style, ending a line at
+/// each line feed and before the scalar that would pass width cells.
+/// line_width is the cells content holds, and lines the lines ended.
+fn layout_wrap_text(
+    allocator: Allocator,
+    layout: &var MarkdownLayout,
+    body: &var BodyRender,
+    content: &var array::Array<StyledSpan>,
+    text: []u8,
+    span: SpanStyle,
+    prefix: []u8,
+    indent: []u8,
+    style: LineStyle,
+    width: i64,
+    line_width: &var i64,
+    lines: &var i64
+) -> mem::Error!void {
+    var index: i64 = 0;
+    while index < mem::len(text) {
+        var scalar: i64 = 0;
+        let length = decode_scalar(text, index, &var scalar);
+        let cells = scalar_width(scalar);
+        if scalar == 10 or line_width > 0 and line_width + cells > width {
+            if lines == 0 {
+                try layout_push_wrapped_line(allocator, layout, body, content, prefix, style);
+            } else {
+                try layout_push_wrapped_line(allocator, layout, body, content, indent, style);
+            }
+            lines = lines + 1;
+            line_width = 0;
+        }
+        if scalar != 10 {
+            try append_span(allocator, content, text[index..index + length], span);
+            line_width = line_width + cells;
+        }
+        index = index + length;
+    }
+    return;
+}
+
+/// Appends spans wrapped to width cells: the first line after prefix,
+/// and the lines after it after indent.
+fn layout_wrap_spans(
+    allocator: Allocator,
+    layout: &var MarkdownLayout,
+    body: &var BodyRender,
+    spans: &array::Array<StyledSpan>,
+    prefix: []u8,
+    indent: []u8,
+    style: LineStyle,
+    width: i64
+) -> mem::Error!void {
+    var content = array::new<StyledSpan>(allocator);
+    defer content.deinit(allocator);
+    var line_width: i64 = 0;
+    var lines: i64 = 0;
+    for 0..spans.len() |index| {
+        if spans.at(index) |span| {
+            let text = span.text.as_bytes();
+            try layout_wrap_text(allocator, layout, body, &var content, text, span.style, prefix, indent, style, width,
+                &var line_width, &var lines);
+        }
+    }
+    try trim_spans(allocator, &var content);
+    if content.len() == 0 and lines > 0 {
+        return;
+    }
+    if lines == 0 {
+        try layout_push_wrapped_line(allocator, layout, body, &var content, prefix, style);
+    } else {
+        try layout_push_wrapped_line(allocator, layout, body, &var content, indent, style);
+    }
+    return;
+}
+
+/// Appends spans wrapped to the pane: the first line after prefix, and
+/// the lines after it under as many spaces.
+fn layout_push_wrapped_spans(
+    allocator: Allocator,
+    layout: &var MarkdownLayout,
+    body: &var BodyRender,
+    spans: &array::Array<StyledSpan>,
+    prefix: []u8,
+    style: LineStyle
+) -> mem::Error!void {
+    let prefix_width = display_width(prefix);
+    var width = layout.width - prefix_width;
+    if width < 1 {
+        width = 1;
+    }
+    var indent = string::new(allocator);
+    defer indent.deinit(allocator);
+    try append_spaces(allocator, &var indent, prefix_width);
+    let indent_bytes = indent.as_bytes();
+    try layout_wrap_spans(allocator, layout, body, spans, prefix, indent_bytes, style, width);
+    return;
+}
+
+/// Appends text wrapped to the pane, in one style.
+fn layout_push_wrapped(
+    allocator: Allocator,
+    layout: &var MarkdownLayout,
+    body: &var BodyRender,
+    text: []u8,
+    prefix: []u8,
+    style: LineStyle
+) -> mem::Error!void {
+    var spans = array::new<StyledSpan>(allocator);
+    defer spans.deinit(allocator);
+    var owned = try string::from_bytes(allocator, text);
+    errdefer owned.deinit(allocator);
+    try spans.append(allocator, StyledSpan { text: move owned, style: span_style(style) });
+    try layout_push_wrapped_spans(allocator, layout, body, &spans, prefix, style);
+    return;
+}
+
+/// Appends a code line: a bar, and the line in the accent color when
+/// the block names a language. A line over 4096 bytes is cut at a
+/// scalar's end, with an ellipsis.
+fn layout_push_code_line(
+    allocator: Allocator,
+    layout: &var MarkdownLayout,
+    body: &var BodyRender,
+    line: []u8,
+    plain: bool
+) -> mem::Error!void {
+    var spans = array::new<StyledSpan>(allocator);
+    errdefer spans.deinit(allocator);
+    try append_span(allocator, &var spans, "│ ", span_style(LineStyle::Muted));
+    var style = span_style(LineStyle::Accent);
+    if plain {
+        style = span_style(LineStyle::Normal);
+    }
+    if mem::len(line) <= max_code_line_bytes() {
+        try append_span(allocator, &var spans, line, style);
+    } else {
+        var end = max_code_line_bytes();
+        while end > 0 and cast<i64>(line[end]) & 192 == 128 {
+            end = end - 1;
+        }
+        try append_span(allocator, &var spans, line[0..end], style);
+        try append_span(allocator, &var spans, "…", style);
+    }
+    try layout_push_spans(allocator, layout, body, move spans, LineStyle::Normal);
+    return;
+}
+
+/// Draws a code block: its language over its lines, as many as leave a
+/// row for the line that closes it.
+fn render_code(
+    allocator: Allocator,
+    layout: &var MarkdownLayout,
+    body: &var BodyRender,
+    language: []u8,
+    source: []u8
+) -> mem::Error!void {
+    var label = try string::from_bytes(allocator, "┌─ ");
+    defer label.deinit(allocator);
+    if mem::len(language) == 0 {
+        try label.append_bytes(allocator, "code");
+    } else {
+        try label.append_bytes(allocator, language);
+    }
+    let label_bytes = label.as_bytes();
+    try layout_push_line(allocator, layout, body, label_bytes, LineStyle::Muted);
+    var length = mem::len(source);
+    while length > 0 and (source[length - 1] == cast<u8>(10) or source[length - 1] == cast<u8>(13)) {
+        length = length - 1;
+    }
+    var count: i64 = 1;
+    for 0..length |index| {
+        if source[index] == cast<u8>(10) {
+            count = count + 1;
+        }
+    }
+    var shown = layout.limit - layout.used_rows - 1;
+    if shown < 0 {
+        shown = 0;
+    }
+    if shown > count {
+        shown = count;
+    }
+    layout_omit(body, count - shown);
+    var start: i64 = 0;
+    for 0..shown |_| {
+        var end = start;
+        while end < length and source[end] != cast<u8>(10) {
+            end = end + 1;
+        }
+        var line_end = end;
+        while line_end > start and source[line_end - 1] == cast<u8>(13) {
+            line_end = line_end - 1;
+        }
+        try layout_push_code_line(allocator, layout, body, source[start..line_end], mem::len(language) == 0);
+        start = end + 1;
+    }
+    try layout_push_line(allocator, layout, body, "└─", LineStyle::Muted);
+    return;
+}
+
+/// Draws a table in box borders, the columns that fit the pane.
+fn render_markdown_table(
+    allocator: Allocator,
+    layout: &var MarkdownLayout,
+    body: &var BodyRender,
+    table: &Table
+) -> mem::Error!void {
+    var fallback = array::new<string::String>(allocator);
+    defer fallback.deinit(allocator);
+    try append_text(allocator, &var fallback, "value");
+    var columns = table.headers.len();
+    if columns == 0 {
+        columns = 1;
+    }
+    let shown = table_column_limit(layout.width, columns);
+    layout_omit(body, columns - shown);
+    let widths = try table_widths(allocator, layout.width, shown);
+    defer widths.deinit(allocator);
+    var truncated = count_wide_cells(&table.headers, &widths);
+    if table.headers.len() == 0 {
+        truncated = count_wide_cells(&fallback, &widths);
+    }
+    for 0..table.rows.len() |index| {
+        if table.rows.at(index) |row| {
+            truncated = truncated + count_wide_cells(row, &widths);
+        }
+    }
+    layout_omit(body, truncated);
+    var line = string::new(allocator);
+    defer line.deinit(allocator);
+    // U+250C, U+252C, U+2510.
+    try append_table_border(allocator, &var line, 9484, 9516, 9488, &widths);
+    try layout_push_owned(allocator, layout, body, &var line, LineStyle::Muted);
+    if table.headers.len() == 0 {
+        try append_table_row(allocator, &var line, &fallback, &widths);
+    } else {
+        try append_table_row(allocator, &var line, &table.headers, &widths);
+    }
+    try layout_push_owned(allocator, layout, body, &var line, LineStyle::Heading);
+    // U+251C, U+253C, U+2524.
+    try append_table_border(allocator, &var line, 9500, 9532, 9508, &widths);
+    try layout_push_owned(allocator, layout, body, &var line, LineStyle::Muted);
+    for 0..table.rows.len() |index| {
+        if table.rows.at(index) |row| {
+            try append_table_row(allocator, &var line, row, &widths);
+            try layout_push_owned(allocator, layout, body, &var line, LineStyle::Normal);
+        }
+    }
+    // U+2514, U+2534, U+2518.
+    try append_table_border(allocator, &var line, 9492, 9524, 9496, &widths);
+    try layout_push_owned(allocator, layout, body, &var line, LineStyle::Muted);
+    return;
+}
+
+/// Appends line as a line of the body, and empties it.
+fn layout_push_owned(
+    allocator: Allocator,
+    layout: &var MarkdownLayout,
+    body: &var BodyRender,
+    line: &var string::String,
+    style: LineStyle
+) -> mem::Error!void {
+    try layout_push_text(allocator, layout, body, line, style);
+    line.clear();
+    return;
+}
+
+fn layout_push_text(
+    allocator: Allocator,
+    layout: &var MarkdownLayout,
+    body: &var BodyRender,
+    line: &string::String,
+    style: LineStyle
+) -> mem::Error!void {
+    let bytes = line.as_bytes();
+    try layout_push_line(allocator, layout, body, bytes, style);
+    return;
+}
+
+/// The cells a PNG is drawn in when available columns are free: as wide
+/// as the pane, three to ten rows, a cell twice as high as it is wide.
+fn image_geometry(bytes: []u8, available: i64, columns: &var i64, rows: &var i64) -> bool {
+    var width: i64 = 0;
+    var height: i64 = 0;
+    if !png_size(bytes, &var width, &var height) {
+        return false;
+    }
+    var fitted = available * height / (width * 2);
+    if fitted < min_image_rows() {
+        fitted = min_image_rows();
+    }
+    if fitted > max_image_rows() {
+        fitted = max_image_rows();
+    }
+    var cells = fitted * width * 2 / height;
+    if cells > available {
+        cells = available;
+    }
+    if cells < 1 {
+        cells = 1;
+    }
+    columns = cells;
+    rows = fitted;
+    return true;
+}
+
+/// Draws an image: a caption, and the picture when three rows or more
+/// are left, in as many of the rows it wants as there are. A picture
+/// that is not a local PNG is a note about that.
+fn render_markdown_image(
+    allocator: Allocator,
+    message: &var string::String,
+    layout: &var MarkdownLayout,
+    body: &var BodyRender,
+    manifest: &ArtifactManifest,
+    alt: []u8,
+    destination: []u8
+) -> ArtifactFailure!void {
+    var caption = try string::from_bytes(allocator, alt);
+    defer caption.deinit(allocator);
+    if mem::len(alt) == 0 {
+        try caption.append_bytes(allocator, "Image");
+    }
+    var relative = string::new(allocator);
+    defer relative.deinit(allocator);
+    let safe = try safe_local_png_destination(allocator, destination, &var relative);
+    if !safe {
+        var note = try string::from_bytes(allocator, "Image: ");
+        defer note.deinit(allocator);
+        try note.append_string(allocator, &caption);
+        try note.append_bytes(allocator, " (remote or non-PNG source not fetched)");
+        try layout_push_note(allocator, layout, body, &note, LineStyle::Warning);
+        return;
+    }
+    let document = manifest.document.as_bytes();
+    let parent = try real_parent(allocator, message, document, "artifact document has no parent directory",
+        "resolve artifact directory for ");
+    defer parent.deinit(allocator);
+    let parent_bytes = parent.as_bytes();
+    let name = relative.as_bytes();
+    var image = string::new(allocator);
+    errdefer image.deinit(allocator);
+    try read_markdown_png(allocator, message, parent_bytes, name, &var image);
+    var columns: i64 = 0;
+    var rows: i64 = 0;
+    let sized = image_size(&image, layout.width, &var columns, &var rows);
+    if !sized {
+        explain(allocator, message, "decode Markdown PNG header", "", "");
+        return ArtifactError::Failed;
+    }
+    try layout_push_note(allocator, layout, body, &caption, LineStyle::Muted);
+    try layout_push_image(allocator, layout, body, &caption, move image, columns, rows);
+    return;
+}
+
+/// Appends a picture that wants columns by rows cells when three rows
+/// or more are left, in as many of its rows as there are.
+fn layout_push_image(
+    allocator: Allocator,
+    layout: &var MarkdownLayout,
+    body: &var BodyRender,
+    caption: &string::String,
+    image: string::String,
+    columns: i64,
+    rows: i64
+) -> mem::Error!void {
+    errdefer image.deinit(allocator);
+    let remaining = layout.limit - layout.used_rows;
+    if remaining < min_image_rows() {
+        layout_omit(body, rows);
+        image.deinit(allocator);
+        return;
+    }
+    var shown = rows;
+    if shown > remaining {
+        shown = remaining;
+    }
+    var cells = columns * shown / rows;
+    if cells < 1 {
+        cells = 1;
+    }
+    var alt = string::new(allocator);
+    errdefer alt.deinit(allocator);
+    try alt.append_string(allocator, caption);
+    try body.images.append(allocator, BodyImage {
+        after_line: body.lines.len(),
+        columns: cells,
+        rows: shown,
+        alt: move alt,
+        bytes: move image
+    });
+    layout.used_rows = layout.used_rows + shown;
+    layout.has_content = true;
+    layout.last_blank = false;
+    return;
+}
+
+fn image_size(image: &string::String, available: i64, columns: &var i64, rows: &var i64) -> bool {
+    let bytes = image.as_bytes();
+    return image_geometry(bytes, available, columns, rows);
+}
+
+/// Appends text wrapped after the sign of a picture.
+fn layout_push_note(
+    allocator: Allocator,
+    layout: &var MarkdownLayout,
+    body: &var BodyRender,
+    text: &string::String,
+    style: LineStyle
+) -> mem::Error!void {
+    let bytes = text.as_bytes();
+    try layout_push_wrapped(allocator, layout, body, bytes, "▧ ", style);
+    return;
+}
+
+/// Whether block is a heading that says what the title already does.
+fn repeats_title(block: &MarkdownBlock, title: []u8) -> bool {
+    if block.kind != MarkdownBlockKind::Text or block.style != LineStyle::Heading {
+        return false;
+    }
+    let text = block.text.as_bytes();
+    let start = trimmed_start(title);
+    if start >= mem::len(title) {
+        return mem::len(text) == 0;
+    }
+    let rest = title[start..mem::len(title)];
+    return mem::equal_bytes(text[trimmed_start(text)..trimmed_end(text)], rest[0..trimmed_end(rest)]);
+}
+
+/// Draws one block into the body.
+fn render_markdown_block(
+    allocator: Allocator,
+    message: &var string::String,
+    layout: &var MarkdownLayout,
+    body: &var BodyRender,
+    manifest: &ArtifactManifest,
+    block: &MarkdownBlock
+) -> ArtifactFailure!void {
+    let text = block.text.as_bytes();
+    let label = block.label.as_bytes();
+    if block.kind == MarkdownBlockKind::Text {
+        try layout_push_wrapped_spans(allocator, layout, body, &block.spans, label, block.style);
+    } else if block.kind == MarkdownBlockKind::Code {
+        try render_code(allocator, layout, body, label, text);
+    } else if block.kind == MarkdownBlockKind::Table {
+        try render_markdown_table(allocator, layout, body, &block.table);
+    } else if block.kind == MarkdownBlockKind::Image {
+        try render_markdown_image(allocator, message, layout, body, manifest, text, label);
+    } else {
+        var rule = string::new(allocator);
+        defer rule.deinit(allocator);
+        for 0..layout.width |_| {
+            // U+2500.
+            try append_scalar(allocator, &var rule, 9472);
+        }
+        try layout_push_text(allocator, layout, body, &rule, LineStyle::Muted);
+    }
+    return;
+}
+
+/// Draws the blocks into the body, an empty line between two of them. A
+/// first heading that repeats the title is left out.
+fn render_markdown_blocks(
+    allocator: Allocator,
+    message: &var string::String,
+    layout: &var MarkdownLayout,
+    body: &var BodyRender,
+    manifest: &ArtifactManifest,
+    blocks: &array::Array<MarkdownBlock>
+) -> ArtifactFailure!void {
+    let title = manifest.title.as_bytes();
+    var first_visible = true;
+    for 0..blocks.len() |index| {
+        if blocks.at(index) |block| {
+            if first_visible and repeats_title(block, title) {
+                continue;
+            }
+            if !first_visible {
+                try layout_separate(allocator, layout, body);
+            }
+            try render_markdown_block(allocator, message, layout, body, manifest, block);
+            first_visible = false;
+        }
+    }
+    return;
+}
+
+/// The Markdown in content laid out in width cells, the first limit rows
+/// of it kept. The manifest gives the title and where the images are.
+fn render_markdown_content(
+    allocator: Allocator,
+    message: &var string::String,
+    manifest: &ArtifactManifest,
+    content: []u8,
+    width: i64,
+    limit: i64
+) -> ArtifactFailure!BodyRender {
+    var builder = new_markdown_builder(allocator);
+    defer builder.deinit(allocator);
+    try parse_markdown(allocator, &var builder, content);
+    var body = new_body(allocator);
+    errdefer body.deinit(allocator);
+    body.source_lines = count_lines(content);
+    var layout = MarkdownLayout { width: width, limit: limit, used_rows: 0, has_content: false, last_blank: false };
+    try render_markdown_blocks(allocator, message, &var layout, &var body, manifest, &builder.blocks);
+    return move body;
+}
+
+/// The Markdown of the manifest's source laid out in width cells, the
+/// first limit rows of it kept.
+fn render_markdown_body(
+    allocator: Allocator,
+    message: &var string::String,
+    manifest: &ArtifactManifest,
+    width: i64,
+    limit: i64
+) -> ArtifactFailure!BodyRender {
+    let content = try read_text_source(allocator, message, manifest);
+    defer content.deinit(allocator);
+    let text = content.as_bytes();
+    return render_markdown_content(allocator, message, manifest, text, width, limit);
+}
