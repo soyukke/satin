@@ -117,6 +117,7 @@ final class NativeTabFuseView: NSView {
             run.toValue = -offset - perimeter
             run.duration = 1.7
             run.repeatCount = .infinity
+            run.preferredFrameRateRange = NativeHandEffects.ambientFrameRate
             shape.add(run, forKey: "satin.tab.fuse")
         }
         return container

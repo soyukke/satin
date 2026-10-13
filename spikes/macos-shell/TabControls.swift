@@ -735,6 +735,15 @@ final class NativeTabControl: NSSegmentedControl {
         attributed.draw(in: titleRect)
     }
 
+    /// Only the tabs with a turning mark change between two ticks.
+    private func redrawRunningSegments() {
+        for (segment, badge) in statusBadges where badge == .running {
+            if let rect = segmentRect(for: segment) {
+                setNeedsDisplay(rect)
+            }
+        }
+    }
+
     private func updateActivityTimer() {
         activityTimer?.invalidate()
         activityTimer = nil
@@ -742,7 +751,7 @@ final class NativeTabControl: NSSegmentedControl {
             return
         }
         let timer = Timer(timeInterval: 1.0 / 12.0, repeats: true) { [weak self] _ in
-            self?.needsDisplay = true
+            self?.redrawRunningSegments()
         }
         RunLoop.main.add(timer, forMode: .common)
         activityTimer = timer

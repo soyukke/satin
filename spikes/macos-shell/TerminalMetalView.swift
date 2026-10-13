@@ -3,9 +3,76 @@ import Metal
 import MetalKit
 import QuartzCore
 
+/// Where the renderer's pixels go: memory the CPU and the GPU share, which
+/// the GPU then copies to the drawable. The core writes a frame with the one
+/// texture message it knows, and this answers it with a plain copy. Writing
+/// into a drawable itself re-encodes the GPU-private layout of its texture.
+final class NativeFrameBuffer: NSObject {
+    let texture: MTLTexture
+    let width: Int
+    let height: Int
+    private let buffer: MTLBuffer
+    private let rowBytes: Int
+
+    init?(matching target: MTLTexture) {
+        let device = target.device
+        let alignment = max(1, device.minimumLinearTextureAlignment(for: target.pixelFormat))
+        let rowBytes = (target.width * 4 + alignment - 1) / alignment * alignment
+        let descriptor = MTLTextureDescriptor.texture2DDescriptor(
+            pixelFormat: target.pixelFormat,
+            width: target.width,
+            height: target.height,
+            mipmapped: false
+        )
+        descriptor.storageMode = .shared
+        descriptor.usage = .shaderRead
+        guard
+            let buffer = device.makeBuffer(
+                length: rowBytes * target.height, options: .storageModeShared),
+            let texture = buffer.makeTexture(
+                descriptor: descriptor, offset: 0, bytesPerRow: rowBytes)
+        else {
+            return nil
+        }
+        self.buffer = buffer
+        self.texture = texture
+        self.rowBytes = rowBytes
+        width = target.width
+        height = target.height
+    }
+
+    func matches(_ target: MTLTexture) -> Bool {
+        width == target.width && height == target.height
+            && texture.pixelFormat == target.pixelFormat
+    }
+
+    @objc(replaceRegion:mipmapLevel:withBytes:bytesPerRow:)
+    func replace(
+        region: MTLRegion,
+        mipmapLevel: Int,
+        withBytes bytes: UnsafeRawPointer,
+        bytesPerRow: Int
+    ) {
+        let x = region.origin.x
+        let y = region.origin.y
+        let columns = region.size.width
+        let rows = region.size.height
+        guard mipmapLevel == 0, x >= 0, y >= 0, columns > 0, rows > 0,
+            x + columns <= width, y + rows <= height, bytesPerRow >= columns * 4
+        else {
+            return
+        }
+        let target = buffer.contents() + y * rowBytes + x * 4
+        for row in 0..<rows {
+            (target + row * rowBytes).copyMemory(
+                from: bytes + row * bytesPerRow, byteCount: columns * 4)
+        }
+    }
+}
+
 final class TerminalMetalView: MTKView, CAMetalDisplayLinkDelegate, MTKViewDelegate {
     weak var contextMenuProvider: TerminalContextMenuProvider?
-    var renderProvider: ((MTLTexture, UnsafeMutableRawPointer?) -> Bool)?
+    var renderProvider: ((NativeFrameBuffer, UnsafeMutableRawPointer?) -> Bool)?
 
     private let commandQueue: MTLCommandQueue
     private let usesSmokeFrameFallback: Bool = {
@@ -14,6 +81,7 @@ final class TerminalMetalView: MTKView, CAMetalDisplayLinkDelegate, MTKViewDeleg
     }()
     private var skiaRenderer: UnsafeMutableRawPointer?
     private var skiaFrameCount = 0
+    private var frameBuffer: NativeFrameBuffer?
     private var nextFrameWorkItem: DispatchWorkItem?
     private var frameDisplayLink: CAMetalDisplayLink?
     private var displayRefreshInterval: CFTimeInterval?
@@ -49,6 +117,8 @@ final class TerminalMetalView: MTKView, CAMetalDisplayLinkDelegate, MTKViewDeleg
         self.skiaRenderer = skiaRenderer
         super.init(frame: frameRect, device: device)
         colorPixelFormat = .bgra8Unorm
+        // The frame buffer is blitted into the drawable.
+        framebufferOnly = false
         clearColor = MTLClearColor(red: 0.078, green: 0.086, blue: 0.102, alpha: 1.0)
         delegate = self
         if usesSmokeFrameFallback {
@@ -192,8 +262,13 @@ final class TerminalMetalView: MTKView, CAMetalDisplayLinkDelegate, MTKViewDeleg
         }
 
         _ = satinSkiaMetalBeginFrame(skiaRenderer)
-        if renderProvider?(drawable.texture, skiaRenderer) == true {
+        if let frame = frameBuffer(matching: drawable.texture),
+            renderProvider?(frame, skiaRenderer) == true,
+            let blit = commandBuffer.makeBlitCommandEncoder()
+        {
             skiaFrameCount += 1
+            blit.copy(from: frame.texture, to: drawable.texture)
+            blit.endEncoding()
         } else {
             let descriptor = MTLRenderPassDescriptor()
             descriptor.colorAttachments[0].texture = drawable.texture
@@ -479,6 +554,14 @@ final class TerminalMetalView: MTKView, CAMetalDisplayLinkDelegate, MTKViewDeleg
         let revisions = (frameRequestRevision, renderedFrameRequestRevision)
         frameRequestLock.unlock()
         return revisions
+    }
+
+    private func frameBuffer(matching target: MTLTexture) -> NativeFrameBuffer? {
+        if let frameBuffer, frameBuffer.matches(target) {
+            return frameBuffer
+        }
+        frameBuffer = NativeFrameBuffer(matching: target)
+        return frameBuffer
     }
 
     private func prepareDrawableForRendering(_ texture: MTLTexture) -> Bool {

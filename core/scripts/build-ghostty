@@ -32,6 +32,15 @@ if [ ! -f "$archive" ]; then
     echo "zig build left no $archive" >&2
     exit 1
 fi
+# zig puts its own memcpy, memmove, memset and memcmp in the archive, and a
+# program that links it takes them for all of its code in place of the
+# system's, which are several times faster on a large copy. Linking the
+# archive into one object first keeps them inside it.
 mkdir -p "$root/target/native"
-ln -sf "$archive" "$root/target/native/libghostty-vt.a"
-echo "target/native/libghostty-vt.a -> $archive"
+merged=$root/target/native/libghostty-vt.o
+/usr/bin/ld -r -arch "$(uname -m)" -platform_version macos 14.0 14.0 -all_load "$archive" -o "$merged"
+rm -f "$root/target/native/libghostty-vt.a"
+ar -rc "$root/target/native/libghostty-vt.a" "$merged"
+ranlib "$root/target/native/libghostty-vt.a"
+rm -f "$merged"
+echo "target/native/libghostty-vt.a <- $archive"
