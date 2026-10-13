@@ -87,6 +87,35 @@ and changes across the workspace.
 
 ## Experimental features
 
+### Attention hand
+
+The attention hand is experimental and off by default; turn it on under
+Satin → Settings… → Appearance. Each pane whose agent is waiting on you, has
+failed, or has finished unread is dealt as a card along the window's lower
+edge, most urgent first. A fuse runs round a tab that is waiting or has failed,
+a spark carries each new card down from its tab, and a thread ties every raised
+card back to the tab it came from.
+
+<p align="center">
+  <a href="assets/satin-attention-hand-demo.mp4">
+    <img src="assets/satin-attention-hand-demo.gif" width="880"
+      alt="Satin dealing cards for waiting agents and playing them to jump to their panes">
+  </a>
+</p>
+
+<p align="center">
+  <sub>Four agents ask for attention, Command-J looks through the hand, and
+  each played card switches to its pane. Click for the 24-second MP4.</sub>
+</p>
+
+Hold `Command-J` to open the hand with the first card chosen. With Command
+still held, `J`, the arrow keys, or `1`–`5` choose another card, and the chosen
+card shows the last lines of its pane. Let go of Command, or press Return, to
+jump there; Escape cancels. A quick `Command-J` jumps to the first card
+directly, and a card can also be clicked. The strip counts running panes, the
+cards played since launch, and the longest run of consecutive plays; nothing is
+saved. With the hand off, `Command-J` cycles through the waiting panes.
+
 ### Work Switcher
 
 The Work Switcher is experimental. Open it with `Command-P` to find tabs and
@@ -122,7 +151,7 @@ plugin to install.
 
 <p align="center">
   <sub>The CLI opens and refreshes a versioned Markdown report with a table,
-  highlighted code, and the current Satin icon. Click for the 16-second MP4.</sub>
+  a code block, and the current Satin icon. Click for the 16-second MP4.</sub>
 </p>
 
 ## Requirements
@@ -267,6 +296,8 @@ security boundary.
 
 - `Command-T`: new tab
 - `Command-P`: search and focus open tabs and panes with the Work Switcher
+- `Command-J`: jump to the agent that has waited longest, or look through the
+  attention hand while Command is held
 - `Command-D` / `Command-Shift-D`: vertical / horizontal split
 - `Command-W`: close the active pane
 - `Control-Command-H/J/K/L`: focus the pane to the left / down / up / right
