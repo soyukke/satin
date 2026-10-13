@@ -5,16 +5,6 @@ import satin::tmux;
 import std::mem;
 import std::string;
 
-fn null_control() -> ?ptr<tmux::Control> {
-    // SAFETY: address zero is null, which nothing dereferences.
-    return unsafe ptr_from_int<ptr<tmux::Control>>(0);
-}
-
-fn null_bytes() -> ?ptr<u8> {
-    // SAFETY: address zero is null, which nothing dereferences.
-    return unsafe ptr_from_int<ptr<u8>>(0);
-}
-
 export "c" fn satin_tmux_create() -> ?ptr<tmux::Control> {
     // SAFETY: malloc returns storage for one Control or null.
     let storage = unsafe malloc(mem::size_of<tmux::Control>());
@@ -26,7 +16,7 @@ export "c" fn satin_tmux_create() -> ?ptr<tmux::Control> {
         unsafe ptr_write(handle, move value);
         return handle;
     }
-    return null_control();
+    return null;
 }
 
 export "c" fn satin_tmux_destroy(handle: ?ptr<tmux::Control>) -> void {
@@ -43,7 +33,7 @@ export "c" fn satin_tmux_destroy(handle: ?ptr<tmux::Control>) -> void {
 /// null, with length 0, when there are none or no storage.
 fn bytes_out(bytes: []u8, out_len: ?ptr<usize>) -> ?ptr<u8> {
     let length = mem::len(bytes);
-    var result = null_bytes();
+    var result: ?ptr<u8> = null;
     var written: usize = 0;
     if length > 0 {
         // SAFETY: malloc returns length bytes of storage or null.
@@ -88,7 +78,7 @@ export "c" fn satin_tmux_feed(
 }
 
 export "c" fn satin_tmux_take_event_json(handle: ?ptr<tmux::Control>) -> ?ptr<u8> {
-    let live = handle orelse return null_bytes();
+    let live = handle orelse return null;
     let allocator = mem::page_allocator();
     var event = string::new(allocator);
     defer event.deinit(allocator);
@@ -101,7 +91,7 @@ export "c" fn satin_tmux_take_event_json(handle: ?ptr<tmux::Control>) -> ?ptr<u8
         }
     } else |_| {}
     if !taken {
-        return null_bytes();
+        return null;
     }
     let bytes = event.as_bytes();
     return c_string_out(bytes);

@@ -1,0 +1,229 @@
+import std::mem;
+import std::string;
+import std::testing;
+
+fn test_size() -> GridSize {
+    return GridSize { rows: 24, cols: 80, pixel_width: 800, pixel_height: 480 };
+}
+
+/// text with `^` read as ESC, `~` as BEL and `$` as CR LF.
+fn marked(allocator: Allocator, text: []u8) -> mem::Error!string::String {
+    var out = string::new(allocator);
+    errdefer out.deinit(allocator);
+    for 0..mem::len(text) |index| {
+        if text[index] == cast<u8>(94) {
+            try out.append_byte(allocator, 27);
+        } else if text[index] == cast<u8>(126) {
+            try out.append_byte(allocator, 7);
+        } else if text[index] == cast<u8>(36) {
+            try out.append_byte(allocator, 13);
+            try out.append_byte(allocator, 10);
+        } else {
+            try out.append_byte(allocator, text[index]);
+        }
+    }
+    return move out;
+}
+
+fn feed(allocator: Allocator, runtime: &var Runtime, text: []u8, replies: &var string::String) -> !void {
+    let input = try marked(allocator, text);
+    defer input.deinit(allocator);
+    let bytes = input.as_bytes();
+    try runtime.feed_external(allocator, bytes, replies);
+    return;
+}
+
+fn project(allocator: Allocator, runtime: &var Runtime, text: []u8) -> !void {
+    let input = try marked(allocator, text);
+    defer input.deinit(allocator);
+    let bytes = input.as_bytes();
+    try runtime.feed_tmux_projection(allocator, bytes);
+    return;
+}
+
+fn screen_has(allocator: Allocator, runtime: &var Runtime, needle: []u8) -> !bool {
+    var text = string::new(allocator);
+    defer text.deinit(allocator);
+    try runtime.screen_text(allocator, &var text);
+    let bytes = text.as_bytes();
+    return find_bytes(bytes, needle, 0) >= 0;
+}
+
+fn newline() -> []u8 {
+    return
+        \\
+        \\
+    ;
+}
+
+fn prompt_is(runtime: &Runtime, expected: ShellPromptState) -> bool {
+    if runtime.tmux_shell_prompt_state() |state| {
+        return state == expected;
+    } else |_| {}
+    return false;
+}
+
+test "a fed terminal carries its replies and bells" {
+    let allocator = mem::page_allocator();
+    var runtime = try external_runtime(allocator, test_size());
+    defer runtime.deinit(allocator);
+    var replies = string::new(allocator);
+    defer replies.deinit(allocator);
+    try feed(allocator, &var runtime, "^[c", &var replies);
+    let reply = replies.as_bytes();
+    testing::expect(mem::len(reply) > 3 and reply[0] == cast<u8>(27) and reply[2] == cast<u8>(63));
+    replies.clear();
+    try feed(allocator, &var runtime, "", &var replies);
+    testing::expect(replies.len() == 0);
+    try feed(allocator, &var runtime, "~ding~", &var replies);
+    testing::expect(runtime.take_bell_count() == 2);
+    testing::expect(runtime.take_bell_count() == 0);
+    testing::expect(try screen_has(allocator, &var runtime, "ding"));
+    testing::expect(runtime.wakeup_fd() == -1);
+    testing::expect(!runtime.is_exited());
+    testing::expect(!try runtime.drain(allocator));
+}
+
+test "a tmux projection drops the terminal's replies" {
+    let allocator = mem::page_allocator();
+    var runtime = try external_runtime(allocator, test_size());
+    defer runtime.deinit(allocator);
+    try project(allocator, &var runtime, "^[c");
+    var replies = string::new(allocator);
+    defer replies.deinit(allocator);
+    try feed(allocator, &var runtime, "", &var replies);
+    testing::expect(replies.len() == 0);
+}
+
+test "the prompt state follows the cursor until the shell marks its prompts" {
+    let allocator = mem::page_allocator();
+    var runtime = try external_runtime(allocator, test_size());
+    defer runtime.deinit(allocator);
+    testing::expect(prompt_is(&runtime, ShellPromptState::Waiting));
+    try project(allocator, &var runtime, "prompt> ");
+    testing::expect(prompt_is(&runtime, ShellPromptState::Ready));
+    try project(allocator, &var runtime, "$^]133;C^\");
+    testing::expect(runtime.tmux_semantic_prompt_seen());
+    testing::expect(runtime.tmux_prompt_generation() == 0);
+    testing::expect(prompt_is(&runtime, ShellPromptState::Waiting));
+    try project(allocator, &var runtime, "^]133;A^\next> ^]133;B^\");
+    testing::expect(runtime.tmux_prompt_generation() == 1);
+    testing::expect(prompt_is(&runtime, ShellPromptState::Ready));
+    runtime.reset_tmux_prompt_tracking();
+    testing::expect(!runtime.tmux_semantic_prompt_seen());
+    testing::expect(runtime.tmux_prompt_generation() == 0);
+    try project(allocator, &var runtime, "^[?1049h");
+    testing::expect(prompt_is(&runtime, ShellPromptState::Unavailable));
+}
+
+test "a fed terminal refuses what needs a child" {
+    let allocator = mem::page_allocator();
+    var runtime = try external_runtime(allocator, test_size());
+    defer runtime.deinit(allocator);
+    var refused = false;
+    if runtime.write_all("x") {} else |_| {
+        refused = true;
+    }
+    testing::expect(refused);
+    testing::expect(!runtime.interactive_shell_owns_foreground());
+    testing::expect(!try runtime.tmux_command(allocator, "list-sessions"));
+    testing::expect(!try runtime.tmux_send_bytes(allocator, 1, "x"));
+}
+
+test "a scroll region the output names animates the model" {
+    let allocator = mem::page_allocator();
+    var runtime = try external_runtime(allocator, GridSize { rows: 4, cols: 8, pixel_width: 80, pixel_height: 80 });
+    defer runtime.deinit(allocator);
+    var replies = string::new(allocator);
+    defer replies.deinit(allocator);
+    try feed(allocator, &var runtime, "^[?1049hone$two$three$status", &var replies);
+    try runtime.update_model(allocator);
+    testing::expect(!runtime.model.has_active_animation());
+    try feed(allocator, &var runtime, "^[1;3r^[H^[M^[r", &var replies);
+    try runtime.update_model(allocator);
+    testing::expect(runtime.model.scroll_position() == cast<f32>(-1.0));
+    testing::expect(runtime.model.window.margins.bottom == 1);
+    testing::expect(runtime.model.advance_animations(cast<f32>(0.016)));
+}
+
+test "scrolling the viewport is bounded by the scrollback and recorded" {
+    let allocator = mem::page_allocator();
+    var runtime = try external_runtime(allocator, GridSize { rows: 3, cols: 8, pixel_width: 80, pixel_height: 60 });
+    defer runtime.deinit(allocator);
+    var replies = string::new(allocator);
+    defer replies.deinit(allocator);
+    try feed(allocator, &var runtime, "1$2$3$4$5", &var replies);
+    try runtime.update_model(allocator);
+    testing::expect(runtime.scroll_delta(-10) == -2);
+    testing::expect(runtime.scroll_delta(-1) == 0);
+    try runtime.update_model(allocator);
+    testing::expect(runtime.model.scroll_position() == cast<f32>(2.0));
+    testing::expect(try screen_has(allocator, &var runtime, "1"));
+    runtime.finish_external_input();
+    testing::expect(!try screen_has(allocator, &var runtime, "1"));
+}
+
+test "a resize reaches the terminal and the model" {
+    let allocator = mem::page_allocator();
+    var runtime = try external_runtime(allocator, test_size());
+    defer runtime.deinit(allocator);
+    try runtime.resize(allocator, GridSize { rows: 10, cols: 40, pixel_width: 400, pixel_height: 200 });
+    try runtime.update_model(allocator);
+    testing::expect(runtime.frame.row_count() == 10);
+    testing::expect(runtime.model.window.width == 40);
+    testing::expect(runtime.model.window.height == 10);
+}
+
+test "the terminal reports the directory its shell names" {
+    let allocator = mem::page_allocator();
+    var runtime = try external_runtime(allocator, test_size());
+    defer runtime.deinit(allocator);
+    var replies = string::new(allocator);
+    defer replies.deinit(allocator);
+    var directory = string::new(allocator);
+    defer directory.deinit(allocator);
+    testing::expect(!try runtime.working_directory(allocator, &var directory));
+    try feed(allocator, &var runtime, "^]7;file://host/tmp/a%20b^\", &var replies);
+    testing::expect(try runtime.working_directory(allocator, &var directory));
+    let bytes = directory.as_bytes();
+    testing::expect(mem::equal_bytes(bytes, "/tmp/a b"));
+}
+
+test "a child's output is drained into the terminal and its exit seen" {
+    let allocator = mem::page_allocator();
+    var config = new_spawn_config(allocator);
+    defer config.deinit(allocator);
+    config.direct_startup = true;
+    config.has_cwd = true;
+    try config.cwd.append_bytes(allocator, "/tmp");
+    try append_text(allocator, &var config.startup_command, "/bin/sh");
+    try append_text(allocator, &var config.startup_command, "-c");
+    try append_text(allocator, &var config.startup_command, "printf 'hello\033[6n'; read -r reply; echo got-reply");
+    var runtime = try spawn_runtime(allocator, test_size(), &config);
+    defer runtime.deinit(allocator);
+    testing::expect(runtime.wakeup_fd() >= 0);
+    var exited = false;
+    var answered = false;
+    for 0..300 |_attempt| {
+        let _ = try runtime.drain(allocator);
+        if !exited {
+            // The shell waits for a line; the cursor report the terminal
+            // answered arrives without a newline.
+            if !answered and try screen_has(allocator, &var runtime, "hello") {
+                try runtime.write_all(newline());
+                answered = true;
+            }
+            exited = runtime.is_exited();
+            // SAFETY: sleeping takes no memory of ours.
+            let _ = unsafe usleep(10000);
+        }
+    }
+    let _ = try runtime.drain(allocator);
+    testing::expect(exited);
+    testing::expect(try screen_has(allocator, &var runtime, "got-reply"));
+    var directory = string::new(allocator);
+    defer directory.deinit(allocator);
+    testing::expect(try runtime.working_directory(allocator, &var directory));
+    let bytes = directory.as_bytes();
+    testing::expect(mem::equal_bytes(bytes, "/tmp"));
+}

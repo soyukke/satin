@@ -1,0 +1,382 @@
+// What a terminal's child process is started with: its startup command, its
+// environment, and its shell. The Rust `terminal_runtime::spawn`.
+import std::array;
+import std::mem;
+import std::string;
+
+pub error SpawnError {
+    /// The startup command is empty where one is needed, or has too many
+    /// arguments, too many bytes, an empty program, or a control character.
+    InvalidStartupCommand,
+    /// The configured shell is not an absolute path to an executable file.
+    InvalidShell,
+    /// The system gave no PTY or no child process.
+    Unavailable,
+}
+
+pub error SpawnFailure = SpawnError or mem::Error;
+
+fn max_startup_arguments() -> i64 {
+    return 256;
+}
+
+fn max_startup_bytes() -> i64 {
+    return 65536;
+}
+
+/// The application version the child reads as TERM_PROGRAM_VERSION.
+fn program_version() -> []u8 {
+    return "0.2.37";
+}
+
+/// How to start a terminal's child. cwd and shell are read only when their
+/// has_ flag is set; environment_values[i] is the value of
+/// environment_keys[i].
+pub struct SpawnConfig {
+    pub has_cwd: bool,
+    pub cwd: string::String,
+    pub has_shell: bool,
+    pub shell: string::String,
+    pub environment_keys: array::Array<string::String>,
+    pub environment_values: array::Array<string::String>,
+    pub startup_command: array::Array<string::String>,
+    pub direct_startup: bool,
+}
+
+pub fn new_spawn_config(allocator: Allocator) -> SpawnConfig {
+    return SpawnConfig {
+        has_cwd: false,
+        cwd: string::new(allocator),
+        has_shell: false,
+        shell: string::new(allocator),
+        environment_keys: array::new<string::String>(allocator),
+        environment_values: array::new<string::String>(allocator),
+        startup_command: array::new<string::String>(allocator),
+        direct_startup: false
+    };
+}
+
+pub fn (self: SpawnConfig) deinit(allocator: Allocator) -> void {
+    self.cwd.deinit(allocator);
+    self.shell.deinit(allocator);
+    self.environment_keys.deinit(allocator);
+    self.environment_values.deinit(allocator);
+    self.startup_command.deinit(allocator);
+}
+
+/// Appends a copy of text to list.
+pub fn append_text(allocator: Allocator, list: &var array::Array<string::String>, text: []u8) -> mem::Error!void {
+    var copy = try string::from_bytes(allocator, text);
+    errdefer copy.deinit(allocator);
+    try list.append(allocator, move copy);
+    return;
+}
+
+/// Copies element index of list into out; false when there is none.
+pub fn copy_text(
+    allocator: Allocator,
+    list: &array::Array<string::String>,
+    index: i64,
+    out: &var string::String
+) -> mem::Error!bool {
+    if list.at(index) |element| {
+        let bytes = element.as_bytes();
+        try out.append_bytes(allocator, bytes);
+        return true;
+    }
+    return false;
+}
+
+/// The value config's environment gives key, copied into out; false when it
+/// gives none.
+pub fn (self: &SpawnConfig) environment_value(
+    allocator: Allocator,
+    key: []u8,
+    out: &var string::String
+) -> mem::Error!bool {
+    var found: i64 = -1;
+    for 0..self.environment_keys.len() |index| {
+        if self.environment_keys.at(index) |candidate| {
+            let bytes = candidate.as_bytes();
+            if mem::equal_bytes(bytes, key) {
+                found = index;
+            }
+        }
+    }
+    if found < 0 {
+        return false;
+    }
+    return copy_text(allocator, &self.environment_values, found, out);
+}
+
+/// A process environment: `KEY=VALUE` entries, one a key.
+pub struct Environment {
+    entries: array::Array<string::String>,
+}
+
+pub fn new_environment(allocator: Allocator) -> Environment {
+    return Environment { entries: array::new<string::String>(allocator) };
+}
+
+pub fn (self: Environment) deinit(allocator: Allocator) -> void {
+    self.entries.deinit(allocator);
+}
+
+pub fn (self: &Environment) len() -> i64 {
+    return self.entries.len();
+}
+
+/// Whether entry is `key=...`.
+fn entry_has_key(entry: []u8, key: []u8) -> bool {
+    let length = mem::len(key);
+    return mem::len(entry) > length and mem::starts_with(entry, key) and entry[length] == cast<u8>(61);
+}
+
+fn (self: &Environment) index_of(key: []u8) -> i64 {
+    var found: i64 = -1;
+    for 0..self.entries.len() |index| {
+        if self.entries.at(index) |entry| {
+            let bytes = entry.as_bytes();
+            if entry_has_key(bytes, key) {
+                found = index;
+            }
+        }
+    }
+    return found;
+}
+
+/// Removes key; nothing when it is not set.
+pub fn (self: &var Environment) remove(allocator: Allocator, key: []u8) -> void {
+    let index = self.index_of(key);
+    if index < 0 {
+        return;
+    }
+    if self.entries.remove(index) |entry| {
+        entry.deinit(allocator);
+    } else |_| {}
+    return;
+}
+
+/// Sets key to value, replacing what it was.
+pub fn (self: &var Environment) set(allocator: Allocator, key: []u8, value: []u8) -> mem::Error!void {
+    var entry = try string::from_bytes(allocator, key);
+    errdefer entry.deinit(allocator);
+    try entry.append_byte(allocator, 61);
+    try entry.append_bytes(allocator, value);
+    self.remove(allocator, key);
+    try self.entries.append(allocator, move entry);
+    return;
+}
+
+/// Adds a `KEY=VALUE` entry as it is, replacing the key's old entry. An
+/// entry with no `=` is dropped.
+pub fn (self: &var Environment) add_entry(allocator: Allocator, entry: []u8) -> mem::Error!void {
+    let split = find_bytes(entry, "=", 0);
+    if split <= 0 {
+        return;
+    }
+    return self.set(allocator, entry[0..split], entry[split + 1..mem::len(entry)]);
+}
+
+/// Copies key's value into out; false when key is not set.
+pub fn (self: &Environment) value(allocator: Allocator, key: []u8, out: &var string::String) -> mem::Error!bool {
+    let index = self.index_of(key);
+    if index < 0 {
+        return false;
+    }
+    if self.entries.at(index) |entry| {
+        let bytes = entry.as_bytes();
+        try out.append_bytes(allocator, bytes[mem::len(key) + 1..mem::len(bytes)]);
+        return true;
+    }
+    return false;
+}
+
+/// Copies entry index into out; false when there is none.
+pub fn (self: &Environment) entry(allocator: Allocator, index: i64, out: &var string::String) -> mem::Error!bool {
+    return copy_text(allocator, &self.entries, index, out);
+}
+
+/// Whether a host-supplied variable may reach the child: the application's
+/// own, and PATH.
+pub fn allowed_environment_key(key: []u8) -> bool {
+    return mem::starts_with(key, "SATIN_") or mem::starts_with(key, "NVTERM_") or mem::equal_bytes(key, "PATH");
+}
+
+/// The locale a terminal runs in: lang when it is a UTF-8 one, else Japanese
+/// UTF-8.
+pub fn terminal_locale(lang: []u8) -> []u8 {
+    let marker = "UTF-8";
+    var index: i64 = 0;
+    while index + mem::len(marker) <= mem::len(lang) {
+        var matches = true;
+        for 0..mem::len(marker) |offset| {
+            var byte = cast<i64>(lang[index + offset]);
+            if byte >= 97 and byte <= 122 {
+                byte = byte - 32;
+            }
+            if byte != cast<i64>(marker[offset]) {
+                matches = false;
+            }
+        }
+        if matches {
+            return lang;
+        }
+        index = index + 1;
+    }
+    return "ja_JP.UTF-8";
+}
+
+/// The first of the three that is not empty, else `/tmp`: the directory zsh
+/// reads the user's own startup files from.
+pub fn resolve_user_zdotdir(satin_user_zdotdir: []u8, zdotdir: []u8, home: []u8) -> []u8 {
+    if mem::len(satin_user_zdotdir) > 0 {
+        return satin_user_zdotdir;
+    }
+    if mem::len(zdotdir) > 0 {
+        return zdotdir;
+    }
+    if mem::len(home) > 0 {
+        return home;
+    }
+    return "/tmp";
+}
+
+/// Whether path's last component is name.
+pub fn file_name_is(path: []u8, name: []u8) -> bool {
+    var start: i64 = 0;
+    for 0..mem::len(path) |index| {
+        if path[index] == cast<u8>(47) {
+            start = index + 1;
+        }
+    }
+    return mem::equal_bytes(path[start..mem::len(path)], name);
+}
+
+/// Sets what every terminal child reads: its directory, locale, terminal
+/// type, shell, and the host's own variables from config.
+pub fn configure_terminal_environment(
+    allocator: Allocator,
+    environment: &var Environment,
+    config: &SpawnConfig,
+    shell: []u8,
+    cwd: []u8,
+    lang: []u8
+) -> mem::Error!void {
+    if mem::len(cwd) > 0 {
+        try environment.set(allocator, "PWD", cwd);
+    }
+    let locale = terminal_locale(lang);
+    environment.remove(allocator, "LC_ALL");
+    // Launcher-side presentation preferences describe the parent process, not
+    // the new terminal. Shell startup files can still opt back into NO_COLOR.
+    environment.remove(allocator, "NO_COLOR");
+    try environment.set(allocator, "LANG", locale);
+    try environment.set(allocator, "LC_CTYPE", locale);
+    try environment.set(allocator, "TERM", "xterm-256color");
+    try environment.set(allocator, "COLORTERM", "truecolor");
+    try environment.set(allocator, "TERM_PROGRAM", "satin");
+    try environment.set(allocator, "TERM_PROGRAM_VERSION", program_version());
+    try environment.set(allocator, "SHELL", shell);
+    try environment.set(allocator, "SATIN_PROTO", "libghostty-vt");
+    try environment.set(allocator, "NVTERM_PROTO", "libghostty-vt");
+    for 0..config.environment_keys.len() |index| {
+        var key = string::new(allocator);
+        defer key.deinit(allocator);
+        var value = string::new(allocator);
+        defer value.deinit(allocator);
+        let _ = try copy_text(allocator, &config.environment_keys, index, &var key);
+        let _ = try copy_text(allocator, &config.environment_values, index, &var value);
+        let key_bytes = key.as_bytes();
+        let value_bytes = value.as_bytes();
+        if allowed_environment_key(key_bytes) {
+            try environment.set(allocator, key_bytes, value_bytes);
+        }
+    }
+    try environment.set(allocator, "SATIN_SHELL_EXECUTABLE", shell);
+    return;
+}
+
+fn has_control_character(text: []u8) -> bool {
+    var index: i64 = 0;
+    while index < mem::len(text) {
+        let scalar = decode_scalar(text, index);
+        index = index + scalar.length;
+        if scalar.value < 32 or (scalar.value >= 127 and scalar.value < 160) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/// Checks a startup command. False when it is empty, which is no command.
+pub fn validate_startup_command(arguments: &array::Array<string::String>) -> SpawnError!bool {
+    if arguments.len() == 0 {
+        return false;
+    }
+    if arguments.len() > max_startup_arguments() {
+        return SpawnError::InvalidStartupCommand;
+    }
+    var total: i64 = 0;
+    for 0..arguments.len() |index| {
+        if arguments.at(index) |argument| {
+            let bytes = argument.as_bytes();
+            total = total + mem::len(bytes) + 1;
+            if index == 0 and mem::len(bytes) == 0 {
+                return SpawnError::InvalidStartupCommand;
+            }
+            if has_control_character(bytes) {
+                return SpawnError::InvalidStartupCommand;
+            }
+        }
+    }
+    if total > max_startup_bytes() {
+        return SpawnError::InvalidStartupCommand;
+    }
+    return true;
+}
+
+/// Appends value in single quotes, as one shell word.
+fn append_shell_quoted(allocator: Allocator, out: &var string::String, value: []u8) -> mem::Error!void {
+    try out.append_byte(allocator, 39);
+    for 0..mem::len(value) |index| {
+        if value[index] == cast<u8>(39) {
+            try out.append_byte(allocator, 39);
+            try out.append_byte(allocator, 92);
+            try out.append_byte(allocator, 39);
+            try out.append_byte(allocator, 39);
+        } else {
+            try out.append_byte(allocator, value[index]);
+        }
+    }
+    try out.append_byte(allocator, 39);
+    return;
+}
+
+/// Appends what to type at the shell to run the startup command and exit
+/// with its status. False when there is no command.
+pub fn startup_command_input(
+    allocator: Allocator,
+    arguments: &array::Array<string::String>,
+    out: &var string::String
+) -> SpawnFailure!bool {
+    if !try validate_startup_command(arguments) {
+        return false;
+    }
+    let before = out.len();
+    for 0..arguments.len() |index| {
+        if index > 0 {
+            try out.append_byte(allocator, 32);
+        }
+        if arguments.at(index) |argument| {
+            let bytes = argument.as_bytes();
+            try append_shell_quoted(allocator, out, bytes);
+        }
+    }
+    try out.append_bytes(allocator, "; exit $?");
+    try out.append_byte(allocator, 13);
+    if out.len() - before > max_startup_bytes() {
+        return SpawnError::InvalidStartupCommand;
+    }
+    return true;
+}

@@ -93,6 +93,22 @@ pub fn new_tracker(allocator: Allocator, pane: i64) -> ScrollTracker {
     };
 }
 
+/// Forgets the sequence in progress and the scroll region, as a fresh
+/// tracker would.
+pub fn (self: &var ScrollTracker) reset() -> void {
+    self.state = ScrollState::Ground;
+    self.first = 0;
+    self.second = 0;
+    self.first_present = false;
+    self.second_present = false;
+    self.parameter_index = 0;
+    self.csi_valid = false;
+    self.has_scroll_region = false;
+    self.scroll_region = no_region();
+    self.osc_payload.clear();
+    self.osc_valid = true;
+}
+
 /// Feeds bytes and returns the scroll they carried. Scrolls in one region
 /// add up; a scroll in another region replaces what came before it.
 pub fn (self: &var ScrollTracker) feed(allocator: Allocator, bytes: []u8) -> mem::Error!ScrollUpdate {

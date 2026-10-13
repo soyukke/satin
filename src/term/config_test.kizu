@@ -1,0 +1,42 @@
+import std::mem;
+import std::testing;
+
+test "reads a spawn configuration with every key" {
+    let allocator = mem::page_allocator();
+    let config = try spawn_config_from_json(allocator,
+        \\{"cwd":"/tmp","shell":"/bin/zsh","environment":{"A":"1","B":"two"},
+        \\ "startup_command":["nvim","a b"],"direct_startup":true,"later":1}
+    );
+    defer config.deinit(allocator);
+    testing::expect(config.has_cwd and config.has_shell and config.direct_startup);
+    let cwd = config.cwd.as_bytes();
+    testing::expect(mem::equal_bytes(cwd, "/tmp"));
+    testing::expect(config.environment_keys.len() == 2);
+    testing::expect(config.environment_values.len() == 2);
+    testing::expect(config.startup_command.len() == 2);
+    var second = false;
+    if config.startup_command.at(1) |argument| {
+        let text = argument.as_bytes();
+        second = mem::equal_bytes(text, "a b");
+    }
+    testing::expect(second);
+}
+
+test "an empty spawn configuration is the default" {
+    let allocator = mem::page_allocator();
+    let config = try spawn_config_from_json(allocator, "{}");
+    defer config.deinit(allocator);
+    testing::expect(!config.has_cwd and !config.has_shell and !config.direct_startup);
+    testing::expect(config.startup_command.len() == 0);
+}
+
+test "a spawn configuration that is not JSON is refused" {
+    let allocator = mem::page_allocator();
+    var refused = false;
+    if spawn_config_from_json(allocator, "{nope") |config| {
+        config.deinit(allocator);
+    } else |_| {
+        refused = true;
+    }
+    testing::expect(refused);
+}

@@ -1,0 +1,657 @@
+// One frame of a terminal's viewport: every cell's text, colors and style,
+// the cursor, and the scrollbar. The Rust `TerminalFrameRenderer`.
+import std::array;
+import std::mem;
+import std::string;
+
+pub struct Color {
+    pub r: u8,
+    pub g: u8,
+    pub b: u8,
+}
+
+pub fn same_color(first: Color, second: Color) -> bool {
+    return first.r == second.r and first.g == second.g and first.b == second.b;
+}
+
+pub enum Underline {
+    None,
+    Single,
+    Double,
+    Curly,
+    Dotted,
+    Dashed,
+}
+
+pub struct CellStyle {
+    pub bold: bool,
+    pub italic: bool,
+    pub underline: Underline,
+    pub has_underline_color: bool,
+    pub underline_color: Color,
+    pub faint: bool,
+    pub blink: bool,
+    pub strikethrough: bool,
+    pub overline: bool,
+}
+
+/// One cell. Its text is text_len bytes of the frame's text at text_start;
+/// bg is read only when has_bg is set, and is never the frame's background.
+pub struct Cell {
+    pub text_start: i64,
+    pub text_len: i64,
+    pub fg: Color,
+    pub has_bg: bool,
+    pub bg: Color,
+    pub blend: u8,
+    pub style: CellStyle,
+}
+
+pub enum CursorShape {
+    Block,
+    Bar,
+    Underline,
+}
+
+pub struct Cursor {
+    pub x: i64,
+    pub y: i64,
+    pub shape: CursorShape,
+}
+
+pub struct Scrollbar {
+    pub top: u64,
+    pub visible: u64,
+    pub total: u64,
+}
+
+/// A collected frame. Row r holds the cells from row_ends[r - 1] (zero for
+/// the first row) up to row_ends[r].
+pub struct Frame {
+    pub cells: array::Array<Cell>,
+    pub row_ends: array::Array<i64>,
+    pub text: string::String,
+    pub background: Color,
+    pub cursor_color: Color,
+    pub has_cursor: bool,
+    pub cursor: Cursor,
+    pub scrollbar: Scrollbar,
+    pub alternate: bool,
+}
+
+fn black() -> Color {
+    return Color { r: 0, g: 0, b: 0 };
+}
+
+pub fn new_frame(allocator: Allocator) -> Frame {
+    return Frame {
+        cells: array::new<Cell>(allocator),
+        row_ends: array::new<i64>(allocator),
+        text: string::new(allocator),
+        background: black(),
+        cursor_color: black(),
+        has_cursor: false,
+        cursor: Cursor { x: 0, y: 0, shape: CursorShape::Block },
+        scrollbar: Scrollbar { top: 0, visible: 0, total: 0 },
+        alternate: false
+    };
+}
+
+pub fn (self: Frame) deinit(allocator: Allocator) -> void {
+    self.cells.deinit(allocator);
+    self.row_ends.deinit(allocator);
+    self.text.deinit(allocator);
+}
+
+pub fn (self: &Frame) row_count() -> i64 {
+    return self.row_ends.len();
+}
+
+/// Where row's cells start in cells.
+pub fn (self: &Frame) row_start(row: i64) -> i64 {
+    if row <= 0 {
+        return 0;
+    }
+    return self.row_ends.get(row - 1) orelse self.cells.len();
+}
+
+/// One past row's last cell in cells.
+pub fn (self: &Frame) row_end(row: i64) -> i64 {
+    return self.row_ends.get(row) orelse self.cells.len();
+}
+
+/// Appends the frame's text to out, one line a row, each without its
+/// trailing blanks.
+pub fn (self: &Frame) screen_text(allocator: Allocator, out: &var string::String) -> mem::Error!void {
+    let cells = self.cells.as_slice();
+    let text = self.text.as_bytes();
+    for 0..self.row_count() |row| {
+        if row > 0 {
+            try out.append_byte(allocator, 10);
+        }
+        let start = self.row_start(row);
+        let end = self.row_end(row);
+        if end <= start {
+            continue;
+        }
+        let first = cells[start];
+        let last = cells[end - 1];
+        let line = text[first.text_start..last.text_start + last.text_len];
+        var length = mem::len(line);
+        while length > 0 and cast<i64>(line[length - 1]) <= 32 {
+            length = length - 1;
+        }
+        try out.append_bytes(allocator, line[0..length]);
+    }
+    return;
+}
+
+fn render_data_color_background() -> i32 {
+    return 5;
+}
+
+fn render_data_color_foreground() -> i32 {
+    return 6;
+}
+
+fn render_data_color_cursor() -> i32 {
+    return 7;
+}
+
+fn render_data_color_cursor_has_value() -> i32 {
+    return 8;
+}
+
+fn render_data_row_iterator() -> i32 {
+    return 4;
+}
+
+fn render_data_cursor_visual_style() -> i32 {
+    return 10;
+}
+
+fn render_data_cursor_visible() -> i32 {
+    return 11;
+}
+
+fn render_data_cursor_viewport_has_value() -> i32 {
+    return 14;
+}
+
+fn render_data_cursor_viewport_x() -> i32 {
+    return 15;
+}
+
+fn render_data_cursor_viewport_y() -> i32 {
+    return 16;
+}
+
+fn row_data_cells() -> i32 {
+    return 3;
+}
+
+fn row_data_selection() -> i32 {
+    return 4;
+}
+
+fn cell_data_style() -> i32 {
+    return 2;
+}
+
+fn cell_data_bg_color() -> i32 {
+    return 5;
+}
+
+fn cell_data_fg_color() -> i32 {
+    return 6;
+}
+
+fn cell_data_graphemes_utf8() -> i32 {
+    return 9;
+}
+
+fn terminal_data_active_screen() -> i32 {
+    return 6;
+}
+
+fn terminal_data_scrollbar() -> i32 {
+    return 9;
+}
+
+/// `GHOSTTY_OUT_OF_SPACE`.
+fn out_of_space() -> i32 {
+    return -3;
+}
+
+/// The bytes the text buffer starts with; a grapheme cluster rarely needs more.
+fn text_bytes() -> usize {
+    return 256;
+}
+
+/// The libghostty render state and iterators a frame is collected through,
+/// which outlive each collect so libghostty keeps its row cache.
+///
+/// state, rows and cells are live libghostty handles; slot is a Slot; text is
+/// text_cap bytes of malloc storage. All five are freed by deinit, once.
+pub unsafe struct FrameRenderer {
+    state: ptr<u8>,
+    rows: ptr<u8>,
+    cells: ptr<u8>,
+    slot: ptr<u8>,
+    text: ptr<u8>,
+    text_cap: usize,
+}
+
+/// A handle from one of libghostty's `*_new` calls; null when it made none.
+fn new_render_handle(slot: ptr<u8>, kind: i64) -> ?ptr<u8> {
+    set_slot_usize(slot, 0);
+    var result: i32 = 0;
+    if kind == 0 {
+        // SAFETY: the slot holds one writable handle; a null allocator is libghostty's own.
+        result = unsafe ghostty_render_state_new(null, slot);
+    } else if kind == 1 {
+        // SAFETY: as above.
+        result = unsafe ghostty_render_state_row_iterator_new(null, slot);
+    } else {
+        // SAFETY: as above.
+        result = unsafe ghostty_render_state_row_cells_new(null, slot);
+    }
+    if result != success() {
+        return null;
+    }
+    return slot_handle(slot);
+}
+
+pub fn new_frame_renderer() -> GhosttyError!FrameRenderer {
+    let slot = new_slot() orelse return GhosttyError::Refused;
+    // SAFETY: malloc returns text_bytes() of storage or null.
+    let text = unsafe malloc(text_bytes());
+    let state = new_render_handle(slot, 0);
+    let rows = new_render_handle(slot, 1);
+    let cells = new_render_handle(slot, 2);
+    if text |text_live| {
+        if state |state_live| {
+            if rows |rows_live| {
+                if cells |cells_live| {
+                    // SAFETY: each handle is live and each block is malloc storage of its size.
+                    return unsafe FrameRenderer {
+                        state: state_live,
+                        rows: rows_live,
+                        cells: cells_live,
+                        slot: slot,
+                        text: text_live,
+                        text_cap: text_bytes()
+                    };
+                }
+            }
+        }
+    }
+    if cells |live| {
+        // SAFETY: live came from row_cells_new and nothing holds it.
+        unsafe ghostty_render_state_row_cells_free(live);
+    }
+    if rows |live| {
+        // SAFETY: live came from row_iterator_new and nothing holds it.
+        unsafe ghostty_render_state_row_iterator_free(live);
+    }
+    if state |live| {
+        // SAFETY: live came from render_state_new and nothing holds it.
+        unsafe ghostty_render_state_free(live);
+    }
+    if text |live| {
+        // SAFETY: live came from malloc and holds nothing.
+        unsafe free(live);
+    }
+    // SAFETY: the slot came from malloc and nothing reads it after this.
+    unsafe free(slot);
+    return GhosttyError::Refused;
+}
+
+pub fn (self: FrameRenderer) deinit() -> void {
+    // SAFETY: the cells handle is live and freed once, here.
+    unsafe ghostty_render_state_row_cells_free(self.cells);
+    // SAFETY: the row iterator is live and freed once, here.
+    unsafe ghostty_render_state_row_iterator_free(self.rows);
+    // SAFETY: the render state is live and freed once, here.
+    unsafe ghostty_render_state_free(self.state);
+    // SAFETY: the text buffer came from malloc and nothing reads it after this.
+    unsafe free(self.text);
+    // SAFETY: the slot came from malloc and nothing reads it after this.
+    unsafe free(self.slot);
+}
+
+fn color_of(rgb: Rgb) -> Color {
+    return Color { r: rgb.r, g: rgb.g, b: rgb.b };
+}
+
+/// The selection highlight over background, each channel saturating.
+fn selection_color(background: Color) -> Color {
+    return Color {
+        r: saturating_add(background.r, 42),
+        g: saturating_add(background.g, 68),
+        b: saturating_add(background.b, 96)
+    };
+}
+
+fn saturating_add(value: u8, amount: i64) -> u8 {
+    let sum = cast<i64>(value) + amount;
+    if sum > 255 {
+        return 255;
+    }
+    return cast<u8>(sum);
+}
+
+/// Foreground at 55% over background, which is how a faint cell draws.
+fn faint_color(foreground: Color, background: Color) -> Color {
+    return Color {
+        r: faint_channel(foreground.r, background.r),
+        g: faint_channel(foreground.g, background.g),
+        b: faint_channel(foreground.b, background.b)
+    };
+}
+
+fn faint_channel(foreground: u8, background: u8) -> u8 {
+    let mixed = (cast<i64>(foreground) * 55 + cast<i64>(background) * 45 + 50) / 100;
+    return cast<u8>(mixed);
+}
+
+fn underline_of(value: i32) -> Underline {
+    if value == 0 {
+        return Underline::None;
+    }
+    if value == 2 {
+        return Underline::Double;
+    }
+    if value == 3 {
+        return Underline::Curly;
+    }
+    if value == 4 {
+        return Underline::Dotted;
+    }
+    if value == 5 {
+        return Underline::Dashed;
+    }
+    return Underline::Single;
+}
+
+/// A render-state value, written to the slot; false when there is none.
+fn (self: &FrameRenderer) get(data: i32) -> bool {
+    // SAFETY: the state is live and the slot holds any value this reads.
+    let result = unsafe ghostty_render_state_get(self.state, data, self.slot);
+    return result == success();
+}
+
+/// A value of the cell the iterator is on, written to the slot; false when
+/// the cell has none.
+fn (self: &FrameRenderer) get_cell(data: i32) -> bool {
+    // SAFETY: the cells handle is on a cell and the slot holds any value this reads.
+    let result = unsafe ghostty_render_state_row_cells_get(self.cells, data, self.slot);
+    return result == success();
+}
+
+fn (self: &FrameRenderer) color(data: i32) -> GhosttyError!Color {
+    if !self.get(data) {
+        return GhosttyError::Refused;
+    }
+    return color_of(slot_rgb(self.slot));
+}
+
+/// Collects terminal's viewport into frame, replacing what it held.
+///
+/// terminal must be a live libghostty terminal.
+pub unsafe fn(self: &var FrameRenderer) collect(
+    allocator: Allocator,
+    terminal: ptr<u8>,
+    frame: &var Frame
+) -> Failure!void {
+    frame.cells.clear(allocator);
+    frame.row_ends.clear(allocator);
+    frame.text.clear();
+    // SAFETY: the caller passes a live terminal; the slot holds a scrollbar.
+    let scrollbar_result = unsafe ghostty_terminal_get(terminal, terminal_data_scrollbar(), self.slot);
+    if scrollbar_result != success() {
+        return GhosttyError::Refused;
+    }
+    // SAFETY: libghostty wrote a scrollbar to the slot.
+    let scrollbar = unsafe ptr_read(cast<ptr<TerminalScrollbar>>(self.slot));
+    frame.scrollbar = Scrollbar { top: scrollbar.offset, visible: scrollbar.len, total: scrollbar.total };
+    // SAFETY: the state and the caller's terminal are live.
+    let update_result = unsafe ghostty_render_state_update(self.state, terminal);
+    if update_result != success() {
+        return GhosttyError::Refused;
+    }
+    let background = try self.color(render_data_color_background());
+    let foreground = try self.color(render_data_color_foreground());
+    frame.background = background;
+    frame.cursor_color = foreground;
+    if self.get(render_data_color_cursor_has_value()) and slot_bool(self.slot) {
+        frame.cursor_color = try self.color(render_data_color_cursor());
+    }
+    self.collect_cursor(frame);
+    try self.collect_rows(allocator, frame, foreground, background);
+    set_slot_usize(self.slot, 0);
+    // SAFETY: the state is live; the slot holds the dirty value, false.
+    let clean_result = unsafe ghostty_render_state_set(self.state, 0, self.slot);
+    if clean_result != success() {
+        return GhosttyError::Refused;
+    }
+    // SAFETY: the caller's terminal is live; the slot holds a screen value.
+    let screen_result = unsafe ghostty_terminal_get(terminal, terminal_data_active_screen(), self.slot);
+    if screen_result != success() {
+        return GhosttyError::Refused;
+    }
+    frame.alternate = slot_i32(self.slot) == 1;
+    return;
+}
+
+fn (self: &FrameRenderer) collect_cursor(frame: &var Frame) -> void {
+    frame.has_cursor = false;
+    if !self.get(render_data_cursor_visible()) or !slot_bool(self.slot) {
+        return;
+    }
+    if !self.get(render_data_cursor_viewport_has_value()) or !slot_bool(self.slot) {
+        return;
+    }
+    if !self.get(render_data_cursor_viewport_x()) {
+        return;
+    }
+    let x = cast<i64>(slot_u16(self.slot));
+    if !self.get(render_data_cursor_viewport_y()) {
+        return;
+    }
+    let y = cast<i64>(slot_u16(self.slot));
+    var shape = CursorShape::Block;
+    if self.get(render_data_cursor_visual_style()) {
+        let style = slot_i32(self.slot);
+        if style == 0 {
+            shape = CursorShape::Bar;
+        } else if style == 2 {
+            shape = CursorShape::Underline;
+        }
+    }
+    frame.has_cursor = true;
+    frame.cursor = Cursor { x: x, y: y, shape: shape };
+    return;
+}
+
+fn (self: &var FrameRenderer) collect_rows(
+    allocator: Allocator,
+    frame: &var Frame,
+    foreground: Color,
+    background: Color
+) -> Failure!void {
+    set_slot_handle(self.slot, self.rows);
+    if !self.get(render_data_row_iterator()) {
+        return GhosttyError::Refused;
+    }
+    // SAFETY: the row iterator is live and was filled from the state above.
+    while unsafe ghostty_render_state_row_iterator_next(self.rows) {
+        try self.collect_cells(allocator, frame, foreground, background);
+        try frame.row_ends.append(allocator, frame.cells.len());
+        set_slot_usize(self.slot, 0);
+        // SAFETY: the iterator is on a row; the slot holds the dirty value, false.
+        let clean_result = unsafe ghostty_render_state_row_set(self.rows, 0, self.slot);
+        if clean_result != success() {
+            return GhosttyError::Refused;
+        }
+    }
+    return;
+}
+
+/// Appends the cells of the row the iterator is on.
+fn (self: &var FrameRenderer) collect_cells(
+    allocator: Allocator,
+    frame: &var Frame,
+    foreground: Color,
+    background: Color
+) -> Failure!void {
+    var selected = false;
+    var selection_start: i64 = 0;
+    var selection_end: i64 = 0;
+    let selection_size = mem::size_of<RowSelection>();
+    // SAFETY: the slot is writable storage larger than a RowSelection.
+    unsafe ptr_write(cast<ptr<RowSelection>>(self.slot), RowSelection { size: selection_size, start_x: 0, end_x: 0 });
+    // SAFETY: the iterator is on a row; the slot holds a sized RowSelection.
+    let selection_result = unsafe ghostty_render_state_row_get(self.rows, row_data_selection(), self.slot);
+    if selection_result == success() {
+        // SAFETY: libghostty wrote a RowSelection to the slot.
+        let selection = unsafe ptr_read(cast<ptr<RowSelection>>(self.slot));
+        selected = true;
+        selection_start = cast<i64>(selection.start_x);
+        selection_end = cast<i64>(selection.end_x);
+    }
+    set_slot_handle(self.slot, self.cells);
+    // SAFETY: the iterator is on a row; the slot holds the cells handle to fill.
+    let cells_result = unsafe ghostty_render_state_row_get(self.rows, row_data_cells(), self.slot);
+    if cells_result != success() {
+        return GhosttyError::Refused;
+    }
+    var column: i64 = 0;
+    // SAFETY: the cells handle is live and was filled from the row above.
+    while unsafe ghostty_render_state_row_cells_next(self.cells) {
+        var cell = try self.collect_cell(allocator, frame, foreground, background);
+        if selected and column >= selection_start and column <= selection_end {
+            cell.has_bg = true;
+            cell.bg = selection_color(background);
+        }
+        try frame.cells.append(allocator, cell);
+        column = column + 1;
+    }
+    return;
+}
+
+/// Reads the cell the iterator is on, appending its text to the frame's.
+fn (self: &var FrameRenderer) collect_cell(
+    allocator: Allocator,
+    frame: &var Frame,
+    default_foreground: Color,
+    background: Color
+) -> Failure!Cell {
+    clear_slot(self.slot);
+    set_slot_usize(self.slot, mem::size_of<Style>());
+    if !self.get_cell(cell_data_style()) {
+        return GhosttyError::Refused;
+    }
+    // SAFETY: libghostty wrote a Style to the slot.
+    let style = unsafe ptr_read(cast<ptr<Style>>(self.slot));
+    let text_start = frame.text.len();
+    if !style.invisible {
+        try self.append_text(allocator, frame);
+    }
+    var fg = default_foreground;
+    if self.get_cell(cell_data_fg_color()) {
+        fg = color_of(slot_rgb(self.slot));
+    }
+    var has_bg = false;
+    var bg = background;
+    if self.get_cell(cell_data_bg_color()) {
+        has_bg = true;
+        bg = color_of(slot_rgb(self.slot));
+    }
+    if style.inverse {
+        let inverse_bg = fg;
+        fg = default_foreground;
+        if has_bg {
+            fg = bg;
+        }
+        has_bg = true;
+        bg = inverse_bg;
+    }
+    if style.faint {
+        fg = faint_color(fg, background);
+    }
+    if has_bg and same_color(bg, background) {
+        has_bg = false;
+    }
+    var has_underline_color = false;
+    var underline_color = black();
+    if style.underline_color.tag == 2 {
+        has_underline_color = true;
+        let value = style.underline_color.value;
+        underline_color = Color {
+            r: cast<u8>(value & 255),
+            g: cast<u8>((value >> 8) & 255),
+            b: cast<u8>((value >> 16) & 255)
+        };
+    }
+    return Cell {
+        text_start: text_start,
+        text_len: frame.text.len() - text_start,
+        fg: fg,
+        has_bg: has_bg,
+        bg: bg,
+        blend: 0,
+        style: CellStyle {
+            bold: style.bold,
+            italic: style.italic,
+            underline: underline_of(style.underline),
+            has_underline_color: has_underline_color,
+            underline_color: underline_color,
+            faint: style.faint,
+            blink: style.blink,
+            strikethrough: style.strikethrough,
+            overline: style.overline
+        }
+    };
+}
+
+/// Appends the UTF-8 of the cell the iterator is on to the frame's text.
+fn (self: &var FrameRenderer) append_text(allocator: Allocator, frame: &var Frame) -> Failure!void {
+    var length = self.read_text();
+    if length > self.text_cap {
+        // SAFETY: malloc returns length bytes of storage or null.
+        let grown = unsafe malloc(length) orelse return mem::Error::OutOfMemory;
+        // SAFETY: the old buffer came from malloc and nothing reads it after this.
+        unsafe free(self.text);
+        // SAFETY: grown is length bytes of malloc storage, which text_cap now says.
+        unsafe self.text = grown;
+        // SAFETY: as above.
+        unsafe self.text_cap = length;
+        length = self.read_text();
+        if length > self.text_cap {
+            return GhosttyError::Refused;
+        }
+    }
+    if length == 0 {
+        return;
+    }
+    // SAFETY: libghostty wrote length bytes to the text buffer.
+    let bytes = unsafe view_from_ptr(self.text, cast<i64>(length));
+    try frame.text.append_bytes(allocator, bytes);
+    return;
+}
+
+/// Asks libghostty for the cell's UTF-8 in the text buffer. Returns the
+/// bytes it wrote, or the bytes it needs when that is more than text_cap.
+fn (self: &FrameRenderer) read_text() -> usize {
+    // SAFETY: the slot is writable storage larger than a Buffer.
+    unsafe ptr_write(cast<ptr<Buffer>>(self.slot), Buffer { data: self.text, cap: self.text_cap, len: 0 });
+    // SAFETY: the cells handle is on a cell; the slot holds a Buffer over text_cap writable bytes.
+    let result = unsafe ghostty_render_state_row_cells_get(self.cells, cell_data_graphemes_utf8(), self.slot);
+    // SAFETY: the slot still holds the Buffer, with the length libghostty wrote.
+    let buffer = unsafe ptr_read(cast<ptr<Buffer>>(self.slot));
+    if result == success() or result == out_of_space() {
+        return buffer.len;
+    }
+    return 0;
+}

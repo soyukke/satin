@@ -54,26 +54,11 @@ unsafe struct Vt {
     prompt: vt::PromptTracker,
 }
 
-fn null_vt() -> ?ptr<Vt> {
-    // SAFETY: address zero is null, which nothing dereferences.
-    return unsafe ptr_from_int<ptr<Vt>>(0);
-}
-
-fn default_allocator() -> ?ptr<u8> {
-    // SAFETY: address zero is null, which libghostty reads as its own allocator.
-    return unsafe ptr_from_int<ptr<u8>>(0);
-}
-
 /// Reads the Sink libghostty hands a callback as userdata.
 fn sink_of(userdata: ?ptr<u8>) -> ?ptr<Sink> {
-    let data = userdata orelse return none_sink();
+    let data = userdata orelse return null;
     // SAFETY: satin_vt_create set userdata to the Vt's Sink storage.
     return unsafe cast<ptr<Sink>>(data);
-}
-
-fn none_sink() -> ?ptr<Sink> {
-    // SAFETY: address zero is null, which nothing dereferences.
-    return unsafe ptr_from_int<ptr<Sink>>(0);
 }
 
 export "c" fn satin_vt_on_write_pty(
@@ -103,20 +88,20 @@ export "c" fn satin_vt_on_bell(terminal: ?ptr<u8>, userdata: ?ptr<u8>) -> void {
 /// Creates a terminal of cols x rows keeping max_scrollback lines of history.
 fn new_terminal(cols: u16, rows: u16, max_scrollback: usize) -> ?ptr<u8> {
     // SAFETY: malloc returns storage for one usize or null.
-    let storage = unsafe malloc(mem::size_of<usize>()) orelse return default_allocator();
+    let storage = unsafe malloc(mem::size_of<usize>()) orelse return null;
     // SAFETY: storage holds one usize, written below.
     let out = unsafe cast<ptr<usize>>(storage);
     // SAFETY: out is fresh storage for one usize.
     unsafe ptr_write(out, 0);
     let options = TerminalOptions { cols: cols, rows: rows, max_scrollback: max_scrollback };
-    // SAFETY: out holds one writable usize.
-    let result = unsafe ghostty_terminal_new(default_allocator(), out, options);
+    // SAFETY: out holds one writable usize; a null allocator is libghostty's own.
+    let result = unsafe ghostty_terminal_new(null, out, options);
     // SAFETY: out still holds the usize libghostty wrote, or the zero above.
     let address = unsafe ptr_read(out);
     // SAFETY: storage came from malloc and nothing reads it after this.
     unsafe free(storage);
     if result != 0 or address == 0 {
-        return default_allocator();
+        return null;
     }
     // SAFETY: address is the terminal libghostty created.
     return unsafe ptr_from_int<ptr<u8>>(address);
@@ -141,7 +126,7 @@ fn install_callbacks(terminal: ptr<u8>, sink: ptr<Sink>) -> bool {
 }
 
 export "c" fn satin_vt_create(cols: u16, rows: u16, max_scrollback: usize) -> ?ptr<Vt> {
-    let terminal = new_terminal(cols, rows, max_scrollback) orelse return null_vt();
+    let terminal = new_terminal(cols, rows, max_scrollback) orelse return null;
     // SAFETY: malloc returns storage for one Sink or null.
     let sink_storage = unsafe malloc(mem::size_of<Sink>());
     // SAFETY: malloc returns storage for one Vt or null.
@@ -168,7 +153,7 @@ export "c" fn satin_vt_create(cols: u16, rows: u16, max_scrollback: usize) -> ?p
                 return handle;
             }
             destroy(handle);
-            return null_vt();
+            return null;
         }
     }
     if sink_storage |slot| {
@@ -181,7 +166,7 @@ export "c" fn satin_vt_create(cols: u16, rows: u16, max_scrollback: usize) -> ?p
     }
     // SAFETY: terminal came from ghostty_terminal_new and nothing holds it.
     unsafe ghostty_terminal_free(terminal);
-    return null_vt();
+    return null;
 }
 
 export "c" fn satin_vt_destroy(handle: ?ptr<Vt>) -> void {
@@ -209,7 +194,7 @@ fn destroy(live: ptr<Vt>) -> void {
 
 /// The terminal, which the runtime borrows and never frees.
 export "c" fn satin_vt_terminal(handle: ?ptr<Vt>) -> ?ptr<u8> {
-    let live = handle orelse return default_allocator();
+    let live = handle orelse return null;
     // SAFETY: the runtime holds live from satin_vt_create and calls from one thread.
     let value = unsafe &live.*;
     let terminal = value.terminal;

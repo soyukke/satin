@@ -1,0 +1,211 @@
+// What a terminal's frames become for drawing: one window of retained
+// lines, scrolled by what the output and the user scrolled. The Rust
+// `TerminalRendererModel`.
+import satin::tmux;
+import std::math;
+import std::mem;
+
+fn no_scroll() -> tmux::ScrollUpdate {
+    return tmux::ScrollUpdate {
+        rows: 0,
+        has_region: false,
+        region: tmux::Region { top: 0, bottom: 0, left: 0, right: 0 }
+    };
+}
+
+fn same_region(first: &tmux::ScrollUpdate, second: &tmux::ScrollUpdate) -> bool {
+    if first.has_region != second.has_region {
+        return false;
+    }
+    if !first.has_region {
+        return true;
+    }
+    return first.region.top == second.region.top and first.region.bottom == second.region.bottom and
+        first.region.left == second.region.left and first.region.right == second.region.right;
+}
+
+/// The margins that leave region to scroll in a window of width x height;
+/// false when the region holds no cell of it.
+fn margins_for_region(region: tmux::Region, height: i64, width: i64, out: &var Margins) -> bool {
+    let top = math::max<i64>(region.top - 1, 0);
+    let bottom_row = math::min<i64>(region.bottom, height);
+    if top >= bottom_row or top >= height {
+        return false;
+    }
+    var left: i64 = 0;
+    var right: i64 = 0;
+    if region.left != 0 or region.right != 0 {
+        left = math::max<i64>(region.left - 1, 0);
+        let right_col = math::min<i64>(region.right, width);
+        if left >= right_col or left >= width {
+            return false;
+        }
+        right = math::max<i64>(width - right_col, 0);
+    }
+    out.top = top;
+    out.bottom = math::max<i64>(height - bottom_row, 0);
+    out.left = left;
+    out.right = right;
+    return true;
+}
+
+fn is_at_bottom(scrollbar: Scrollbar) -> bool {
+    return scrollbar.total <= scrollbar.visible or scrollbar.top + scrollbar.visible >= scrollbar.total;
+}
+
+pub struct RenderModel {
+    pub window: WindowCache,
+    width: i64,
+    height: i64,
+    pending: tmux::ScrollUpdate,
+    has_last_scrollbar: bool,
+    last_scrollbar: Scrollbar,
+    has_last_screen: bool,
+    last_alternate: bool,
+}
+
+pub fn new_render_model(allocator: Allocator, cols: i64, rows: i64) -> mem::Error!RenderModel {
+    return RenderModel {
+        window: try new_window_cache(allocator, cols, rows),
+        width: cols,
+        height: rows,
+        pending: no_scroll(),
+        has_last_scrollbar: false,
+        last_scrollbar: Scrollbar { top: 0, visible: 0, total: 0 },
+        has_last_screen: false,
+        last_alternate: false
+    };
+}
+
+pub fn (self: RenderModel) deinit(allocator: Allocator) -> void {
+    self.window.deinit(allocator);
+}
+
+pub fn (self: &var RenderModel) resize(allocator: Allocator, cols: i64, rows: i64) -> mem::Error!void {
+    try self.resize_window(allocator, cols, rows);
+    self.has_last_scrollbar = false;
+    return;
+}
+
+/// Records a scroll of the whole window, positive up.
+pub fn (self: &var RenderModel) record_scroll_delta(rows: i64) -> void {
+    var update = no_scroll();
+    update.rows = rows;
+    self.record_scroll_update(update);
+}
+
+/// Records a scroll for the next frame. Scrolls in one region add up; a
+/// scroll in another region replaces what came before it.
+pub fn (self: &var RenderModel) record_scroll_update(update: tmux::ScrollUpdate) -> void {
+    if update.rows == 0 {
+        return;
+    }
+    if self.pending.rows == 0 or same_region(&self.pending, &update) {
+        self.pending.rows = self.pending.rows + update.rows;
+        self.pending.has_region = update.has_region;
+        self.pending.region = update.region;
+    } else {
+        self.pending = update;
+    }
+    return;
+}
+
+/// Draws frame into the window and starts the scroll recorded since the
+/// last frame.
+pub fn (self: &var RenderModel) update(allocator: Allocator, frame: &Frame) -> mem::Error!void {
+    let height = math::max<i64>(frame.row_count(), 1);
+    var width: i64 = 1;
+    for 0..frame.row_count() |row| {
+        width = math::max<i64>(width, frame.row_end(row) - frame.row_start(row));
+    }
+    let inferred = self.inferred_output_scroll(frame);
+    if inferred != 0 {
+        // Primary-screen shell output can arrive faster than the spring can
+        // settle (holding Return is the common case). Keep the newest
+        // transition animated without accumulating a visual backlog behind
+        // the PTY's current screen.
+        self.window.reset_scroll_animation();
+        self.pending = no_scroll();
+        self.record_scroll_delta(inferred);
+    }
+    try self.resize_window(allocator, width, height);
+    if !self.has_last_screen or self.last_alternate != frame.alternate {
+        self.window.set_margins(Margins { top: 0, bottom: 0, left: 0, right: 0 });
+    }
+    self.prepare_pending_scroll_region(height);
+    try self.window.flush(allocator, 1);
+    for 0..frame.row_count() |row| {
+        let id = try self.window.line_from_frame(allocator, frame, row);
+        self.window.draw_line(allocator, row, id);
+    }
+    if self.pending.rows != 0 {
+        self.window.viewport(self.pending.rows);
+        self.pending = no_scroll();
+    }
+    try self.window.flush(allocator, 1);
+    self.has_last_scrollbar = true;
+    self.last_scrollbar = frame.scrollbar;
+    self.has_last_screen = true;
+    self.last_alternate = frame.alternate;
+    return;
+}
+
+pub fn (self: &var RenderModel) advance_animations(dt: f32) -> bool {
+    return self.window.advance_animation(dt);
+}
+
+pub fn (self: &RenderModel) has_active_animation() -> bool {
+    return self.window.has_active_animation();
+}
+
+pub fn (self: &RenderModel) scroll_position() -> f32 {
+    return self.window.spring.position;
+}
+
+fn (self: &var RenderModel) resize_window(allocator: Allocator, width: i64, height: i64) -> mem::Error!void {
+    if self.width == width and self.height == height {
+        return;
+    }
+    let width_changed = self.width != width;
+    try self.window.resize(allocator, width, height);
+    if width_changed {
+        // VT width changes reflow rows, unlike Neovim multigrid position
+        // updates, so the previous terminal scroll spring is incompatible.
+        self.window.reset_scroll_animation();
+    }
+    self.width = width;
+    self.height = height;
+    return;
+}
+
+fn (self: &var RenderModel) prepare_pending_scroll_region(height: i64) -> void {
+    if self.pending.rows == 0 {
+        return;
+    }
+    var margins = Margins { top: 0, bottom: 0, left: 0, right: 0 };
+    if self.pending.has_region {
+        if !margins_for_region(self.pending.region, height, self.width, &var margins) {
+            margins = Margins { top: 0, bottom: 0, left: 0, right: 0 };
+        }
+    }
+    let inner_height = math::max<i64>(height - margins.top - margins.bottom, 1);
+    self.pending.rows = math::clamp<i64>(self.pending.rows, 0 - inner_height, inner_height);
+    self.window.set_margins(margins);
+    return;
+}
+
+/// The rows the primary screen's output scrolled since the last frame, read
+/// from the scrollback it grew by; zero when it did not.
+fn (self: &RenderModel) inferred_output_scroll(frame: &Frame) -> i64 {
+    if frame.alternate or !is_at_bottom(frame.scrollbar) or !self.has_last_scrollbar {
+        return 0;
+    }
+    if !is_at_bottom(self.last_scrollbar) or frame.scrollbar.total <= self.last_scrollbar.total {
+        return 0;
+    }
+    // A primary-shell frame may batch many prompt redraws between display-link
+    // ticks. Animating that batch as a multi-row displacement makes the live
+    // bottom line visibly race after the PTY has already reached its newest
+    // prompt. The retained screen is current, so animate only the newest row.
+    return 1;
+}

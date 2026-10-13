@@ -1,0 +1,471 @@
+// A PNG decoder: any color type and bit depth, interlaced or not, to 8-bit
+// RGBA. What the Rust runtime used the `png` crate for, decoding the images
+// a terminal's output carries.
+import std::compress;
+import std::mem;
+import std::string;
+
+pub error PngError {
+    /// The bytes are not a PNG this decoder reads.
+    Malformed,
+    /// The image is larger than max_png_pixels().
+    TooLarge,
+}
+
+pub error PngFailure = PngError or compress::Failure;
+
+/// The pixels the decoder takes: 64 megapixels, a quarter gigabyte of RGBA.
+pub fn max_png_pixels() -> i64 {
+    return 67108864;
+}
+
+/// A PNG's header.
+struct Header {
+    width: i64,
+    height: i64,
+    depth: i64,
+    color_type: i64,
+    interlaced: bool,
+}
+
+fn be32(bytes: []u8, index: i64) -> i64 {
+    return cast<i64>(bytes[index]) * 16777216 + cast<i64>(bytes[index + 1]) * 65536 +
+        cast<i64>(bytes[index + 2]) * 256 + cast<i64>(bytes[index + 3]);
+}
+
+fn has_signature(bytes: []u8) -> bool {
+    if mem::len(bytes) < 8 {
+        return false;
+    }
+    return bytes[0] == cast<u8>(137) and bytes[1] == cast<u8>(80) and bytes[2] == cast<u8>(78) and
+        bytes[3] == cast<u8>(71) and bytes[4] == cast<u8>(13) and bytes[5] == cast<u8>(10) and
+        bytes[6] == cast<u8>(26) and bytes[7] == cast<u8>(10);
+}
+
+/// The samples a pixel of color_type has; zero for a type PNG does not define.
+fn channels_of(color_type: i64) -> i64 {
+    if color_type == 0 or color_type == 3 {
+        return 1;
+    }
+    if color_type == 2 {
+        return 3;
+    }
+    if color_type == 4 {
+        return 2;
+    }
+    if color_type == 6 {
+        return 4;
+    }
+    return 0;
+}
+
+fn depth_is_allowed(color_type: i64, depth: i64) -> bool {
+    if color_type == 0 {
+        return depth == 1 or depth == 2 or depth == 4 or depth == 8 or depth == 16;
+    }
+    if color_type == 3 {
+        return depth == 1 or depth == 2 or depth == 4 or depth == 8;
+    }
+    return depth == 8 or depth == 16;
+}
+
+/// The bytes a row of width pixels takes, without its filter byte.
+fn row_bytes(header: &Header, width: i64) -> i64 {
+    return (width * channels_of(header.color_type) * header.depth + 7) / 8;
+}
+
+/// The bytes one pixel takes, which is how far back a filter looks.
+fn pixel_bytes(header: &Header) -> i64 {
+    let bits = channels_of(header.color_type) * header.depth;
+    if bits < 8 {
+        return 1;
+    }
+    return bits / 8;
+}
+
+fn paeth(left: i64, above: i64, upper_left: i64) -> i64 {
+    let estimate = left + above - upper_left;
+    var left_distance = estimate - left;
+    if left_distance < 0 {
+        left_distance = 0 - left_distance;
+    }
+    var above_distance = estimate - above;
+    if above_distance < 0 {
+        above_distance = 0 - above_distance;
+    }
+    var upper_left_distance = estimate - upper_left;
+    if upper_left_distance < 0 {
+        upper_left_distance = 0 - upper_left_distance;
+    }
+    if left_distance <= above_distance and left_distance <= upper_left_distance {
+        return left;
+    }
+    if above_distance <= upper_left_distance {
+        return above;
+    }
+    return upper_left;
+}
+
+/// Undoes the row filters of rows rows of width row_length at start, in
+/// place. False when a row names a filter PNG does not define.
+fn unfilter(data: &var []u8, start: i64, rows: i64, row_length: i64, pixel: i64) -> bool {
+    for 0..rows |row| {
+        let position = start + row * (row_length + 1);
+        let previous = position - (row_length + 1);
+        let filter = cast<i64>(data[position]);
+        if filter > 4 {
+            return false;
+        }
+        if filter == 0 {
+            continue;
+        }
+        for 0..row_length |index| {
+            var left: i64 = 0;
+            var above: i64 = 0;
+            var upper_left: i64 = 0;
+            if index >= pixel {
+                left = cast<i64>(data[position + 1 + index - pixel]);
+            }
+            if row > 0 {
+                above = cast<i64>(data[previous + 1 + index]);
+                if index >= pixel {
+                    upper_left = cast<i64>(data[previous + 1 + index - pixel]);
+                }
+            }
+            var predicted = left;
+            if filter == 2 {
+                predicted = above;
+            } else if filter == 3 {
+                predicted = (left + above) / 2;
+            } else if filter == 4 {
+                predicted = paeth(left, above, upper_left);
+            }
+            let value = (cast<i64>(data[position + 1 + index]) + predicted) % 256;
+            data[position + 1 + index] = cast<u8>(value);
+        }
+    }
+    return true;
+}
+
+/// Sample number sample of the row at row_start, at the header's depth.
+fn sample_at(data: []u8, header: &Header, row_start: i64, sample: i64) -> i64 {
+    if header.depth == 8 {
+        return cast<i64>(data[row_start + sample]);
+    }
+    if header.depth == 16 {
+        return cast<i64>(data[row_start + sample * 2]) * 256 + cast<i64>(data[row_start + sample * 2 + 1]);
+    }
+    let bit = sample * header.depth;
+    let byte = cast<i64>(data[row_start + bit / 8]);
+    let shift = 8 - header.depth - bit % 8;
+    var mask: i64 = 1;
+    if header.depth == 2 {
+        mask = 3;
+    } else if header.depth == 4 {
+        mask = 15;
+    }
+    return (byte >> shift) & mask;
+}
+
+/// A sample as eight bits: a deeper one keeps its high byte, a shallower
+/// one spreads over the range.
+fn to_eight_bits(value: i64, depth: i64) -> u8 {
+    if depth == 16 {
+        return cast<u8>(value / 256);
+    }
+    if depth == 8 {
+        return cast<u8>(value);
+    }
+    if depth == 4 {
+        return cast<u8>(value * 17);
+    }
+    if depth == 2 {
+        return cast<u8>(value * 85);
+    }
+    return cast<u8>(value * 255);
+}
+
+/// The chunks that say how a pixel becomes RGBA: the palette, and the
+/// transparency chunk, each empty when the PNG has none.
+struct Colors {
+    palette: []u8,
+    transparency: []u8,
+}
+
+/// Whether the transparency chunk names (first, second, third) as the one
+/// fully transparent color; gray compares first alone.
+fn is_transparent_color(colors: &Colors, color_type: i64, first: i64, second: i64, third: i64) -> bool {
+    let key = colors.transparency;
+    if color_type == 0 and mem::len(key) >= 2 {
+        return first == cast<i64>(key[0]) * 256 + cast<i64>(key[1]);
+    }
+    if color_type == 2 and mem::len(key) >= 6 {
+        return first == cast<i64>(key[0]) * 256 + cast<i64>(key[1]) and
+            second == cast<i64>(key[2]) * 256 + cast<i64>(key[3]) and
+            third == cast<i64>(key[4]) * 256 + cast<i64>(key[5]);
+    }
+    return false;
+}
+
+/// Writes pixel x of the unfiltered row at row_start as RGBA at target.
+/// False when the pixel names a palette entry the PNG does not have.
+fn write_pixel(
+    out: &var []u8,
+    target: i64,
+    data: []u8,
+    header: &Header,
+    colors: &Colors,
+    row_start: i64,
+    x: i64
+) -> bool {
+    let channels = channels_of(header.color_type);
+    let first = sample_at(data, header, row_start, x * channels);
+    if header.color_type == 3 {
+        if first * 3 + 2 >= mem::len(colors.palette) {
+            return false;
+        }
+        out[target] = colors.palette[first * 3];
+        out[target + 1] = colors.palette[first * 3 + 1];
+        out[target + 2] = colors.palette[first * 3 + 2];
+        out[target + 3] = 255;
+        if first < mem::len(colors.transparency) {
+            out[target + 3] = colors.transparency[first];
+        }
+        return true;
+    }
+    if header.color_type == 0 or header.color_type == 4 {
+        let gray = to_eight_bits(first, header.depth);
+        out[target] = gray;
+        out[target + 1] = gray;
+        out[target + 2] = gray;
+        out[target + 3] = 255;
+        if header.color_type == 4 {
+            out[target + 3] = to_eight_bits(sample_at(data, header, row_start, x * channels + 1), header.depth);
+        } else if is_transparent_color(colors, 0, first, 0, 0) {
+            out[target + 3] = 0;
+        }
+        return true;
+    }
+    let second = sample_at(data, header, row_start, x * channels + 1);
+    let third = sample_at(data, header, row_start, x * channels + 2);
+    out[target] = to_eight_bits(first, header.depth);
+    out[target + 1] = to_eight_bits(second, header.depth);
+    out[target + 2] = to_eight_bits(third, header.depth);
+    out[target + 3] = 255;
+    if header.color_type == 6 {
+        out[target + 3] = to_eight_bits(sample_at(data, header, row_start, x * channels + 3), header.depth);
+    } else if is_transparent_color(colors, 2, first, second, third) {
+        out[target + 3] = 0;
+    }
+    return true;
+}
+
+/// One pass over the image: the pixels at x_start + i * x_step, y_start +
+/// j * y_step. A PNG that is not interlaced is one pass over every pixel.
+struct Pass {
+    x_start: i64,
+    y_start: i64,
+    x_step: i64,
+    y_step: i64,
+}
+
+fn adam7_pass(index: i64) -> Pass {
+    if index == 0 {
+        return Pass { x_start: 0, y_start: 0, x_step: 8, y_step: 8 };
+    }
+    if index == 1 {
+        return Pass { x_start: 4, y_start: 0, x_step: 8, y_step: 8 };
+    }
+    if index == 2 {
+        return Pass { x_start: 0, y_start: 4, x_step: 4, y_step: 8 };
+    }
+    if index == 3 {
+        return Pass { x_start: 2, y_start: 0, x_step: 4, y_step: 4 };
+    }
+    if index == 4 {
+        return Pass { x_start: 0, y_start: 2, x_step: 2, y_step: 4 };
+    }
+    if index == 5 {
+        return Pass { x_start: 1, y_start: 0, x_step: 2, y_step: 2 };
+    }
+    return Pass { x_start: 0, y_start: 1, x_step: 1, y_step: 2 };
+}
+
+/// The pixels a pass has along a side of length pixels.
+fn pass_extent(length: i64, start: i64, step: i64) -> i64 {
+    if length <= start {
+        return 0;
+    }
+    return (length - start + step - 1) / step;
+}
+
+/// Unfilters one pass of the image data at start and writes its pixels to
+/// out, whose first pixel is at offset. Returns where the next pass starts;
+/// -1 when the data is malformed.
+fn decode_pass(
+    out: &var []u8,
+    offset: i64,
+    data: &var []u8,
+    header: &Header,
+    colors: &Colors,
+    pass: Pass,
+    start: i64
+) -> i64 {
+    let width = pass_extent(header.width, pass.x_start, pass.x_step);
+    let height = pass_extent(header.height, pass.y_start, pass.y_step);
+    if width == 0 or height == 0 {
+        return start;
+    }
+    let row_length = row_bytes(header, width);
+    let end = start + height * (row_length + 1);
+    if end > mem::count<u8>(data) {
+        return -1;
+    }
+    if !unfilter(data, start, height, row_length, pixel_bytes(header)) {
+        return -1;
+    }
+    for 0..height |row| {
+        let row_start = start + row * (row_length + 1) + 1;
+        let y = pass.y_start + row * pass.y_step;
+        for 0..width |column| {
+            let x = pass.x_start + column * pass.x_step;
+            if !write_pixel(out, offset + (y * header.width + x) * 4, data, header, colors, row_start, column) {
+                return -1;
+            }
+        }
+    }
+    return end;
+}
+
+fn read_header(bytes: []u8) -> PngError!Header {
+    if !has_signature(bytes) or mem::len(bytes) < 33 or be32(bytes, 8) != 13 or
+        !mem::equal_bytes(bytes[12..16], "IHDR") {
+        return PngError::Malformed;
+    }
+    let header = Header {
+        width: be32(bytes, 16),
+        height: be32(bytes, 20),
+        depth: cast<i64>(bytes[24]),
+        color_type: cast<i64>(bytes[25]),
+        interlaced: bytes[28] == cast<u8>(1)
+    };
+    if header.width == 0 or header.height == 0 or channels_of(header.color_type) == 0 or
+        !depth_is_allowed(header.color_type, header.depth) or bytes[26] != cast<u8>(0) or
+        bytes[27] != cast<u8>(0) or cast<i64>(bytes[28]) > 1 {
+        return PngError::Malformed;
+    }
+    if header.width > max_png_pixels() or header.height > max_png_pixels() or
+        header.width * header.height > max_png_pixels() {
+        return PngError::TooLarge;
+    }
+    return header;
+}
+
+/// The size of the PNG in bytes, read from its header alone.
+pub fn png_size(bytes: []u8, width: &var i64, height: &var i64) -> PngError!void {
+    let header = try read_header(bytes);
+    width = header.width;
+    height = header.height;
+    return;
+}
+
+/// Decodes the PNG in bytes and appends its pixels to out as 8-bit RGBA,
+/// row by row, writing its size through width and height.
+pub fn decode_png(
+    allocator: Allocator,
+    bytes: []u8,
+    width: &var i64,
+    height: &var i64,
+    out: &var string::String
+) -> PngFailure!void {
+    let header = try read_header(bytes);
+    var colors = Colors { palette: "", transparency: "" };
+    var compressed = string::new(allocator);
+    defer compressed.deinit(allocator);
+    var position: i64 = 8;
+    var ended = false;
+    while !ended {
+        if position + 12 > mem::len(bytes) {
+            return PngError::Malformed;
+        }
+        let length = be32(bytes, position);
+        let body = position + 8;
+        if length > mem::len(bytes) - body - 4 {
+            return PngError::Malformed;
+        }
+        let kind = bytes[position + 4..body];
+        let data = bytes[body..body + length];
+        if mem::equal_bytes(kind, "PLTE") {
+            colors.palette = data;
+        } else if mem::equal_bytes(kind, "tRNS") {
+            colors.transparency = data;
+        } else if mem::equal_bytes(kind, "IDAT") {
+            try compressed.append_bytes(allocator, data);
+        } else if mem::equal_bytes(kind, "IEND") {
+            ended = true;
+        }
+        position = body + length + 4;
+    }
+    var passes: i64 = 1;
+    if header.interlaced {
+        passes = 7;
+    }
+    var expected: i64 = 0;
+    for 0..passes |index| {
+        var pass = Pass { x_start: 0, y_start: 0, x_step: 1, y_step: 1 };
+        if header.interlaced {
+            pass = adam7_pass(index);
+        }
+        let pass_width = pass_extent(header.width, pass.x_start, pass.x_step);
+        let pass_height = pass_extent(header.height, pass.y_start, pass.y_step);
+        if pass_width > 0 {
+            expected = expected + pass_height * (row_bytes(&header, pass_width) + 1);
+        }
+    }
+    let compressed_bytes = compressed.as_bytes();
+    var raw = try compress::unzlib(allocator, compressed_bytes, mem::Limit::Bytes(expected));
+    defer raw.deinit(allocator);
+    if raw.len() < expected {
+        return PngError::Malformed;
+    }
+    let before = out.len();
+    let pixels = header.width * header.height * 4;
+    if out.reserve(allocator, pixels) {} else |_| {
+        return PngError::TooLarge;
+    }
+    for 0..pixels |_index| {
+        try out.append_byte(allocator, 0);
+    }
+    if !decode_passes(out, before, &var raw, &header, &colors, passes) {
+        let _ = out.truncate(before);
+        return PngError::Malformed;
+    }
+    width = header.width;
+    height = header.height;
+    return;
+}
+
+/// Runs every pass over the unfiltered data, writing to out from offset on.
+fn decode_passes(
+    out: &var string::String,
+    offset: i64,
+    raw: &var string::String,
+    header: &Header,
+    colors: &Colors,
+    passes: i64
+) -> bool {
+    let pixels = out.as_mut_bytes();
+    let data = raw.as_mut_bytes();
+    var start: i64 = 0;
+    for 0..passes |index| {
+        var pass = Pass { x_start: 0, y_start: 0, x_step: 1, y_step: 1 };
+        if header.interlaced {
+            pass = adam7_pass(index);
+        }
+        start = decode_pass(pixels, offset, data, header, colors, pass, start);
+        if start < 0 {
+            return false;
+        }
+    }
+    return true;
+}

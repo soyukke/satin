@@ -1,0 +1,138 @@
+import std::array;
+import std::mem;
+import std::string;
+import std::testing;
+
+fn bytes_are(text: &string::String, expected: []u8) -> bool {
+    let bytes = text.as_bytes();
+    return mem::equal_bytes(bytes, expected);
+}
+
+/// Whether the startup command of one argument is refused.
+fn refuses(allocator: Allocator, argument: []u8) -> !bool {
+    var arguments = array::new<string::String>(allocator);
+    defer arguments.deinit(allocator);
+    try append_text(allocator, &var arguments, argument);
+    if validate_startup_command(&arguments) |_| {
+        return false;
+    } else |_| {
+        return true;
+    }
+}
+
+test "a startup command is quoted argv that exits the shell" {
+    let allocator = mem::page_allocator();
+    var arguments = array::new<string::String>(allocator);
+    defer arguments.deinit(allocator);
+    var out = string::new(allocator);
+    defer out.deinit(allocator);
+    testing::expect(!try startup_command_input(allocator, &arguments, &var out));
+    try append_text(allocator, &var arguments, "nvim");
+    try append_text(allocator, &var arguments, "--");
+    try append_text(allocator, &var arguments, "/tmp/file with spaces.txt");
+    try append_text(allocator, &var arguments, "/tmp/it's-safe.txt");
+    try append_text(allocator, &var arguments, "/tmp/$(touch nope);still-safe.txt");
+    testing::expect(try startup_command_input(allocator, &arguments, &var out));
+    var expected = string::new(allocator);
+    defer expected.deinit(allocator);
+    try expected.append_bytes(allocator, "'nvim' '--' '/tmp/file with spaces.txt' '/tmp/it'");
+    try expected.append_byte(allocator, 92);
+    try expected.append_bytes(allocator, "''s-safe.txt' '/tmp/$(touch nope);still-safe.txt'; exit $?");
+    try expected.append_byte(allocator, 13);
+    let expected_bytes = expected.as_bytes();
+    testing::expect(bytes_are(&out, expected_bytes));
+}
+
+test "a startup command is refused when invalid or oversized" {
+    let allocator = mem::page_allocator();
+    testing::expect(try refuses(allocator, ""));
+    var with_newline = string::new(allocator);
+    defer with_newline.deinit(allocator);
+    try with_newline.append_bytes(allocator, "nvim");
+    try with_newline.append_byte(allocator, 10);
+    try with_newline.append_bytes(allocator, "bad");
+    let newline_bytes = with_newline.as_bytes();
+    testing::expect(try refuses(allocator, newline_bytes));
+    var with_nul = string::new(allocator);
+    defer with_nul.deinit(allocator);
+    try with_nul.append_bytes(allocator, "nvim");
+    try with_nul.append_byte(allocator, 0);
+    let nul_bytes = with_nul.as_bytes();
+    testing::expect(try refuses(allocator, nul_bytes));
+    var huge = string::new(allocator);
+    defer huge.deinit(allocator);
+    for 0..65536 |_index| {
+        try huge.append_byte(allocator, 120);
+    }
+    let huge_bytes = huge.as_bytes();
+    testing::expect(try refuses(allocator, huge_bytes));
+    testing::expect(!try refuses(allocator, "/bin/echo"));
+    var many = array::new<string::String>(allocator);
+    defer many.deinit(allocator);
+    for 0..257 |_index| {
+        try append_text(allocator, &var many, "x");
+    }
+    var refused = false;
+    if validate_startup_command(&many) |_| {} else |_| {
+        refused = true;
+    }
+    testing::expect(refused);
+}
+
+test "the child's environment lets the host's variables through and no others" {
+    testing::expect(allowed_environment_key("SATIN_SOCKET"));
+    testing::expect(allowed_environment_key("SATIN_CLI"));
+    testing::expect(allowed_environment_key("NVTERM_SOCKET"));
+    testing::expect(allowed_environment_key("PATH"));
+    testing::expect(!allowed_environment_key("HOME"));
+    testing::expect(!allowed_environment_key("DYLD_INSERT_LIBRARIES"));
+}
+
+test "a nested shell keeps the user's own zdotdir" {
+    testing::expect(mem::equal_bytes(
+        resolve_user_zdotdir("/Users/tester", "/Applications/App/zsh", "/Users/tester"),
+        "/Users/tester"
+    ));
+    testing::expect(mem::equal_bytes(resolve_user_zdotdir("", "", "/Users/alice"), "/Users/alice"));
+    testing::expect(mem::equal_bytes(resolve_user_zdotdir("", "", ""), "/tmp"));
+}
+
+test "the terminal environment replaces the launcher's presentation" {
+    let allocator = mem::page_allocator();
+    var config = new_spawn_config(allocator);
+    defer config.deinit(allocator);
+    try append_text(allocator, &var config.environment_keys, "SATIN_SOCKET");
+    try append_text(allocator, &var config.environment_values, "/tmp/s");
+    try append_text(allocator, &var config.environment_keys, "HOME");
+    try append_text(allocator, &var config.environment_values, "/nope");
+    var environment = new_environment(allocator);
+    defer environment.deinit(allocator);
+    try environment.add_entry(allocator, "HOME=/Users/alice");
+    try environment.add_entry(allocator, "LC_ALL=C");
+    try environment.add_entry(allocator, "NO_COLOR=1");
+    try environment.add_entry(allocator, "TERM=dumb");
+    try configure_terminal_environment(allocator, &var environment, &config, "/bin/zsh", "/work", "en_US.utf-8");
+    var value = string::new(allocator);
+    defer value.deinit(allocator);
+    testing::expect(try environment.value(allocator, "HOME", &var value));
+    testing::expect(bytes_are(&value, "/Users/alice"));
+    value.clear();
+    testing::expect(!try environment.value(allocator, "LC_ALL", &var value));
+    testing::expect(!try environment.value(allocator, "NO_COLOR", &var value));
+    testing::expect(try environment.value(allocator, "TERM", &var value));
+    testing::expect(bytes_are(&value, "xterm-256color"));
+    value.clear();
+    testing::expect(try environment.value(allocator, "LANG", &var value));
+    testing::expect(bytes_are(&value, "en_US.utf-8"));
+    value.clear();
+    testing::expect(try environment.value(allocator, "PWD", &var value));
+    testing::expect(bytes_are(&value, "/work"));
+    value.clear();
+    testing::expect(try environment.value(allocator, "SATIN_SOCKET", &var value));
+    testing::expect(bytes_are(&value, "/tmp/s"));
+    value.clear();
+    testing::expect(try environment.value(allocator, "SATIN_SHELL_EXECUTABLE", &var value));
+    testing::expect(bytes_are(&value, "/bin/zsh"));
+    testing::expect(mem::equal_bytes(terminal_locale("C"), "ja_JP.UTF-8"));
+    testing::expect(file_name_is("/bin/zsh", "zsh") and !file_name_is("/bin/bash", "zsh"));
+}

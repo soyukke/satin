@@ -11,7 +11,6 @@ import std::string;
 extern "c" fn malloc(size: usize) -> ?ptr<u8>
 extern "c" fn free(p: ptr<u8>) -> void
 extern "c" fn strlen(s: ptr<const u8>) -> usize
-
 fn none() -> usize {
     return cast<usize>(-1);
 }
@@ -50,12 +49,6 @@ fn c_string_out(bytes: []u8) -> ?ptr<u8> {
     return storage;
 }
 
-/// The null handle, the answer to a create that could not allocate.
-fn null_core() -> ?ptr<core::Core> {
-    // SAFETY: address zero is null, which nothing dereferences.
-    return unsafe ptr_from_int<ptr<core::Core>>(0);
-}
-
 fn create(theme: []u8) -> ?ptr<core::Core> {
     let allocator = mem::page_allocator();
     if core::new_core(allocator, theme) |value| {
@@ -70,7 +63,7 @@ fn create(theme: []u8) -> ?ptr<core::Core> {
         }
         value.deinit(allocator);
     } else |_| {}
-    return null_core();
+    return null;
 }
 
 export "c" fn satin_core_create() -> ?ptr<core::Core> {
@@ -85,7 +78,7 @@ export "c" fn satin_core_create_with_theme(theme: ?ptr<const u8>) -> ?ptr<core::
             let bytes = name.as_bytes();
             return create(bytes);
         } else |_| {
-            return null_core();
+            return null;
         }
     }
     return create("Graphite");
@@ -312,14 +305,8 @@ export "c" fn satin_core_set_default_theme(handle: ?ptr<core::Core>, theme: ?ptr
     return flag(done);
 }
 
-/// The null string, the answer to a snapshot that could not be written.
-fn null_string() -> ?ptr<u8> {
-    // SAFETY: address zero is null, which nothing dereferences.
-    return unsafe ptr_from_int<ptr<u8>>(0);
-}
-
 export "c" fn satin_core_snapshot_json(handle: ?ptr<core::Core>) -> ?ptr<u8> {
-    let live = handle orelse return null_string();
+    let live = handle orelse return null;
     let allocator = mem::page_allocator();
     // SAFETY: the host holds live from satin_core_create and calls from one thread.
     let value = unsafe &live.*;
@@ -329,7 +316,7 @@ export "c" fn satin_core_snapshot_json(handle: ?ptr<core::Core>) -> ?ptr<u8> {
         let bytes = json.as_bytes();
         return c_string_out(bytes);
     } else |_| {}
-    return null_string();
+    return null;
 }
 
 export "c" fn satin_core_apply_workspace_json(handle: ?ptr<core::Core>, workspace: ?ptr<const u8>) -> u8 {
