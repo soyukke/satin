@@ -1,0 +1,272 @@
+// The C boundary the Rust terminal runtime calls for the VT terminal:
+// `satin_vt_*`. Kizu creates the libghostty-vt terminal, owns it, installs
+// its callbacks, and feeds it; the runtime borrows the terminal through
+// `satin_vt_terminal` to render, select and encode input.
+//
+// The callbacks run inside `ghostty_terminal_vt_write`, while the feed holds
+// the Vt read out of its storage. So what they write lives apart, in a Sink
+// with storage of its own that libghostty hands back as userdata.
+import satin::vt;
+import std::mem;
+import std::string;
+
+/// libghostty's `GhosttyTerminalOptions`.
+extern "c" struct TerminalOptions {
+    cols: u16,
+    rows: u16,
+    max_scrollback: usize,
+}
+
+@link_library("ghostty-vt")
+extern "c" fn ghostty_terminal_new(
+    allocator: ?ptr<u8>,
+    terminal: ptr<usize>,
+    options: TerminalOptions
+) -> i32
+@link_library("ghostty-vt")
+extern "c" fn ghostty_terminal_free(terminal: ptr<u8>) -> void
+@link_library("ghostty-vt")
+extern "c" fn ghostty_terminal_set(terminal: ptr<u8>, option: i32, value: ptr<const u8>) -> i32
+@link_library("ghostty-vt")
+extern "c" fn ghostty_terminal_vt_write(terminal: ptr<u8>, data: ptr<const u8>, length: usize) -> void
+fn option_userdata() -> i32 {
+    return 0;
+}
+fn option_write_pty() -> i32 {
+    return 1;
+}
+
+fn option_bell() -> i32 {
+    return 2;
+}
+
+/// What the callbacks write while the terminal reads its input: the replies
+/// it owes the PTY, and the bells it rang.
+struct Sink {
+    replies: string::String,
+    bells: u64,
+}
+
+/// One terminal and what Kizu tracks beside it.
+unsafe struct Vt {
+    terminal: ptr<u8>,
+    sink: ptr<Sink>,
+    prompt: vt::PromptTracker,
+}
+
+/// Reads the Sink libghostty hands a callback as userdata.
+fn sink_of(userdata: ?ptr<u8>) -> ?ptr<Sink> {
+    let data = userdata orelse return null;
+    // SAFETY: satin_vt_create set userdata to the Vt's Sink storage.
+    return unsafe cast<ptr<Sink>>(data);
+}
+
+export "c" fn satin_vt_on_write_pty(
+    terminal: ?ptr<u8>,
+    userdata: ?ptr<u8>,
+    data: ?ptr<const u8>,
+    length: usize
+) -> void {
+    let cell = sink_of(userdata) orelse return;
+    let bytes = data orelse return;
+    // SAFETY: libghostty passes length readable bytes at data for this call.
+    let reply = unsafe view_from_ptr(bytes, cast<i64>(length));
+    // SAFETY: cell is the Sink storage, which no other code holds during vt_write.
+    let sink = unsafe &var cell.*;
+    if sink.replies.append_bytes(mem::page_allocator(), reply) {} else |_| {}
+    return;
+}
+
+export "c" fn satin_vt_on_bell(terminal: ?ptr<u8>, userdata: ?ptr<u8>) -> void {
+    let cell = sink_of(userdata) orelse return;
+    // SAFETY: cell is the Sink storage, which no other code holds during vt_write.
+    let sink = unsafe &var cell.*;
+    sink.bells = sink.bells + 1;
+    return;
+}
+
+/// Creates a terminal of cols x rows keeping max_scrollback lines of history.
+fn new_terminal(cols: u16, rows: u16, max_scrollback: usize) -> ?ptr<u8> {
+    // SAFETY: malloc returns storage for one usize or null.
+    let storage = unsafe malloc(mem::size_of<usize>()) orelse return null;
+    // SAFETY: storage holds one usize, written below.
+    let out = unsafe cast<ptr<usize>>(storage);
+    // SAFETY: out is fresh storage for one usize.
+    unsafe ptr_write(out, 0);
+    let options = TerminalOptions { cols: cols, rows: rows, max_scrollback: max_scrollback };
+    // SAFETY: out holds one writable usize; a null allocator is libghostty's own.
+    let result = unsafe ghostty_terminal_new(null, out, options);
+    // SAFETY: out still holds the usize libghostty wrote, or the zero above.
+    let address = unsafe ptr_read(out);
+    // SAFETY: storage came from malloc and nothing reads it after this.
+    unsafe free(storage);
+    if result != 0 or address == 0 {
+        return null;
+    }
+    // SAFETY: address is the terminal libghostty created.
+    return unsafe ptr_from_int<ptr<u8>>(address);
+}
+
+/// Points the terminal's callbacks at the Kizu functions and its userdata
+/// at sink.
+fn install_callbacks(terminal: ptr<u8>, sink: ptr<Sink>) -> bool {
+    // SAFETY: the address is the Sink storage, which lives as long as the terminal.
+    let userdata = unsafe cast<ptr<const u8>>(sink);
+    // SAFETY: the address is a function of the WritePtyFn signature.
+    let write_pty = unsafe cast<ptr<const u8>>(satin_vt_on_write_pty);
+    // SAFETY: the address is a function of the BellFn signature.
+    let bell = unsafe cast<ptr<const u8>>(satin_vt_on_bell);
+    // SAFETY: terminal is live; each option takes the pointer it is passed.
+    let set_userdata = unsafe ghostty_terminal_set(terminal, option_userdata(), userdata);
+    // SAFETY: as above.
+    let set_write_pty = unsafe ghostty_terminal_set(terminal, option_write_pty(), write_pty);
+    // SAFETY: as above.
+    let set_bell = unsafe ghostty_terminal_set(terminal, option_bell(), bell);
+    return set_userdata == 0 and set_write_pty == 0 and set_bell == 0;
+}
+
+export "c" fn satin_vt_create(cols: u16, rows: u16, max_scrollback: usize) -> ?ptr<Vt> {
+    let terminal = new_terminal(cols, rows, max_scrollback) orelse return null;
+    // SAFETY: malloc returns storage for one Sink or null.
+    let sink_storage = unsafe malloc(mem::size_of<Sink>());
+    // SAFETY: malloc returns storage for one Vt or null.
+    let vt_storage = unsafe malloc(mem::size_of<Vt>());
+    if sink_storage |sink_slot| {
+        if vt_storage |vt_slot| {
+            let allocator = mem::page_allocator();
+            // SAFETY: sink_slot is fresh storage for one Sink.
+            let sink = unsafe cast<ptr<Sink>>(sink_slot);
+            let empty = Sink { replies: string::new(allocator), bells: 0 };
+            // SAFETY: sink is fresh storage for one Sink; the sink now lives there.
+            unsafe ptr_write(sink, move empty);
+            // SAFETY: the Vt holds the terminal and sink it is built from.
+            let value = unsafe Vt {
+                terminal: terminal,
+                sink: sink,
+                prompt: vt::new_prompt_tracker(allocator)
+            };
+            // SAFETY: vt_slot is fresh storage for one Vt.
+            let handle = unsafe cast<ptr<Vt>>(vt_slot);
+            // SAFETY: handle is fresh storage for one Vt; the Vt now lives there.
+            unsafe ptr_write(handle, move value);
+            if install_callbacks(terminal, sink) {
+                return handle;
+            }
+            destroy(handle);
+            return null;
+        }
+    }
+    if sink_storage |slot| {
+        // SAFETY: slot came from malloc and holds nothing.
+        unsafe free(slot);
+    }
+    if vt_storage |slot| {
+        // SAFETY: slot came from malloc and holds nothing.
+        unsafe free(slot);
+    }
+    // SAFETY: terminal came from ghostty_terminal_new and nothing holds it.
+    unsafe ghostty_terminal_free(terminal);
+    return null;
+}
+
+export "c" fn satin_vt_destroy(handle: ?ptr<Vt>) -> void {
+    let live = handle orelse return;
+    destroy(live);
+    return;
+}
+
+fn destroy(live: ptr<Vt>) -> void {
+    let allocator = mem::page_allocator();
+    // SAFETY: live came from satin_vt_create and is destroyed once.
+    let value = unsafe ptr_read(live);
+    // SAFETY: the terminal is freed first, so no callback reaches the sink after.
+    unsafe ghostty_terminal_free(value.terminal);
+    // SAFETY: the sink came from satin_vt_create and is freed once, here.
+    let sink = unsafe ptr_read(value.sink);
+    sink.replies.deinit(allocator);
+    // SAFETY: the sink storage came from malloc and nothing reads it after this.
+    unsafe free(cast<ptr<u8>>(value.sink));
+    value.prompt.deinit(allocator);
+    // SAFETY: live is malloc storage nothing reads after this.
+    unsafe free(cast<ptr<u8>>(live));
+    return;
+}
+
+/// The terminal, which the runtime borrows and never frees.
+export "c" fn satin_vt_terminal(handle: ?ptr<Vt>) -> ?ptr<u8> {
+    let live = handle orelse return null;
+    // SAFETY: the runtime holds live from satin_vt_create and calls from one thread.
+    let value = unsafe &live.*;
+    let terminal = value.terminal;
+    return terminal;
+}
+
+/// Feeds output to the terminal, and to the prompt tracker beside it.
+export "c" fn satin_vt_feed(handle: ?ptr<Vt>, bytes: ?ptr<const u8>, length: usize) -> void {
+    let live = handle orelse return;
+    let data = bytes orelse return;
+    if length == 0 {
+        return;
+    }
+    // SAFETY: the caller passes length readable bytes at data.
+    let input = unsafe view_from_ptr(data, cast<i64>(length));
+    // SAFETY: the runtime holds live from satin_vt_create and calls from one thread.
+    let value = unsafe &var live.*;
+    // The callbacks this runs write only the sink, which value does not hold.
+    // SAFETY: the terminal is live and data holds length bytes.
+    unsafe ghostty_terminal_vt_write(value.terminal, data, length);
+    if value.prompt.feed(mem::page_allocator(), input) {} else |_| {}
+    return;
+}
+
+/// The replies the terminal owes the PTY since the last take, as malloc
+/// storage the caller frees, with their length written through out_len.
+export "c" fn satin_vt_take_replies(handle: ?ptr<Vt>, out_len: ?ptr<usize>) -> ?ptr<u8> {
+    let live = handle orelse return bytes_out("", out_len);
+    // SAFETY: the runtime holds live from satin_vt_create and calls from one thread.
+    let value = unsafe &live.*;
+    let cell = value.sink;
+    // SAFETY: cell is the Sink storage; no vt_write runs during this call.
+    let sink = unsafe &var cell.*;
+    let replies = sink.replies.as_bytes();
+    let out = bytes_out(replies, out_len);
+    sink.replies.clear();
+    return out;
+}
+
+/// The bells rung since the last take.
+export "c" fn satin_vt_take_bell_count(handle: ?ptr<Vt>) -> u64 {
+    let live = handle orelse return 0;
+    // SAFETY: the runtime holds live from satin_vt_create and calls from one thread.
+    let value = unsafe &live.*;
+    let cell = value.sink;
+    // SAFETY: cell is the Sink storage; no vt_write runs during this call.
+    let sink = unsafe &var cell.*;
+    let bells = sink.bells;
+    sink.bells = 0;
+    return bells;
+}
+
+export "c" fn satin_vt_prompt_seen(handle: ?ptr<Vt>) -> u8 {
+    let live = handle orelse return 0;
+    // SAFETY: the runtime holds live from satin_vt_create and calls from one thread.
+    let value = unsafe &live.*;
+    let seen = value.prompt.observed;
+    return flag(seen);
+}
+
+export "c" fn satin_vt_prompt_generation(handle: ?ptr<Vt>) -> u64 {
+    let live = handle orelse return 0;
+    // SAFETY: the runtime holds live from satin_vt_create and calls from one thread.
+    let value = unsafe &live.*;
+    let generation = value.prompt.ready_generation;
+    return generation;
+}
+
+export "c" fn satin_vt_reset_prompt(handle: ?ptr<Vt>) -> void {
+    let live = handle orelse return;
+    // SAFETY: the runtime holds live from satin_vt_create and calls from one thread.
+    let value = unsafe &var live.*;
+    value.prompt.reset();
+    return;
+}

@@ -1,0 +1,88 @@
+import satin::nvim;
+import std::mem;
+import std::process;
+import std::string;
+import std::testing;
+
+fn is_live_nvim(handle: ?ptr<nvim::Runtime>) -> bool {
+    if handle |_live| {
+        return true;
+    }
+    return false;
+}
+
+test "the nvim boundary refuses null handles and malformed launches" {
+    testing::expect(satin_nvim_drain(null) == 0);
+    testing::expect(satin_nvim_exited(null) == 1);
+    testing::expect(satin_nvim_exit_code(null) == -2147483648);
+    testing::expect(satin_nvim_wakeup_fd(null) == -1);
+    testing::expect(satin_nvim_kitty_placement_count(null) == 0);
+    testing::expect(!returned_has(satin_nvim_ui_state_json(null), ""));
+    testing::expect(!is_live_nvim(satin_nvim_create_with_config(24, 80, 800, 480, c"nope")));
+    testing::expect(!is_live_nvim(satin_nvim_create_with_config(24, 80, 800, 480, null)));
+    satin_nvim_destroy(null);
+}
+
+test "a real nvim is driven through the boundary" {
+    // Runs only when SATIN_TEST_NVIM names an nvim to start.
+    let allocator = mem::page_allocator();
+    var configuration = string::new(allocator);
+    defer configuration.deinit(allocator);
+    if process::env("SATIN_TEST_NVIM") |program| {
+        try configuration.append_bytes(allocator,
+            \\{"cwd":"/tmp","arguments":["-u","NONE"],"environment":{"SATIN_MARK":"1"},"executable":"
+        );
+        try configuration.append_bytes(allocator, program);
+        try configuration.append_bytes(allocator,
+            \\"}
+        );
+        try configuration.append_byte(allocator, 0);
+    }
+    if configuration.len() == 0 {
+        return;
+    }
+    let document = configuration.as_bytes();
+    let handle = satin_nvim_create_with_config(6, 40, 400, 120, ptr_of(document));
+    testing::expect(is_live_nvim(handle));
+    testing::expect(satin_nvim_wakeup_fd(handle) >= 0);
+    testing::expect(returned_has(satin_nvim_take_cwd_update(handle), "/tmp"));
+    testing::expect(returned_has(satin_nvim_cwd(handle), "/tmp"));
+    var typed = string::new(allocator);
+    defer typed.deinit(allocator);
+    try typed.append_bytes(allocator, "iboundary text");
+    try typed.append_byte(allocator, 27);
+    let keys = typed.as_bytes();
+    testing::expect(satin_nvim_input(handle, ptr_of(keys), cast<usize>(mem::len(keys))) == 1);
+    var shown = false;
+    for 0..300 |_| {
+        if !shown {
+            let _ = satin_nvim_drain(handle);
+            shown = returned_has(satin_nvim_renderer_model_json(handle), "boundary text");
+            // SAFETY: sleeping takes no memory of ours.
+            let _ = unsafe usleep(10000);
+        }
+    }
+    testing::expect(shown);
+    testing::expect(returned_has(satin_nvim_renderer_model_json(handle),
+        \\"window_kind":"normal"
+    ));
+    testing::expect(returned_has(satin_nvim_ui_state_json(handle),
+        \\"cursor":{"x":
+    ));
+    testing::expect(satin_nvim_mouse(handle, c"left", c"press", c"", 2, 0, 0) == 1);
+    testing::expect(satin_nvim_resize(handle, 8, 50, 500, 160) == 1);
+    testing::expect(satin_nvim_exited(handle) == 0);
+    testing::expect(satin_nvim_command(handle, c"qa!") == 1);
+    var exited = false;
+    for 0..300 |_| {
+        if !exited {
+            let _ = satin_nvim_drain(handle);
+            exited = satin_nvim_exited(handle) != 0;
+            // SAFETY: sleeping takes no memory of ours.
+            let _ = unsafe usleep(10000);
+        }
+    }
+    testing::expect(exited);
+    testing::expect(satin_nvim_exit_code(handle) == 0);
+    satin_nvim_destroy(handle);
+}

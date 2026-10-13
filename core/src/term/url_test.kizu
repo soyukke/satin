@@ -1,0 +1,60 @@
+import std::mem;
+import std::string;
+import std::testing;
+
+/// Whether word normalizes to expected; an empty expected is no URL.
+fn url_is(word: []u8, expected: []u8) -> !bool {
+    let allocator = mem::page_allocator();
+    var out = string::new(allocator);
+    defer out.deinit(allocator);
+    let found = try normalize_terminal_url(allocator, word, &var out);
+    let bytes = out.as_bytes();
+    if mem::len(expected) == 0 {
+        return !found;
+    }
+    return found and mem::equal_bytes(bytes, expected);
+}
+
+test "a URL sheds the prose around it" {
+    let artifact = "https://example.com/docs/83ba-4939";
+    testing::expect(try url_is("(https://example.com/docs/83ba-4939)」", artifact));
+    testing::expect(try url_is("資料はhttps://example.com/docs/83ba-4939。", artifact));
+    testing::expect(try url_is("<https://example.com/docs/83ba-4939>,", artifact));
+    testing::expect(try url_is(
+        "https://en.wikipedia.org/wiki/Rust_(language)",
+        "https://en.wikipedia.org/wiki/Rust_(language)"
+    ));
+    testing::expect(try url_is("(https://example.com/a?b=1&c=[2]).", "https://example.com/a?b=1&c=[2]"));
+    testing::expect(try url_is("「www.example.com」", "https://www.example.com"));
+    testing::expect(try url_is("mailto:alice@example.com,", "mailto:alice@example.com"));
+    testing::expect(try url_is("file:///tmp/a.txt", "file:///tmp/a.txt"));
+    testing::expect(try url_is("https://", ""));
+    testing::expect(try url_is("(https://)", ""));
+    testing::expect(try url_is("awww.example.com", ""));
+    testing::expect(try url_is("plain", ""));
+}
+
+/// Whether pwd names expected; an empty expected is no directory.
+fn pwd_is(pwd: []u8, expected: []u8) -> !bool {
+    let allocator = mem::page_allocator();
+    var out = string::new(allocator);
+    defer out.deinit(allocator);
+    let found = try terminal_pwd_path(allocator, pwd, &var out);
+    let bytes = out.as_bytes();
+    if mem::len(expected) == 0 {
+        return !found and mem::len(bytes) == 0;
+    }
+    return found and mem::equal_bytes(bytes, expected);
+}
+
+test "a reported working directory names a path" {
+    testing::expect(try pwd_is("/tmp/work", "/tmp/work"));
+    testing::expect(try pwd_is(" file://host/tmp/a%20b ", "/tmp/a b"));
+    testing::expect(try pwd_is("file:///Users/alice", "/Users/alice"));
+    testing::expect(try pwd_is("file://host", ""));
+    testing::expect(try pwd_is("relative/path", ""));
+    testing::expect(try pwd_is("/tmp/bad%2", ""));
+    testing::expect(try pwd_is("/tmp/bad%zz", ""));
+    testing::expect(try pwd_is("/tmp/bad%ff", ""));
+    testing::expect(try pwd_is("", ""));
+}

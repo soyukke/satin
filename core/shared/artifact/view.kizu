@@ -1,0 +1,54 @@
+// The viewer a pane runs: one artifact drawn over the whole terminal.
+import std::mem;
+import std::string;
+
+/// Draws the artifact id names over the terminal standard output is. With
+/// wait, in a terminal, it takes the alternate screen and stays until
+/// standard input ends; otherwise it writes the screen once and returns.
+pub fn view_artifact(
+    allocator: Allocator,
+    message: &var string::String,
+    socket: []u8,
+    id: []u8,
+    wait: bool
+) -> ArtifactFailure!void {
+    let policy = try load_policy(allocator, message, socket);
+    defer policy.deinit(allocator);
+    let manifest = try load_manifest(allocator, message, socket, id);
+    defer manifest.deinit(allocator);
+    var columns: i64 = -1;
+    var rows: i64 = -1;
+    terminal_size(&var columns, &var rows);
+    let rendered = try render_artifact(allocator, message, &manifest, &policy, columns, rows);
+    defer rendered.deinit(allocator);
+    let ansi = rendered.ansi.as_bytes();
+    let screen = ansi[0..viewer_output_length(ansi)];
+    if !wait or !is_terminal(0) or !is_terminal(1) {
+        if !write_terminal(screen) {
+            explain(allocator, message, "write to the terminal", "", "");
+            return ArtifactError::Failed;
+        }
+        return;
+    }
+    let presentation = try enter_presentation(allocator, message);
+    var clear = string::new(allocator);
+    defer clear.deinit(allocator);
+    if append_escape(allocator, &var clear, "[2J") {} else |_| {}
+    if append_escape(allocator, &var clear, "[H") {} else |_| {}
+    if append_escape(allocator, &var clear, "[?25l") {} else |_| {}
+    let prelude = clear.as_bytes();
+    if !write_terminal(prelude) or !write_terminal(screen) {
+        leave_presentation(allocator, presentation);
+        explain(allocator, message, "write to the terminal", "", "");
+        return ArtifactError::Failed;
+    }
+    if wait_until_closed(allocator, message) {} else |err| {
+        leave_presentation(allocator, presentation);
+        if err == mem::Error::OutOfMemory {
+            return mem::Error::OutOfMemory;
+        }
+        return ArtifactError::Failed;
+    }
+    leave_presentation(allocator, presentation);
+    return;
+}

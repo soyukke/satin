@@ -1,0 +1,204 @@
+import std::mem;
+import std::string;
+import std::testing;
+
+/// A cols x rows terminal fed text, with `^` read as ESC, `~` as BEL and
+/// `$` as CR LF.
+fn query_terminal(allocator: Allocator, cols: u16, rows: u16, text: []u8) -> !ptr<u8> {
+    var input = string::new(allocator);
+    defer input.deinit(allocator);
+    for 0..mem::len(text) |index| {
+        if text[index] == cast<u8>(94) {
+            try input.append_byte(allocator, 27);
+        } else if text[index] == cast<u8>(126) {
+            try input.append_byte(allocator, 7);
+        } else if text[index] == cast<u8>(36) {
+            try input.append_byte(allocator, 13);
+            try input.append_byte(allocator, 10);
+        } else {
+            try input.append_byte(allocator, text[index]);
+        }
+    }
+    let terminal = new_terminal(cols, rows, 1000) orelse return GhosttyError::Refused;
+    let bytes = input.as_bytes();
+    // SAFETY: terminal is live; the caller frees it.
+    unsafe write_terminal(terminal, bytes);
+    return terminal;
+}
+
+/// Whether out is expected, with `$` in expected read as LF.
+fn text_is(out: &string::String, expected: []u8) -> bool {
+    let bytes = out.as_bytes();
+    if mem::len(bytes) != mem::len(expected) {
+        return false;
+    }
+    for 0..mem::len(expected) |index| {
+        var want = expected[index];
+        if want == cast<u8>(36) {
+            want = 10;
+        }
+        if bytes[index] != want {
+            return false;
+        }
+    }
+    return true;
+}
+
+test "a soft-wrapped URL opens from every row without its prose" {
+    let allocator = mem::page_allocator();
+    let terminal = try query_terminal(allocator, 20, 6, "資料 (https://example.com/abcdefghijklmnop)」");
+    var queries = try new_queries(allocator);
+    defer queries.deinit(allocator);
+    var out = string::new(allocator);
+    defer out.deinit(allocator);
+    // SAFETY: terminal is live until free_terminal below.
+    testing::expect(try unsafe queries.hyperlink_at(allocator, terminal, 20, 6, 0, 8, &var out));
+    testing::expect(text_is(&out, "https://example.com/abcdefghijklmnop"));
+    out.clear();
+    // SAFETY: as above.
+    testing::expect(try unsafe queries.hyperlink_at(allocator, terminal, 20, 6, 1, 2, &var out));
+    testing::expect(text_is(&out, "https://example.com/abcdefghijklmnop"));
+    out.clear();
+    // SAFETY: as above.
+    testing::expect(try unsafe queries.hyperlink_at(allocator, terminal, 20, 6, 2, 0, &var out));
+    testing::expect(text_is(&out, "https://example.com/abcdefghijklmnop"));
+    out.clear();
+    // SAFETY: as above.
+    testing::expect(!try unsafe queries.hyperlink_at(allocator, terminal, 20, 6, 5, 0, &var out));
+    // SAFETY: terminal came from new_terminal and nothing uses it after this.
+    unsafe free_terminal(terminal);
+}
+
+test "an OSC 8 hyperlink wins over the word" {
+    let allocator = mem::page_allocator();
+    let terminal = try query_terminal(allocator, 40, 4, "^]8;;https://example.com/target^\\link^]8;;^\\ plain");
+    var queries = try new_queries(allocator);
+    defer queries.deinit(allocator);
+    var out = string::new(allocator);
+    defer out.deinit(allocator);
+    // SAFETY: terminal is live until free_terminal below.
+    testing::expect(try unsafe queries.hyperlink_at(allocator, terminal, 40, 4, 0, 1, &var out));
+    testing::expect(text_is(&out, "https://example.com/target"));
+    out.clear();
+    // SAFETY: as above.
+    testing::expect(!try unsafe queries.hyperlink_at(allocator, terminal, 40, 4, 0, 6, &var out));
+    // SAFETY: terminal came from new_terminal and nothing uses it after this.
+    unsafe free_terminal(terminal);
+}
+
+test "selects everything and clears it" {
+    let allocator = mem::page_allocator();
+    let terminal = try query_terminal(allocator, 20, 4, "one$two");
+    var queries = try new_queries(allocator);
+    defer queries.deinit(allocator);
+    var out = string::new(allocator);
+    defer out.deinit(allocator);
+    // SAFETY: terminal is live until free_terminal below.
+    testing::expect(!try unsafe queries.selected_text(allocator, terminal, &var out));
+    // SAFETY: as above.
+    try unsafe queries.select_all(terminal);
+    // SAFETY: as above.
+    testing::expect(try unsafe queries.selected_text(allocator, terminal, &var out));
+    testing::expect(text_is(&out, "one$two"));
+    out.clear();
+    // SAFETY: as above.
+    try unsafe clear_selection(terminal);
+    // SAFETY: as above.
+    testing::expect(!try unsafe queries.selected_text(allocator, terminal, &var out));
+    // SAFETY: terminal came from new_terminal and nothing uses it after this.
+    unsafe free_terminal(terminal);
+}
+
+test "find selects each match in turn and wraps" {
+    let allocator = mem::page_allocator();
+    let terminal = try query_terminal(allocator, 20, 4, "alpha beta$gamma$beta again");
+    var queries = try new_queries(allocator);
+    defer queries.deinit(allocator);
+    var out = string::new(allocator);
+    defer out.deinit(allocator);
+    // SAFETY: terminal is live until free_terminal below.
+    testing::expect(try unsafe queries.find(allocator, terminal, 20, 4, "beta", false));
+    testing::expect(queries.search_row == 0);
+    // SAFETY: as above.
+    testing::expect(try unsafe queries.selected_text(allocator, terminal, &var out));
+    testing::expect(text_is(&out, "beta"));
+    // SAFETY: as above.
+    testing::expect(try unsafe queries.find(allocator, terminal, 20, 4, "beta", false));
+    testing::expect(queries.search_row == 2);
+    // SAFETY: as above.
+    testing::expect(try unsafe queries.find(allocator, terminal, 20, 4, "beta", false));
+    testing::expect(queries.search_row == 0);
+    // SAFETY: as above.
+    testing::expect(try unsafe queries.find(allocator, terminal, 20, 4, "beta", true));
+    testing::expect(queries.search_row == 2);
+    // SAFETY: as above.
+    testing::expect(!try unsafe queries.find(allocator, terminal, 20, 4, "delta", false));
+    // SAFETY: as above.
+    testing::expect(!try unsafe queries.find(allocator, terminal, 20, 4, "", false));
+    // SAFETY: terminal came from new_terminal and nothing uses it after this.
+    unsafe free_terminal(terminal);
+}
+
+test "reads the title, working directory and cursor" {
+    let allocator = mem::page_allocator();
+    let terminal = try query_terminal(allocator, 20, 4, "^]2;build~^]7;file://host/tmp/a%20b~ab$c");
+    var queries = try new_queries(allocator);
+    defer queries.deinit(allocator);
+    var out = string::new(allocator);
+    defer out.deinit(allocator);
+    // SAFETY: terminal is live until free_terminal below.
+    testing::expect(try unsafe queries.title(allocator, terminal, &var out));
+    testing::expect(text_is(&out, "build"));
+    out.clear();
+    // SAFETY: as above.
+    testing::expect(try unsafe queries.working_directory(allocator, terminal, &var out));
+    testing::expect(text_is(&out, "/tmp/a b"));
+    var x: i64 = 0;
+    var y: i64 = 0;
+    // SAFETY: as above.
+    try unsafe queries.cursor_position(terminal, &var x, &var y);
+    testing::expect(x == 1 and y == 1);
+    // SAFETY: terminal came from new_terminal and nothing uses it after this.
+    unsafe free_terminal(terminal);
+    let plain = try query_terminal(allocator, 20, 4, "ab");
+    out.clear();
+    // SAFETY: plain is live until free_terminal below.
+    testing::expect(!try unsafe queries.title(allocator, plain, &var out));
+    // SAFETY: as above.
+    testing::expect(!try unsafe queries.working_directory(allocator, plain, &var out));
+    // SAFETY: plain came from new_terminal and nothing uses it after this.
+    unsafe free_terminal(plain);
+}
+
+test "a scroll stops at either end of the scrollback" {
+    let allocator = mem::page_allocator();
+    let terminal = try query_terminal(allocator, 20, 2, "1$2$3$4$5");
+    var queries = try new_queries(allocator);
+    defer queries.deinit(allocator);
+    // SAFETY: terminal is live until free_terminal below.
+    testing::expect(unsafe queries.scroll_delta(terminal, 1) == 0);
+    // SAFETY: as above.
+    testing::expect(unsafe queries.scroll_delta(terminal, -2) == -2);
+    // SAFETY: as above.
+    testing::expect(unsafe queries.scroll_delta(terminal, -5) == -1);
+    // SAFETY: as above.
+    testing::expect(unsafe queries.scroll_delta(terminal, 9) == 3);
+    // SAFETY: as above.
+    unsafe scroll_viewport_by(terminal, -2);
+    // SAFETY: as above.
+    unsafe scroll_viewport_to_bottom(terminal);
+    // SAFETY: as above.
+    let scrollbar = try unsafe queries.scrollbar(terminal);
+    testing::expect(scrollbar.top == 3 and scrollbar.visible == 2 and scrollbar.total == 5);
+    // SAFETY: terminal came from new_terminal and nothing uses it after this.
+    unsafe free_terminal(terminal);
+}
+
+test "bounds a scroll request by the scrollbar" {
+    let middle = Scrollbar { top: 3, visible: 10, total: 20 };
+    testing::expect(bounded_scroll_rows(4, middle) == 4);
+    testing::expect(bounded_scroll_rows(40, middle) == 7);
+    testing::expect(bounded_scroll_rows(-40, middle) == -3);
+    testing::expect(bounded_scroll_rows(0, middle) == 0);
+    testing::expect(bounded_scroll_rows(5, Scrollbar { top: 0, visible: 10, total: 10 }) == 0);
+}

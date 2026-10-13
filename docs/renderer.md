@@ -7,17 +7,36 @@ visual smoke coverage. Long-term design constraints remain in
 ## Ownership boundary
 
 AppKit owns windows, tabs, menus, pane layout, input routing, dialogs, and
-context menus. Rust owns terminal state, the Neovim compositor, retained
-renderer state, and the Skia/Metal drawing path. Terminal behavior remains
-owned by `libghostty-vt`.
+context menus. The Kizu core in `core/` owns terminal state, the Neovim
+compositor, retained renderer state, and the drawing path. Terminal behavior
+remains owned by `libghostty-vt`. The decision and its trade-offs are recorded
+in [ADR 0019](adr/0019-replace-the-rust-core-with-kizu.md).
 
 Both `just terminal` and `just neovim` draw retained renderer models into the
 current `MTKView` drawable. The renderer owns backgrounds, glyphs, decorations,
 images, scroll animation, and Neovide-derived four-corner cursor geometry.
 
+## Drawing path
+
+Each frame is built as a display list (`core/src/draw`): a flat run of
+rectangle, line, quad, text-run, image, and clip commands in device pixels that
+names no drawing library. The CoreGraphics backend (`core/src/draw/quartz.kizu`)
+executes the list on the CPU into a premultiplied BGRA bitmap, and the host
+boundary (`core/host`) copies the pixels each pane wrote into the drawable's
+`MTLTexture`. Swift still owns the `MTKView` and presents the drawable. The C
+exports keep the `satin_skia_metal_*` names the Swift host already links; Skia
+is not used.
+
+Measured at 200x60 cells on a 3000x1800 target, a frame costs about 1.8 ms
+with a warm shaped-run cache and about 10 ms when every run is new text.
+
+The core starts no threads. The host waits on the PTY, the Neovim pipe, or the
+control server's kernel queue descriptor and calls the matching drain export
+from its one calling thread.
+
 ## Scroll model
 
-`src/neovide_render.rs` owns the retained-window spring model. Terminal and
+`core/src/term/render.kizu` owns the retained-window spring model. Terminal and
 Neovim runtimes feed two event-driven scroll sources into it:
 
 - Terminal history applies integer rows to `libghostty-vt`, retains fractional
@@ -54,14 +73,31 @@ such as statuslines remain outside the animated scroll clip.
 
 ## Text and graphics
 
-The Neovide-derived shaper uses `swash` to place grapheme clusters on grid cells,
-caches Skia `TextBlob`s with `lru`, uses the configured font as its primary face,
-falls back through Skia `FontMgr`, and keeps the bundled fonts as final fallback
-faces. Bold and italic participate in fallback; faint, blink, underline
-variants and colors, strikethrough, and overline remain grid-aligned.
+Neighboring cells that share a color and style form one text run. CoreText
+shapes each run with standard ligatures on, and every cell's glyphs are placed
+back on that cell's own column, so text stays on the grid. Fonts are tried in
+a fixed order: the configured family in the run's weight and slant, the file
+`SATIN_FONT` names, the bundled FiraCode Nerd Font, the default system family,
+the font CoreText falls back to for the text, and the bundled LastResort last.
+The bundled fonts are loaded at run time from `fonts/` beside the executable or
+`Contents/Resources/fonts` in the bundle. Faint, blink, underline variants and
+colors, strikethrough, and overline remain grid-aligned.
+
+Shaped runs are cached by a hash of their cells' text, weight, and slant. The
+cache holds up to 10,000 runs and 65,536 glyphs and is emptied whole when
+either limit is passed; it is not an LRU.
+
+Known differences from the earlier Skia renderer:
+
+- Glyphs are rasterized by CoreGraphics with font smoothing off. There is no
+  font hinting and none of Skia's contrast and gamma tables, so glyph edge
+  pixels differ from the Skia build.
+- Shaping is CoreText's. Ligatures, contextual alternates, and mark positioning
+  are applied, but a font's rarer features need not match the previous shaper.
+- A configured family without a bold or italic face is drawn regular.
 
 AppKit owns the `NSTextInputClient` contract and IME candidate coordinates, but
-the active preedit string is composited by the same Skia shaper as committed
+the active preedit string is composited by the same CoreText shaper as committed
 grid text. This keeps CJK fallback metrics and the cell baseline stable when a
 composition is committed.
 
@@ -87,7 +123,7 @@ The user-facing reproduction sequence is kept in
 - `just frame-liveness-smoke` injects a redraw request at the idle/pause boundary,
   then repeats terminal input and tab switching. Every phase waits for the
   matching `CAMetalDrawable` presentation rather than only accepting a submitted
-  Skia frame.
+  renderer frame.
 - `just nvim-smoke-commandline` and `just nvim-smoke-cursor-move` reject false
   scroll animation from command-line or cursor-only redraws.
 
@@ -111,7 +147,12 @@ Pixel-backed checks add:
 
 The cursor-shape coverage also drives normal block, insert `ver25`, and replace
 `hor20` modes through Neovim `mode_info_set` and `mode_change`. The smoke recipes
-require Skia frames; `native-smoke` asserts `skia-frames=yes`.
+require renderer frames; `native-smoke` asserts `skia-frames=yes`, a result key
+that keeps its old name.
+
+`just test` also renders offscreen into a real Metal drawable and reads the
+pixels back (`core/scripts/test-drawable`). It opens no window and captures no
+screen, so it runs in CI and while self-hosting.
 
 Pixel-backed recipes use macOS Screen & System Audio Recording permission. Do
 not run them while self-hosting in Satin. When pixels are explicitly required,

@@ -1,0 +1,223 @@
+// Restoring a saved workspace: the JSON the host kept from an earlier
+// snapshot, checked whole before it replaces the tabs.
+import std::array;
+import std::json;
+import std::mem;
+import std::string;
+
+pub struct LayoutInput {
+    pub kind: string::String,
+    pub pane_id: ?i64,
+    pub axis: ?string::String,
+    pub ratio: ?f64,
+    pub first: ?mem::Box<LayoutInput>,
+    pub second: ?mem::Box<LayoutInput>,
+}
+
+pub fn (self: LayoutInput) deinit(allocator: Allocator) -> void {
+    self.kind.deinit(allocator);
+    if self.axis |axis| {
+        axis.deinit(allocator);
+    }
+    if self.first |first| {
+        first.deinit(allocator);
+    }
+    if self.second |second| {
+        second.deinit(allocator);
+    }
+}
+
+pub struct TabInput {
+    pub id: i64,
+    pub title: string::String,
+    pub active_pane: i64,
+    pub theme: string::String,
+    pub panes: array::Array<i64>,
+    pub layout: LayoutInput,
+}
+
+pub fn (self: TabInput) deinit(allocator: Allocator) -> void {
+    self.title.deinit(allocator);
+    self.theme.deinit(allocator);
+    self.panes.deinit(allocator);
+    self.layout.deinit(allocator);
+}
+
+pub struct WorkspaceInput {
+    pub active_tab: i64,
+    pub tabs: array::Array<TabInput>,
+}
+
+pub fn (self: WorkspaceInput) deinit(allocator: Allocator) -> void {
+    self.tabs.deinit(allocator);
+}
+
+error WorkspaceError {
+    Invalid,
+}
+
+error BuildError = WorkspaceError or mem::Error;
+
+pub error ApplyError = WorkspaceError or json::DecodeError;
+
+/// Appends the layout input as nodes and returns the index of its root.
+fn build_layout(allocator: Allocator, input: &LayoutInput, nodes: &var array::Array<Node>) -> BuildError!i64 {
+    let kind = input.kind.as_bytes();
+    if mem::equal_bytes(kind, "leaf") {
+        let pane = input.pane_id orelse return WorkspaceError::Invalid;
+        try nodes.append(allocator, leaf_node(pane));
+        return nodes.len() - 1;
+    }
+    if !mem::equal_bytes(kind, "split") {
+        return WorkspaceError::Invalid;
+    }
+    var axis = Axis::Vertical;
+    if input.axis |spelled| {
+        let bytes = spelled.as_bytes();
+        if mem::equal_bytes(bytes, "horizontal") {
+            axis = Axis::Horizontal;
+        } else if !mem::equal_bytes(bytes, "vertical") {
+            return WorkspaceError::Invalid;
+        }
+    } else {
+        return WorkspaceError::Invalid;
+    }
+    let ratio = input.ratio orelse 0.5;
+    if !(ratio >= min_split_ratio() and ratio <= max_split_ratio()) {
+        return WorkspaceError::Invalid;
+    }
+    var first: i64 = -1;
+    var second: i64 = -1;
+    if input.first |child| {
+        let node = child.borrow();
+        first = try build_layout(allocator, node, nodes);
+    } else {
+        return WorkspaceError::Invalid;
+    }
+    if input.second |child| {
+        let node = child.borrow();
+        second = try build_layout(allocator, node, nodes);
+    } else {
+        return WorkspaceError::Invalid;
+    }
+    try nodes.append(allocator, split_node(axis, ratio, first, second));
+    return nodes.len() - 1;
+}
+
+/// Reports whether values holds value.
+fn holds(values: &array::Array<i64>, value: i64) -> bool {
+    var index = 0;
+    while values.get(index) |current| {
+        if current == value {
+            return true;
+        }
+        index = index + 1;
+    }
+    return false;
+}
+
+/// Builds one tab from its input, checking its panes against the ones every
+/// earlier tab already took.
+fn build_tab(allocator: Allocator, input: &TabInput, taken: &var array::Array<i64>) -> BuildError!Tab {
+    var nodes = array::new<Node>(allocator);
+    errdefer nodes.deinit(allocator);
+    let root = try build_layout(allocator, &input.layout, &var nodes);
+    var layout = Layout { nodes: move nodes, root: root };
+    errdefer layout.deinit(allocator);
+    var panes = array::new<i64>(allocator);
+    errdefer panes.deinit(allocator);
+    try layout.leaves(allocator, root, &var panes);
+    if !holds(&panes, input.active_pane) {
+        return WorkspaceError::Invalid;
+    }
+    var index = 0;
+    while panes.get(index) |pane| {
+        index = index + 1;
+        if holds(taken, pane) {
+            return WorkspaceError::Invalid;
+        }
+        try taken.append(allocator, pane);
+    }
+    // The declared pane list names the same set the layout does.
+    index = 0;
+    while input.panes.get(index) |pane| {
+        index = index + 1;
+        if !holds(&panes, pane) {
+            return WorkspaceError::Invalid;
+        }
+    }
+    index = 0;
+    while panes.get(index) |pane| {
+        index = index + 1;
+        if !holds(&input.panes, pane) {
+            return WorkspaceError::Invalid;
+        }
+    }
+    let title_bytes = input.title.as_bytes();
+    var title = try string::from_bytes(allocator, title_bytes);
+    errdefer title.deinit(allocator);
+    let theme_bytes = input.theme.as_bytes();
+    let theme = try normalized_theme(allocator, theme_bytes);
+    return Tab {
+        id: input.id,
+        title: move title,
+        active_pane: input.active_pane,
+        theme: move theme,
+        panes: move panes,
+        layout: move layout
+    };
+}
+
+/// Replaces the tabs with the workspace in document. Nothing changes unless
+/// the whole workspace is valid.
+pub fn (self: &var Core) apply_workspace(allocator: Allocator, document: []u8) -> ApplyError!void {
+    var input = try json::decode_ignore_unknown<WorkspaceInput>(allocator, document);
+    defer input.deinit(allocator);
+    if input.tabs.len() == 0 or input.active_tab < 0 or input.active_tab >= input.tabs.len() {
+        return WorkspaceError::Invalid;
+    }
+    var tabs = array::new<Tab>(allocator);
+    errdefer tabs.deinit(allocator);
+    var tab_ids = array::new<i64>(allocator);
+    defer tab_ids.deinit(allocator);
+    var pane_ids = array::new<i64>(allocator);
+    defer pane_ids.deinit(allocator);
+    var max_tab: i64 = 0;
+    var index = 0;
+    while input.tabs.at(index) |tab_input| {
+        index = index + 1;
+        if holds(&tab_ids, tab_input.id) {
+            return WorkspaceError::Invalid;
+        }
+        try tab_ids.append(allocator, tab_input.id);
+        if tab_input.id > max_tab {
+            max_tab = tab_input.id;
+        }
+        let tab = try build_tab(allocator, tab_input, &var pane_ids);
+        try tabs.append(allocator, move tab);
+    }
+    var max_pane: i64 = 0;
+    index = 0;
+    while pane_ids.get(index) |pane| {
+        if pane > max_pane {
+            max_pane = pane;
+        }
+        index = index + 1;
+    }
+    // An owner field cannot be replaced, so the new tabs move in one by one,
+    // into room reserved first so no append fails after the old tabs are gone.
+    try self.tabs.reserve(allocator, tabs.len());
+    self.tabs.clear(allocator);
+    while tabs.len() > 0 {
+        if tabs.remove(0) |tab| {
+            try self.tabs.append(allocator, move tab);
+        } else |_| {
+            break;
+        }
+    }
+    tabs.deinit(allocator);
+    self.active_tab = input.active_tab;
+    self.next_tab_id = max_tab + 1;
+    self.next_pane_id = max_pane + 1;
+    return;
+}

@@ -1,0 +1,208 @@
+// The Block Elements a terminal draws as shapes instead of glyphs, so that
+// neighbors meet without a seam. The Rust `neovide_text::block_elements`.
+//
+// Native Block Elements rendering follows Neovide's audited box-drawing
+// renderer: cell fractions are rounded in absolute pixel coordinates so
+// neighboring shapes share the exact same physical boundary.
+import satin::term;
+import std::math;
+import std::mem;
+
+fn top_left() -> i64 {
+    return 1;
+}
+
+fn top_right() -> i64 {
+    return 2;
+}
+
+fn bottom_left() -> i64 {
+    return 4;
+}
+
+fn bottom_right() -> i64 {
+    return 8;
+}
+
+/// The part of a cell a block element fills, in eighths of the cell: one
+/// rectangle, or the quadrants of mask when quadrants is set.
+struct BlockShape {
+    quadrants: bool,
+    mask: i64,
+    left: i64,
+    top: i64,
+    right: i64,
+    bottom: i64,
+}
+
+fn block_rect(left: i64, top: i64, right: i64, bottom: i64) -> BlockShape {
+    return BlockShape { quadrants: false, mask: 0, left: left, top: top, right: right, bottom: bottom };
+}
+
+fn block_quadrants(mask: i64) -> BlockShape {
+    return BlockShape { quadrants: true, mask: mask, left: 0, top: 0, right: 0, bottom: 0 };
+}
+
+/// The shape of the character U+2580 + offset; null for the shades, which
+/// stay glyphs.
+fn shape_at(offset: i64) -> ?BlockShape {
+    if offset == 0 {
+        return block_rect(0, 0, 8, 4);
+    }
+    if offset >= 1 and offset <= 8 {
+        return block_rect(0, 8 - offset, 8, 8);
+    }
+    if offset >= 9 and offset <= 15 {
+        return block_rect(0, 0, 16 - offset, 8);
+    }
+    if offset == 16 {
+        return block_rect(4, 0, 8, 8);
+    }
+    if offset == 20 {
+        return block_rect(0, 0, 8, 1);
+    }
+    if offset == 21 {
+        return block_rect(7, 0, 8, 8);
+    }
+    if offset == 22 {
+        return block_quadrants(bottom_left());
+    }
+    if offset == 23 {
+        return block_quadrants(bottom_right());
+    }
+    if offset == 24 {
+        return block_quadrants(top_left());
+    }
+    if offset == 25 {
+        return block_quadrants(top_left() | bottom_left() | bottom_right());
+    }
+    if offset == 26 {
+        return block_quadrants(top_left() | bottom_right());
+    }
+    if offset == 27 {
+        return block_quadrants(top_left() | top_right() | bottom_left());
+    }
+    if offset == 28 {
+        return block_quadrants(top_left() | top_right() | bottom_right());
+    }
+    if offset == 29 {
+        return block_quadrants(top_right());
+    }
+    if offset == 30 {
+        return block_quadrants(top_right() | bottom_left());
+    }
+    if offset == 31 {
+        return block_quadrants(top_right() | bottom_left() | bottom_right());
+    }
+    return null;
+}
+
+/// The shape a cell's text is drawn as; null for anything but one block
+/// element, which is three bytes from E2 96 80 on.
+fn block_shape(text: []u8) -> ?BlockShape {
+    if mem::len(text) != 3 or cast<i64>(text[0]) != 226 or cast<i64>(text[1]) != 150 {
+        return null;
+    }
+    let last = cast<i64>(text[2]);
+    if last < 128 or last > 159 {
+        return null;
+    }
+    return shape_at(last - 128);
+}
+
+/// Whether a cell's text is drawn as a shape.
+pub fn is_block_element(text: []u8) -> bool {
+    if block_shape(text) |_shape| {
+        return true;
+    }
+    return false;
+}
+
+/// Fills the eighths from (left, top) to (right, bottom) of the cell whose
+/// top left is at (cell_left, cell_top), each edge on a whole pixel.
+fn fill_eighths(
+    allocator: Allocator,
+    list: &var DisplayList,
+    cell_left: f32,
+    cell_top: f32,
+    part: BlockShape,
+    color: Rgba,
+    spot: LineSpot,
+    layout: &Layout
+) -> mem::Error!void {
+    let eighth_width = layout.geometry.cell_width / lit(8.0);
+    let eighth_height = layout.geometry.cell_height / lit(8.0);
+    let left = math::round<f32>(cell_left + span(part.left) * eighth_width);
+    let top = math::round<f32>(cell_top + span(part.top) * eighth_height);
+    let right = math::round<f32>(cell_left + span(part.right) * eighth_width);
+    let bottom = math::round<f32>(cell_top + span(part.bottom) * eighth_height);
+    try list.fill_rect(
+        allocator,
+        Rect { x: left, y: top + spot.y_offset, width: right - left, height: bottom - top },
+        color
+    );
+    return;
+}
+
+fn fill_shape(
+    allocator: Allocator,
+    list: &var DisplayList,
+    cell_left: f32,
+    cell_top: f32,
+    shape: BlockShape,
+    color: Rgba,
+    spot: LineSpot,
+    layout: &Layout
+) -> mem::Error!void {
+    if !shape.quadrants {
+        try fill_eighths(allocator, list, cell_left, cell_top, shape, color, spot, layout);
+        return;
+    }
+    if shape.mask & top_left() != 0 {
+        try fill_eighths(allocator, list, cell_left, cell_top, block_rect(0, 0, 4, 4), color, spot, layout);
+    }
+    if shape.mask & top_right() != 0 {
+        try fill_eighths(allocator, list, cell_left, cell_top, block_rect(4, 0, 8, 4), color, spot, layout);
+    }
+    if shape.mask & bottom_left() != 0 {
+        try fill_eighths(allocator, list, cell_left, cell_top, block_rect(0, 4, 4, 8), color, spot, layout);
+    }
+    if shape.mask & bottom_right() != 0 {
+        try fill_eighths(allocator, list, cell_left, cell_top, block_rect(4, 4, 8, 8), color, spot, layout);
+    }
+    return;
+}
+
+/// Draws the block elements among the line's cells, each with its cell's
+/// decorations.
+fn draw_line_blocks(
+    allocator: Allocator,
+    list: &var DisplayList,
+    cells: []term::Cell,
+    text: []u8,
+    spot: LineSpot,
+    layout: &Layout
+) -> mem::Error!void {
+    let width = math::min<i64>(spot.width, mem::count<term::Cell>(cells));
+    for 0..width |col| {
+        let cell = cells[col];
+        if block_shape(text[cell.text_start..cell.text_start + cell.text_len]) |shape| {
+            if cell.style.blink and !layout.blink_visible {
+                continue;
+            }
+            let screen_col = spot.left + col;
+            try fill_shape(
+                allocator,
+                list,
+                layout.column_x(screen_col),
+                layout.row_y(spot.row),
+                shape,
+                opaque(cell.fg),
+                spot,
+                layout
+            );
+            try draw_decorations(allocator, list, screen_col, screen_col + 1, cell.style, cell.fg, spot, layout);
+        }
+    }
+    return;
+}

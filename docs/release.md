@@ -22,11 +22,11 @@ runs Gatekeeper assessment, and only then writes the archive and manifest.
 
 ## Publish a release
 
-The release workflow requires a tag that exactly matches the Cargo package
-version, for example `vX.Y.Z`, and points at the current `main` commit. Pull
+The release workflow requires a tag that exactly matches the `VERSION` file,
+for example `vX.Y.Z`, and points at the current `main` commit. Pull
 request CI owns the full source and packaged-app verification gates. A strictly
 version-only release PR may skip the redundant macOS lane after the scope check
-normalizes and compares both Cargo files. The tag workflow uses a minimal Nix
+confirms that `VERSION` is the only changed file. The tag workflow uses a minimal Nix
 closure, builds the release bundle once from `main`, signs it, verifies the
 archive and its installability, publishes the archive and schema-2 manifest,
 generates release notes, and records GitHub build provenance. It also attaches
@@ -71,5 +71,6 @@ The historical signed migration from Neovide Tabs is recorded in
 
 ## Runtime diagnostics
 
-Set `SATIN_LOG=off|error|warn|info|debug|trace` to control Rust diagnostics.
-Native lifecycle, runtime, and session events use macOS unified logging.
+Native lifecycle, runtime, and session events use macOS unified logging. The
+Kizu core does not read `SATIN_LOG`; the leveled diagnostics of the Rust core
+were not ported.

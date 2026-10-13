@@ -1,0 +1,187 @@
+// The command line as a list of words commands take their flags out of,
+// and the one message a failed command leaves for main to print.
+import std::array;
+import std::mem;
+import std::process;
+import std::string;
+
+pub error CliError {
+    /// The command failed; Cli.message says why.
+    Failed,
+}
+
+pub error CliFailure = CliError or mem::Error;
+
+struct Cli {
+    args: array::Array<string::String>,
+    message: string::String,
+    json_output: bool,
+}
+
+fn (self: Cli) deinit(allocator: Allocator) -> void {
+    self.args.deinit(allocator);
+    self.message.deinit(allocator);
+}
+
+/// Sets the message main prints, from parts written one after another.
+fn (self: &var Cli) say(allocator: Allocator, first: []u8, second: []u8, third: []u8) -> void {
+    self.message.clear();
+    if self.message.append_bytes(allocator, first) {} else |_| {}
+    if self.message.append_bytes(allocator, second) {} else |_| {}
+    if self.message.append_bytes(allocator, third) {} else |_| {}
+    return;
+}
+
+fn (self: &Cli) first_is(expected: []u8) -> bool {
+    if self.args.at(0) |word| {
+        let bytes = word.as_bytes();
+        return mem::equal_bytes(bytes, expected);
+    }
+    return false;
+}
+
+/// Drops the first word.
+fn (self: &var Cli) shift(allocator: Allocator) -> void {
+    if self.args.remove(0) |word| {
+        word.deinit(allocator);
+    } else |_| {}
+    return;
+}
+
+fn (self: &Cli) index_of(flag: []u8) -> i64 {
+    for 0..self.args.len() |index| {
+        if self.args.at(index) |word| {
+            let bytes = word.as_bytes();
+            if mem::equal_bytes(bytes, flag) {
+                return index;
+            }
+        }
+    }
+    return -1;
+}
+
+/// Takes `flag VALUE` out of the words and appends VALUE to out; false
+/// when flag is not there or is the last word.
+fn (self: &var Cli) extract_value(allocator: Allocator, flag: []u8, out: &var string::String) -> mem::Error!bool {
+    let index = self.index_of(flag);
+    if index < 0 or index + 1 >= self.args.len() {
+        return false;
+    }
+    if self.args.remove(index) |word| {
+        word.deinit(allocator);
+    } else |_| {}
+    if self.args.remove(index) |value| {
+        defer value.deinit(allocator);
+        try out.append_string(allocator, &value);
+    } else |_| {}
+    return true;
+}
+
+/// Takes flag out of the words; whether it was there.
+fn (self: &var Cli) remove_flag(allocator: Allocator, flag: []u8) -> bool {
+    let index = self.index_of(flag);
+    if index < 0 {
+        return false;
+    }
+    if self.args.remove(index) |word| {
+        word.deinit(allocator);
+    } else |_| {}
+    return true;
+}
+
+/// Appends the words left, a space between them, to out.
+fn (self: &Cli) join_rest(allocator: Allocator, out: &var string::String) -> mem::Error!void {
+    for 0..self.args.len() |index| {
+        if index > 0 {
+            try out.append_byte(allocator, 32);
+        }
+        if self.args.at(index) |word| {
+            try out.append_string(allocator, word);
+        }
+    }
+    return;
+}
+
+fn (self: &var Cli) ensure_empty(allocator: Allocator) -> CliFailure!void {
+    if self.args.len() == 0 {
+        return;
+    }
+    var rest = string::new(allocator);
+    defer rest.deinit(allocator);
+    try self.join_rest(allocator, &var rest);
+    let words = rest.as_bytes();
+    self.say(allocator, "unexpected arguments: ", words, "");
+    return CliError::Failed;
+}
+
+/// A whole number of decimal digits; -1 for anything else.
+fn parse_index(text: []u8) -> i64 {
+    if mem::len(text) == 0 or mem::len(text) > 18 {
+        return -1;
+    }
+    var value: i64 = 0;
+    for 0..mem::len(text) |index| {
+        let digit = cast<i64>(text[index]) - 48;
+        if digit < 0 or digit > 9 {
+            return -1;
+        }
+        value = value * 10 + digit;
+    }
+    return value;
+}
+
+/// Appends the value of `flag VALUE`, or of the first of the two
+/// environment variables that is set, to out; false when none is.
+fn (self: &var Cli) flag_or_environment(
+    allocator: Allocator,
+    flag: []u8,
+    environment: []u8,
+    legacy_environment: []u8,
+    out: &var string::String
+) -> mem::Error!bool {
+    if try self.extract_value(allocator, flag, out) {
+        return true;
+    }
+    if process::env(environment) |value| {
+        try out.append_bytes(allocator, value);
+        return true;
+    }
+    if process::env(legacy_environment) |value| {
+        try out.append_bytes(allocator, value);
+        return true;
+    }
+    return false;
+}
+
+/// The pane or tab a command acts on: from its flag, or the environment a
+/// Satin pane runs in.
+fn (self: &var Cli) identifier(
+    allocator: Allocator,
+    flag: []u8,
+    environment: []u8,
+    legacy_environment: []u8,
+    label: []u8
+) -> CliFailure!i64 {
+    var text = string::new(allocator);
+    defer text.deinit(allocator);
+    if !try self.flag_or_environment(allocator, flag, environment, legacy_environment, &var text) {
+        self.say(allocator, "pass ", flag, " or set ");
+        if self.message.append_bytes(allocator, environment) {} else |_| {}
+        return CliError::Failed;
+    }
+    let digits = text.as_bytes();
+    let value = parse_index(digits);
+    if value < 0 {
+        self.say(allocator, "invalid ", label, " identifier");
+        return CliError::Failed;
+    }
+    return value;
+}
+
+fn (self: &var Cli) pane(allocator: Allocator) -> CliFailure!i64 {
+    return try self.identifier(allocator, "--pane", "SATIN_PANE_ID", "NVTERM_PANE_ID", "pane");
+}
+
+fn (self: &var Cli) tab(allocator: Allocator) -> CliFailure!i64 {
+    return try self.identifier(allocator, "--tab", "SATIN_TAB_ID", "NVTERM_TAB_ID", "tab");
+}

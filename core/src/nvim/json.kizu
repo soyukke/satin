@@ -1,0 +1,247 @@
+// What the host reads of an embedded Neovim as JSON: the cursor and scroll
+// of one frame, and the whole screen for the control socket and for tests.
+// The keys are the ones the Rust library serialized.
+import satin::term;
+import std::array;
+import std::json;
+import std::map;
+import std::mem;
+import std::string;
+
+fn write_color(encoder: &var json::Encoder, name: []u8, color: term::Color) -> mem::Error!void {
+    try encoder.begin_object_field(name);
+    try encoder.write_i64_field("r", cast<i64>(color.r));
+    try encoder.write_i64_field("g", cast<i64>(color.g));
+    try encoder.write_i64_field("b", cast<i64>(color.b));
+    try encoder.end_object();
+    return;
+}
+
+fn write_cursor(encoder: &var json::Encoder, editor: &Editor) -> mem::Error!void {
+    if editor.cursor() |cursor| {
+        try encoder.begin_object_field("cursor");
+        try encoder.write_i64_field("x", cursor.x);
+        try encoder.write_i64_field("y", cursor.y);
+        if cursor.shape == term::CursorShape::Bar {
+            try encoder.write_bytes_field("style", "bar");
+        } else if cursor.shape == term::CursorShape::Underline {
+            try encoder.write_bytes_field("style", "underline");
+        } else {
+            try encoder.write_bytes_field("style", "block");
+        }
+        try encoder.write_i64_field("cell_percentage", cast<i64>(cursor.cell_percentage));
+        try encoder.write_i64_field("blinkwait_ms", cast<i64>(cursor.blinkwait_ms));
+        try encoder.write_i64_field("blinkon_ms", cast<i64>(cursor.blinkon_ms));
+        try encoder.write_i64_field("blinkoff_ms", cast<i64>(cursor.blinkoff_ms));
+        try encoder.end_object();
+    } else {
+        try encoder.write_null_field("cursor");
+    }
+    return;
+}
+
+/// Writes the one scroll since the last frame, which this takes.
+fn write_scroll_hint(encoder: &var json::Encoder, editor: &var Editor) -> mem::Error!void {
+    if editor.take_scroll_hint() |hint| {
+        try encoder.begin_object_field("scroll_hint");
+        try encoder.write_i64_field("start_row", hint.start_row);
+        try encoder.write_i64_field("end_row", hint.end_row);
+        try encoder.write_i64_field("start_col", hint.start_col);
+        try encoder.write_i64_field("end_col", hint.end_col);
+        try encoder.write_i64_field("rows", hint.rows);
+        try encoder.end_object();
+    } else {
+        try encoder.write_null_field("scroll_hint");
+    }
+    return;
+}
+
+/// Appends the cursor and the scroll since the last frame to out.
+pub fn append_ui_state_json(allocator: Allocator, editor: &var Editor, out: &var string::String) -> mem::Error!void {
+    var encoder = json::encoder(allocator);
+    defer encoder.deinit(allocator);
+    try encoder.begin_object();
+    try write_cursor(&var encoder, editor);
+    try write_scroll_hint(&var encoder, editor);
+    try encoder.end_object();
+    try encoder.finish_into(allocator, out);
+    return;
+}
+
+/// Writes one drawn row: its text, and each cell's text and colors.
+fn write_line(encoder: &var json::Encoder, line: &term::Line) -> mem::Error!void {
+    let text = line.text.as_bytes();
+    try encoder.begin_object();
+    try encoder.write_bytes_field("text", text);
+    try encoder.begin_array_field("cells");
+    for 0..line.cells.len() |index| {
+        if line.cells.get(index) |cell| {
+            try encoder.begin_object();
+            try encoder.write_bytes_field("text", text[cell.text_start..cell.text_start + cell.text_len]);
+            try write_color(encoder, "fg", cell.fg);
+            if cell.has_bg {
+                try write_color(encoder, "bg", cell.bg);
+            } else {
+                try encoder.write_null_field("bg");
+            }
+            try encoder.write_i64_field("blend", cast<i64>(cell.blend));
+            try encoder.end_object();
+        }
+    }
+    try encoder.end_array();
+    try encoder.end_object();
+    return;
+}
+
+fn write_window(encoder: &var json::Encoder, editor: &Editor, grid: i64) -> mem::Error!void {
+    let placement = editor.placement(grid);
+    try encoder.begin_object();
+    try encoder.write_i64_field("grid_id", grid);
+    try encoder.write_i64_field("top", placement.top);
+    try encoder.write_i64_field("left", placement.left);
+    try encoder.write_i64_field("width", placement.width);
+    try encoder.write_i64_field("height", placement.height);
+    if placement.kind == WindowKind::Float {
+        try encoder.write_bytes_field("window_kind", "float");
+    } else if placement.kind == WindowKind::Message {
+        try encoder.write_bytes_field("window_kind", "message");
+    } else {
+        try encoder.write_bytes_field("window_kind", "normal");
+    }
+    try encoder.write_i64_field("zindex", placement.zindex);
+    try encoder.write_i64_field("compindex", placement.compindex);
+    try encoder.write_bool_field("hidden", placement.hidden);
+    if editor.window(grid) |cache| {
+        try encoder.write_f64_field("scroll_position", cast<f64>(cache.spring.position));
+        try encoder.begin_object_field("viewport_margins");
+        try encoder.write_i64_field("top", cache.margins.top);
+        try encoder.write_i64_field("bottom", cache.margins.bottom);
+        try encoder.write_i64_field("left", cache.margins.left);
+        try encoder.write_i64_field("right", cache.margins.right);
+        try encoder.end_object();
+        try encoder.begin_array_field("lines");
+        for 0..cache.height |row| {
+            if cache.line(cache.line_id(row)) |line| {
+                try write_line(encoder, line);
+            } else {
+                try encoder.write_null();
+            }
+        }
+        try encoder.end_array();
+    } else {
+        try encoder.write_f64_field("scroll_position", 0.0);
+        try encoder.begin_array_field("lines");
+        try encoder.end_array();
+    }
+    try encoder.end_object();
+    return;
+}
+
+/// Appends the whole screen to out: every window in drawing order with the
+/// rows it shows, the cursor, and the scroll since the last frame.
+pub fn append_renderer_model_json(
+    allocator: Allocator,
+    editor: &var Editor,
+    out: &var string::String
+) -> mem::Error!void {
+    var encoder = json::encoder(allocator);
+    defer encoder.deinit(allocator);
+    try encoder.begin_object();
+    try encoder.write_i64_field("schema_version", 1);
+    try write_color(&var encoder, "background", editor.background());
+    try write_color(&var encoder, "cursor_color", editor.cursor_color());
+    try write_cursor(&var encoder, editor);
+    if editor.cursor_parent_grid() |grid| {
+        try encoder.write_i64_field("cursor_parent_grid_id", grid);
+    } else {
+        try encoder.write_null_field("cursor_parent_grid_id");
+    }
+    if editor.message_selection() |selection| {
+        try encoder.begin_object_field("message_selection");
+        try encoder.write_i64_field("grid_id", selection.grid);
+        try encoder.begin_object_field("start");
+        try encoder.write_i64_field("row", selection.start.row);
+        try encoder.write_i64_field("col", selection.start.col);
+        try encoder.end_object();
+        try encoder.begin_object_field("end");
+        try encoder.write_i64_field("row", selection.end.row);
+        try encoder.write_i64_field("col", selection.end.col);
+        try encoder.end_object();
+        try encoder.end_object();
+    } else {
+        try encoder.write_null_field("message_selection");
+    }
+    try encoder.write_null_field("scrollbar");
+    try write_scroll_hint(&var encoder, editor);
+    try encoder.begin_array_field("windows");
+    for 0..editor.window_count() |index| {
+        try write_window(&var encoder, editor, editor.window_grid(index));
+    }
+    try encoder.end_array();
+    try encoder.end_object();
+    try encoder.finish_into(allocator, out);
+    return;
+}
+
+/// How the host asks for Neovim: a JSON object of which every key may be
+/// left out. reserved comes first: std::json::decode does not compile for
+/// a struct whose first field is an optional owner (gaps/README.md).
+pub struct LaunchDocument {
+    pub reserved: ?bool,
+    pub cwd: ?string::String,
+    pub executable: ?string::String,
+    pub arguments: ?array::Array<string::String>,
+    pub environment: ?map::Map<[]u8, string::String>,
+}
+
+fn (self: LaunchDocument) deinit(allocator: Allocator) -> void {
+    if self.cwd |held| {
+        held.deinit(allocator);
+    }
+    if self.executable |held| {
+        held.deinit(allocator);
+    }
+    if self.arguments |held| {
+        held.deinit(allocator);
+    }
+    if self.environment |held| {
+        held.deinit(allocator);
+    }
+    return;
+}
+
+/// Reads a launch from its JSON. Keys it does not know are ignored.
+pub fn launch_from_json(allocator: Allocator, document: []u8) -> json::DecodeError!Launch {
+    let read = try json::decode_ignore_unknown<LaunchDocument>(allocator, document);
+    defer read.deinit(allocator);
+    var launch = new_launch(allocator);
+    errdefer launch.deinit(allocator);
+    if read.cwd |cwd| {
+        launch.has_cwd = true;
+        try launch.cwd.append_string(allocator, cwd);
+    }
+    if read.executable |executable| {
+        launch.has_executable = true;
+        try launch.executable.append_string(allocator, executable);
+    }
+    if read.arguments |arguments| {
+        for 0..arguments.len() |index| {
+            if arguments.at(index) |argument| {
+                let text = argument.as_bytes();
+                try append_word(allocator, &var launch.arguments, text);
+            }
+        }
+    }
+    if read.environment |environment| {
+        for 0..environment.len() |index| {
+            if environment.key_at(index) |key| {
+                if environment.at(key) |value| {
+                    let text = value.as_bytes();
+                    try append_word(allocator, &var launch.environment_keys, key);
+                    try append_word(allocator, &var launch.environment_values, text);
+                }
+            }
+        }
+    }
+    return move launch;
+}

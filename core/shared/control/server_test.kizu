@@ -1,0 +1,334 @@
+import std::fmt;
+import std::mem;
+import std::process;
+import std::string;
+import std::testing;
+
+extern "c" struct PollEntry {
+    descriptor: i32,
+    events: i16,
+    returned: i16,
+}
+
+extern "c" fn poll(entries: &var PollEntry, count: u32, wait_millis: i32) -> i32
+extern "c" fn getpid() -> i32
+
+/// Whether descriptor reads as ready within wait_millis.
+fn is_readable(descriptor: i32, wait_millis: i32) -> bool {
+    var entry = PollEntry { descriptor: descriptor, events: 1, returned: 0 };
+    // SAFETY: entry is one writable pollfd.
+    return unsafe poll(&var entry, 1, wait_millis) > 0;
+}
+
+/// A directory no test used yet, which does not exist.
+fn test_root(allocator: Allocator, label: []u8) -> mem::Error!string::String {
+    var root = try string::from_bytes(allocator, "/tmp/satin-control-");
+    errdefer root.deinit(allocator);
+    try root.append_bytes(allocator, label);
+    try root.append_byte(allocator, 45);
+    // SAFETY: getpid has no preconditions.
+    try fmt::append_i64(allocator, &var root, cast<i64>(unsafe getpid()));
+    try root.append_byte(allocator, 45);
+    try fmt::append_i64(allocator, &var root, process::monotonic_millis());
+    return move root;
+}
+
+fn socket_in(allocator: Allocator, root: &string::String) -> mem::Error!string::String {
+    var path = string::new(allocator);
+    errdefer path.deinit(allocator);
+    try path.append_string(allocator, root);
+    try path.append_bytes(allocator, "/control.sock");
+    return move path;
+}
+
+fn make_directory(allocator: Allocator, path: []u8, mode: u16) -> mem::Error!void {
+    let name = try c_path(allocator, path);
+    defer name.deinit(allocator);
+    let bytes = name.as_bytes();
+    // SAFETY: name ends in NUL.
+    let _ = unsafe mkdir(ptr_of(bytes), mode);
+    // SAFETY: as above; mkdir's mode passes through the umask, chmod's does not.
+    let _ = unsafe chmod(ptr_of(bytes), mode);
+    return;
+}
+
+/// The permission bits of path, -1 when nothing is there.
+fn permissions(allocator: Allocator, path: []u8) -> mem::Error!i64 {
+    var mode: i64 = 0;
+    var owner: i64 = 0;
+    if !try path_status(allocator, path, &var mode, &var owner) {
+        return -1;
+    }
+    return mode % 512;
+}
+
+fn send_line(descriptor: i32, line: []u8) -> bool {
+    return send_all(descriptor, line) and send_all(descriptor, line_feed());
+}
+
+fn can_start(allocator: Allocator, path: []u8) -> bool {
+    if start_server(allocator, path) |server| {
+        server.deinit(allocator);
+        return true;
+    } else |_| {}
+    return false;
+}
+
+test "the server routes a request to the host and the answer back" {
+    let allocator = mem::page_allocator();
+    let root = try test_root(allocator, "round-trip");
+    defer root.deinit(allocator);
+    let socket_path = try socket_in(allocator, &root);
+    defer socket_path.deinit(allocator);
+    let root_bytes = root.as_bytes();
+    let path = socket_path.as_bytes();
+    var server = try start_server(allocator, path);
+    errdefer server.deinit(allocator);
+    testing::expect(try permissions(allocator, path) == 384);
+    testing::expect(try permissions(allocator, root_bytes) == 448);
+    testing::expect(!is_readable(server.wakeup_fd(), 0));
+    var request = string::new(allocator);
+    defer request.deinit(allocator);
+    testing::expect(!try server.take_request(allocator, &var request));
+    let client = try connect_to(allocator, path);
+    testing::expect(is_readable(server.wakeup_fd(), 1000));
+    testing::expect(send_line(client,
+        \\{"version":1,"command":"list"}
+    ));
+    testing::expect(try server.take_request(allocator, &var request));
+    let taken = request.as_bytes();
+    testing::expect(mem::equal_bytes(taken,
+        \\{"id":1,"version":1,"command":"list"}
+    ));
+    testing::expect(!is_readable(server.wakeup_fd(), 0));
+    testing::expect(!try server.respond(allocator, 2,
+        \\{"ok":true}
+    ));
+    testing::expect(try server.respond(allocator, 1,
+        \\{"ok":true,"result":{"tabs":[]}}
+    ));
+    testing::expect(server.client_count() == 0);
+    var answer = string::new(allocator);
+    defer answer.deinit(allocator);
+    testing::expect(try receive(allocator, client, true, &var answer) > 0);
+    let answered = answer.as_bytes();
+    let answer_line = mem::trim_ascii(answered);
+    testing::expect(mem::equal_bytes(answer_line,
+        \\{"ok":true,"result":{"tabs":[]}}
+    ));
+    close_descriptor(client);
+    server.deinit(allocator);
+    testing::expect(try permissions(allocator, path) == -1);
+    testing::expect(try permissions(allocator, root_bytes) == -1);
+}
+
+test "a line that is no request closes its client without an answer" {
+    let allocator = mem::page_allocator();
+    let root = try test_root(allocator, "invalid");
+    defer root.deinit(allocator);
+    let socket_path = try socket_in(allocator, &root);
+    defer socket_path.deinit(allocator);
+    let path = socket_path.as_bytes();
+    var server = try start_server(allocator, path);
+    defer server.deinit(allocator);
+    let client = try connect_to(allocator, path);
+    testing::expect(send_line(client, "nope"));
+    var request = string::new(allocator);
+    defer request.deinit(allocator);
+    testing::expect(!try server.take_request(allocator, &var request));
+    testing::expect(server.client_count() == 0);
+    var answer = string::new(allocator);
+    defer answer.deinit(allocator);
+    testing::expect(try receive(allocator, client, true, &var answer) == 0);
+    close_descriptor(client);
+}
+
+test "a request sent in pieces is read once its line ends" {
+    let allocator = mem::page_allocator();
+    let root = try test_root(allocator, "pieces");
+    defer root.deinit(allocator);
+    let socket_path = try socket_in(allocator, &root);
+    defer socket_path.deinit(allocator);
+    let path = socket_path.as_bytes();
+    var server = try start_server(allocator, path);
+    defer server.deinit(allocator);
+    let client = try connect_to(allocator, path);
+    var request = string::new(allocator);
+    defer request.deinit(allocator);
+    testing::expect(send_all(client,
+        \\{"version":1,"command":"read-
+    ));
+    testing::expect(!try server.take_request(allocator, &var request));
+    testing::expect(server.client_count() == 1);
+    testing::expect(send_line(client,
+        \\screen","pane":3}
+    ));
+    testing::expect(try server.take_request(allocator, &var request));
+    let taken = request.as_bytes();
+    testing::expect(mem::equal_bytes(taken,
+        \\{"id":1,"version":1,"command":"read-screen","pane":3}
+    ));
+    close_descriptor(client);
+}
+
+test "a stopping server tells the clients it owes an answer" {
+    let allocator = mem::page_allocator();
+    let root = try test_root(allocator, "stopping");
+    defer root.deinit(allocator);
+    let socket_path = try socket_in(allocator, &root);
+    defer socket_path.deinit(allocator);
+    let path = socket_path.as_bytes();
+    var server = try start_server(allocator, path);
+    errdefer server.deinit(allocator);
+    let client = try connect_to(allocator, path);
+    testing::expect(send_line(client,
+        \\{"version":1,"command":"list"}
+    ));
+    var request = string::new(allocator);
+    defer request.deinit(allocator);
+    testing::expect(try server.take_request(allocator, &var request));
+    server.deinit(allocator);
+    var answer = string::new(allocator);
+    defer answer.deinit(allocator);
+    testing::expect(try receive(allocator, client, true, &var answer) > 0);
+    let answered = answer.as_bytes();
+    var ok = true;
+    var line = string::new(allocator);
+    defer line.deinit(allocator);
+    let answer_line = mem::trim_ascii(answered);
+    try read_response(allocator, answer_line, &var line, &var ok);
+    testing::expect(!ok);
+    close_descriptor(client);
+}
+
+test "the server refuses a path it could not make safe" {
+    let allocator = mem::page_allocator();
+    testing::expect(!can_start(allocator, "control.sock"));
+    let root = try test_root(allocator, "open-parent");
+    defer root.deinit(allocator);
+    let socket_path = try socket_in(allocator, &root);
+    defer socket_path.deinit(allocator);
+    let root_bytes = root.as_bytes();
+    let path = socket_path.as_bytes();
+    // 0755: others may enter.
+    try make_directory(allocator, root_bytes, 493);
+    testing::expect(!can_start(allocator, path));
+    testing::expect(try permissions(allocator, root_bytes) == 493);
+    testing::expect(try permissions(allocator, path) == -1);
+    // A directory where the socket would be is not a socket to replace.
+    try make_directory(allocator, root_bytes, 448);
+    try make_directory(allocator, path, 448);
+    testing::expect(!can_start(allocator, path));
+    testing::expect(try permissions(allocator, path) == 448);
+    remove_path(allocator, path, true);
+    remove_path(allocator, root_bytes, true);
+}
+
+test "the server does not replace a socket in use" {
+    let allocator = mem::page_allocator();
+    let root = try test_root(allocator, "in-use");
+    defer root.deinit(allocator);
+    let socket_path = try socket_in(allocator, &root);
+    defer socket_path.deinit(allocator);
+    let root_bytes = root.as_bytes();
+    let path = socket_path.as_bytes();
+    var server = try start_server(allocator, path);
+    errdefer server.deinit(allocator);
+    testing::expect(!can_start(allocator, path));
+    testing::expect(try permissions(allocator, path) == 384);
+    server.deinit(allocator);
+    testing::expect(try permissions(allocator, root_bytes) == -1);
+}
+
+test "a client sends a request and reads its answer" {
+    let allocator = mem::page_allocator();
+    var answer = string::new(allocator);
+    defer answer.deinit(allocator);
+    var refused = false;
+    if send_request(allocator, "/tmp/satin-control-no-such/control.sock", "{}", 100, &var answer) {} else |_| {
+        refused = true;
+    }
+    testing::expect(refused);
+}
+
+test "a client whose time ran out is told so, or dropped while still sending" {
+    let allocator = mem::page_allocator();
+    let root = try test_root(allocator, "expired");
+    defer root.deinit(allocator);
+    let socket_path = try socket_in(allocator, &root);
+    defer socket_path.deinit(allocator);
+    let path = socket_path.as_bytes();
+    var server = try start_server(allocator, path);
+    defer server.deinit(allocator);
+    let waiting = try connect_to(allocator, path);
+    testing::expect(send_line(waiting,
+        \\{"version":1,"command":"list"}
+    ));
+    var request = string::new(allocator);
+    defer request.deinit(allocator);
+    testing::expect(try server.take_request(allocator, &var request));
+    let slow = try connect_to(allocator, path);
+    testing::expect(!try server.take_request(allocator, &var request));
+    testing::expect(server.client_count() == 2);
+    server.expire_client(allocator, 1);
+    server.expire_client(allocator, 2);
+    testing::expect(server.client_count() == 0);
+    var answer = string::new(allocator);
+    defer answer.deinit(allocator);
+    testing::expect(try receive(allocator, waiting, true, &var answer) > 0);
+    let answered = answer.as_bytes();
+    testing::expect(mem::starts_with(answered,
+        \\{"ok":false,"error":{"code":"timeout"
+    ));
+    answer.clear();
+    testing::expect(try receive(allocator, slow, true, &var answer) == 0);
+    testing::expect(!try server.respond(allocator, 1,
+        \\{"ok":true}
+    ));
+    close_descriptor(waiting);
+    close_descriptor(slow);
+}
+
+test "requests keep being answered through connections that say nothing" {
+    let allocator = mem::page_allocator();
+    let root = try test_root(allocator, "churn");
+    defer root.deinit(allocator);
+    let socket_path = try socket_in(allocator, &root);
+    defer socket_path.deinit(allocator);
+    let path = socket_path.as_bytes();
+    var server = try start_server(allocator, path);
+    defer server.deinit(allocator);
+    var request = string::new(allocator);
+    defer request.deinit(allocator);
+    var answer = string::new(allocator);
+    defer answer.deinit(allocator);
+    var answered = 0;
+    for 0..200 |round| {
+        let silent = try connect_to(allocator, path);
+        close_descriptor(silent);
+        let client = try connect_to(allocator, path);
+        testing::expect(send_line(client,
+            \\{"version":1,"command":"list"}
+        ));
+        request.clear();
+        var taken = false;
+        for 0..20 |_| {
+            if !taken and is_readable(server.wakeup_fd(), 100) {
+                taken = try server.take_request(allocator, &var request);
+            }
+        }
+        testing::expect(taken);
+        testing::expect(try server.respond(allocator, round + 1,
+            \\{"ok":true}
+        ) or try server.respond(allocator, round * 2 + 2,
+            \\{"ok":true}
+        ));
+        answer.clear();
+        if try receive(allocator, client, true, &var answer) > 0 {
+            answered = answered + 1;
+        }
+        close_descriptor(client);
+    }
+    testing::expect(answered == 200);
+    testing::expect(server.client_count() == 0);
+}

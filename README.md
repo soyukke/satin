@@ -50,7 +50,8 @@ and changes across the workspace.
 - Neovide-style animated cursor movement and retained smooth scrolling,
   designed to feel good, look good, and make movement easier to follow.
 - A unified native Neovim UI backed by `nvim --embed`, `ext_multigrid`, and the
-  same Skia/Metal renderer whether it is opened from the shell or Command-N.
+  same CoreText/CoreGraphics renderer, presented through Metal, whether it is
+  opened from the shell or Command-N.
 - Explicit local `tmux -CC` integration that projects tmux windows, panes, zoom,
   history, alternate screens, terminal modes, and bells as native tabs and
   splits, then reattaches that projection after a clean Satin restart. A native
@@ -61,7 +62,7 @@ and changes across the workspace.
   through an owner-only local control socket.
 - Experimental bounded, versioned Markdown artifacts with a native recent-item
   picker and reusable, window-scoped sidebar. The terminal viewer renders GFM
-  tables, inline emphasis, syntax-highlighted fenced code, and snapshotted
+  tables, inline emphasis, fenced code in one uniform style, and snapshotted
   relative PNG images without an embedded browser.
 - Native tabs, recursive splits, working-directory inheritance, and session
   restore.
@@ -329,5 +330,5 @@ The Satin source is available under the [MIT License](LICENSE),
 copyright © 2026 soyukke. Adapted code, bundled fonts, and other third-party
 components remain under their respective licenses as documented in
 [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md). Release bundles include
-these notices, the full font license, and generated Rust dependency license
-texts under `Contents/Resources/Legal/`; Help → Acknowledgements… reveals them.
+these notices and the full font license under `Contents/Resources/Legal/`;
+Help → Acknowledgements… reveals them.

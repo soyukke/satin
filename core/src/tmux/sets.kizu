@@ -1,0 +1,49 @@
+// Small sets of pane ids, the Rust side's `HashSet<u32>`. A tmux session has a
+// handful of panes, so a scan is cheaper than a hash.
+import std::array;
+import std::mem;
+
+pub fn set_has(values: &array::Array<i64>, value: i64) -> bool {
+    var index = 0;
+    while values.get(index) |current| {
+        if current == value {
+            return true;
+        }
+        index = index + 1;
+    }
+    return false;
+}
+
+/// Adds value; returns false when it was there already.
+pub fn set_add(allocator: Allocator, values: &var array::Array<i64>, value: i64) -> mem::Error!bool {
+    if set_has(values, value) {
+        return false;
+    }
+    try values.append(allocator, value);
+    return true;
+}
+
+/// Removes value; returns false when it was not there.
+pub fn set_drop(values: &var array::Array<i64>, value: i64) -> bool {
+    var index = 0;
+    while values.get(index) |current| {
+        if current == value {
+            values.remove(index) catch return false;
+            return true;
+        }
+        index = index + 1;
+    }
+    return false;
+}
+
+/// Keeps only the values keep holds.
+pub fn set_keep(values: &var array::Array<i64>, keep: &array::Array<i64>) -> void {
+    var index = 0;
+    while values.get(index) |current| {
+        if set_has(keep, current) {
+            index = index + 1;
+        } else {
+            values.remove(index) catch return;
+        }
+    }
+}

@@ -1,0 +1,385 @@
+import std::mem;
+import std::string;
+import std::testing;
+
+extern "c" fn clock_gettime_nsec_np(clock: u32) -> u64
+extern "c" fn setenv(name: ptr<const u8>, value: ptr<const u8>, overwrite: i32) -> i32
+extern "c" fn unsetenv(name: ptr<const u8>) -> i32
+/// The microseconds since some moment before the test began.
+fn micros_now() -> i64 {
+    // SAFETY: 8 is CLOCK_UPTIME_RAW, which takes no other argument.
+    return cast<i64>(unsafe clock_gettime_nsec_np(8) / 1000);
+}
+
+/// Points painter at this repository's bundled fonts, from its root or
+/// from a package's directory in it. False, after saying so, when the
+/// font's file is in neither: a test of the bundled font then checks
+/// nothing.
+fn use_bundled_fonts(allocator: Allocator, painter: &var Painter) -> mem::Error!bool {
+    try painter.set_font_dir(allocator, "assets/fonts");
+    if try painter.has_bundled_font(allocator) {
+        return true;
+    }
+    try painter.set_font_dir(allocator, "../assets/fonts");
+    if try painter.has_bundled_font(allocator) {
+        return true;
+    }
+    print("skipped: assets/fonts/FiraCodeNerdFont-Regular.ttf was not found from the working directory");
+    return false;
+}
+
+/// drawn, with the bundled font when its file is found; found says so.
+struct DrawnBundled {
+    painter: Painter,
+    bitmap: Bitmap,
+    found: bool,
+}
+
+fn (self: DrawnBundled) deinit(allocator: Allocator) -> void {
+    self.painter.deinit(allocator);
+    self.bitmap.deinit();
+}
+
+fn drawn_bundled(allocator: Allocator, list: &DisplayList, width: i64, height: i64) -> mem::Error!DrawnBundled {
+    var painter = new_painter(allocator) orelse return mem::Error::OutOfMemory;
+    errdefer painter.deinit(allocator);
+    let bitmap = new_bitmap(width, height) orelse return mem::Error::OutOfMemory;
+    errdefer bitmap.deinit();
+    let found = try use_bundled_fonts(allocator, &var painter);
+    let metrics = try painter.metrics(allocator, pane_geometry(width, height, 12.0, 24.0));
+    testing::expect(metrics.ascent > lit(10.0) and metrics.ascent < lit(24.0));
+    try painter.execute(allocator, list, &bitmap);
+    return DrawnBundled { painter: move painter, bitmap: move bitmap, found: found };
+}
+
+/// Whether the two bitmaps hold the same pixels in the columns from left
+/// up to right.
+fn same_columns(first: &Bitmap, second: &Bitmap, left: i64, right: i64) -> bool {
+    for 0..first.height() |y| {
+        for left..right |x| {
+            if !same_rgba(first.pixel(x, y), second.pixel(x, y)) {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+/// The place in fonts of the font the glyph at index of shaped is drawn
+/// with; -1 without that glyph.
+fn shaped_font(painter: &Painter, index: i64) -> i64 {
+    if painter.shaped.get(index) |shaped| {
+        return shaped.font;
+    }
+    return -1;
+}
+
+test "a ligature joins the cells of a run and letters stay as they are a cell at a time" {
+    let allocator = mem::page_allocator();
+    var joined = new_display_list(allocator);
+    defer joined.deinit(allocator);
+    try add_run(allocator, &var joined, "->", 4, 24, 12, false, true);
+    try add_run(allocator, &var joined, "!=", 52, 24, 12, false, true);
+    try add_run(allocator, &var joined, "Hg@W", 100, 24, 12, false, true);
+    var apart = new_display_list(allocator);
+    defer apart.deinit(allocator);
+    try add_text(allocator, &var apart, "-", 4, 24, false, white());
+    try add_text(allocator, &var apart, ">", 16, 24, false, white());
+    try add_text(allocator, &var apart, "!", 52, 24, false, white());
+    try add_text(allocator, &var apart, "=", 64, 24, false, white());
+    try add_text(allocator, &var apart, "H", 100, 24, false, white());
+    try add_text(allocator, &var apart, "g", 112, 24, false, white());
+    try add_text(allocator, &var apart, "@", 124, 24, false, white());
+    try add_text(allocator, &var apart, "W", 136, 24, false, white());
+
+    // The default family has no ligatures: a run is its cells.
+    let plain_joined = try drawn(allocator, &joined, 160, 36);
+    defer plain_joined.deinit(allocator);
+    let plain_apart = try drawn(allocator, &apart, 160, 36);
+    defer plain_apart.deinit(allocator);
+    if plain_joined.painter.face_bundled == 0 {
+        testing::expect(same_bitmaps(&plain_joined.bitmap, &plain_apart.bitmap));
+    }
+
+    let whole = try drawn_bundled(allocator, &joined, 160, 36);
+    defer whole.deinit(allocator);
+    let cells = try drawn_bundled(allocator, &apart, 160, 36);
+    defer cells.deinit(allocator);
+    if !whole.found or !cells.found {
+        return;
+    }
+    // The arrow and the not-equal sign are other glyphs than their parts.
+    testing::expect(!same_columns(&whole.bitmap, &cells.bitmap, 0, 40));
+    testing::expect(!same_columns(&whole.bitmap, &cells.bitmap, 48, 88));
+    testing::expect(same_columns(&whole.bitmap, &cells.bitmap, 96, 160));
+    // And still in the two cells of their run.
+    testing::expect(lit_pixels(&whole.bitmap, 4, 0, 28, 36) > 20);
+    testing::expect_equal<i64>(0, lit_pixels(&whole.bitmap, 0, 0, 3, 36));
+    testing::expect_equal<i64>(0, lit_pixels(&whole.bitmap, 29, 0, 51, 36));
+    testing::expect(lit_pixels(&whole.bitmap, 52, 0, 76, 36) > 20);
+    testing::expect_equal<i64>(0, lit_pixels(&whole.bitmap, 77, 0, 99, 36));
+}
+
+test "every cell's glyph starts at its cell whatever the font advances" {
+    let allocator = mem::page_allocator();
+    var list = new_display_list(allocator);
+    defer list.deinit(allocator);
+    // Cells four pixels wider than the letters of a font this size.
+    try add_run(allocator, &var list, "MMMMMM", 0, 24, 16, false, true);
+    try add_run(allocator, &var list, "M M M ", 0, 60, 16, false, true);
+    let result = try drawn_bundled(allocator, &list, 96, 72);
+    defer result.deinit(allocator);
+    if !result.found {
+        return;
+    }
+    let first = lit_pixels(&result.bitmap, 0, 0, 16, 36);
+    testing::expect(first > 20);
+    for 1..6 |cell| {
+        testing::expect_equal<i64>(first, lit_pixels(&result.bitmap, cell * 16, 0, cell * 16 + 16, 36));
+        testing::expect(same_columns_apart(&result.bitmap, cell * 16, 16));
+        // The letter ends where the font's own advance does.
+        testing::expect_equal<i64>(0, lit_pixels(&result.bitmap, cell * 16 + 12, 0, cell * 16 + 16, 36));
+    }
+    for 0..3 |pair| {
+        testing::expect_equal<i64>(first, lit_pixels(&result.bitmap, pair * 32, 36, pair * 32 + 16, 72));
+        testing::expect_equal<i64>(0, lit_pixels(&result.bitmap, pair * 32 + 12, 36, pair * 32 + 32, 72));
+    }
+}
+
+/// Whether the top 36 rows of the width columns from left hold the pixels
+/// of the first width columns.
+fn same_columns_apart(bitmap: &Bitmap, left: i64, width: i64) -> bool {
+    for 0..36 |y| {
+        for 0..width |x| {
+            if !same_rgba(bitmap.pixel(x, y), bitmap.pixel(left + x, y)) {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+/// Draws text as one cell from (4, 24) into 120 x 36 pixels and expects
+/// one glyph of it, in the cell pair it starts in.
+fn expect_one_glyph(allocator: Allocator, text: []u8) -> mem::Error!void {
+    var list = new_display_list(allocator);
+    defer list.deinit(allocator);
+    try add_text(allocator, &var list, text, 4, 24, false, white());
+    let result = try drawn_bundled(allocator, &list, 120, 36);
+    defer result.deinit(allocator);
+    testing::expect_equal<i64>(1, result.painter.shaped.len());
+    testing::expect(lit_pixels(&result.bitmap, 0, 0, 34, 36) > 100);
+    testing::expect_equal<i64>(0, lit_pixels(&result.bitmap, 34, 0, 120, 36));
+    return;
+}
+
+test "a joined emoji sequence, a flag and a skin tone are one glyph in one cell pair" {
+    let allocator = mem::page_allocator();
+    // A man, a woman and a girl joined: three glyphs in six cells unshaped.
+    try expect_one_glyph(allocator, "👨‍👩‍👧");
+    try expect_one_glyph(allocator, "🇯🇵");
+    try expect_one_glyph(allocator, "👍🏽");
+}
+
+test "a combining mark is set on its letter" {
+    let allocator = mem::page_allocator();
+    var list = new_display_list(allocator);
+    defer list.deinit(allocator);
+    try add_text(allocator, &var list, "e", 4, 24, false, white());
+    try add_text(allocator, &var list, "é", 40, 24, false, white());
+    let result = try drawn_bundled(allocator, &list, 80, 36);
+    defer result.deinit(allocator);
+    let bare = lit_pixels(&result.bitmap, 4, 0, 16, 36);
+    let marked = lit_pixels(&result.bitmap, 40, 0, 52, 36);
+    testing::expect(bare > 10 and marked > bare + 3);
+    // The letter under the mark is the bare letter, and the mark is over
+    // it in the same cell: nothing is beside the cell.
+    testing::expect_equal<i64>(marked, lit_pixels(&result.bitmap, 20, 0, 80, 36));
+    var over = 0;
+    for 0..12 |x| {
+        for 0..36 |y| {
+            if cast<i64>(result.bitmap.pixel(40 + x, y).a) > 32 and cast<i64>(result.bitmap.pixel(4 + x, y).a) <= 32 {
+                over = over + 1;
+                testing::expect(y < 14);
+            }
+        }
+    }
+    testing::expect(over > 3);
+}
+
+test "a cell's font is the first that has it: family, bundled, symbols, the system, the last resort" {
+    let allocator = mem::page_allocator();
+    var list = new_display_list(allocator);
+    defer list.deinit(allocator);
+    try add_text(allocator, &var list, "M", 4, 24, false, white());
+    try add_text(allocator, &var list, "", 34, 24, false, white());
+    try add_text(allocator, &var list, "⚠", 64, 24, false, white());
+    try add_text(allocator, &var list, "日", 94, 24, false, white());
+    try add_text(allocator, &var list, "͸", 134, 24, false, white());
+    try add_text(allocator, &var list, "M", 164, 24, true, white());
+    var result = try drawn_bundled(allocator, &list, 190, 36);
+    defer result.deinit(allocator);
+    if !result.found {
+        return;
+    }
+    testing::expect_equal<i64>(6, result.painter.shaped.len());
+    testing::expect_equal<i64>(bundled_slot(), try result.painter.base_slot(allocator));
+    testing::expect_equal<i64>(bundled_slot(), shaped_font(&result.painter, 0));
+    // The powerline arrow is the bundled font's own, and fills its cell's
+    // left edge from top to bottom.
+    testing::expect_equal<i64>(bundled_slot(), shaped_font(&result.painter, 1));
+    testing::expect(lit_pixels(&result.bitmap, 34, 0, 46, 36) > 60);
+    testing::expect(lit_pixels(&result.bitmap, 34, 4, 36, 28) > 40);
+    testing::expect_equal<i64>(default_slot(), shaped_font(&result.painter, 2));
+    testing::expect(shaped_font(&result.painter, 3) >= fixed_slots());
+    testing::expect(lit_pixels(&result.bitmap, 94, 0, 124, 36) > 30);
+    // No font has a character Unicode has not assigned: the bundled last
+    // resort draws its box.
+    testing::expect_equal<i64>(last_resort_slot(), shaped_font(&result.painter, 4));
+    testing::expect(lit_pixels(&result.bitmap, 134, 0, 160, 36) > 30);
+    // The bundled font has one weight, as the Rust renderer drew it.
+    testing::expect_equal<i64>(bundled_slot(), shaped_font(&result.painter, 5));
+    testing::expect(same_columns_apart(&result.bitmap, 160, 16));
+    testing::expect_equal<i64>(
+        lit_pixels(&result.bitmap, 4, 0, 16, 36),
+        lit_pixels(&result.bitmap, 164, 0, 176, 36)
+    );
+
+    // A named family goes first, in its own bold, and the bundled font
+    // still has what the family lacks.
+    testing::expect(try result.painter.set_font_family(allocator, "Courier New"));
+    let named = try result.painter.metrics(allocator, pane_geometry(190, 36, 12.0, 24.0));
+    testing::expect(named.ascent > lit(10.0));
+    testing::expect_equal<i64>(0, try result.painter.base_slot(allocator));
+    try result.painter.execute(allocator, &list, &result.bitmap);
+    testing::expect_equal<i64>(6, result.painter.shaped.len());
+    testing::expect_equal<i64>(0, shaped_font(&result.painter, 0));
+    testing::expect_equal<i64>(bundled_slot(), shaped_font(&result.painter, 1));
+    testing::expect_equal<i64>(1, shaped_font(&result.painter, 5));
+}
+
+/// Whether a new painter finds the bundled font when SATIN_FONT_DIR is dir.
+fn env_dir_finds(allocator: Allocator, dir: ptr<const u8>) -> mem::Error!bool {
+    // SAFETY: both are NUL-terminated strings, which the environment copies.
+    if unsafe setenv(c"SATIN_FONT_DIR", dir, 1) != 0 {
+        return false;
+    }
+    var painter = new_painter(allocator) orelse return mem::Error::OutOfMemory;
+    defer painter.deinit(allocator);
+    var found = false;
+    var failed = false;
+    if painter.has_bundled_font(allocator) |has| {
+        found = has;
+    } else |_| {
+        failed = true;
+    }
+    // SAFETY: the name is a NUL-terminated string.
+    if unsafe unsetenv(c"SATIN_FONT_DIR") != 0 {}
+    if failed {
+        return mem::Error::OutOfMemory;
+    }
+    return found;
+}
+
+test "SATIN_FONT_DIR names the bundled fonts' directory and SATIN_FONT a font's file" {
+    let allocator = mem::page_allocator();
+    var found = try env_dir_finds(allocator, c"assets/fonts");
+    if !found {
+        found = try env_dir_finds(allocator, c"../assets/fonts");
+    }
+    if !found {
+        print("skipped: assets/fonts/FiraCodeNerdFont-Regular.ttf was not found from the working directory");
+    }
+    testing::expect(!try env_dir_finds(allocator, c"/no/such/directory/4f2a") or !found);
+
+    // SAFETY: both are NUL-terminated strings, which the environment copies.
+    if unsafe setenv(c"SATIN_FONT", c"/System/Library/Fonts/Monaco.ttf", 1) != 0 {
+        return;
+    }
+    var painter = new_painter(allocator) orelse return;
+    defer painter.deinit(allocator);
+    let has_file = painter.path_face() != 0;
+    // SAFETY: the name is a NUL-terminated string.
+    if unsafe unsetenv(c"SATIN_FONT") != 0 {}
+    if !has_file {
+        print("skipped: /System/Library/Fonts/Monaco.ttf was not found");
+        return;
+    }
+    if try use_bundled_fonts(allocator, &var painter) {}
+    let metrics = try painter.metrics(allocator, pane_geometry(100, 100, 12.0, 24.0));
+    testing::expect(metrics.cell_width > lit(8.0));
+    // The file goes before the bundled font, and a named family before it.
+    testing::expect_equal<i64>(path_slot(), try painter.base_slot(allocator));
+    if painter.font(path_slot()) |font| {
+        if cf_string("Monaco") |name| {
+            testing::expect(font_is_named(font, name));
+            // SAFETY: name is live and released once.
+            unsafe CFRelease(name);
+        }
+    }
+    testing::expect(try painter.set_font_family(allocator, "Courier New"));
+    testing::expect_equal<i64>(0, try painter.base_slot(allocator));
+}
+
+/// Sets a row of 200 characters that no other row of the stage has.
+fn set_distinct_row(allocator: Allocator, stage: &var Stage, row: i64) -> mem::Error!void {
+    var text = string::new(allocator);
+    defer text.deinit(allocator);
+    for 0..200 |col| {
+        try text.append_byte(allocator, cast<u8>(33 + (col + row * 7) % 90));
+    }
+    let row_text = text.as_bytes();
+    try stage.set_text(allocator, 1, row, row_text, rgb(220, 220, 210), row % 2 == 0, rgb(40, 44, 52));
+    return;
+}
+
+test "200 x 60 cells of the bundled font are shaped once and then drawn from the cache" {
+    let allocator = mem::page_allocator();
+    let geometry = pane_geometry(3000, 1800, 15.0, 30.0);
+    var stage = try main_stage(allocator, 200, 60);
+    defer stage.deinit(allocator);
+    stage.scene.background = rgb(20, 22, 26);
+    for 0..60 |row| {
+        try set_distinct_row(allocator, &var stage, row);
+    }
+    var painter = new_painter(allocator) orelse return;
+    defer painter.deinit(allocator);
+    let found = try use_bundled_fonts(allocator, &var painter);
+    let bitmap = new_bitmap(3000, 1800) orelse return;
+    defer bitmap.deinit();
+    var list = new_display_list(allocator);
+    defer list.deinit(allocator);
+    try stage.draw(allocator, &var list, geometry, "");
+    let metrics = try painter.metrics(allocator, geometry);
+    testing::expect(metrics.cell_width > lit(10.0));
+
+    // The first frame of a process loads the fonts as well.
+    let began = micros_now();
+    try painter.execute(allocator, &list, &bitmap);
+    let first = micros_now() - began;
+    testing::expect_equal<i64>(60, painter.cached_runs());
+    let glyphs = painter.shaped.len();
+    testing::expect(glyphs > 11000 and glyphs <= 12000);
+
+    // A frame none of whose runs is kept: every one is shaped.
+    painter.forget_glyphs(allocator);
+    let cold_began = micros_now();
+    try painter.execute(allocator, &list, &bitmap);
+    let cold = micros_now() - cold_began;
+    testing::expect_equal<i64>(60, painter.cached_runs());
+
+    let frames = 10;
+    let warm_began = micros_now();
+    for 0..frames |_| {
+        try painter.execute(allocator, &list, &bitmap);
+    }
+    let warm = (micros_now() - warm_began) / frames;
+    testing::expect_equal<i64>(glyphs, painter.shaped.len());
+    print("200 x 60 cells into 3000 x 1800 pixels, microseconds: first frame, unshaped frame, shaped frame");
+    print(first);
+    print(cold);
+    print(warm);
+    testing::expect(found == (painter.face_bundled != 0));
+    testing::expect(lit_pixels(&bitmap, 0, 0, 3000, 30) > 3000 * 29);
+    testing::expect(same_rgba(bitmap.pixel(2999, 1799), Rgba { r: 20, g: 22, b: 26, a: 255 }));
+}

@@ -1,0 +1,1617 @@
+// What Neovim's redraw events (ext_linegrid, ext_multigrid, ext_popupmenu)
+// leave on screen: grids, windows, highlights, the cursor and its modes, the
+// popupmenu, a message selection, and one retained window of lines a grid
+// for a renderer to draw. The Rust `neovim_editor`.
+import satin::term;
+import std::array;
+import std::map;
+import std::math;
+import std::mem;
+import std::string;
+
+fn default_grid() -> i64 {
+    return 1;
+}
+
+/// The grid id the popupmenu's window goes by; Neovim's own are positive.
+pub fn popupmenu_grid() -> i64 {
+    return -1;
+}
+
+fn popupmenu_zindex() -> i64 {
+    return 250;
+}
+
+pub enum WindowKind {
+    Normal,
+    Float,
+    Message,
+}
+
+/// Where a window is drawn, in screen cells, and over what: windows are
+/// drawn in the order of zindex, then compindex, then grid id.
+pub struct Placement {
+    pub top: i64,
+    pub left: i64,
+    pub width: i64,
+    pub height: i64,
+    pub kind: WindowKind,
+    pub zindex: i64,
+    pub compindex: i64,
+    pub hidden: bool,
+}
+
+/// A cell of a window, counted from its top left.
+pub struct GridPosition {
+    pub row: i64,
+    pub col: i64,
+}
+
+/// The cells of a message window the mouse dragged over, both ends included.
+pub struct MessageSelection {
+    pub grid: i64,
+    pub start: GridPosition,
+    pub end: GridPosition,
+}
+
+/// The screen cells one scroll moved, both ends included, and by how many
+/// rows; positive when the text moved up.
+pub struct ScrollHint {
+    pub start_row: i64,
+    pub end_row: i64,
+    pub start_col: i64,
+    pub end_col: i64,
+    pub rows: i64,
+}
+
+/// The cursor in screen cells. grid is the grid it is in, whose window it
+/// scrolls with; cell_percentage is how much of the cell a bar or an
+/// underline covers, and the blink times are zero for a steady cursor.
+pub struct EditorCursor {
+    pub x: i64,
+    pub y: i64,
+    pub grid: i64,
+    pub shape: term::CursorShape,
+    pub cell_percentage: u8,
+    pub blinkwait_ms: u64,
+    pub blinkon_ms: u64,
+    pub blinkoff_ms: u64,
+}
+
+/// What a mouse event did to the message selection. Finished leaves the
+/// selected text, when there is any, in the caller's string.
+pub enum SelectionOutcome {
+    Ignored,
+    Updated,
+    Finished,
+}
+
+struct WindowPosition {
+    top: i64,
+    left: i64,
+    width: i64,
+    height: i64,
+}
+
+fn (self: WindowPosition) contains(row: i64, col: i64) -> bool {
+    return self.width > 0 and self.height > 0 and row >= self.top and row < self.top + self.height and
+        col >= self.left and col < self.left + self.width;
+}
+
+fn no_margins() -> term::Margins {
+    return term::Margins { top: 0, bottom: 0, left: 0, right: 0 };
+}
+
+/// What win_pos, win_float_pos or msg_set_pos said of a grid.
+struct Window {
+    grid: i64,
+    position: WindowPosition,
+    kind: WindowKind,
+    zindex: i64,
+    compindex: i64,
+    margins: term::Margins,
+    hidden: bool,
+    pending_scroll_rows: i64,
+}
+
+fn hidden_window(grid: i64) -> Window {
+    return Window {
+        grid: grid,
+        position: WindowPosition { top: 0, left: 0, width: 0, height: 0 },
+        kind: WindowKind::Normal,
+        zindex: 0,
+        compindex: 0,
+        margins: no_margins(),
+        hidden: true,
+        pending_scroll_rows: 0
+    };
+}
+
+/// Whether the window is drawn over the default grid.
+fn (self: Window) is_visible_layer() -> bool {
+    return !self.hidden and self.grid != default_grid() and self.position.width > 0 and self.position.height > 0;
+}
+
+struct GridSize {
+    width: i64,
+    height: i64,
+}
+
+/// The hint for the screen rows from start_row up to bottom and the columns
+/// from start_col up to right, cut to the screen; null when that is empty.
+/// Its rows are left zero.
+fn hint_region(start_row: i64, bottom: i64, start_col: i64, right: i64, screen: GridSize) -> ?ScrollHint {
+    let end_row = math::min<i64>(bottom, screen.height) - 1;
+    let end_col = math::min<i64>(right, screen.width) - 1;
+    if end_row < 0 or end_col < 0 or start_row > end_row or start_col > end_col {
+        return null;
+    }
+    return ScrollHint { start_row: start_row, end_row: end_row, start_col: start_col, end_col: end_col, rows: 0 };
+}
+
+/// region scrolled by rows, which a region of one row cannot show; null
+/// when nothing is left to show.
+fn hint_scrolled(region: ScrollHint, rows: i64) -> ?ScrollHint {
+    let most = math::max<i64>(region.end_row - region.start_row, 0);
+    var hint = region;
+    hint.rows = math::clamp<i64>(rows, 0 - most, most);
+    if hint.rows == 0 {
+        return null;
+    }
+    return hint;
+}
+
+/// The hint for rows the window's viewport scrolled, inside its margins.
+fn window_scroll_hint(window: Window, rows: i64, screen: GridSize) -> ?ScrollHint {
+    if rows == 0 or !window.is_visible_layer() {
+        return null;
+    }
+    let position = window.position;
+    let bottom = math::max<i64>(position.top + position.height - window.margins.bottom, 0);
+    let right = math::max<i64>(position.left + position.width - window.margins.right, 0);
+    let region = hint_region(position.top + window.margins.top, bottom, position.left + window.margins.left, right, screen);
+    if region |found| {
+        return hint_scrolled(found, rows);
+    }
+    return null;
+}
+
+/// One entry of mode_info_set: how the cursor looks in a mode.
+struct CursorMode {
+    shape: term::CursorShape,
+    cell_percentage: u8,
+    blinkwait_ms: u64,
+    blinkon_ms: u64,
+    blinkoff_ms: u64,
+}
+
+fn default_cursor_mode() -> CursorMode {
+    return CursorMode {
+        shape: term::CursorShape::Block,
+        cell_percentage: 100,
+        blinkwait_ms: 0,
+        blinkon_ms: 0,
+        blinkoff_ms: 0
+    };
+}
+
+fn cursor_mode_from(value: &Value) -> CursorMode {
+    var mode = default_cursor_mode();
+    match value {
+        Map(entries) => {
+            for 0..entries.len() |index| {
+                if entries.at(index) |entry| {
+                    if value_is_text(&entry.key, "cursor_shape") {
+                        mode.shape = term::CursorShape::Block;
+                        if value_is_text(&entry.value, "horizontal") {
+                            mode.shape = term::CursorShape::Underline;
+                        } else if value_is_text(&entry.value, "vertical") {
+                            mode.shape = term::CursorShape::Bar;
+                        }
+                    } else if value_is_text(&entry.key, "cell_percentage") {
+                        mode.cell_percentage = value_capped(&entry.value, 100) orelse 100;
+                    } else if value_is_text(&entry.key, "blinkwait") {
+                        mode.blinkwait_ms = value_unsigned(&entry.value) orelse 0;
+                    } else if value_is_text(&entry.key, "blinkon") {
+                        mode.blinkon_ms = value_unsigned(&entry.value) orelse 0;
+                    } else if value_is_text(&entry.key, "blinkoff") {
+                        mode.blinkoff_ms = value_unsigned(&entry.value) orelse 0;
+                    }
+                }
+            }
+        },
+        _ => {},
+    }
+    return mode;
+}
+
+/// One hl_attr_define: the colors and style of the cells drawn with it.
+struct Highlight {
+    has_fg: bool,
+    fg: term::Color,
+    has_bg: bool,
+    bg: term::Color,
+    blend: u8,
+    reverse: bool,
+    style: term::CellStyle,
+}
+
+fn no_highlight() -> Highlight {
+    return Highlight {
+        has_fg: false,
+        fg: term::Color { r: 0, g: 0, b: 0 },
+        has_bg: false,
+        bg: term::Color { r: 0, g: 0, b: 0 },
+        blend: 0,
+        reverse: false,
+        style: plain_style()
+    };
+}
+
+fn highlight_from(value: &Value) -> Highlight {
+    var highlight = no_highlight();
+    match value {
+        Map(entries) => {
+            for 0..entries.len() |index| {
+                if entries.at(index) |entry| {
+                    if value_is_text(&entry.key, "foreground") {
+                        highlight.has_fg = false;
+                        if value_color(&entry.value) |color| {
+                            highlight.has_fg = true;
+                            highlight.fg = color;
+                        }
+                    } else if value_is_text(&entry.key, "background") {
+                        highlight.has_bg = false;
+                        if value_color(&entry.value) |color| {
+                            highlight.has_bg = true;
+                            highlight.bg = color;
+                        }
+                    } else if value_is_text(&entry.key, "blend") {
+                        highlight.blend = value_capped(&entry.value, 100) orelse 0;
+                    } else if value_is_text(&entry.key, "reverse") {
+                        highlight.reverse = value_bool(&entry.value) orelse false;
+                    } else if value_is_text(&entry.key, "bold") {
+                        highlight.style.bold = value_bool(&entry.value) orelse false;
+                    } else if value_is_text(&entry.key, "italic") {
+                        highlight.style.italic = value_bool(&entry.value) orelse false;
+                    } else if value_is_text(&entry.key, "underline") or value_is_text(&entry.key, "undercurl") {
+                        highlight.style.underline = term::Underline::None;
+                        if value_bool(&entry.value) orelse false {
+                            highlight.style.underline = term::Underline::Single;
+                        }
+                    } else if value_is_text(&entry.key, "strikethrough") {
+                        highlight.style.strikethrough = value_bool(&entry.value) orelse false;
+                    }
+                }
+            }
+        },
+        _ => {},
+    }
+    return highlight;
+}
+
+/// A cell drawn with highlight over the default colors; its text is not set.
+/// A background that is the default one is left out unless it blends.
+fn highlighted_cell(highlight: Highlight, default_fg: term::Color, default_bg: term::Color) -> term::Cell {
+    var cell = blank_cell(default_fg);
+    if highlight.has_fg {
+        cell.fg = highlight.fg;
+    }
+    cell.has_bg = highlight.has_bg and (!term::same_color(highlight.bg, default_bg) or highlight.blend > 0);
+    cell.bg = highlight.bg;
+    if highlight.reverse {
+        var next_fg = default_bg;
+        if cell.has_bg {
+            next_fg = cell.bg;
+        }
+        cell.bg = cell.fg;
+        cell.has_bg = true;
+        cell.fg = next_fg;
+    }
+    cell.blend = highlight.blend;
+    cell.style = highlight.style;
+    return cell;
+}
+
+/// How many bytes the UTF-8 character starting with lead takes.
+fn utf8_width(lead: u8) -> i64 {
+    let byte = cast<i64>(lead);
+    if byte < 192 {
+        return 1;
+    }
+    if byte < 224 {
+        return 2;
+    }
+    if byte < 240 {
+        return 3;
+    }
+    return 4;
+}
+
+fn utf8_count(text: []u8) -> i64 {
+    var count = 0;
+    var index = 0;
+    while index < mem::len(text) {
+        index = index + utf8_width(text[index]);
+        count = count + 1;
+    }
+    return count;
+}
+
+/// Appends the word, kind and menu of a popupmenu item, the ones that are
+/// not empty, with a space between them.
+fn append_popupmenu_item(allocator: Allocator, out: &var string::String, item: &Value) -> mem::Error!void {
+    match item {
+        Arr(fields) => {
+            for 0..3 |index| {
+                if fields.at(index) |field| {
+                    match field {
+                        Str(text) => {
+                            let bytes = text.as_bytes();
+                            if mem::len(bytes) > 0 {
+                                if out.len() > 0 {
+                                    try out.append_byte(allocator, 32);
+                                }
+                                try out.append_bytes(allocator, bytes);
+                            }
+                        },
+                        _ => {},
+                    }
+                }
+            }
+        },
+        _ => {},
+    }
+    return;
+}
+
+/// The editor Neovim's redraw events describe.
+///
+/// rendered holds one retained window a grid that was drawn to, and popup
+/// the popupmenu's; order names them all in draw order.
+pub struct Editor {
+    grids: map::Map<i64, Grid>,
+    windows: map::Map<i64, Window>,
+    highlights: map::Map<i64, Highlight>,
+    default_fg: term::Color,
+    default_bg: term::Color,
+    has_cursor: bool,
+    cursor_grid: i64,
+    cursor_row: i64,
+    cursor_col: i64,
+    cursor_style_enabled: bool,
+    cursor_modes: array::Array<CursorMode>,
+    current_mode: i64,
+    popup_shown: bool,
+    popup_items: array::Array<string::String>,
+    popup_selected: i64,
+    popup_row: i64,
+    popup_col: i64,
+    popup_grid: i64,
+    popup: array::Array<term::WindowCache>,
+    layout_changed: bool,
+    rendered: map::Map<i64, term::WindowCache>,
+    order: array::Array<i64>,
+    order_stale: bool,
+    pending_hint_count: i64,
+    pending_hint: ScrollHint,
+    has_selection: bool,
+    selection: MessageSelection,
+    selection_bounds: WindowPosition,
+}
+
+/// An editor whose default grid is cols x rows.
+pub fn new_editor(allocator: Allocator, cols: i64, rows: i64) -> mem::Error!Editor {
+    var editor = Editor {
+        grids: map::new<i64, Grid>(allocator),
+        windows: map::new<i64, Window>(allocator),
+        highlights: map::new<i64, Highlight>(allocator),
+        default_fg: term::Color { r: 229, g: 229, b: 229 },
+        default_bg: term::Color { r: 20, g: 22, b: 26 },
+        has_cursor: false,
+        cursor_grid: 0,
+        cursor_row: 0,
+        cursor_col: 0,
+        cursor_style_enabled: false,
+        cursor_modes: array::new<CursorMode>(allocator),
+        current_mode: -1,
+        popup_shown: false,
+        popup_items: array::new<string::String>(allocator),
+        popup_selected: -1,
+        popup_row: 0,
+        popup_col: 0,
+        popup_grid: default_grid(),
+        popup: array::new<term::WindowCache>(allocator),
+        layout_changed: true,
+        rendered: map::new<i64, term::WindowCache>(allocator),
+        order: array::new<i64>(allocator),
+        order_stale: true,
+        pending_hint_count: 0,
+        pending_hint: ScrollHint { start_row: 0, end_row: 0, start_col: 0, end_col: 0, rows: 0 },
+        has_selection: false,
+        selection: MessageSelection {
+            grid: 0,
+            start: GridPosition { row: 0, col: 0 },
+            end: GridPosition { row: 0, col: 0 }
+        },
+        selection_bounds: WindowPosition { top: 0, left: 0, width: 0, height: 0 }
+    };
+    errdefer editor.deinit(allocator);
+    var popup = try term::new_window_cache(allocator, 1, 1);
+    errdefer popup.deinit(allocator);
+    try editor.popup.append(allocator, move popup);
+    var grid = try new_grid(allocator, cols, rows, editor.default_fg);
+    errdefer grid.deinit(allocator);
+    try editor.grids.insert(allocator, default_grid(), move grid);
+    try editor.ensure_rendered(allocator, default_grid());
+    try editor.sync_order(allocator);
+    return move editor;
+}
+
+pub fn (self: Editor) deinit(allocator: Allocator) -> void {
+    self.grids.deinit(allocator);
+    self.windows.deinit(allocator);
+    self.highlights.deinit(allocator);
+    self.cursor_modes.deinit(allocator);
+    self.popup_items.deinit(allocator);
+    self.popup.deinit(allocator);
+    self.rendered.deinit(allocator);
+    self.order.deinit(allocator);
+}
+
+/// Gives the default grid cols x rows cells, ahead of Neovim's own
+/// grid_resize.
+pub fn (self: &var Editor) resize_screen(allocator: Allocator, cols: i64, rows: i64) -> mem::Error!void {
+    try self.resize_grid(allocator, default_grid(), cols, rows);
+    return;
+}
+
+/// Applies one redraw event: its name and one tuple of its arguments.
+/// Whether what is drawn may have changed.
+pub fn (self: &var Editor) handle_event(allocator: Allocator, event: []u8, args: &Value) -> mem::Error!bool {
+    var changed = false;
+    match args {
+        Arr(items) => {
+            changed = try self.dispatch(allocator, event, items);
+        },
+        _ => {
+            // The one event that reads none of its arguments.
+            if mem::equal_bytes(event, "popupmenu_hide") {
+                changed = self.hide_popupmenu();
+            }
+        },
+    }
+    if self.order_stale {
+        try self.sync_order(allocator);
+    }
+    return changed;
+}
+
+fn (self: &var Editor) dispatch(allocator: Allocator, event: []u8, args: &array::Array<Value>) -> mem::Error!bool {
+    if mem::equal_bytes(event, "grid_line") {
+        return try self.on_grid_line(allocator, args);
+    }
+    if mem::equal_bytes(event, "grid_scroll") {
+        return try self.on_grid_scroll(allocator, args);
+    }
+    if mem::equal_bytes(event, "grid_cursor_goto") {
+        return self.on_cursor_goto(args);
+    }
+    if mem::equal_bytes(event, "hl_attr_define") {
+        return try self.on_highlight(allocator, args);
+    }
+    if mem::equal_bytes(event, "default_colors_set") {
+        return try self.on_default_colors(allocator, args);
+    }
+    if mem::equal_bytes(event, "grid_resize") {
+        return try self.on_grid_resize(allocator, args);
+    }
+    if mem::equal_bytes(event, "grid_clear") {
+        return try self.on_grid_clear(allocator, args);
+    }
+    if mem::equal_bytes(event, "grid_destroy") {
+        return self.on_grid_destroy(allocator, args);
+    }
+    if mem::equal_bytes(event, "mode_info_set") {
+        return try self.on_mode_info(allocator, args);
+    }
+    if mem::equal_bytes(event, "mode_change") {
+        self.current_mode = arg_index(args, 1) orelse -1;
+        return true;
+    }
+    if mem::equal_bytes(event, "popupmenu_show") {
+        return try self.on_popupmenu_show(allocator, args);
+    }
+    if mem::equal_bytes(event, "popupmenu_select") {
+        return try self.on_popupmenu_select(allocator, args);
+    }
+    if mem::equal_bytes(event, "popupmenu_hide") {
+        return self.hide_popupmenu();
+    }
+    if mem::equal_bytes(event, "win_pos") {
+        return try self.on_window_position(allocator, args);
+    }
+    if mem::equal_bytes(event, "win_float_pos") {
+        return try self.on_float_position(allocator, args);
+    }
+    if mem::equal_bytes(event, "msg_set_pos") {
+        return try self.on_message_position(allocator, args);
+    }
+    if mem::equal_bytes(event, "win_hide") {
+        return try self.on_window_hide(allocator, args);
+    }
+    if mem::equal_bytes(event, "win_close") {
+        return self.on_window_close(allocator, args);
+    }
+    if mem::equal_bytes(event, "win_viewport") {
+        return try self.on_viewport(allocator, args);
+    }
+    if mem::equal_bytes(event, "win_viewport_margins") {
+        return try self.on_viewport_margins(allocator, args);
+    }
+    return false;
+}
+
+/// Brings every retained window's scrollback up to what was drawn and
+/// starts the scrolls recorded since the last flush. Neovim's `flush`.
+pub fn (self: &var Editor) flush_renderer(allocator: Allocator) -> mem::Error!void {
+    var index = 0;
+    while self.rendered.key_at(index) |grid| {
+        if self.rendered.at_mut(grid) |cache| {
+            try cache.flush(allocator, 1);
+        }
+        index = index + 1;
+    }
+    return;
+}
+
+/// Moves every scroll dt seconds on. Whether one is still moving.
+pub fn (self: &var Editor) advance_renderer_animations(dt: f32) -> bool {
+    var moving = false;
+    var index = 0;
+    while self.rendered.key_at(index) |grid| {
+        if self.rendered.at_mut(grid) |cache| {
+            if cache.advance_animation(dt) {
+                moving = true;
+            }
+        }
+        index = index + 1;
+    }
+    return moving;
+}
+
+pub fn (self: &Editor) has_active_renderer_animation() -> bool {
+    var index = 0;
+    while self.rendered.key_at(index) |grid| {
+        if self.rendered.at(grid) |cache| {
+            if cache.has_active_animation() {
+                return true;
+            }
+        }
+        index = index + 1;
+    }
+    return false;
+}
+
+/// The color behind every cell without a background.
+pub fn (self: &Editor) background() -> term::Color {
+    return self.default_bg;
+}
+
+pub fn (self: &Editor) cursor_color() -> term::Color {
+    return self.default_fg;
+}
+
+/// How many windows there are to draw, the hidden ones and the popupmenu's
+/// included.
+pub fn (self: &Editor) window_count() -> i64 {
+    return self.order.len();
+}
+
+/// The grid of the window drawn index-th, the lowest first; popupmenu_grid()
+/// for the popupmenu's.
+pub fn (self: &Editor) window_grid(index: i64) -> i64 {
+    return self.order.get(index) orelse 0;
+}
+
+/// The retained lines of grid's window; null for a grid with none.
+pub fn (self: &Editor) window(grid: i64) -> ?&term::WindowCache {
+    if grid == popupmenu_grid() {
+        if !self.popupmenu_visible() {
+            return null;
+        }
+        return self.popup.at(0);
+    }
+    return self.rendered.at(grid);
+}
+
+/// Where grid's window is drawn. A grid Neovim placed nowhere is hidden.
+pub fn (self: &Editor) placement(grid: i64) -> Placement {
+    if grid == popupmenu_grid() {
+        let position = self.popupmenu_position();
+        return Placement {
+            top: position.top,
+            left: position.left,
+            width: position.width,
+            height: position.height,
+            kind: WindowKind::Float,
+            zindex: popupmenu_zindex(),
+            compindex: 0,
+            hidden: !self.popupmenu_visible()
+        };
+    }
+    let size = self.grid_size(grid);
+    var placement = Placement {
+        top: 0,
+        left: 0,
+        width: size.width,
+        height: size.height,
+        kind: WindowKind::Normal,
+        zindex: 0,
+        compindex: 0,
+        hidden: grid != default_grid()
+    };
+    if grid == default_grid() {
+        return placement;
+    }
+    if self.windows.get(grid) |window| {
+        placement.top = window.position.top;
+        placement.left = window.position.left;
+        placement.width = window.position.width;
+        placement.height = window.position.height;
+        placement.kind = window.kind;
+        placement.zindex = window.zindex;
+        placement.compindex = window.compindex;
+        placement.hidden = window.hidden;
+    }
+    return placement;
+}
+
+/// The cursor; null before Neovim placed it and while its window is hidden.
+pub fn (self: &Editor) cursor() -> ?EditorCursor {
+    if !self.has_cursor {
+        return null;
+    }
+    var left: i64 = 0;
+    var top: i64 = 0;
+    if self.cursor_grid != default_grid() {
+        let window = self.windows.get(self.cursor_grid) orelse hidden_window(self.cursor_grid);
+        if !window.is_visible_layer() {
+            return null;
+        }
+        left = window.position.left;
+        top = window.position.top;
+    }
+    var mode = default_cursor_mode();
+    if self.cursor_style_enabled {
+        mode = self.cursor_modes.get(self.current_mode) orelse default_cursor_mode();
+    }
+    return EditorCursor {
+        x: math::min<i64>(left + self.cursor_col, 65535),
+        y: math::min<i64>(top + self.cursor_row, 65535),
+        grid: self.cursor_grid,
+        shape: mode.shape,
+        cell_percentage: mode.cell_percentage,
+        blinkwait_ms: mode.blinkwait_ms,
+        blinkon_ms: mode.blinkon_ms,
+        blinkoff_ms: mode.blinkoff_ms
+    };
+}
+
+/// The grid the cursor is in, whether or not its window is shown.
+pub fn (self: &Editor) cursor_parent_grid() -> ?i64 {
+    if !self.has_cursor {
+        return null;
+    }
+    return self.cursor_grid;
+}
+
+pub fn (self: &Editor) message_selection() -> ?MessageSelection {
+    if !self.has_selection {
+        return null;
+    }
+    return self.selection;
+}
+
+/// The one scroll since the last call, for a renderer to slide; null when
+/// there was none, more than one, or the layout changed with it.
+pub fn (self: &var Editor) take_scroll_hint() -> ?ScrollHint {
+    let suppress = self.layout_changed;
+    self.layout_changed = false;
+    let screen = self.grid_size(default_grid());
+    let event_count = self.pending_hint_count;
+    self.pending_hint_count = 0;
+    var found: ?ScrollHint = null;
+    if event_count == 1 {
+        found = self.pending_hint;
+    } else {
+        // No grid_scroll, or several: the viewports say what scrolled.
+        var count = 0;
+        var index = 0;
+        while self.windows.key_at(index) |grid| {
+            index = index + 1;
+            if self.windows.at_mut(grid) |window| {
+                let rows = window.pending_scroll_rows;
+                window.pending_scroll_rows = 0;
+                if window_scroll_hint(window.*, rows, screen) |hint| {
+                    count = count + 1;
+                    found = hint;
+                }
+            }
+        }
+        if count != 1 {
+            found = null;
+        }
+    }
+    if suppress {
+        return null;
+    }
+    return found;
+}
+
+/// Follows a mouse button over the message windows: a press on the topmost
+/// window starts a selection when that window shows messages, a drag moves
+/// its end, and a release ends it and writes its text to text.
+pub fn (self: &var Editor) handle_message_selection(
+    allocator: Allocator,
+    button: []u8,
+    action: []u8,
+    row: i64,
+    col: i64,
+    text: &var string::String
+) -> mem::Error!SelectionOutcome {
+    if !mem::equal_bytes(button, "left") {
+        return SelectionOutcome::Ignored;
+    }
+    if mem::equal_bytes(action, "press") {
+        self.has_selection = false;
+        let window = self.message_window_at(row, col) orelse hidden_window(0);
+        if window.hidden {
+            return SelectionOutcome::Ignored;
+        }
+        let start = GridPosition { row: row - window.position.top, col: col - window.position.left };
+        self.has_selection = true;
+        self.selection = MessageSelection { grid: window.grid, start: start, end: start };
+        self.selection_bounds = window.position;
+        return SelectionOutcome::Updated;
+    }
+    if !self.has_selection {
+        return SelectionOutcome::Ignored;
+    }
+    if mem::equal_bytes(action, "drag") {
+        self.selection.end = local_position(self.selection_bounds, row, col);
+        return SelectionOutcome::Updated;
+    }
+    if mem::equal_bytes(action, "release") {
+        self.has_selection = false;
+        self.selection.end = local_position(self.selection_bounds, row, col);
+        try self.selection_text(allocator, self.selection, text);
+        return SelectionOutcome::Finished;
+    }
+    return SelectionOutcome::Ignored;
+}
+
+/// The cell of a window at bounds the screen cell is in, or the nearest.
+fn local_position(bounds: WindowPosition, row: i64, col: i64) -> GridPosition {
+    return GridPosition {
+        row: math::clamp<i64>(row - bounds.top, 0, math::max<i64>(bounds.height - 1, 0)),
+        col: math::clamp<i64>(col - bounds.left, 0, math::max<i64>(bounds.width - 1, 0))
+    };
+}
+
+/// Whether the window of first_grid, at zindex and compindex, is drawn over
+/// the window of second_grid.
+fn is_over(zindex: i64, compindex: i64, first_grid: i64, second_zindex: i64, second_compindex: i64, second_grid: i64) -> bool {
+    if zindex != second_zindex {
+        return zindex > second_zindex;
+    }
+    if compindex != second_compindex {
+        return compindex > second_compindex;
+    }
+    return first_grid > second_grid;
+}
+
+/// The message window that is topmost at a screen cell; null when the
+/// topmost window there, or the popupmenu over it, is something else.
+fn (self: &Editor) message_window_at(row: i64, col: i64) -> ?Window {
+    if row < 0 or col < 0 {
+        return null;
+    }
+    var top = hidden_window(0);
+    var found = false;
+    var index = 0;
+    while self.windows.key_at(index) |grid| {
+        index = index + 1;
+        let window = self.windows.get(grid) orelse continue;
+        if window.hidden or !window.position.contains(row, col) {
+            continue;
+        }
+        if !found or is_over(window.zindex, window.compindex, grid, top.zindex, top.compindex, top.grid) {
+            top = window;
+            found = true;
+        }
+    }
+    if !found or top.kind != WindowKind::Message {
+        return null;
+    }
+    if self.popupmenu_visible() and self.popupmenu_position().contains(row, col) {
+        if is_over(popupmenu_zindex(), 0, popupmenu_grid(), top.zindex, top.compindex, top.grid) {
+            return null;
+        }
+    }
+    return top;
+}
+
+/// Writes the text selection covers to out, one line a row, each without
+/// its trailing spaces; nothing when the window is gone or the text blank.
+fn (self: &Editor) selection_text(allocator: Allocator, selection: MessageSelection, out: &var string::String) -> mem::Error!void {
+    out.clear();
+    let window = self.windows.get(selection.grid) orelse hidden_window(0);
+    if window.hidden or window.kind != WindowKind::Message {
+        return;
+    }
+    let placement = self.placement(selection.grid);
+    if placement.width <= 0 or placement.height <= 0 {
+        return;
+    }
+    let max_row = placement.height - 1;
+    let max_col = placement.width - 1;
+    let start_row = math::min<i64>(selection.start.row, max_row);
+    let end_row = math::min<i64>(selection.end.row, max_row);
+    let first_row = math::min<i64>(start_row, end_row);
+    let last_row = math::max<i64>(start_row, end_row);
+    let start_col = math::min<i64>(selection.start.col, max_col);
+    let end_col = math::min<i64>(selection.end.col, max_col);
+    let first_col = math::min<i64>(start_col, end_col);
+    let last_col = math::max<i64>(start_col, end_col);
+    var lines = 0;
+    var blank = true;
+    if self.rendered.at(selection.grid) |cache| {
+        for first_row..last_row + 1 |row| {
+            if cache.line(cache.line_id(row)) |line| {
+                if lines > 0 {
+                    try out.append_byte(allocator, 10);
+                }
+                lines = lines + 1;
+                var from = 0;
+                if row == first_row {
+                    from = first_col;
+                }
+                var to = max_col;
+                if row == last_row {
+                    to = last_col;
+                }
+                let line_start = out.len();
+                try append_line_range(allocator, out, line, from, to);
+                if out.len() > line_start {
+                    blank = false;
+                }
+            }
+        }
+    }
+    if blank {
+        out.clear();
+    }
+    return;
+}
+
+/// Appends the text of line's cells from column from to column to, both
+/// included and cut to the line, without its trailing spaces.
+fn append_line_range(allocator: Allocator, out: &var string::String, line: &term::Line, from: i64, to: i64) -> mem::Error!void {
+    let cells = line.cells.as_slice();
+    let text = line.text.as_bytes();
+    let count = mem::count<term::Cell>(cells);
+    if count == 0 {
+        return;
+    }
+    let first = math::min<i64>(math::min<i64>(from, to), count - 1);
+    let last = math::min<i64>(math::max<i64>(from, to), count - 1);
+    let line_start = out.len();
+    for first..last + 1 |col| {
+        let cell = cells[col];
+        try out.append_bytes(allocator, text[cell.text_start..cell.text_start + cell.text_len]);
+    }
+    var length = out.len();
+    let written = out.as_bytes();
+    while length > line_start and written[length - 1] == cast<u8>(32) {
+        length = length - 1;
+    }
+    if out.truncate(length) {} else |_| {}
+    return;
+}
+
+fn (self: &var Editor) clear_selection_for(grid: i64) -> void {
+    if self.has_selection and self.selection.grid == grid {
+        self.has_selection = false;
+    }
+    return;
+}
+
+fn (self: &Editor) grid_size(grid: i64) -> GridSize {
+    if self.grids.at(grid) |found| {
+        return GridSize { width: found.width, height: found.height };
+    }
+    return GridSize { width: 1, height: 1 };
+}
+
+/// Where grid's cells are on screen; false while its window is not shown.
+fn (self: &Editor) grid_screen_offset(grid: i64, out: &var WindowPosition) -> bool {
+    if grid == default_grid() {
+        out = WindowPosition { top: 0, left: 0, width: 0, height: 0 };
+        return true;
+    }
+    let window = self.windows.get(grid) orelse hidden_window(grid);
+    if !window.is_visible_layer() {
+        return false;
+    }
+    out = window.position;
+    return true;
+}
+
+/// Makes grid one cell when no event sized it yet.
+fn (self: &var Editor) ensure_grid(allocator: Allocator, grid: i64) -> mem::Error!void {
+    if self.grids.contains(grid) {
+        return;
+    }
+    var created = try new_grid(allocator, 1, 1, self.default_fg);
+    errdefer created.deinit(allocator);
+    try self.grids.insert(allocator, grid, move created);
+    return;
+}
+
+/// Makes grid's window, hidden, when no event placed it yet.
+fn (self: &var Editor) ensure_window(allocator: Allocator, grid: i64) -> mem::Error!void {
+    if !self.windows.contains(grid) {
+        try self.windows.insert(allocator, grid, hidden_window(grid));
+    }
+    return;
+}
+
+/// Makes grid's retained window, of the grid's size, when it has none.
+fn (self: &var Editor) ensure_rendered(allocator: Allocator, grid: i64) -> mem::Error!void {
+    if self.rendered.contains(grid) {
+        return;
+    }
+    let size = self.grid_size(grid);
+    var cache = try term::new_window_cache(allocator, size.width, size.height);
+    errdefer cache.deinit(allocator);
+    try self.rendered.insert(allocator, grid, move cache);
+    self.order_stale = true;
+    return;
+}
+
+/// Lists the retained windows and the popupmenu in draw order.
+fn (self: &var Editor) sync_order(allocator: Allocator) -> mem::Error!void {
+    self.order.clear(allocator);
+    var index = 0;
+    while self.rendered.key_at(index) |grid| {
+        try self.order.append(allocator, grid);
+        index = index + 1;
+    }
+    if self.popupmenu_visible() {
+        try self.order.append(allocator, popupmenu_grid());
+    }
+    for 1..self.order.len() |next| {
+        var at = next;
+        while at > 0 {
+            let below = self.order.get(at - 1) orelse 0;
+            let above = self.order.get(at) orelse 0;
+            let lower = self.placement(below);
+            let upper = self.placement(above);
+            if !is_over(lower.zindex, lower.compindex, below, upper.zindex, upper.compindex, above) {
+                break;
+            }
+            if self.order.swap(at - 1, at) {} else |_| {}
+            at = at - 1;
+        }
+    }
+    self.order_stale = false;
+    return;
+}
+
+/// Gives grid width x height cells and its retained window the same.
+fn (self: &var Editor) resize_grid(allocator: Allocator, grid: i64, width: i64, height: i64) -> mem::Error!void {
+    try self.ensure_grid(allocator, grid);
+    let fg = self.default_fg;
+    if self.grids.at_mut(grid) |found| {
+        try found.resize(allocator, width, height, fg);
+    }
+    try self.size_rendered(allocator, grid);
+    self.layout_changed = true;
+    return;
+}
+
+/// Gives grid's retained window the grid's size.
+fn (self: &var Editor) size_rendered(allocator: Allocator, grid: i64) -> mem::Error!void {
+    try self.ensure_rendered(allocator, grid);
+    let size = self.grid_size(grid);
+    if self.rendered.at_mut(grid) |cache| {
+        try cache.resize(allocator, size.width, size.height);
+    }
+    return;
+}
+
+/// Draws grid's row into its retained window.
+fn (self: &var Editor) draw_row(allocator: Allocator, grid: i64, row: i64) -> mem::Error!void {
+    try self.ensure_rendered(allocator, grid);
+    if self.grids.at(grid) |found| {
+        if found.rows.at(row) |cells| {
+            let view = cells.cells.as_slice();
+            let text = cells.text.as_bytes();
+            if self.rendered.at_mut(grid) |cache| {
+                let id = try cache.line_from_cells(allocator, view, text);
+                cache.draw_line(allocator, row, id);
+            }
+        }
+    }
+    return;
+}
+
+/// Places grid's window and shows it.
+fn (self: &var Editor) show_window(
+    allocator: Allocator,
+    grid: i64,
+    position: WindowPosition,
+    kind: WindowKind,
+    zindex: i64,
+    compindex: i64
+) -> mem::Error!void {
+    try self.ensure_window(allocator, grid);
+    if self.windows.at_mut(grid) |window| {
+        window.position = position;
+        window.kind = kind;
+        window.zindex = zindex;
+        window.compindex = compindex;
+        window.hidden = false;
+    }
+    try self.size_rendered(allocator, grid);
+    if self.rendered.at_mut(grid) |cache| {
+        cache.show();
+    }
+    self.layout_changed = true;
+    self.order_stale = true;
+    return;
+}
+
+/// Forgets grid's window and its retained lines.
+fn (self: &var Editor) close_window(allocator: Allocator, grid: i64) -> void {
+    self.clear_selection_for(grid);
+    if self.windows.remove(allocator, grid) |_| {}
+    if self.rendered.remove(allocator, grid) |cache| {
+        cache.deinit(allocator);
+    }
+    self.layout_changed = true;
+    self.order_stale = true;
+    return;
+}
+
+fn (self: &var Editor) on_default_colors(allocator: Allocator, args: &array::Array<Value>) -> mem::Error!bool {
+    if args.at(0) |value| {
+        if value_color(value) |color| {
+            self.default_fg = color;
+        }
+    }
+    if args.at(1) |value| {
+        if value_color(value) |color| {
+            self.default_bg = color;
+        }
+    }
+    // The popupmenu's lines are drawn in the default foreground.
+    try self.draw_popupmenu(allocator);
+    self.layout_changed = true;
+    return true;
+}
+
+fn (self: &var Editor) on_highlight(allocator: Allocator, args: &array::Array<Value>) -> mem::Error!bool {
+    if arg_int(args, 0) |id| {
+        var highlight = no_highlight();
+        if args.at(1) |value| {
+            highlight = highlight_from(value);
+        }
+        if self.highlights.at_mut(id) |held| {
+            held.* = highlight;
+        } else {
+            try self.highlights.insert(allocator, id, highlight);
+        }
+    }
+    return false;
+}
+
+fn (self: &var Editor) on_grid_resize(allocator: Allocator, args: &array::Array<Value>) -> mem::Error!bool {
+    if arg_int(args, 0) |grid| {
+        try self.resize_grid(allocator, grid, arg_index(args, 1) orelse 1, arg_index(args, 2) orelse 1);
+        return true;
+    }
+    return false;
+}
+
+fn (self: &var Editor) on_grid_clear(allocator: Allocator, args: &array::Array<Value>) -> mem::Error!bool {
+    if arg_int(args, 0) |grid| {
+        try self.ensure_grid(allocator, grid);
+        let fg = self.default_fg;
+        if self.grids.at_mut(grid) |found| {
+            try found.clear(allocator, fg);
+        }
+        try self.ensure_rendered(allocator, grid);
+        if self.rendered.at_mut(grid) |cache| {
+            try cache.clear(allocator);
+        }
+        self.layout_changed = true;
+        return true;
+    }
+    return false;
+}
+
+fn (self: &var Editor) on_grid_destroy(allocator: Allocator, args: &array::Array<Value>) -> bool {
+    if arg_int(args, 0) |grid| {
+        if self.grids.remove(allocator, grid) |found| {
+            found.deinit(allocator);
+        }
+        self.close_window(allocator, grid);
+        return true;
+    }
+    return false;
+}
+
+fn (self: &var Editor) on_cursor_goto(args: &array::Array<Value>) -> bool {
+    if arg_int(args, 0) |grid| {
+        self.has_cursor = true;
+        self.cursor_grid = grid;
+        self.cursor_row = math::min<i64>(arg_index(args, 1) orelse 0, 65535);
+        self.cursor_col = math::min<i64>(arg_index(args, 2) orelse 0, 65535);
+        return true;
+    }
+    return false;
+}
+
+fn (self: &var Editor) on_mode_info(allocator: Allocator, args: &array::Array<Value>) -> mem::Error!bool {
+    self.cursor_style_enabled = arg_bool(args, 0) orelse false;
+    self.cursor_modes.clear(allocator);
+    if args.at(1) |value| {
+        match value {
+            Arr(modes) => {
+                for 0..modes.len() |index| {
+                    if modes.at(index) |mode| {
+                        try self.cursor_modes.append(allocator, cursor_mode_from(mode));
+                    }
+                }
+            },
+            _ => {},
+        }
+    }
+    return true;
+}
+
+fn (self: &Editor) popupmenu_visible() -> bool {
+    return self.popup_shown and self.popup_items.len() > 0;
+}
+
+/// The popupmenu's width in cells: its longest item's characters.
+fn (self: &Editor) popupmenu_width() -> i64 {
+    var width = 1;
+    for 0..self.popup_items.len() |index| {
+        if self.popup_items.at(index) |item| {
+            let bytes = item.as_bytes();
+            width = math::max<i64>(width, utf8_count(bytes));
+        }
+    }
+    return width;
+}
+
+fn (self: &Editor) popupmenu_position() -> WindowPosition {
+    var base = WindowPosition { top: 0, left: 0, width: 0, height: 0 };
+    if self.grid_screen_offset(self.popup_grid, &var base) {}
+    return WindowPosition {
+        top: base.top + self.popup_row,
+        left: base.left + self.popup_col,
+        width: self.popupmenu_width(),
+        height: self.popup_items.len()
+    };
+}
+
+/// Draws the popupmenu's items into its retained window, a cell a
+/// character, the selected one on a background.
+fn (self: &var Editor) draw_popupmenu(allocator: Allocator) -> mem::Error!void {
+    if !self.popupmenu_visible() {
+        return;
+    }
+    let width = self.popupmenu_width();
+    let count = self.popup_items.len();
+    if self.popup.at_mut(0) |cache| {
+        try cache.resize(allocator, width, count);
+    }
+    var cells = array::new<term::Cell>(allocator);
+    defer cells.deinit(allocator);
+    var text = string::new(allocator);
+    defer text.deinit(allocator);
+    for 0..count |index| {
+        cells.clear(allocator);
+        text.clear();
+        var cell = blank_cell(self.default_fg);
+        cell.has_bg = index == self.popup_selected;
+        cell.bg = term::Color { r: 80, g: 96, b: 112 };
+        if self.popup_items.at(index) |item| {
+            let bytes = item.as_bytes();
+            try text.append_bytes(allocator, bytes);
+            var at = 0;
+            while at < mem::len(bytes) {
+                cell.text_start = at;
+                cell.text_len = math::min<i64>(utf8_width(bytes[at]), mem::len(bytes) - at);
+                try cells.append(allocator, cell);
+                at = at + cell.text_len;
+            }
+        }
+        cell.text_start = text.len();
+        cell.text_len = 1;
+        try text.append_byte(allocator, 32);
+        for cells.len()..width |_| {
+            try cells.append(allocator, cell);
+        }
+        let view = cells.as_slice();
+        let bytes = text.as_bytes();
+        if self.popup.at_mut(0) |cache| {
+            let id = try cache.line_from_cells(allocator, view, bytes);
+            cache.draw_line(allocator, index, id);
+        }
+    }
+    if self.popup.at_mut(0) |cache| {
+        try cache.flush(allocator, 1);
+    }
+    return;
+}
+
+fn (self: &var Editor) on_popupmenu_show(allocator: Allocator, args: &array::Array<Value>) -> mem::Error!bool {
+    var listed = false;
+    if args.at(0) |value| {
+        match value {
+            Arr(items) => {
+                listed = true;
+                self.popup_items.clear(allocator);
+                for 0..items.len() |index| {
+                    if items.at(index) |item| {
+                        var line = string::new(allocator);
+                        errdefer line.deinit(allocator);
+                        try append_popupmenu_item(allocator, &var line, item);
+                        try self.popup_items.append(allocator, move line);
+                    }
+                }
+            },
+            _ => {},
+        }
+    }
+    if !listed {
+        return false;
+    }
+    self.popup_shown = true;
+    self.popup_selected = arg_index(args, 1) orelse -1;
+    self.popup_row = arg_index(args, 2) orelse 0;
+    self.popup_col = arg_index(args, 3) orelse 0;
+    self.popup_grid = arg_int(args, 4) orelse default_grid();
+    try self.draw_popupmenu(allocator);
+    self.order_stale = true;
+    return true;
+}
+
+fn (self: &var Editor) on_popupmenu_select(allocator: Allocator, args: &array::Array<Value>) -> mem::Error!bool {
+    if !self.popup_shown {
+        return false;
+    }
+    self.popup_selected = arg_index(args, 0) orelse -1;
+    try self.draw_popupmenu(allocator);
+    return true;
+}
+
+/// Whether there was a popupmenu to hide.
+fn (self: &var Editor) hide_popupmenu() -> bool {
+    let shown = self.popup_shown;
+    self.popup_shown = false;
+    self.order_stale = true;
+    return shown;
+}
+
+fn (self: &var Editor) on_grid_line(allocator: Allocator, args: &array::Array<Value>) -> mem::Error!bool {
+    var drawn = false;
+    if arg_int(args, 0) |grid| {
+        let row = arg_index(args, 1) orelse 0;
+        let col = arg_index(args, 2) orelse 0;
+        if args.at(3) |value| {
+            match value {
+                Arr(cells) => {
+                    try self.apply_grid_line(allocator, grid, row, col, cells);
+                    drawn = true;
+                },
+                _ => {},
+            }
+        }
+    }
+    return drawn;
+}
+
+/// Writes a grid_line's cells from col_start on in row: each is its text,
+/// maybe a highlight id that holds for the cells after it too, and maybe
+/// how many times it repeats.
+fn (self: &var Editor) apply_grid_line(
+    allocator: Allocator,
+    grid: i64,
+    row: i64,
+    col_start: i64,
+    cells: &array::Array<Value>
+) -> mem::Error!void {
+    try self.ensure_grid(allocator, grid);
+    var col = col_start;
+    var highlight_id = 0;
+    for 0..cells.len() |index| {
+        if cells.at(index) |value| {
+            match value {
+                Arr(items) => {
+                    highlight_id = arg_int(items, 1) orelse highlight_id;
+                    let repeat = arg_index(items, 2) orelse 1;
+                    let highlight = self.highlights.get(highlight_id) orelse no_highlight();
+                    let cell = highlighted_cell(highlight, self.default_fg, self.default_bg);
+                    var written = false;
+                    if items.at(0) |first| {
+                        match first {
+                            Str(text) => {
+                                let bytes = text.as_bytes();
+                                if self.grids.at_mut(grid) |found| {
+                                    try found.put(allocator, row, col, repeat, cell, bytes);
+                                }
+                                written = true;
+                            },
+                            _ => {},
+                        }
+                    }
+                    if !written {
+                        if self.grids.at_mut(grid) |found| {
+                            try found.put(allocator, row, col, repeat, cell, " ");
+                        }
+                    }
+                    col = col + repeat;
+                },
+                _ => {},
+            }
+        }
+    }
+    try self.draw_row(allocator, grid, row);
+    return;
+}
+
+fn (self: &var Editor) on_grid_scroll(allocator: Allocator, args: &array::Array<Value>) -> mem::Error!bool {
+    let region = ScrollRegion {
+        top: arg_index(args, 1) orelse -1,
+        bot: arg_index(args, 2) orelse -1,
+        left: arg_index(args, 3) orelse -1,
+        right: arg_index(args, 4) orelse -1,
+        rows: arg_int(args, 5) orelse 0,
+        cols: arg_int(args, 6) orelse 0
+    };
+    if region.top < 0 or region.bot < 0 or region.left < 0 or region.right < 0 {
+        return false;
+    }
+    var scrolled = false;
+    if arg_int(args, 0) |grid| {
+        if arg_int(args, 5) |_| {
+            try self.ensure_grid(allocator, grid);
+            let fg = self.default_fg;
+            if self.grids.at_mut(grid) |found| {
+                try found.scroll(allocator, region, fg);
+            }
+            try self.ensure_rendered(allocator, grid);
+            if self.rendered.at_mut(grid) |cache| {
+                cache.scroll(region.top, region.bot, region.left, region.right, region.rows, region.cols);
+            }
+            if self.grid_scroll_hint(grid, region) |hint| {
+                if self.pending_hint_count == 0 {
+                    self.pending_hint = hint;
+                }
+                self.pending_hint_count = self.pending_hint_count + 1;
+            }
+            scrolled = true;
+        }
+    }
+    return scrolled;
+}
+
+/// The hint for a grid_scroll that moved rows only, in screen cells.
+fn (self: &Editor) grid_scroll_hint(grid: i64, region: ScrollRegion) -> ?ScrollHint {
+    if region.rows == 0 or region.cols != 0 {
+        return null;
+    }
+    var offset = WindowPosition { top: 0, left: 0, width: 0, height: 0 };
+    if !self.grid_screen_offset(grid, &var offset) {
+        return null;
+    }
+    let found = hint_region(
+        offset.top + region.top,
+        offset.top + region.bot,
+        offset.left + region.left,
+        offset.left + region.right,
+        self.grid_size(default_grid())
+    );
+    if found |area| {
+        return hint_scrolled(area, region.rows);
+    }
+    return null;
+}
+
+fn (self: &var Editor) on_window_position(allocator: Allocator, args: &array::Array<Value>) -> mem::Error!bool {
+    if arg_int(args, 0) |grid| {
+        let position = WindowPosition {
+            top: arg_index(args, 2) orelse 0,
+            left: arg_index(args, 3) orelse 0,
+            width: arg_index(args, 4) orelse 1,
+            height: arg_index(args, 5) orelse 1
+        };
+        try self.show_window(allocator, grid, position, WindowKind::Normal, 0, 0);
+        return true;
+    }
+    return false;
+}
+
+/// A float's top left on screen: the composed screen row and column when
+/// Neovim sent them, as Neovide prefers, and else its anchor corner on its
+/// anchor grid. False when the event has neither.
+fn (self: &Editor) float_top_left(args: &array::Array<Value>, size: GridSize, out: &var WindowPosition) -> bool {
+    let screen_row = math::round<f64>(arg_float(args, 9) orelse -1.0);
+    let screen_col = math::round<f64>(arg_float(args, 10) orelse -1.0);
+    if screen_row >= 0.0 and screen_col >= 0.0 {
+        out.top = cast<i64>(screen_row);
+        out.left = cast<i64>(screen_col);
+        return true;
+    }
+    var east = false;
+    var south = false;
+    if arg_is_text(args, 2, "NE") {
+        east = true;
+    } else if arg_is_text(args, 2, "SW") {
+        south = true;
+    } else if arg_is_text(args, 2, "SE") {
+        east = true;
+        south = true;
+    } else if !arg_is_text(args, 2, "NW") {
+        return false;
+    }
+    var top: f64 = 0.0;
+    var left: f64 = 0.0;
+    var anchor_grid: i64 = 0;
+    var given = 0;
+    if arg_int(args, 3) |grid| {
+        anchor_grid = grid;
+        given = given + 1;
+    }
+    if arg_float(args, 4) |row| {
+        top = row;
+        given = given + 1;
+    }
+    if arg_float(args, 5) |col| {
+        left = col;
+        given = given + 1;
+    }
+    if given != 3 {
+        return false;
+    }
+    if east {
+        left = left - cast<f64>(size.width);
+    }
+    if south {
+        top = top - cast<f64>(size.height);
+    }
+    var parent = WindowPosition { top: 0, left: 0, width: 0, height: 0 };
+    if self.grid_screen_offset(anchor_grid, &var parent) {
+        left = left + cast<f64>(parent.left);
+        top = top + cast<f64>(parent.top);
+    }
+    out.top = cast<i64>(math::max<f64>(math::round<f64>(top), 0.0));
+    out.left = cast<i64>(math::max<f64>(math::round<f64>(left), 0.0));
+    return true;
+}
+
+fn (self: &var Editor) on_float_position(allocator: Allocator, args: &array::Array<Value>) -> mem::Error!bool {
+    if arg_int(args, 0) |grid| {
+        let size = self.grid_size(grid);
+        var position = WindowPosition { top: 0, left: 0, width: size.width, height: size.height };
+        if !self.float_top_left(args, size, &var position) {
+            return false;
+        }
+        try self.show_window(
+            allocator,
+            grid,
+            position,
+            WindowKind::Float,
+            arg_int(args, 7) orelse 0,
+            arg_int(args, 8) orelse 0
+        );
+        return true;
+    }
+    return false;
+}
+
+fn (self: &var Editor) on_message_position(allocator: Allocator, args: &array::Array<Value>) -> mem::Error!bool {
+    let grid = arg_int(args, 0) orelse 0;
+    // Neovim 0.11.3+ may emit a duplicate msg_set_pos for grid 0. Neovide
+    // ignores it because the actual message grid always has a nonzero id.
+    if grid == 0 {
+        return false;
+    }
+    let position = WindowPosition {
+        top: arg_index(args, 1) orelse 0,
+        left: 0,
+        width: self.grid_size(default_grid()).width,
+        height: self.grid_size(grid).height
+    };
+    try self.show_window(
+        allocator,
+        grid,
+        position,
+        WindowKind::Message,
+        arg_int(args, 4) orelse 200,
+        arg_int(args, 5) orelse 0
+    );
+    return true;
+}
+
+fn (self: &var Editor) on_window_hide(allocator: Allocator, args: &array::Array<Value>) -> mem::Error!bool {
+    if arg_int(args, 0) |grid| {
+        try self.ensure_window(allocator, grid);
+        if self.windows.at_mut(grid) |window| {
+            window.hidden = true;
+        }
+        try self.ensure_rendered(allocator, grid);
+        if self.rendered.at_mut(grid) |cache| {
+            cache.hide();
+        }
+        self.clear_selection_for(grid);
+        self.layout_changed = true;
+        return true;
+    }
+    return false;
+}
+
+fn (self: &var Editor) on_window_close(allocator: Allocator, args: &array::Array<Value>) -> bool {
+    if arg_int(args, 0) |grid| {
+        self.close_window(allocator, grid);
+        return true;
+    }
+    return false;
+}
+
+fn (self: &var Editor) on_viewport(allocator: Allocator, args: &array::Array<Value>) -> mem::Error!bool {
+    if arg_int(args, 0) |grid| {
+        if arg_float(args, 7) |delta| {
+            let rows = cast<i64>(math::round<f64>(delta));
+            if rows != 0 {
+                try self.ensure_window(allocator, grid);
+                if self.windows.at_mut(grid) |window| {
+                    window.pending_scroll_rows = window.pending_scroll_rows + rows;
+                }
+            }
+            try self.ensure_rendered(allocator, grid);
+            if self.rendered.at_mut(grid) |cache| {
+                cache.viewport(rows);
+            }
+            return true;
+        }
+    }
+    return false;
+}
+
+fn (self: &var Editor) on_viewport_margins(allocator: Allocator, args: &array::Array<Value>) -> mem::Error!bool {
+    if arg_int(args, 0) |grid| {
+        let margins = term::Margins {
+            top: arg_index(args, 2) orelse 0,
+            bottom: arg_index(args, 3) orelse 0,
+            left: arg_index(args, 4) orelse 0,
+            right: arg_index(args, 5) orelse 0
+        };
+        try self.ensure_window(allocator, grid);
+        if self.windows.at_mut(grid) |window| {
+            window.margins = margins;
+        }
+        try self.ensure_rendered(allocator, grid);
+        if self.rendered.at_mut(grid) |cache| {
+            cache.set_margins(margins);
+        }
+        return true;
+    }
+    return false;
+}

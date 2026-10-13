@@ -1,0 +1,368 @@
+// Selecting with the mouse: a press, drags, autoscroll ticks while the
+// pointer is past an edge, and a release, which libghostty turns into the
+// selection they sweep. The Rust `TerminalSelectionGesture`.
+
+/// libghostty's `GhosttySurfacePosition`, in surface pixels.
+extern "c" struct SurfacePosition {
+    x: f64,
+    y: f64,
+}
+
+/// libghostty's `GhosttySelectionGestureGeometry`.
+extern "c" struct GestureGeometry {
+    columns: u32,
+    cell_width: u32,
+    padding_left: u32,
+    screen_height: u32,
+}
+
+/// libghostty's `GhosttyPointCoordinate`.
+extern "c" struct PointCoordinate {
+    x: u16,
+    y: u32,
+}
+
+@link_library("ghostty-vt")
+extern "c" fn ghostty_selection_gesture_new(allocator: ?ptr<u8>, out: ptr<u8>) -> i32
+@link_library("ghostty-vt")
+extern "c" fn ghostty_selection_gesture_free(gesture: ptr<u8>, terminal: ?ptr<u8>) -> void
+@link_library("ghostty-vt")
+extern "c" fn ghostty_selection_gesture_reset(gesture: ptr<u8>, terminal: ptr<u8>) -> void
+@link_library("ghostty-vt")
+extern "c" fn ghostty_selection_gesture_event_new(allocator: ?ptr<u8>, out: ptr<u8>, kind: i32) -> i32
+@link_library("ghostty-vt")
+extern "c" fn ghostty_selection_gesture_event_free(event: ptr<u8>) -> void
+@link_library("ghostty-vt")
+extern "c" fn ghostty_selection_gesture_event_set(event: ptr<u8>, option: i32, value: ?ptr<u8>) -> i32
+@link_library("ghostty-vt")
+extern "c" fn ghostty_selection_gesture_event(
+    gesture: ptr<u8>,
+    terminal: ptr<u8>,
+    event: ptr<u8>,
+    out: &var Selection
+) -> i32
+fn event_option_ref() -> i32 {
+    return 0;
+}
+fn event_option_position() -> i32 {
+    return 1;
+}
+
+fn event_option_rectangle() -> i32 {
+    return 7;
+}
+
+fn event_option_geometry() -> i32 {
+    return 8;
+}
+
+fn event_option_viewport() -> i32 {
+    return 9;
+}
+
+/// Where the pointer is: the viewport cell it is over, its surface position
+/// in pixels, and the size of a cell.
+pub struct SelectionInput {
+    pub row: i64,
+    pub col: i64,
+    pub x: f32,
+    pub y: f32,
+    pub cell_width: u32,
+    pub cell_height: u32,
+}
+
+/// One selection gesture and the event of each kind it is fed.
+///
+/// Each handle is live and slot is a Slot; deinit frees all six, once.
+pub unsafe struct SelectionGesture {
+    gesture: ptr<u8>,
+    press: ptr<u8>,
+    drag: ptr<u8>,
+    release: ptr<u8>,
+    autoscroll: ptr<u8>,
+    slot: ptr<u8>,
+}
+
+/// A gesture event of kind; null when libghostty made none.
+fn new_gesture_event(slot: ptr<u8>, kind: i32) -> ?ptr<u8> {
+    set_slot_usize(slot, 0);
+    // SAFETY: the slot holds one writable handle; a null allocator is libghostty's own.
+    let result = unsafe ghostty_selection_gesture_event_new(null, slot, kind);
+    if result != success() {
+        return null;
+    }
+    return slot_handle(slot);
+}
+
+fn free_gesture_event(event: ?ptr<u8>) -> void {
+    if event |live| {
+        // SAFETY: live came from gesture_event_new and nothing holds it.
+        unsafe ghostty_selection_gesture_event_free(live);
+    }
+    return;
+}
+
+pub fn new_selection_gesture() -> GhosttyError!SelectionGesture {
+    let slot = new_slot() orelse return GhosttyError::Refused;
+    // SAFETY: the slot holds one writable handle; a null allocator is libghostty's own.
+    let result = unsafe ghostty_selection_gesture_new(null, slot);
+    var gesture: ?ptr<u8> = null;
+    if result == success() {
+        gesture = slot_handle(slot);
+    }
+    let press = new_gesture_event(slot, 0);
+    let release = new_gesture_event(slot, 1);
+    let drag = new_gesture_event(slot, 2);
+    let autoscroll = new_gesture_event(slot, 3);
+    if gesture |gesture_live| {
+        if press |press_live| {
+            if release |release_live| {
+                if drag |drag_live| {
+                    if autoscroll |autoscroll_live| {
+                        // SAFETY: each handle is live and the slot is a Slot.
+                        return unsafe SelectionGesture {
+                            gesture: gesture_live,
+                            press: press_live,
+                            drag: drag_live,
+                            release: release_live,
+                            autoscroll: autoscroll_live,
+                            slot: slot
+                        };
+                    }
+                }
+            }
+        }
+    }
+    free_gesture_event(autoscroll);
+    free_gesture_event(drag);
+    free_gesture_event(release);
+    free_gesture_event(press);
+    if gesture |live| {
+        // SAFETY: live came from gesture_new and nothing holds it; it tracks no terminal yet.
+        unsafe ghostty_selection_gesture_free(live, null);
+    }
+    // SAFETY: the slot came from malloc and nothing reads it after this.
+    unsafe free(slot);
+    return GhosttyError::Refused;
+}
+
+pub fn (self: SelectionGesture) deinit() -> void {
+    free_gesture_event(self.autoscroll);
+    free_gesture_event(self.drag);
+    free_gesture_event(self.release);
+    free_gesture_event(self.press);
+    // SAFETY: the gesture is live and freed once, here; without the terminal, what it tracks there is the terminal's to reclaim.
+    unsafe ghostty_selection_gesture_free(self.gesture, null);
+    // SAFETY: the slot came from malloc and nothing reads it after this.
+    unsafe free(self.slot);
+}
+
+/// Sets an event option to the value the slot holds.
+fn (self: &SelectionGesture) set_from_slot(event: ptr<u8>, option: i32) -> GhosttyError!void {
+    // SAFETY: the event is live; the slot holds the value the option reads.
+    let result = unsafe ghostty_selection_gesture_event_set(event, option, self.slot);
+    if result != success() {
+        return GhosttyError::Refused;
+    }
+    return;
+}
+
+fn (self: &SelectionGesture) set_position(event: ptr<u8>, input: SelectionInput) -> GhosttyError!void {
+    let position = SurfacePosition { x: cast<f64>(input.x), y: cast<f64>(input.y) };
+    // SAFETY: the slot is writable storage larger than a SurfacePosition.
+    unsafe ptr_write(cast<ptr<SurfacePosition>>(self.slot), position);
+    return self.set_from_slot(event, event_option_position());
+}
+
+fn (self: &SelectionGesture) set_rectangle(event: ptr<u8>, rectangular: bool) -> GhosttyError!void {
+    var value: usize = 0;
+    if rectangular {
+        value = 1;
+    }
+    set_slot_usize(self.slot, value);
+    return self.set_from_slot(event, event_option_rectangle());
+}
+
+fn (self: &SelectionGesture) set_ref(event: ptr<u8>, target: GridRef) -> GhosttyError!void {
+    // SAFETY: the slot is writable storage larger than a GridRef.
+    unsafe ptr_write(cast<ptr<GridRef>>(self.slot), move target);
+    return self.set_from_slot(event, event_option_ref());
+}
+
+fn (self: &SelectionGesture) set_geometry(
+    event: ptr<u8>,
+    cols: i64,
+    rows: i64,
+    input: SelectionInput
+) -> GhosttyError!void {
+    var columns = cols;
+    if columns < 1 {
+        columns = 1;
+    }
+    var height = rows;
+    if height < 1 {
+        height = 1;
+    }
+    let geometry = GestureGeometry {
+        columns: cast<u32>(columns),
+        cell_width: at_least_one(input.cell_width),
+        padding_left: 0,
+        screen_height: saturating_product(height, at_least_one(input.cell_height))
+    };
+    // SAFETY: the slot is writable storage larger than a GestureGeometry.
+    unsafe ptr_write(cast<ptr<GestureGeometry>>(self.slot), geometry);
+    return self.set_from_slot(event, event_option_geometry());
+}
+
+/// Feeds event to the gesture. With a selection to show, installs it and
+/// returns true; with none, clears the terminal's when clear_when_none is
+/// set, and returns false.
+///
+/// terminal must be a live libghostty terminal.
+unsafe fn(self: &SelectionGesture) apply(
+    terminal: ptr<u8>,
+    event: ptr<u8>,
+    clear_when_none: bool
+) -> GhosttyError!bool {
+    var selection = empty_selection();
+    // SAFETY: gesture, event and the caller's terminal are live; selection is a sized Selection.
+    let result = unsafe ghostty_selection_gesture_event(self.gesture, terminal, event, &var selection);
+    if result == no_value() {
+        if clear_when_none {
+            // SAFETY: the caller passes a live terminal.
+            try unsafe clear_selection(terminal);
+        }
+        return false;
+    }
+    if result != success() {
+        return GhosttyError::Refused;
+    }
+    // SAFETY: the caller passes a live terminal, which made the selection; the slot is a Slot.
+    try unsafe install_selection(terminal, self.slot, move selection);
+    return true;
+}
+
+/// The button went down at input: starts a selection there, or with a
+/// repeated click selects the word or the line.
+///
+/// terminal must be a live libghostty terminal of cols x rows.
+pub unsafe fn(self: &SelectionGesture) press(
+    terminal: ptr<u8>,
+    cols: i64,
+    rows: i64,
+    input: SelectionInput
+) -> GhosttyError!void {
+    // SAFETY: the caller passes a live terminal.
+    let target = try unsafe viewport_grid_ref(terminal, cols, rows, input.row, input.col);
+    try self.set_position(self.press, input);
+    try self.set_ref(self.press, move target);
+    // SAFETY: the caller passes a live terminal.
+    let _ = try unsafe self.apply(terminal, self.press, true);
+    return;
+}
+
+/// The pointer moved to input with the button down.
+///
+/// terminal must be a live libghostty terminal of cols x rows.
+pub unsafe fn(self: &SelectionGesture) drag(
+    terminal: ptr<u8>,
+    cols: i64,
+    rows: i64,
+    input: SelectionInput,
+    rectangular: bool
+) -> GhosttyError!void {
+    // SAFETY: the caller passes a live terminal.
+    let target = try unsafe viewport_grid_ref(terminal, cols, rows, input.row, input.col);
+    try self.set_position(self.drag, input);
+    try self.set_rectangle(self.drag, rectangular);
+    try self.set_ref(self.drag, move target);
+    try self.set_geometry(self.drag, cols, rows, input);
+    // SAFETY: the caller passes a live terminal.
+    let _ = try unsafe self.apply(terminal, self.drag, false);
+    return;
+}
+
+fn clamped(value: i64, limit: i64) -> i64 {
+    if value > limit - 1 {
+        if limit < 1 {
+            return 0;
+        }
+        return limit - 1;
+    }
+    if value < 0 {
+        return 0;
+    }
+    return value;
+}
+
+/// A tick while the pointer is held past an edge: scrolls the viewport and
+/// extends the selection. Returns the rows the viewport moved, positive
+/// toward the newest output.
+///
+/// terminal must be a live libghostty terminal of cols x rows.
+pub unsafe fn(self: &SelectionGesture) autoscroll(
+    terminal: ptr<u8>,
+    cols: i64,
+    rows: i64,
+    input: SelectionInput,
+    rectangular: bool
+) -> GhosttyError!i64 {
+    // SAFETY: the caller passes a live terminal; the slot is a Slot.
+    let before = try unsafe read_scrollbar(terminal, self.slot);
+    try self.set_position(self.autoscroll, input);
+    try self.set_rectangle(self.autoscroll, rectangular);
+    let viewport = PointCoordinate {
+        x: cast<u16>(clamped(input.col, cols)),
+        y: cast<u32>(clamped(input.row, rows))
+    };
+    // SAFETY: the slot is writable storage larger than a PointCoordinate.
+    unsafe ptr_write(cast<ptr<PointCoordinate>>(self.slot), viewport);
+    try self.set_from_slot(self.autoscroll, event_option_viewport());
+    try self.set_geometry(self.autoscroll, cols, rows, input);
+    // SAFETY: the caller passes a live terminal.
+    let _ = try unsafe self.apply(terminal, self.autoscroll, false);
+    // SAFETY: the caller passes a live terminal; the slot is a Slot.
+    let after = try unsafe read_scrollbar(terminal, self.slot);
+    return cast<i64>(after.top) - cast<i64>(before.top);
+}
+
+/// The button came up, over the viewport cell (col, row) when has_point is
+/// set.
+///
+/// terminal must be a live libghostty terminal of cols x rows.
+pub unsafe fn(self: &SelectionGesture) release(
+    terminal: ptr<u8>,
+    cols: i64,
+    rows: i64,
+    has_point: bool,
+    row: i64,
+    col: i64
+) -> GhosttyError!void {
+    if has_point {
+        // SAFETY: the caller passes a live terminal.
+        let target = try unsafe viewport_grid_ref(terminal, cols, rows, row, col);
+        try self.set_ref(self.release, move target);
+    } else {
+        // SAFETY: the event is live; a null value unsets the option.
+        let result = unsafe ghostty_selection_gesture_event_set(self.release, event_option_ref(), null);
+        if result != success() {
+            return GhosttyError::Refused;
+        }
+    }
+    var selection = empty_selection();
+    // SAFETY: gesture, event and the caller's terminal are live; selection is a sized Selection.
+    let result = unsafe ghostty_selection_gesture_event(self.gesture, terminal, self.release, &var selection);
+    if result != success() and result != no_value() {
+        return GhosttyError::Refused;
+    }
+    return;
+}
+
+/// Drops the gesture in progress.
+///
+/// terminal must be a live libghostty terminal.
+pub unsafe fn(self: &SelectionGesture) reset(terminal: ptr<u8>) -> void {
+    // SAFETY: the gesture and the caller's terminal are live.
+    unsafe ghostty_selection_gesture_reset(self.gesture, terminal);
+    return;
+}

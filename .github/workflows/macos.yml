@@ -73,8 +73,8 @@ jobs:
       - name: Install Nix
         uses: DeterminateSystems/determinate-nix-action@021c8a1bd3570eb21f5c20a054812b0c4d9ca614 # v3
 
-      - name: Verify Rust
-        run: nix develop .#ci-native --command just ci-rust
+      - name: Verify the core
+        run: nix develop .#ci-native --command just ci-core
 
       - name: Build native artifacts once
         run: nix develop .#ci-native --command just native-ci-build

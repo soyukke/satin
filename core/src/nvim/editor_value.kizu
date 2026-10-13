@@ -1,0 +1,113 @@
+// Reading the arguments of a redraw event out of MessagePack values.
+import satin::term;
+import std::array;
+import std::mem;
+
+/// The integer value is; null for any other value, and for an unsigned one
+/// no i64 holds.
+fn value_int(value: &Value) -> ?i64 {
+    match value {
+        Int(number) => return number,
+        _ => return null,
+    }
+}
+
+/// The unsigned integer value is; null for a negative one.
+fn value_unsigned(value: &Value) -> ?u64 {
+    match value {
+        Int(number) => {
+            if number < 0 {
+                return null;
+            }
+            return cast<u64>(number);
+        },
+        UInt(number) => return number,
+        _ => return null,
+    }
+}
+
+/// The number value is, integers included.
+fn value_float(value: &Value) -> ?f64 {
+    match value {
+        Float(number) => return number,
+        Int(number) => return cast<f64>(number),
+        UInt(number) => return cast<f64>(number),
+        _ => return null,
+    }
+}
+
+fn value_bool(value: &Value) -> ?bool {
+    match value {
+        Bool(flag) => return flag,
+        _ => return null,
+    }
+}
+
+/// Whether value is the string expected.
+fn value_is_text(value: &Value, expected: []u8) -> bool {
+    match value {
+        Str(text) => {
+            let bytes = text.as_bytes();
+            return mem::equal_bytes(bytes, expected);
+        },
+        _ => return false,
+    }
+}
+
+/// The color of a 24-bit RGB integer; null for a negative one, which is
+/// Neovim's "unset".
+fn value_color(value: &Value) -> ?term::Color {
+    let raw = value_int(value) orelse -1;
+    if raw < 0 {
+        return null;
+    }
+    return term::Color { r: cast<u8>(raw / 65536 % 256), g: cast<u8>(raw / 256 % 256), b: cast<u8>(raw % 256) };
+}
+
+/// The unsigned integer value is, no more than limit.
+fn value_capped(value: &Value, limit: u64) -> ?u8 {
+    if value_unsigned(value) |raw| {
+        if raw > limit {
+            return cast<u8>(limit);
+        }
+        return cast<u8>(raw);
+    }
+    return null;
+}
+
+fn arg_int(args: &array::Array<Value>, index: i64) -> ?i64 {
+    if args.at(index) |value| {
+        return value_int(value);
+    }
+    return null;
+}
+
+/// The argument at index when it is an integer that is not negative.
+fn arg_index(args: &array::Array<Value>, index: i64) -> ?i64 {
+    let number = arg_int(args, index) orelse -1;
+    if number < 0 {
+        return null;
+    }
+    return number;
+}
+
+fn arg_float(args: &array::Array<Value>, index: i64) -> ?f64 {
+    if args.at(index) |value| {
+        return value_float(value);
+    }
+    return null;
+}
+
+fn arg_bool(args: &array::Array<Value>, index: i64) -> ?bool {
+    if args.at(index) |value| {
+        return value_bool(value);
+    }
+    return null;
+}
+
+fn arg_is_text(args: &array::Array<Value>, index: i64, expected: []u8) -> bool {
+    if args.at(index) |value| {
+        return value_is_text(value, expected);
+    }
+    return false;
+}

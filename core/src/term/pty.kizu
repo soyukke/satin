@@ -1,0 +1,750 @@
+// A child process on a PTY: the shell, or a command started directly. The
+// Rust `RuntimePty`, without its reader thread: the host waits on the PTY
+// itself for output and read_available takes what is there.
+import std::array;
+import std::mem;
+import std::process;
+import std::string;
+
+/// The kernel's `struct winsize`.
+extern "c" struct Winsize {
+    rows: u16,
+    cols: u16,
+    pixel_width: u16,
+    pixel_height: u16,
+}
+
+/// An `int` a call writes.
+extern "c" struct Descriptor {
+    value: i32,
+}
+
+/// The kernel's `struct pollfd`.
+extern "c" struct PollFd {
+    fd: i32,
+    events: i16,
+    revents: i16,
+}
+
+/// The two ends `pipe` writes.
+extern "c" struct PipeEnds {
+    read_end: i32,
+    write_end: i32,
+}
+
+/// Darwin's `sigset_t`.
+extern "c" struct SignalSet {
+    bits: u32,
+}
+
+/// Darwin's `struct passwd`.
+extern "c" struct Passwd {
+    name: ?ptr<const u8>,
+    password: ?ptr<const u8>,
+    uid: u32,
+    gid: u32,
+    change: i64,
+    class: ?ptr<const u8>,
+    gecos: ?ptr<const u8>,
+    directory: ?ptr<const u8>,
+    shell: ?ptr<const u8>,
+    expire: i64,
+}
+
+extern "c" fn forkpty(master: &var Descriptor, name: ?ptr<u8>, termios: ?ptr<u8>, size: &Winsize) -> i32
+extern "c" fn execvp(file: ptr<const u8>, argv: ptr<u8>) -> i32
+extern "c" fn _exit(code: i32) -> void
+extern "c" fn chdir(path: ptr<u8>) -> i32
+extern "c" fn read(fd: i32, out: ptr<u8>, length: usize) -> isize
+extern "c" fn write(fd: i32, bytes: ptr<const u8>, length: usize) -> isize
+extern "c" fn close(fd: i32) -> i32
+extern "c" fn dup2(from: i32, to: i32) -> i32
+extern "c" fn pipe(out: &var PipeEnds) -> i32
+extern "c" fn poll(fds: &var PollFd, count: u32, timeout: i32) -> i32
+extern "c" fn waitpid(pid: i32, status: &var Descriptor, options: i32) -> i32
+extern "c" fn kill(pid: i32, number: i32) -> i32
+extern "c" fn tcgetpgrp(fd: i32) -> i32
+extern "c" fn usleep(micros: u32) -> i32
+extern "c" fn signal(number: i32, handler: usize) -> usize
+extern "c" fn sigprocmask(how: i32, set: &SignalSet, old: ?ptr<u8>) -> i32
+extern "c" fn getdtablesize() -> i32
+extern "c" fn getuid() -> u32
+extern "c" fn getpwuid(uid: u32) -> ?ptr<Passwd>
+extern "c" fn getcwd(out: ptr<u8>, size: usize) -> ?ptr<const u8>
+extern "c" fn stat(path: ptr<const u8>, out: ptr<u8>) -> i32
+extern "c" fn strlen(text: ptr<const u8>) -> usize
+extern "c" fn __error() -> ptr<i32>
+extern "c" fn _NSGetEnviron() -> ptr<usize>
+// `ioctl` and `fcntl` are variadic, which Kizu cannot declare. On arm64
+// Darwin a variadic argument travels on the stack, where a ninth integer
+// argument also goes, so six unused register arguments put the real one
+// there. This declaration is wrong on any other target.
+extern "c" fn ioctl(
+    fd: i32,
+    request: u64,
+    unused2: u64,
+    unused3: u64,
+    unused4: u64,
+    unused5: u64,
+    unused6: u64,
+    unused7: u64,
+    size: &Winsize
+) -> i32
+extern "c" fn fcntl(
+    fd: i32,
+    command: i32,
+    unused2: u64,
+    unused3: u64,
+    unused4: u64,
+    unused5: u64,
+    unused6: u64,
+    unused7: u64,
+    argument: i64
+) -> i32
+fn errno() -> i32 {
+    // SAFETY: __error returns this thread's errno, which is always readable.
+    return unsafe ptr_read(__error());
+}
+
+fn interrupted() -> i32 {
+    return 4;
+}
+
+fn would_block() -> i32 {
+    return 35;
+}
+
+fn poll_in() -> i16 {
+    return 1;
+}
+
+fn poll_out() -> i16 {
+    return 4;
+}
+
+/// The bytes one read takes from the PTY.
+fn read_bytes() -> i64 {
+    return 16384;
+}
+
+/// The reads one read_available makes before it returns to the host.
+fn reads_per_drain() -> i64 {
+    return 64;
+}
+
+/// Appends the C string at text to out.
+///
+/// text must point at a NUL-terminated string that stays readable for the call.
+unsafe fn append_c_string(allocator: Allocator, out: &var string::String, text: ptr<const u8>) -> mem::Error!void {
+    // SAFETY: the caller passes a NUL-terminated string.
+    let length = unsafe strlen(text);
+    // SAFETY: strlen counted length readable bytes at text.
+    let bytes = unsafe view_from_ptr(text, cast<i64>(length));
+    return out.append_bytes(allocator, bytes);
+}
+
+/// text with a NUL after it, for a C function that reads to the NUL.
+fn c_string(allocator: Allocator, text: []u8) -> mem::Error!string::String {
+    var out = try string::from_bytes(allocator, text);
+    errdefer out.deinit(allocator);
+    try out.append_byte(allocator, 0);
+    return move out;
+}
+
+/// The `st_mode` of path; -1 when it names nothing.
+fn file_mode(allocator: Allocator, path: []u8) -> mem::Error!i64 {
+    let name = try c_string(allocator, path);
+    defer name.deinit(allocator);
+    // SAFETY: malloc returns 512 bytes, more than a struct stat, or null.
+    let storage = unsafe malloc(512) orelse return mem::Error::OutOfMemory;
+    let name_bytes = name.as_bytes();
+    // SAFETY: name ends in NUL; storage holds a struct stat.
+    let result = unsafe stat(ptr_of(name_bytes), storage);
+    var mode: i64 = -1;
+    if result == 0 {
+        // SAFETY: stat wrote the struct, whose st_mode is the u16 four bytes in.
+        mode = cast<i64>(unsafe ptr_read(cast<ptr<u16>>(ptr_offset(storage, 4))));
+    }
+    // SAFETY: storage came from malloc and nothing reads it after this.
+    unsafe free(storage);
+    return mode;
+}
+
+fn is_directory(allocator: Allocator, path: []u8) -> mem::Error!bool {
+    let mode = try file_mode(allocator, path);
+    return mode >= 0 and (mode & 61440) == 16384;
+}
+
+fn is_executable_file(allocator: Allocator, path: []u8) -> mem::Error!bool {
+    let mode = try file_mode(allocator, path);
+    return mode >= 0 and (mode & 61440) == 32768 and (mode & 73) != 0;
+}
+
+/// Appends the process's working directory to out; false when it has none.
+fn append_current_directory(allocator: Allocator, out: &var string::String) -> mem::Error!bool {
+    // SAFETY: malloc returns 4096 bytes or null.
+    let storage = unsafe malloc(4096) orelse return mem::Error::OutOfMemory;
+    // SAFETY: storage holds 4096 writable bytes.
+    let result = unsafe getcwd(storage, 4096);
+    var found = false;
+    if result |text| {
+        // SAFETY: getcwd wrote a NUL-terminated path to storage.
+        if unsafe append_c_string(allocator, out, text) {
+            found = true;
+        } else |_| {}
+    }
+    // SAFETY: storage came from malloc and nothing reads it after this.
+    unsafe free(storage);
+    return found;
+}
+
+/// Appends the user's login shell to out; false when the system names none.
+fn append_login_shell(allocator: Allocator, out: &var string::String) -> mem::Error!bool {
+    // SAFETY: getpwuid returns the calling user's record, which libc owns, or null.
+    let record = unsafe getpwuid(getuid()) orelse return false;
+    // SAFETY: record is the live passwd record getpwuid returned.
+    let shell = unsafe record.*.shell orelse return false;
+    let before = out.len();
+    // SAFETY: pw_shell is a NUL-terminated string in the record.
+    try unsafe append_c_string(allocator, out, shell);
+    return out.len() > before;
+}
+
+/// Appends the value of the process's variable name to out; false when it is
+/// unset or empty.
+fn append_variable(allocator: Allocator, name: []u8, out: &var string::String) -> mem::Error!bool {
+    let value = process::env(name) orelse return false;
+    if mem::len(value) == 0 {
+        return false;
+    }
+    try out.append_bytes(allocator, value);
+    return true;
+}
+
+/// Appends the shell a terminal runs when its config names none: the host's
+/// override, the user's login shell, `SHELL`, then zsh.
+fn append_default_shell(allocator: Allocator, out: &var string::String) -> mem::Error!void {
+    if try append_variable(allocator, "SATIN_SHELL", out) {
+        return;
+    }
+    if try append_variable(allocator, "NVTERM_SHELL", out) {
+        return;
+    }
+    if try append_login_shell(allocator, out) {
+        return;
+    }
+    if try append_variable(allocator, "SHELL", out) {
+        return;
+    }
+    return out.append_bytes(allocator, "/bin/zsh");
+}
+
+/// Appends the shell config asks for to out: its own when it names an
+/// executable absolute file, the default when it names none.
+pub fn append_configured_shell(
+    allocator: Allocator,
+    config: &SpawnConfig,
+    out: &var string::String
+) -> SpawnFailure!void {
+    var shell = string::new(allocator);
+    defer shell.deinit(allocator);
+    if config.has_shell {
+        let configured = config.shell.as_bytes();
+        let trimmed = mem::trim_ascii(configured);
+        try shell.append_bytes(allocator, trimmed);
+    }
+    let bytes = shell.as_bytes();
+    if mem::len(bytes) == 0 {
+        try append_default_shell(allocator, out);
+        return;
+    }
+    if bytes[0] != cast<u8>(47) or !try is_executable_file(allocator, bytes) {
+        return SpawnError::InvalidShell;
+    }
+    try out.append_bytes(allocator, bytes);
+    return;
+}
+
+/// The process's own environment.
+fn inherited_environment(allocator: Allocator) -> mem::Error!Environment {
+    var environment = new_environment(allocator);
+    errdefer environment.deinit(allocator);
+    // SAFETY: _NSGetEnviron returns the address of `environ`, which is always readable.
+    let table = unsafe ptr_read(_NSGetEnviron());
+    if table == 0 {
+        return move environment;
+    }
+    // SAFETY: environ points at a NULL-terminated array of string addresses.
+    var cursor = unsafe ptr_from_int<ptr<usize>>(table);
+    var entry = string::new(allocator);
+    defer entry.deinit(allocator);
+    while true {
+        // SAFETY: cursor is inside the array, at or before its NULL.
+        let address = unsafe ptr_read(cursor);
+        if address == 0 {
+            break;
+        }
+        entry.clear();
+        // SAFETY: each address before the NULL is a NUL-terminated string.
+        try unsafe append_c_string(allocator, &var entry, ptr_from_int<ptr<const u8>>(address));
+        let bytes = entry.as_bytes();
+        try environment.add_entry(allocator, bytes);
+        // SAFETY: the array goes on until its NULL, which cursor has not reached.
+        cursor = unsafe ptr_offset(cursor, 1);
+    }
+    return move environment;
+}
+
+/// Points zsh at the host's integration directory, keeping the directory the
+/// user's own startup files are in for the integration to source.
+fn configure_zsh_integration(
+    allocator: Allocator,
+    environment: &var Environment,
+    config: &SpawnConfig,
+    shell: []u8
+) -> mem::Error!void {
+    if !file_name_is(shell, "zsh") {
+        return;
+    }
+    var integration = string::new(allocator);
+    defer integration.deinit(allocator);
+    if !try config.environment_value(allocator, "SATIN_ZSH_INTEGRATION_DIR", &var integration) {
+        return;
+    }
+    let directory = integration.as_bytes();
+    if mem::len(directory) == 0 or directory[0] != cast<u8>(47) or !try is_directory(allocator, directory) {
+        return;
+    }
+    let original = resolve_user_zdotdir(
+        process::env("SATIN_USER_ZDOTDIR") orelse "",
+        process::env("ZDOTDIR") orelse "",
+        process::env("HOME") orelse ""
+    );
+    try environment.set(allocator, "SATIN_USER_ZDOTDIR", original);
+    try environment.set(allocator, "ZDOTDIR", directory);
+    return;
+}
+
+/// What the child needs after the fork, laid out before it so the child
+/// allocates nothing: argv, envp and the directory to start in.
+///
+/// storage is one malloc block; argv and envp point at NULL-terminated
+/// pointer arrays inside it, whose strings, and directory, are NUL-terminated
+/// strings inside it too. The block is freed once, by free_exec_block.
+unsafe struct ExecBlock {
+    storage: ptr<u8>,
+    argv: ptr<u8>,
+    envp: ptr<u8>,
+    directory: ?ptr<u8>,
+}
+
+fn list_bytes(list: &array::Array<string::String>) -> i64 {
+    var total: i64 = 0;
+    for 0..list.len() |index| {
+        if list.at(index) |element| {
+            total = total + element.len() + 1;
+        }
+    }
+    return total;
+}
+
+/// Copies text and a NUL to storage at offset and returns the offset after.
+///
+/// storage must hold mem::len(text) + 1 writable bytes at offset.
+unsafe fn write_c_string(storage: ptr<u8>, offset: i64, text: []u8) -> i64 {
+    let length = mem::len(text);
+    // SAFETY: the caller reserves length + 1 bytes at offset.
+    let target = unsafe mut_view_from_ptr(ptr_offset(storage, offset), length + 1);
+    for 0..length |index| {
+        target[index] = text[index];
+    }
+    target[length] = 0;
+    return offset + length + 1;
+}
+
+/// Writes list as a NULL-terminated pointer array at slot, its strings from
+/// offset on, and returns the offset after them.
+///
+/// storage must hold the array's list.len() + 1 pointers at slot and
+/// list_bytes(list) bytes at offset.
+unsafe fn write_c_list(storage: ptr<u8>, slot: i64, offset: i64, list: &array::Array<string::String>) -> i64 {
+    var next = offset;
+    for 0..list.len() |index| {
+        // SAFETY: the caller reserves a pointer at each slot of the array.
+        let cell = unsafe cast<ptr<usize>>(ptr_offset(storage, (slot + index) * 8));
+        // SAFETY: the string starts at next, inside the block.
+        let address = unsafe int_from_ptr<usize>(ptr_offset(storage, next));
+        // SAFETY: cell is a pointer slot inside the block.
+        unsafe ptr_write(cell, address);
+        if list.at(index) |element| {
+            let bytes = element.as_bytes();
+            // SAFETY: the caller reserves the string's bytes at next.
+            next = unsafe write_c_string(storage, next, bytes);
+        }
+    }
+    // SAFETY: the array's last slot is reserved for its NULL.
+    unsafe ptr_write(cast<ptr<usize>>(ptr_offset(storage, (slot + list.len()) * 8)), 0);
+    return next;
+}
+
+fn new_exec_block(
+    arguments: &array::Array<string::String>,
+    environment: &Environment,
+    directory: []u8
+) -> mem::Error!ExecBlock {
+    let slots = arguments.len() + 1 + environment.entries.len() + 1;
+    let strings = list_bytes(arguments) + list_bytes(&environment.entries) + mem::len(directory) + 1;
+    // SAFETY: malloc returns the block or null.
+    let storage = unsafe malloc(cast<usize>(slots * 8 + strings)) orelse return mem::Error::OutOfMemory;
+    var offset = slots * 8;
+    // SAFETY: the block holds the argv array at slot 0 and the strings from offset on.
+    offset = unsafe write_c_list(storage, 0, offset, arguments);
+    // SAFETY: the block holds the envp array after argv's, and its strings from offset on.
+    offset = unsafe write_c_list(storage, arguments.len() + 1, offset, &environment.entries);
+    var start: ?ptr<u8> = null;
+    if mem::len(directory) > 0 {
+        // SAFETY: the directory's string starts at offset, inside the block.
+        start = unsafe ptr_offset(storage, offset);
+    }
+    // SAFETY: the block's last bytes are reserved for the directory and its NUL.
+    let _ = unsafe write_c_string(storage, offset, directory);
+    // SAFETY: envp's array starts after argv's arguments.len() + 1 pointers.
+    let envp = unsafe ptr_offset(storage, (arguments.len() + 1) * 8);
+    // SAFETY: the block was laid out as the struct says.
+    return unsafe ExecBlock { storage: storage, argv: storage, envp: envp, directory: start };
+}
+
+fn free_exec_block(block: ExecBlock) -> void {
+    // SAFETY: the block's storage came from malloc and nothing reads it after this.
+    unsafe free(block.storage);
+    return;
+}
+
+/// The child's side of the fork: becomes the program in block and does not
+/// return.
+///
+/// Must run in the child of forkpty, with block laid out before the fork.
+unsafe fn exec_child(block: &ExecBlock) -> void {
+    // The parent may ignore or block signals a shell expects to get.
+    for 1..32 |number| {
+        if number != 9 and number != 17 {
+            // SAFETY: restoring a default disposition in the forked child.
+            let _ = unsafe signal(cast<i32>(number), 0);
+        }
+    }
+    let unblocked = SignalSet { bits: 0 };
+    // SAFETY: an empty mask unblocks every signal in the forked child.
+    let _ = unsafe sigprocmask(3, &unblocked, null);
+    // SAFETY: the table size bounds the descriptors the child inherited.
+    var limit = unsafe getdtablesize();
+    if limit > 65536 {
+        limit = 65536;
+    }
+    for 3..cast<i64>(limit) |descriptor| {
+        // SAFETY: closing a descriptor the child does not use; a closed one fails harmlessly.
+        let _ = unsafe close(cast<i32>(descriptor));
+    }
+    if block.directory |directory| {
+        // SAFETY: directory is a NUL-terminated string in the block.
+        let _ = unsafe chdir(directory);
+    }
+    // SAFETY: environ is the child's own; envp is a NULL-terminated array in the block.
+    unsafe ptr_write(_NSGetEnviron(), int_from_ptr<usize>(block.envp));
+    // SAFETY: argv is a NULL-terminated array in the block, and so is its first string.
+    let program = unsafe ptr_from_int<ptr<const u8>>(ptr_read(cast<ptr<usize>>(block.argv)));
+    // SAFETY: program and argv are laid out for exec; on success this does not return.
+    let _ = unsafe execvp(program, block.argv);
+    // SAFETY: exec failed; the child must not run the parent's code.
+    unsafe _exit(127);
+    return;
+}
+
+/// A child process and the PTY it runs on. quiet_end is the write end of a
+/// pipe that stands in for the PTY once it reaches its end, or -1 before.
+pub struct Pty {
+    master: i32,
+    child: i32,
+    interactive_shell: bool,
+    quiet_end: i32,
+    ended: bool,
+    exited: bool,
+    buffer: string::String,
+}
+
+/// Starts config's child on a PTY of cols x rows, and appends the directory
+/// it starts in to directory.
+pub fn spawn_pty(
+    allocator: Allocator,
+    cols: u16,
+    rows: u16,
+    pixel_width: u16,
+    pixel_height: u16,
+    config: &SpawnConfig,
+    directory: &var string::String
+) -> SpawnFailure!Pty {
+    var shell = string::new(allocator);
+    defer shell.deinit(allocator);
+    try append_configured_shell(allocator, config, &var shell);
+    let shell_bytes = shell.as_bytes();
+    var arguments = array::new<string::String>(allocator);
+    defer arguments.deinit(allocator);
+    var startup_input = string::new(allocator);
+    defer startup_input.deinit(allocator);
+    var environment = try inherited_environment(allocator);
+    defer environment.deinit(allocator);
+    if config.has_cwd {
+        let configured = config.cwd.as_bytes();
+        try directory.append_bytes(allocator, configured);
+    } else {
+        let _ = try append_current_directory(allocator, directory);
+    }
+    let directory_bytes = directory.as_bytes();
+    let lang = process::env("LANG") orelse "";
+    if config.direct_startup {
+        if !try validate_startup_command(&config.startup_command) {
+            return SpawnError::InvalidStartupCommand;
+        }
+        for 0..config.startup_command.len() |index| {
+            var argument = string::new(allocator);
+            errdefer argument.deinit(allocator);
+            let _ = try copy_text(allocator, &config.startup_command, index, &var argument);
+            try arguments.append(allocator, move argument);
+        }
+        try configure_terminal_environment(allocator, &var environment, config, shell_bytes, directory_bytes, lang);
+    } else {
+        try append_text(allocator, &var arguments, shell_bytes);
+        try append_text(allocator, &var arguments, "-l");
+        try append_text(allocator, &var arguments, "-i");
+        try configure_terminal_environment(allocator, &var environment, config, shell_bytes, directory_bytes, lang);
+        try configure_zsh_integration(allocator, &var environment, config, shell_bytes);
+        let _ = try startup_command_input(allocator, &config.startup_command, &var startup_input);
+    }
+    var buffer = string::new(allocator);
+    errdefer buffer.deinit(allocator);
+    try grow_buffer(allocator, &var buffer, read_bytes());
+    let block = try new_exec_block(&arguments, &environment, directory_bytes);
+    var master = Descriptor { value: -1 };
+    let size = Winsize { rows: rows, cols: cols, pixel_width: pixel_width, pixel_height: pixel_height };
+    // SAFETY: master is a writable int; null name and termios take the defaults.
+    let child = unsafe forkpty(&var master, null, null, &size);
+    if child == 0 {
+        // SAFETY: this is the forked child, and block was laid out before the fork.
+        unsafe exec_child(&block);
+    }
+    free_exec_block(move block);
+    if child < 0 {
+        return SpawnError::Unavailable;
+    }
+    // SAFETY: master.value is the PTY forkpty opened; 2 is F_SETFD and 1 FD_CLOEXEC.
+    let _ = unsafe fcntl(master.value, 2, 0, 0, 0, 0, 0, 0, 1);
+    var pty = Pty {
+        master: master.value,
+        child: child,
+        interactive_shell: !config.direct_startup,
+        quiet_end: -1,
+        ended: false,
+        exited: false,
+        buffer: move buffer
+    };
+    let input = startup_input.as_bytes();
+    if mem::len(input) > 0 {
+        if pty.write_all(input) {} else |_| {}
+    }
+    return move pty;
+}
+
+/// The Pty of a terminal that runs no child: it reads as ended and exited,
+/// and its wakeup_fd is -1.
+pub fn no_pty(allocator: Allocator) -> Pty {
+    return Pty {
+        master: -1,
+        child: 0,
+        interactive_shell: false,
+        quiet_end: -1,
+        ended: true,
+        exited: true,
+        buffer: string::new(allocator)
+    };
+}
+
+/// Closes the PTY and ends the child.
+pub fn (self: Pty) deinit(allocator: Allocator) -> void {
+    // The PTY goes first. A child that exits with output nobody read waits
+    // in the kernel for the terminal to drain, which only its closing ends;
+    // waiting for the child before that would wait for ever.
+    if self.master >= 0 {
+        // SAFETY: master is this Pty's own descriptor, closed once, here.
+        let _ = unsafe close(self.master);
+    }
+    if self.quiet_end >= 0 {
+        // SAFETY: quiet_end is this Pty's own descriptor, closed once, here.
+        let _ = unsafe close(self.quiet_end);
+    }
+    if !self.exited {
+        terminate_child(self.child);
+    }
+    self.buffer.deinit(allocator);
+}
+
+/// The descriptor that is readable when the child has written output.
+pub fn (self: &Pty) wakeup_fd() -> i32 {
+    return self.master;
+}
+
+/// Tells the child its terminal is now cols x rows.
+pub fn (self: &Pty) resize(cols: u16, rows: u16, pixel_width: u16, pixel_height: u16) -> SpawnError!void {
+    if self.ended {
+        return;
+    }
+    let size = Winsize { rows: rows, cols: cols, pixel_width: pixel_width, pixel_height: pixel_height };
+    // SAFETY: master is the live PTY; the request is TIOCSWINSZ, which reads a winsize.
+    let result = unsafe ioctl(self.master, 2148037735, 0, 0, 0, 0, 0, 0, &size);
+    if result != 0 {
+        return SpawnError::Unavailable;
+    }
+    return;
+}
+
+/// Whether descriptor is ready for events, without waiting.
+fn is_ready(descriptor: i32, events: i16, wait_millis: i32) -> bool {
+    var entry = PollFd { fd: descriptor, events: events, revents: 0 };
+    // SAFETY: entry is one writable pollfd.
+    let count = unsafe poll(&var entry, 1, wait_millis);
+    return count > 0;
+}
+
+/// Writes all of bytes to the child.
+pub fn (self: &var Pty) write_all(bytes: []u8) -> SpawnError!void {
+    if self.ended {
+        return SpawnError::Unavailable;
+    }
+    var sent: i64 = 0;
+    while sent < mem::len(bytes) {
+        let rest = bytes[sent..mem::len(bytes)];
+        // SAFETY: master is the live PTY; rest is its length in readable bytes.
+        let count = unsafe write(self.master, ptr_of(rest), cast<usize>(mem::len(rest)));
+        if count > 0 {
+            sent = sent + cast<i64>(count);
+            continue;
+        }
+        let reason = errno();
+        if reason == interrupted() {
+            continue;
+        }
+        if reason == would_block() {
+            let _ = is_ready(self.master, poll_out(), 100);
+            continue;
+        }
+        return SpawnError::Unavailable;
+    }
+    return;
+}
+
+/// Appends the output the child has written to out, without waiting for
+/// more. False when there was none.
+pub fn (self: &var Pty) read_available(allocator: Allocator, out: &var string::String) -> mem::Error!bool {
+    var changed = false;
+    var reads: i64 = 0;
+    while !self.ended and reads < reads_per_drain() and is_ready(self.master, poll_in(), 0) {
+        reads = reads + 1;
+        let count = self.read_once();
+        if count > 0 {
+            let bytes = self.buffer.as_bytes();
+            try out.append_bytes(allocator, bytes[0..count]);
+            changed = true;
+            continue;
+        }
+        if count < 0 {
+            let reason = errno();
+            if reason == interrupted() or reason == would_block() {
+                break;
+            }
+        }
+        self.quiet();
+    }
+    return changed;
+}
+
+/// One read into the buffer; the bytes read, zero at the end, negative on
+/// an error.
+fn (self: &var Pty) read_once() -> i64 {
+    let storage = self.buffer.as_mut_bytes();
+    // SAFETY: master is the live PTY; storage is its length in writable bytes.
+    let count = unsafe read(self.master, mut_ptr_of(storage), cast<usize>(mem::len(storage)));
+    return cast<i64>(count);
+}
+
+/// The PTY reached its end, where it would read as ready for ever. Puts a
+/// pipe nothing writes to in its place, so the host's wait on wakeup_fd
+/// goes quiet while the descriptor stays valid.
+fn (self: &var Pty) quiet() -> void {
+    self.ended = true;
+    var ends = PipeEnds { read_end: -1, write_end: -1 };
+    // SAFETY: ends is two writable ints.
+    if unsafe pipe(&var ends) != 0 {
+        return;
+    }
+    // SAFETY: both descriptors are open; dup2 closes the PTY as it replaces it.
+    let _ = unsafe dup2(ends.read_end, self.master);
+    // SAFETY: the read end now lives on as master.
+    let _ = unsafe close(ends.read_end);
+    self.quiet_end = ends.write_end;
+    return;
+}
+
+/// Whether child has exited, reaping it when it has.
+fn child_exited(child: i32) -> bool {
+    var status = Descriptor { value: 0 };
+    // SAFETY: child is a child of this process; 1 is WNOHANG; status is a writable int.
+    let result = unsafe waitpid(child, &var status, 1);
+    return result != 0;
+}
+
+/// Whether the child has exited.
+pub fn (self: &var Pty) poll_exited() -> bool {
+    if !self.exited and child_exited(self.child) {
+        self.exited = true;
+    }
+    return self.exited;
+}
+
+/// Whether the shell itself, and no command it started, is what reads the
+/// terminal.
+pub fn (self: &Pty) interactive_shell_owns_foreground() -> bool {
+    if !self.interactive_shell or self.ended {
+        return false;
+    }
+    // SAFETY: master is the live PTY.
+    return unsafe tcgetpgrp(self.master) == self.child;
+}
+
+/// Ends child, which has not been reaped, and everything in its process
+/// group: asks, waits a fifth of a second, then kills.
+fn terminate_child(child: i32) -> void {
+    if child_exited(child) {
+        return;
+    }
+    // SAFETY: the child leads its own process group, which forkpty made; 15 is SIGTERM.
+    let _ = unsafe kill(0 - child, 15);
+    var exited = false;
+    for 0..20 |_attempt| {
+        if !exited {
+            exited = child_exited(child);
+        }
+        if !exited {
+            // SAFETY: sleeping takes no memory of ours.
+            let _ = unsafe usleep(10000);
+        }
+    }
+    // SAFETY: as above; 9 is SIGKILL.
+    let _ = unsafe kill(0 - child, 9);
+    if exited {
+        return;
+    }
+    // SAFETY: child is a child of this process.
+    let _ = unsafe kill(child, 9);
+    var status = Descriptor { value: 0 };
+    // SAFETY: child is a child of this process; status is a writable int.
+    let _ = unsafe waitpid(child, &var status, 0);
+    return;
+}

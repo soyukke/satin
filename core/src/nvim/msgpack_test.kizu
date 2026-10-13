@@ -1,0 +1,253 @@
+import std::mem;
+import std::string;
+import std::testing;
+
+/// The bytes text spells in hex, spaces ignored.
+fn hex(allocator: Allocator, text: []u8) -> mem::Error!string::String {
+    var out = string::new(allocator);
+    errdefer out.deinit(allocator);
+    var high: i64 = -1;
+    for 0..mem::len(text) |index| {
+        var digit = cast<i64>(text[index]) - 48;
+        if digit > 9 {
+            digit = cast<i64>(text[index]) - 97 + 10;
+        }
+        if digit < 0 or digit > 15 {
+            continue;
+        }
+        if high < 0 {
+            high = digit;
+        } else {
+            try out.append_byte(allocator, cast<u8>(high * 16 + digit));
+            high = -1;
+        }
+    }
+    return move out;
+}
+
+/// The integer a value is; -999 for any other value.
+fn int_of(value: &Value) -> i64 {
+    match value {
+        Int(number) => return number,
+        _ => return -999,
+    }
+}
+
+fn text_is(value: &Value, expected: []u8) -> bool {
+    match value {
+        Str(text) => {
+            let bytes = text.as_bytes();
+            return mem::equal_bytes(bytes, expected);
+        },
+        _ => return false,
+    }
+}
+
+/// The integer hex decodes to, and whether it took every byte.
+fn decoded_int(allocator: Allocator, text: []u8) -> !i64 {
+    let bytes = try hex(allocator, text);
+    defer bytes.deinit(allocator);
+    let view = bytes.as_bytes();
+    var used: i64 = 0;
+    let value = try decode(allocator, view, &var used);
+    defer value.deinit(allocator);
+    if used != mem::len(view) {
+        return -998;
+    }
+    return int_of(&value);
+}
+
+test "integers of every width decode" {
+    let allocator = mem::page_allocator();
+    testing::expect(try decoded_int(allocator, "00") == 0);
+    testing::expect(try decoded_int(allocator, "7f") == 127);
+    testing::expect(try decoded_int(allocator, "ff") == -1);
+    testing::expect(try decoded_int(allocator, "e0") == -32);
+    testing::expect(try decoded_int(allocator, "cc ff") == 255);
+    testing::expect(try decoded_int(allocator, "cd 01 00") == 256);
+    testing::expect(try decoded_int(allocator, "ce 00 01 00 00") == 65536);
+    testing::expect(try decoded_int(allocator, "cf 00 00 00 01 00 00 00 00") == 4294967296);
+    testing::expect(try decoded_int(allocator, "d0 80") == -128);
+    testing::expect(try decoded_int(allocator, "d1 ff 7f") == -129);
+    testing::expect(try decoded_int(allocator, "d2 ff ff 7f ff") == -32769);
+    testing::expect(try decoded_int(allocator, "d3 ff ff ff ff 7f ff ff ff") == -2147483649);
+    testing::expect(try decoded_int(allocator, "d3 80 00 00 00 00 00 00 00") == -9223372036854775807 - 1);
+}
+
+test "a redraw notification decodes to its nested values" {
+    let allocator = mem::page_allocator();
+    // [2, "redraw", [["flush"], {"a": true, "n": nil}], 1.5, bin "hi"]
+    let bytes = try hex(allocator, "95 02 a6 72 65 64 72 61 77 92 91 a5 66 6c 75 73 68 82 a1 61 c3 a1 6e c0 ca 3f c0 00 00 c4 02 68 69");
+    defer bytes.deinit(allocator);
+    let view = bytes.as_bytes();
+    var used: i64 = 0;
+    let value = try decode(allocator, view, &var used);
+    defer value.deinit(allocator);
+    testing::expect(used == mem::len(view));
+    var checked = 0;
+    match &value {
+        Arr(items) => {
+            testing::expect(items.len() == 5);
+            if items.at(0) |kind| {
+                testing::expect(int_of(kind) == 2);
+            }
+            if items.at(1) |method| {
+                testing::expect(text_is(method, "redraw"));
+            }
+            if items.at(2) |batches| {
+                match batches {
+                    Arr(inner) => {
+                        if inner.at(0) |first| {
+                            match first {
+                                Arr(event) => {
+                                    if event.at(0) |name| {
+                                        testing::expect(text_is(name, "flush"));
+                                        checked = checked + 1;
+                                    }
+                                },
+                                _ => {},
+                            }
+                        }
+                        if inner.at(1) |second| {
+                            match second {
+                                Map(entries) => {
+                                    testing::expect(entries.len() == 2);
+                                    if entries.at(0) |entry| {
+                                        testing::expect(text_is(&entry.key, "a"));
+                                        match &entry.value {
+                                            Bool(set) => {
+                                                testing::expect(set);
+                                                checked = checked + 1;
+                                            },
+                                            _ => {},
+                                        }
+                                    }
+                                },
+                                _ => {},
+                            }
+                        }
+                    },
+                    _ => {},
+                }
+            }
+            if items.at(3) |number| {
+                match number {
+                    Float(real) => {
+                        testing::expect(real == 1.5);
+                        checked = checked + 1;
+                    },
+                    _ => {},
+                }
+            }
+            if items.at(4) |binary| {
+                match binary {
+                    Bin(data) => {
+                        let data_bytes = data.as_bytes();
+                        testing::expect(mem::equal_bytes(data_bytes, "hi"));
+                        checked = checked + 1;
+                    },
+                    _ => {},
+                }
+            }
+        },
+        _ => {},
+    }
+    testing::expect(checked == 4);
+}
+
+test "a value still arriving decodes to nothing, and what follows it stays" {
+    let allocator = mem::page_allocator();
+    let bytes = try hex(allocator, "92 01 a3 61 62 63 2a");
+    defer bytes.deinit(allocator);
+    let view = bytes.as_bytes();
+    var used: i64 = -1;
+    for 0..6 |length| {
+        let partial = try decode(allocator, view[0..length], &var used);
+        partial.deinit(allocator);
+        testing::expect(used == 0);
+    }
+    let whole = try decode(allocator, view, &var used);
+    whole.deinit(allocator);
+    testing::expect(used == 6);
+    let next = try decode(allocator, view[6..7], &var used);
+    defer next.deinit(allocator);
+    testing::expect(used == 1);
+    testing::expect(int_of(&next) == 42);
+}
+
+test "what is no value is refused" {
+    let allocator = mem::page_allocator();
+    let bytes = try hex(allocator, "91 c1");
+    defer bytes.deinit(allocator);
+    let view = bytes.as_bytes();
+    var used: i64 = 0;
+    var refused = false;
+    if decode(allocator, view, &var used) |value| {
+        value.deinit(allocator);
+    } else |_| {
+        refused = true;
+    }
+    testing::expect(refused);
+}
+
+fn round_trips(allocator: Allocator, number: i64) -> !bool {
+    var out = string::new(allocator);
+    defer out.deinit(allocator);
+    try append_int(allocator, &var out, number);
+    let view = out.as_bytes();
+    var used: i64 = 0;
+    let value = try decode(allocator, view, &var used);
+    defer value.deinit(allocator);
+    return used == mem::len(view) and int_of(&value) == number;
+}
+
+test "what is written reads back" {
+    let allocator = mem::page_allocator();
+    testing::expect(try round_trips(allocator, 0));
+    testing::expect(try round_trips(allocator, 127));
+    testing::expect(try round_trips(allocator, 128));
+    testing::expect(try round_trips(allocator, 255));
+    testing::expect(try round_trips(allocator, 256));
+    testing::expect(try round_trips(allocator, 65535));
+    testing::expect(try round_trips(allocator, 65536));
+    testing::expect(try round_trips(allocator, 4294967296));
+    testing::expect(try round_trips(allocator, -1));
+    testing::expect(try round_trips(allocator, -32));
+    testing::expect(try round_trips(allocator, -33));
+    testing::expect(try round_trips(allocator, -129));
+    testing::expect(try round_trips(allocator, -32769));
+    testing::expect(try round_trips(allocator, -2147483649));
+    testing::expect(try round_trips(allocator, -9223372036854775807 - 1));
+    var request = string::new(allocator);
+    defer request.deinit(allocator);
+    try append_array(allocator, &var request, 4);
+    try append_int(allocator, &var request, 0);
+    try append_int(allocator, &var request, 7);
+    try append_str(allocator, &var request, "nvim_ui_attach");
+    try append_array(allocator, &var request, 3);
+    try append_int(allocator, &var request, 80);
+    try append_int(allocator, &var request, 24);
+    try append_map(allocator, &var request, 1);
+    try append_str(allocator, &var request, "rgb");
+    try append_bool(allocator, &var request, true);
+    let expected = try hex(allocator, "94 00 07 ae 6e 76 69 6d 5f 75 69 5f 61 74 74 61 63 68 93 50 18 81 a3 72 67 62 c3");
+    defer expected.deinit(allocator);
+    let written = request.as_bytes();
+    let wanted = expected.as_bytes();
+    testing::expect(mem::equal_bytes(written, wanted));
+    var long = string::new(allocator);
+    defer long.deinit(allocator);
+    var text = string::new(allocator);
+    defer text.deinit(allocator);
+    for 0..300 |_| {
+        try text.append_byte(allocator, 120);
+    }
+    let text_bytes = text.as_bytes();
+    try append_str(allocator, &var long, text_bytes);
+    let long_bytes = long.as_bytes();
+    var used: i64 = 0;
+    let value = try decode(allocator, long_bytes, &var used);
+    defer value.deinit(allocator);
+    testing::expect(used == 303);
+    testing::expect(text_is(&value, text_bytes));
+}

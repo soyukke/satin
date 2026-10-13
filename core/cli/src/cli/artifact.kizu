@@ -1,0 +1,532 @@
+// The `satin artifact` commands: they keep the artifact store beside the
+// control socket themselves, and ask the app only to show an artifact.
+import satin::artifact;
+import std::array;
+import std::fmt;
+import std::json;
+import std::mem;
+import std::string;
+
+pub error ArtifactCommandFailure = CliError or artifact::ArtifactError or mem::Error;
+
+fn artifact_usage() -> []u8 {
+    return
+        \\usage: satin artifact policy
+        \\       satin artifact policy set [--max-columns N] [--max-rows N]
+        \\                                 [--language TAG]
+        \\                                 [--overflow compact|defer|reject]
+        \\       satin artifact add [--id ID] --kind KIND --title TITLE --file PATH
+        \\                          [--language TAG] [--pane ID] [--tab ID]
+        \\       satin artifact list [ID] [--limit N]
+        \\       satin artifact show [--pane ID] ID [--background]
+        \\       satin artifact view ID [--no-wait]
+        \\
+        \\kinds: text, markdown, table, tree, timeline, diff, image
+    ;
+}
+
+/// Takes the first word out of the words and appends it to out; false
+/// when no word is left.
+fn take_word(cli: &var Cli, allocator: Allocator, out: &var string::String) -> mem::Error!bool {
+    if cli.args.len() == 0 {
+        return false;
+    }
+    if cli.args.remove(0) |word| {
+        defer word.deinit(allocator);
+        try out.append_string(allocator, &word);
+    } else |_| {}
+    return true;
+}
+
+/// Takes `flag N` out of the words and reads N, at most limit, into out;
+/// false without the flag.
+fn extract_number(
+    cli: &var Cli,
+    allocator: Allocator,
+    flag: []u8,
+    limit: i64,
+    out: &var i64
+) -> CliFailure!bool {
+    var text = string::new(allocator);
+    defer text.deinit(allocator);
+    if !try cli.extract_value(allocator, flag, &var text) {
+        return false;
+    }
+    let digits = text.as_bytes();
+    let value = parse_index(digits);
+    if value < 0 or value > limit {
+        cli.say(allocator, flag, " must be an integer", "");
+        return CliError::Failed;
+    }
+    out = value;
+    return true;
+}
+
+/// The pane or tab an artifact belongs to: from its flag, or the
+/// environment a Satin pane runs in; null outside one.
+fn optional_identifier(
+    cli: &var Cli,
+    allocator: Allocator,
+    flag: []u8,
+    environment: []u8,
+    legacy_environment: []u8
+) -> CliFailure!?i64 {
+    var text = string::new(allocator);
+    defer text.deinit(allocator);
+    if !try cli.flag_or_environment(allocator, flag, environment, legacy_environment, &var text) {
+        return null;
+    }
+    let digits = text.as_bytes();
+    let value = parse_index(digits);
+    if value < 0 {
+        cli.say(allocator, "invalid identifier in ", environment, "");
+        return CliError::Failed;
+    }
+    return value;
+}
+
+/// Starts the answer a command prints: a success, its result an object
+/// the command ends, with the answer's own, before it prints it.
+fn begin_result(encoder: &var json::Encoder) -> mem::Error!void {
+    try encoder.begin_object();
+    try encoder.write_bool_field("ok", true);
+    try encoder.begin_object_field("result");
+    return;
+}
+
+/// Writes the members of a manifest's object, in the order of their
+/// names.
+fn write_manifest(encoder: &var json::Encoder, manifest: &artifact::ArtifactManifest) -> mem::Error!void {
+    let created_at = manifest.created_at.as_bytes();
+    let document = manifest.document.as_bytes();
+    let id = manifest.id.as_bytes();
+    let language = manifest.language.as_bytes();
+    let origin = manifest.origin.as_bytes();
+    let source = manifest.source.as_bytes();
+    let title = manifest.title.as_bytes();
+    if manifest.assets.len() > 0 {
+        try encoder.begin_array_field("assets");
+        for 0..manifest.assets.len() |index| {
+            if manifest.assets.at(index) |asset| {
+                let bytes = asset.as_bytes();
+                try encoder.write_bytes(bytes);
+            }
+        }
+        try encoder.end_array();
+    }
+    try encoder.write_bytes_field("created_at", created_at);
+    try encoder.write_i64_field("created_at_ms", manifest.created_at_ms);
+    try encoder.write_bytes_field("document", document);
+    try encoder.write_i64_field("format_version", manifest.format_version);
+    try encoder.write_bytes_field("id", id);
+    try encoder.write_bytes_field("kind", artifact::kind_name(manifest.kind));
+    try encoder.write_bytes_field("language", language);
+    try encoder.write_bytes_field("origin", origin);
+    if manifest.owner_pane |pane| {
+        try encoder.write_i64_field("owner_pane", pane);
+    }
+    if manifest.owner_tab |tab| {
+        try encoder.write_i64_field("owner_tab", tab);
+    }
+    try encoder.begin_object_field("preview");
+    try encoder.write_i64_field("omitted_items", manifest.preview.omitted_items);
+    try encoder.write_i64_field("source_lines", manifest.preview.source_lines);
+    try encoder.write_bytes_field("status", artifact::preview_status_name(manifest.preview.status));
+    try encoder.end_object();
+    try encoder.write_bytes_field("source", source);
+    try encoder.write_i64_field("source_bytes", manifest.source_bytes);
+    try encoder.write_bytes_field("title", title);
+    try encoder.write_i64_field("version", manifest.version);
+    return;
+}
+
+/// Writes the members of a listed artifact's object, in the order of
+/// their names.
+fn write_list_item(encoder: &var json::Encoder, item: &artifact::ArtifactListItem) -> mem::Error!void {
+    let directory = item.directory.as_bytes();
+    let id = item.id.as_bytes();
+    let language = item.language.as_bytes();
+    let preview = item.preview.as_bytes();
+    let title = item.title.as_bytes();
+    let updated_at = item.updated_at.as_bytes();
+    try encoder.write_bytes_field("directory", directory);
+    try encoder.write_bytes_field("id", id);
+    try encoder.write_bytes_field("kind", artifact::kind_name(item.kind));
+    try encoder.write_bytes_field("language", language);
+    try encoder.write_bytes_field("preview", preview);
+    try encoder.write_bytes_field("title", title);
+    try encoder.write_bytes_field("updated_at", updated_at);
+    try encoder.write_i64_field("updated_at_ms", item.updated_at_ms);
+    try encoder.write_i64_field("version", item.version);
+    try encoder.write_i64_field("version_count", item.version_count);
+    return;
+}
+
+/// `artifact policy`: prints the policy, after `set` changed and saved it.
+fn artifact_policy(cli: &var Cli, allocator: Allocator, socket: []u8) -> ArtifactCommandFailure!void {
+    var policy = try artifact::load_policy(allocator, &var cli.message, socket);
+    defer policy.deinit(allocator);
+    if cli.first_is("set") {
+        cli.shift(allocator);
+        let _ = try extract_number(cli, allocator, "--max-columns", 65535, &var policy.max_columns);
+        let _ = try extract_number(cli, allocator, "--max-rows", 65535, &var policy.max_rows);
+        var language = string::new(allocator);
+        defer language.deinit(allocator);
+        if try cli.extract_value(allocator, "--language", &var language) {
+            policy.language.clear();
+            try policy.language.append_string(allocator, &language);
+        }
+        var overflow = string::new(allocator);
+        defer overflow.deinit(allocator);
+        if try cli.extract_value(allocator, "--overflow", &var overflow) {
+            let word = overflow.as_bytes();
+            if artifact::parse_overflow(word) |parsed| {
+                policy.overflow = parsed;
+            } else {
+                cli.say(allocator, "overflow must be compact, defer, or reject", "", "");
+                return CliError::Failed;
+            }
+        }
+        let path = try artifact::save_policy(allocator, &var cli.message, socket, &policy);
+        path.deinit(allocator);
+    }
+    try cli.ensure_empty(allocator);
+    var resolved = string::new(allocator);
+    defer resolved.deinit(allocator);
+    try policy.append_resolved_language(allocator, &var resolved);
+    let resolved_bytes = resolved.as_bytes();
+    let language_bytes = policy.language.as_bytes();
+    var encoder = json::encoder(allocator);
+    defer encoder.deinit(allocator);
+    try begin_result(&var encoder);
+    try encoder.begin_object_field("policy");
+    try encoder.write_bytes_field("language", language_bytes);
+    try encoder.write_i64_field("max_columns", policy.max_columns);
+    try encoder.write_i64_field("max_rows", policy.max_rows);
+    try encoder.write_bytes_field("overflow", artifact::overflow_name(policy.overflow));
+    try encoder.end_object();
+    try encoder.write_bytes_field("resolvedLanguage", resolved_bytes);
+    try encoder.end_object();
+    try encoder.end_object();
+    var answer = string::new(allocator);
+    defer answer.deinit(allocator);
+    try encoder.finish_into(allocator, &var answer);
+    let answer_bytes = answer.as_bytes();
+    try print_response(cli, allocator, answer_bytes);
+    return;
+}
+
+/// Takes `flag VALUE` out of the words into out, and fails with a message
+/// about usage when the flag is not there.
+fn require_value(
+    cli: &var Cli,
+    allocator: Allocator,
+    flag: []u8,
+    usage: []u8,
+    out: &var string::String
+) -> CliFailure!void {
+    if !try cli.extract_value(allocator, flag, out) {
+        cli.say(allocator, "artifact add requires ", flag, usage);
+        return CliError::Failed;
+    }
+    return;
+}
+
+/// `artifact add`: stores a file as an artifact, or as the next version
+/// of the one `--id` names, and prints its manifest.
+fn artifact_add(cli: &var Cli, allocator: Allocator, socket: []u8) -> ArtifactCommandFailure!void {
+    var request = artifact::new_register_artifact(allocator, artifact::ArtifactKind::Text);
+    defer request.deinit(allocator);
+    request.has_id = try cli.extract_value(allocator, "--id", &var request.id);
+    var kind = string::new(allocator);
+    defer kind.deinit(allocator);
+    try require_value(cli, allocator, "--kind", " KIND", &var kind);
+    let kind_word = kind.as_bytes();
+    if artifact::parse_kind(kind_word) |parsed| {
+        request.kind = parsed;
+    } else {
+        cli.say(allocator, "unsupported artifact kind ", "", "");
+        if fmt::append_bytes_literal(allocator, &var cli.message, kind_word) {} else |_| {}
+        return CliError::Failed;
+    }
+    try require_value(cli, allocator, "--title", " TITLE", &var request.title);
+    try require_value(cli, allocator, "--file", " PATH", &var request.source);
+    let source = request.source.as_bytes();
+    let absolute = mem::starts_with(source, "/");
+    if !absolute {
+        cli.say(allocator, "artifact source path must be absolute", "", "");
+        return CliError::Failed;
+    }
+    request.has_language = try cli.extract_value(allocator, "--language", &var request.language);
+    request.owner_pane = try optional_identifier(cli, allocator, "--pane", "SATIN_PANE_ID", "NVTERM_PANE_ID");
+    request.owner_tab = try optional_identifier(cli, allocator, "--tab", "SATIN_TAB_ID", "NVTERM_TAB_ID");
+    try cli.ensure_empty(allocator);
+    let policy = try artifact::load_policy(allocator, &var cli.message, socket);
+    defer policy.deinit(allocator);
+    let manifest = try artifact::register_artifact(allocator, &var cli.message, socket, &policy, &request);
+    defer manifest.deinit(allocator);
+    var encoder = json::encoder(allocator);
+    defer encoder.deinit(allocator);
+    try begin_result(&var encoder);
+    try write_manifest(&var encoder, &manifest);
+    try encoder.end_object();
+    try encoder.end_object();
+    var answer = string::new(allocator);
+    defer answer.deinit(allocator);
+    try encoder.finish_into(allocator, &var answer);
+    let answer_bytes = answer.as_bytes();
+    try print_response(cli, allocator, answer_bytes);
+    return;
+}
+
+/// Where the artifact id is in items; -1 when it is not there.
+fn position_of(items: &array::Array<artifact::ArtifactListItem>, id: []u8) -> i64 {
+    for 0..items.len() |index| {
+        if items.at(index) |item| {
+            let bytes = item.id.as_bytes();
+            if mem::equal_bytes(bytes, id) {
+                return index;
+            }
+        }
+    }
+    return -1;
+}
+
+/// Prints the latest limit versions of one listed artifact, the latest
+/// first.
+fn list_versions(
+    cli: &var Cli,
+    allocator: Allocator,
+    socket: []u8,
+    item: &artifact::ArtifactListItem,
+    limit: i64
+) -> ArtifactCommandFailure!void {
+    var text = string::new(allocator);
+    defer text.deinit(allocator);
+    var encoder = json::encoder(allocator);
+    defer encoder.deinit(allocator);
+    try begin_result(&var encoder);
+    try encoder.begin_object_field("artifact");
+    try write_list_item(&var encoder, item);
+    try encoder.end_object();
+    var versions = array::new<artifact::ArtifactManifest>(allocator);
+    defer versions.deinit(allocator);
+    for 0..item.version_count |index| {
+        if index >= limit {
+            break;
+        }
+        var selector = string::new(allocator);
+        defer selector.deinit(allocator);
+        try selector.append_string(allocator, &item.id);
+        try selector.append_byte(allocator, 64);
+        try fmt::append_i64(allocator, &var selector, item.version_count - index);
+        let selector_bytes = selector.as_bytes();
+        var manifest = try artifact::load_manifest(allocator, &var cli.message, socket, selector_bytes);
+        errdefer manifest.deinit(allocator);
+        if index > 0 {
+            try text.append_byte(allocator, 10);
+        }
+        try text.append_byte(allocator, 118);
+        try fmt::append_i64(allocator, &var text, manifest.version);
+        try text.append_byte(allocator, 9);
+        try text.append_string(allocator, &manifest.created_at);
+        try text.append_byte(allocator, 9);
+        try fmt::append_i64(allocator, &var text, manifest.source_bytes);
+        try text.append_bytes(allocator, " bytes");
+        try versions.append(allocator, move manifest);
+    }
+    let text_bytes = text.as_bytes();
+    try encoder.write_bytes_field("text", text_bytes);
+    try encoder.begin_array_field("versions");
+    for 0..versions.len() |index| {
+        if versions.at(index) |manifest| {
+            try encoder.begin_object();
+            try write_manifest(&var encoder, manifest);
+            try encoder.end_object();
+        }
+    }
+    try encoder.end_array();
+    try encoder.end_object();
+    try encoder.end_object();
+    var answer = string::new(allocator);
+    defer answer.deinit(allocator);
+    try encoder.finish_into(allocator, &var answer);
+    let answer_bytes = answer.as_bytes();
+    try print_response(cli, allocator, answer_bytes);
+    return;
+}
+
+/// `artifact list`: prints the artifacts of the store, or with an ID the
+/// versions of that artifact.
+fn artifact_list(cli: &var Cli, allocator: Allocator, socket: []u8) -> ArtifactCommandFailure!void {
+    var limit: i64 = 20;
+    var limit_text = string::new(allocator);
+    defer limit_text.deinit(allocator);
+    if try cli.extract_value(allocator, "--limit", &var limit_text) {
+        let digits = limit_text.as_bytes();
+        limit = parse_index(digits);
+        if limit < 0 {
+            cli.say(allocator, "--limit must be an integer", "", "");
+            return CliError::Failed;
+        }
+    }
+    if limit < 1 or limit > 200 {
+        cli.say(allocator, "--limit must be between 1 and 200", "", "");
+        return CliError::Failed;
+    }
+    if cli.args.len() > 1 {
+        cli.say(allocator, "artifact list accepts at most one artifact ID", "", "");
+        return CliError::Failed;
+    }
+    let artifacts = try artifact::list_artifacts(allocator, &var cli.message, socket, -1);
+    defer artifacts.deinit(allocator);
+    var id = string::new(allocator);
+    defer id.deinit(allocator);
+    if try take_word(cli, allocator, &var id) {
+        let id_bytes = id.as_bytes();
+        let position = position_of(&artifacts, id_bytes);
+        if position < 0 {
+            cli.say(allocator, "artifact ", id_bytes, " does not exist");
+            return CliError::Failed;
+        }
+        if artifacts.at(position) |item| {
+            try list_versions(cli, allocator, socket, item, limit);
+        }
+        return;
+    }
+    var text = string::new(allocator);
+    defer text.deinit(allocator);
+    var encoder = json::encoder(allocator);
+    defer encoder.deinit(allocator);
+    try begin_result(&var encoder);
+    try encoder.begin_array_field("artifacts");
+    for 0..artifacts.len() |index| {
+        if index >= limit {
+            break;
+        }
+        if artifacts.at(index) |item| {
+            try encoder.begin_object();
+            try write_list_item(&var encoder, item);
+            try encoder.end_object();
+            try text.append_string(allocator, &item.id);
+            try text.append_byte(allocator, 9);
+            try text.append_byte(allocator, 118);
+            try fmt::append_i64(allocator, &var text, item.version);
+            try text.append_byte(allocator, 9);
+            try text.append_bytes(allocator, artifact::kind_name(item.kind));
+            try text.append_byte(allocator, 9);
+            try text.append_string(allocator, &item.updated_at);
+            try text.append_byte(allocator, 9);
+            try text.append_string(allocator, &item.title);
+            try text.append_byte(allocator, 9);
+            try text.append_string(allocator, &item.preview);
+            try text.append_byte(allocator, 10);
+        }
+    }
+    try encoder.end_array();
+    if text.len() == 0 {
+        try text.append_bytes(allocator, "No artifacts.");
+        try text.append_byte(allocator, 10);
+    }
+    let text_bytes = text.as_bytes();
+    try encoder.write_bytes_field("text", text_bytes);
+    try encoder.end_object();
+    try encoder.end_object();
+    var answer = string::new(allocator);
+    defer answer.deinit(allocator);
+    try encoder.finish_into(allocator, &var answer);
+    let answer_bytes = answer.as_bytes();
+    try print_response(cli, allocator, answer_bytes);
+    return;
+}
+
+/// `artifact show`: asks the app to open a stored artifact beside a pane.
+fn artifact_show(cli: &var Cli, allocator: Allocator, socket: []u8) -> ArtifactCommandFailure!void {
+    let pane = try cli.pane(allocator);
+    let background = cli.remove_flag(allocator, "--background");
+    let vertical = cli.remove_flag(allocator, "--vertical");
+    let horizontal = cli.remove_flag(allocator, "--horizontal");
+    if vertical and horizontal {
+        cli.say(allocator, "artifact show accepts at most one of --vertical or --horizontal", "", "");
+        return CliError::Failed;
+    }
+    if cli.args.len() != 1 {
+        cli.say(allocator, "artifact show requires one artifact ID", "", "");
+        return CliError::Failed;
+    }
+    var selector = string::new(allocator);
+    defer selector.deinit(allocator);
+    let _ = try take_word(cli, allocator, &var selector);
+    let selector_bytes = selector.as_bytes();
+    let manifest = try artifact::load_manifest(allocator, &var cli.message, socket, selector_bytes);
+    manifest.deinit(allocator);
+    var encoder = json::encoder(allocator);
+    defer encoder.deinit(allocator);
+    try begin_request(&var encoder, "artifact-show");
+    try encoder.write_i64_field("pane", pane);
+    try encoder.write_bytes_field("artifact", selector_bytes);
+    if horizontal {
+        try encoder.write_bytes_field("axis", "horizontal");
+    } else {
+        try encoder.write_bytes_field("axis", "vertical");
+    }
+    try encoder.write_bool_field("background", background);
+    try encoder.end_object();
+    var request = string::new(allocator);
+    defer request.deinit(allocator);
+    try encoder.finish_into(allocator, &var request);
+    let line = request.as_bytes();
+    var answer = string::new(allocator);
+    defer answer.deinit(allocator);
+    try exchange(cli, allocator, socket, line, &var answer);
+    let bytes = answer.as_bytes();
+    try print_response(cli, allocator, bytes);
+    return;
+}
+
+/// `artifact view`: draws a stored artifact over this terminal.
+fn artifact_view(cli: &var Cli, allocator: Allocator, socket: []u8) -> ArtifactCommandFailure!void {
+    let no_wait = cli.remove_flag(allocator, "--no-wait");
+    if cli.args.len() != 1 {
+        cli.say(allocator, "artifact view requires one artifact ID", "", "");
+        return CliError::Failed;
+    }
+    var selector = string::new(allocator);
+    defer selector.deinit(allocator);
+    let _ = try take_word(cli, allocator, &var selector);
+    let selector_bytes = selector.as_bytes();
+    try artifact::view_artifact(allocator, &var cli.message, socket, selector_bytes, !no_wait);
+    return;
+}
+
+/// Runs the artifact command the words name, against the store beside
+/// socket.
+fn run_artifact(cli: &var Cli, allocator: Allocator, socket: []u8) -> ArtifactCommandFailure!void {
+    var command = string::new(allocator);
+    defer command.deinit(allocator);
+    if !try take_word(cli, allocator, &var command) {
+        cli.say(allocator, artifact_usage(), "", "");
+        return CliError::Failed;
+    }
+    let word = command.as_bytes();
+    if mem::equal_bytes(word, "policy") {
+        return artifact_policy(cli, allocator, socket);
+    }
+    if mem::equal_bytes(word, "add") {
+        return artifact_add(cli, allocator, socket);
+    }
+    if mem::equal_bytes(word, "list") {
+        return artifact_list(cli, allocator, socket);
+    }
+    if mem::equal_bytes(word, "show") {
+        return artifact_show(cli, allocator, socket);
+    }
+    if mem::equal_bytes(word, "view") {
+        return artifact_view(cli, allocator, socket);
+    }
+    cli.say(allocator, "unknown artifact command ", "", "");
+    if fmt::append_bytes_literal(allocator, &var cli.message, word) {} else |_| {}
+    if cli.message.append_bytes(allocator, blank_line()) {} else |_| {}
+    if cli.message.append_bytes(allocator, artifact_usage()) {} else |_| {}
+    return CliError::Failed;
+}

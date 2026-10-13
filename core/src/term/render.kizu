@@ -1,0 +1,562 @@
+// The retained lines a terminal is drawn from, and the spring that animates
+// its scrolls. The Rust `neovide_render`.
+//
+// The line cache, its scrollback ring and the critically damped spring follow
+// Neovide's MIT-licensed renderer architecture:
+// https://github.com/neovide/neovide
+// Copyright (c) 2023 Neovide Contributors.
+import std::array;
+import std::math;
+import std::mem;
+import std::string;
+
+fn zero() -> f32 {
+    return cast<f32>(0.0);
+}
+
+/// How long a scroll takes to settle, in seconds.
+pub fn scroll_animation_seconds() -> f32 {
+    return cast<f32>(0.3);
+}
+
+/// The cells from start_col up to end_col, which share one background.
+pub struct BackgroundRun {
+    pub start_col: i64,
+    pub end_col: i64,
+    pub background: Color,
+    pub blend: u8,
+}
+
+/// One drawn row. A cell's text is text_len bytes of text at text_start.
+pub struct Line {
+    pub cells: array::Array<Cell>,
+    pub text: string::String,
+    pub runs: array::Array<BackgroundRun>,
+    pub has_blink: bool,
+    refs: i64,
+}
+
+fn new_line(allocator: Allocator) -> Line {
+    return Line {
+        cells: array::new<Cell>(allocator),
+        text: string::new(allocator),
+        runs: array::new<BackgroundRun>(allocator),
+        has_blink: false,
+        refs: 0
+    };
+}
+
+pub fn (self: Line) deinit(allocator: Allocator) -> void {
+    self.cells.deinit(allocator);
+    self.text.deinit(allocator);
+    self.runs.deinit(allocator);
+}
+
+/// The background run a line's cells are in as they are appended.
+struct OpenRun {
+    open: bool,
+    start: i64,
+    background: Color,
+    blend: u8,
+}
+
+fn no_run() -> OpenRun {
+    return OpenRun { open: false, start: 0, background: Color { r: 0, g: 0, b: 0 }, blend: 0 };
+}
+
+/// Appends cell, whose text line already holds, as line's column col.
+fn append_cell(allocator: Allocator, line: &var Line, run: &var OpenRun, cell: Cell, col: i64) -> mem::Error!void {
+    try line.cells.append(allocator, cell);
+    if cell.style.blink {
+        line.has_blink = true;
+    }
+    var same = cell.has_bg == run.open;
+    if same and cell.has_bg {
+        same = same_color(cell.bg, run.background) and cell.blend == run.blend;
+    }
+    if same {
+        return;
+    }
+    try end_run(allocator, line, run, col);
+    run.open = cell.has_bg;
+    run.start = col;
+    run.background = cell.bg;
+    run.blend = cell.blend;
+    return;
+}
+
+/// Records the run that ends before col, when one is open.
+fn end_run(allocator: Allocator, line: &var Line, run: &var OpenRun, col: i64) -> mem::Error!void {
+    if run.open {
+        try line.runs.append(
+            allocator,
+            BackgroundRun { start_col: run.start, end_col: col, background: run.background, blend: run.blend }
+        );
+    }
+    return;
+}
+
+fn reset_line(allocator: Allocator, line: &var Line) -> void {
+    line.cells.clear(allocator);
+    line.text.clear();
+    line.runs.clear(allocator);
+    line.has_blink = false;
+}
+
+/// Makes line the frame's row, with its background runs.
+fn fill_line(allocator: Allocator, line: &var Line, frame: &Frame, row: i64) -> mem::Error!void {
+    reset_line(allocator, line);
+    let start = frame.row_start(row);
+    let end = frame.row_end(row);
+    if end <= start {
+        return;
+    }
+    let cells = frame.cells.as_slice();
+    let text = frame.text.as_bytes();
+    let base = cells[start].text_start;
+    let last = cells[end - 1];
+    try line.text.append_bytes(allocator, text[base..last.text_start + last.text_len]);
+    var run = no_run();
+    for start..end |index| {
+        var cell = cells[index];
+        cell.text_start = cell.text_start - base;
+        try append_cell(allocator, line, &var run, cell, index - start);
+    }
+    try end_run(allocator, line, &var run, end - start);
+    return;
+}
+
+/// Makes line the cells, each with its text copied out of text, which need
+/// not hold them in order.
+fn fill_line_from_cells(allocator: Allocator, line: &var Line, cells: []Cell, text: []u8) -> mem::Error!void {
+    reset_line(allocator, line);
+    let count = mem::count<Cell>(cells);
+    var run = no_run();
+    for 0..count |col| {
+        var cell = cells[col];
+        let from = cell.text_start;
+        cell.text_start = line.text.len();
+        try line.text.append_bytes(allocator, text[from..from + cell.text_len]);
+        try append_cell(allocator, line, &var run, cell, col);
+    }
+    try end_run(allocator, line, &var run, count);
+    return;
+}
+
+/// A critically damped spring pulling position back to zero.
+pub struct Spring {
+    pub position: f32,
+    velocity: f32,
+}
+
+pub fn (self: &var Spring) reset() -> void {
+    self.position = zero();
+    self.velocity = zero();
+}
+
+/// Moves the spring dt seconds on. Whether it is still moving.
+pub fn (self: &var Spring) update(dt: f32, animation_length: f32) -> bool {
+    if animation_length <= dt {
+        self.reset();
+        return false;
+    }
+    if self.position == zero() {
+        return false;
+    }
+    let omega = cast<f32>(4.0) / animation_length;
+    let start = self.position;
+    let velocity = self.position * omega + self.velocity;
+    let decay = math::exp<f32>(zero() - omega * dt);
+    self.position = (start + velocity * dt) * decay;
+    self.velocity = decay * (velocity - start * omega - velocity * dt * omega);
+    if math::abs<f32>(self.position) < cast<f32>(0.01) {
+        self.reset();
+        return false;
+    }
+    return true;
+}
+
+/// The rows and columns of a window a scroll leaves in place.
+pub struct Margins {
+    pub top: i64,
+    pub bottom: i64,
+    pub left: i64,
+    pub right: i64,
+}
+
+/// Where logical row signed_row of a ring of length sits when its row zero
+/// is at zero; -1 for an empty ring.
+pub fn ring_index(length: i64, zero_index: i64, signed_row: i64) -> i64 {
+    if length <= 0 {
+        return -1;
+    }
+    let moved = (zero_index + signed_row) % length;
+    if moved < 0 {
+        return moved + length;
+    }
+    return moved;
+}
+
+fn reverse(cells: &var []i64, from: i64, to: i64) -> void {
+    var left = from;
+    var right = to - 1;
+    while left < right {
+        let held = cells[left];
+        cells[left] = cells[right];
+        cells[right] = held;
+        left = left + 1;
+        right = right - 1;
+    }
+    return;
+}
+
+/// Moves the element at count to the front, keeping the cyclic order.
+fn rotate_left(ring: &var array::Array<i64>, count: i64) -> void {
+    let length = ring.len();
+    if count <= 0 or count >= length {
+        return;
+    }
+    let cells = ring.as_mut_slice();
+    reverse(cells, 0, count);
+    reverse(cells, count, length);
+    reverse(cells, 0, length);
+    return;
+}
+
+/// A window's rows as they were last drawn, and twice its scrolled rows of
+/// scrollback for a scroll to slide through.
+///
+/// Rows are numbers into pool, -1 for a row never drawn; a pooled line counts
+/// the rows that name it and is reused once none does.
+pub struct WindowCache {
+    pool: array::Array<Line>,
+    free: array::Array<i64>,
+    pub height: i64,
+    pub width: i64,
+    lines: array::Array<i64>,
+    lines_zero: i64,
+    scrollback: array::Array<i64>,
+    scrollback_zero: i64,
+    scroll_delta: i64,
+    pub margins: Margins,
+    pub hidden: bool,
+    pub spring: Spring,
+}
+
+pub fn new_window_cache(allocator: Allocator, width: i64, height: i64) -> mem::Error!WindowCache {
+    var cache = WindowCache {
+        pool: array::new<Line>(allocator),
+        free: array::new<i64>(allocator),
+        height: 0,
+        width: 0,
+        lines: array::new<i64>(allocator),
+        lines_zero: 0,
+        scrollback: array::new<i64>(allocator),
+        scrollback_zero: 0,
+        scroll_delta: 0,
+        margins: Margins { top: 0, bottom: 0, left: 0, right: 0 },
+        hidden: false,
+        spring: Spring { position: zero(), velocity: zero() }
+    };
+    errdefer cache.deinit(allocator);
+    try cache.resize(allocator, width, height);
+    return move cache;
+}
+
+pub fn (self: WindowCache) deinit(allocator: Allocator) -> void {
+    self.pool.deinit(allocator);
+    self.free.deinit(allocator);
+    self.lines.deinit(allocator);
+    self.scrollback.deinit(allocator);
+}
+
+fn (self: &var WindowCache) retain(id: i64) -> void {
+    if self.pool.at_mut(id) |line| {
+        line.refs = line.refs + 1;
+    }
+    return;
+}
+
+fn (self: &var WindowCache) release(allocator: Allocator, id: i64) -> void {
+    var unused = false;
+    if self.pool.at_mut(id) |line| {
+        line.refs = line.refs - 1;
+        unused = line.refs == 0;
+    }
+    if unused {
+        // free has room for every pooled line, so this does not allocate.
+        if self.free.append(allocator, id) {} else |_| {}
+    }
+    return;
+}
+
+/// A pooled line to fill, named by one row.
+fn (self: &var WindowCache) take_line(allocator: Allocator) -> mem::Error!i64 {
+    var id = self.free.pop() orelse -1;
+    if id < 0 {
+        try self.pool.append(allocator, new_line(allocator));
+        id = self.pool.len() - 1;
+        try self.free.reserve(allocator, self.pool.len() - self.free.len());
+    }
+    if self.pool.at_mut(id) |line| {
+        line.refs = 1;
+    }
+    return id;
+}
+
+/// A pooled line holding the frame's row, named by one row.
+pub fn (self: &var WindowCache) line_from_frame(allocator: Allocator, frame: &Frame, row: i64) -> mem::Error!i64 {
+    let id = try self.take_line(allocator);
+    if self.pool.at_mut(id) |line| {
+        try fill_line(allocator, line, frame, row);
+    }
+    return id;
+}
+
+/// A pooled line holding cells, named by one row. A cell's text is its
+/// text_len bytes of text at text_start; the line keeps its own copy.
+pub fn (self: &var WindowCache) line_from_cells(allocator: Allocator, cells: []Cell, text: []u8) -> mem::Error!i64 {
+    let id = try self.take_line(allocator);
+    if self.pool.at_mut(id) |line| {
+        try fill_line_from_cells(allocator, line, cells, text);
+    }
+    return id;
+}
+
+/// The pooled line id names, for -1 none.
+pub fn (self: &WindowCache) line(id: i64) -> ?&Line {
+    return self.pool.at(id);
+}
+
+/// What the window's row shows, -1 when it was never drawn.
+pub fn (self: &WindowCache) line_id(row: i64) -> i64 {
+    if row < 0 or row >= self.lines.len() {
+        return -1;
+    }
+    return self.lines.get(ring_index(self.lines.len(), self.lines_zero, row)) orelse -1;
+}
+
+/// What the scrollback's row shows; row zero is the first scrolled row, and
+/// rows wrap around the scrollback.
+pub fn (self: &WindowCache) scrollback_id(signed_row: i64) -> i64 {
+    return self.scrollback.get(ring_index(self.scrollback.len(), self.scrollback_zero, signed_row)) orelse -1;
+}
+
+pub fn (self: &WindowCache) scrollback_len() -> i64 {
+    return self.scrollback.len();
+}
+
+/// Makes row show the line id, taking over the caller's naming of it.
+pub fn (self: &var WindowCache) draw_line(allocator: Allocator, row: i64, id: i64) -> void {
+    if row < 0 or row >= self.lines.len() {
+        self.release(allocator, id);
+        return;
+    }
+    let index = ring_index(self.lines.len(), self.lines_zero, row);
+    let old = self.lines.get(index) orelse -1;
+    if self.lines.set(index, id) {} else |_| {}
+    self.release(allocator, old);
+    return;
+}
+
+fn (self: &var WindowCache) set_scrollback(allocator: Allocator, signed_row: i64, id: i64) -> void {
+    let index = ring_index(self.scrollback.len(), self.scrollback_zero, signed_row);
+    if index < 0 {
+        return;
+    }
+    let old = self.scrollback.get(index) orelse -1;
+    if old == id {
+        return;
+    }
+    self.retain(id);
+    if self.scrollback.set(index, id) {} else |_| {}
+    self.release(allocator, old);
+    return;
+}
+
+/// Makes a ring hold length rows from its logical row zero on, dropping the
+/// rows past it and adding undrawn ones.
+fn (self: &var WindowCache) resize_ring(allocator: Allocator, scrollback: bool, length: i64) -> mem::Error!void {
+    var old_length = self.lines.len();
+    if scrollback {
+        old_length = self.scrollback.len();
+    }
+    if length > 0 and old_length > 0 {
+        if scrollback {
+            rotate_left(&var self.scrollback, ring_index(old_length, self.scrollback_zero, 0));
+        } else {
+            rotate_left(&var self.lines, ring_index(old_length, self.lines_zero, 0));
+        }
+    }
+    var index = old_length - 1;
+    while index >= length {
+        var id: i64 = -1;
+        if scrollback {
+            id = self.scrollback.pop() orelse -1;
+        } else {
+            id = self.lines.pop() orelse -1;
+        }
+        self.release(allocator, id);
+        index = index - 1;
+    }
+    for old_length..length |_| {
+        if scrollback {
+            try self.scrollback.append(allocator, -1);
+        } else {
+            try self.lines.append(allocator, -1);
+        }
+    }
+    if scrollback {
+        self.scrollback_zero = 0;
+    } else {
+        self.lines_zero = 0;
+    }
+    return;
+}
+
+/// Gives the window width x height cells. A new height drops the scroll in
+/// progress; a new width alone keeps it, as the rows stay where they were.
+pub fn (self: &var WindowCache) resize(allocator: Allocator, width: i64, height: i64) -> mem::Error!void {
+    let new_width = math::max<i64>(width, 1);
+    let new_height = math::max<i64>(height, 1);
+    if self.width == new_width and self.height == new_height {
+        return;
+    }
+    let height_changed = self.height != new_height;
+    self.width = new_width;
+    if !height_changed {
+        return;
+    }
+    self.height = new_height;
+    try self.resize_ring(allocator, false, new_height);
+    self.reset_scroll_animation();
+    try self.resize_ring(allocator, true, new_height * 2);
+    let shared = math::min<i64>(self.scrollback.len(), self.lines.len());
+    for 0..shared |row| {
+        self.set_scrollback(allocator, row, self.line_id(row));
+    }
+    return;
+}
+
+/// Scrolls the window's rows when the scroll covers all of it.
+pub fn (self: &var WindowCache) scroll(top: i64, bottom: i64, left: i64, right: i64, rows: i64, cols: i64) -> void {
+    if top == 0 and bottom == self.height and left == 0 and right == self.width and cols == 0 {
+        self.lines_zero = math::max<i64>(ring_index(self.lines.len(), self.lines_zero, rows), 0);
+    }
+    return;
+}
+
+/// Forgets every row and the scroll in progress.
+pub fn (self: &var WindowCache) clear(allocator: Allocator) -> mem::Error!void {
+    for 0..self.lines.len() |index| {
+        let old = self.lines.get(index) orelse -1;
+        if self.lines.set(index, -1) {} else |_| {}
+        self.release(allocator, old);
+    }
+    self.reset_scroll_animation();
+    try self.reset_scrollback(allocator);
+    return;
+}
+
+pub fn (self: &var WindowCache) show() -> void {
+    if self.hidden {
+        self.hidden = false;
+        self.reset_scroll_animation();
+    }
+    return;
+}
+
+pub fn (self: &var WindowCache) hide() -> void {
+    self.hidden = true;
+}
+
+/// Records that the rows inside the margins scrolled by rows since the last
+/// flush. Zero records nothing.
+pub fn (self: &var WindowCache) viewport(rows: i64) -> void {
+    if rows != 0 {
+        self.scroll_delta = rows;
+    }
+    return;
+}
+
+pub fn (self: &var WindowCache) set_margins(margins: Margins) -> void {
+    self.margins = margins;
+}
+
+pub fn (self: &var WindowCache) reset_scroll_animation() -> void {
+    self.scroll_delta = 0;
+    self.spring.reset();
+}
+
+/// The first row inside the margins.
+pub fn (self: &WindowCache) inner_top() -> i64 {
+    return math::min<i64>(self.margins.top, self.height);
+}
+
+/// One past the last row inside the margins.
+pub fn (self: &WindowCache) inner_bottom() -> i64 {
+    let top = self.inner_top();
+    return self.height - math::min<i64>(self.margins.bottom, self.height - top);
+}
+
+fn (self: &var WindowCache) copy_inner_to_scrollback(allocator: Allocator) -> void {
+    let top = self.inner_top();
+    for top..self.inner_bottom() |row| {
+        self.set_scrollback(allocator, row - top, self.line_id(row));
+    }
+    return;
+}
+
+fn (self: &var WindowCache) reset_scrollback(allocator: Allocator) -> mem::Error!void {
+    try self.resize_ring(allocator, true, 0);
+    try self.resize_ring(allocator, true, (self.inner_bottom() - self.inner_top()) * 2);
+    self.copy_inner_to_scrollback(allocator);
+    return;
+}
+
+/// Brings the scrollback up to the rows drawn since the last flush, and
+/// starts the spring from the scroll recorded since then. A scroll past what
+/// the scrollback holds slides in over far_lines undrawn rows instead.
+pub fn (self: &var WindowCache) flush(allocator: Allocator, far_lines: i64) -> mem::Error!void {
+    let inner_height = self.inner_bottom() - self.inner_top();
+    if self.scrollback.len() != inner_height * 2 {
+        try self.reset_scrollback(allocator);
+        self.scroll_delta = 0;
+        self.spring.reset();
+        return;
+    }
+    let delta = self.scroll_delta;
+    self.scrollback_zero = math::max<i64>(ring_index(self.scrollback.len(), self.scrollback_zero, delta), 0);
+    self.copy_inner_to_scrollback(allocator);
+    if delta != 0 {
+        let max_delta = math::max<i64>(self.scrollback.len() - inner_height, 0);
+        if math::abs<i64>(delta) > max_delta {
+            let far = math::min<i64>(far_lines, self.lines.len());
+            if delta > 0 {
+                self.spring.position = zero() - cast<f32>(far);
+                for 0..far |offset| {
+                    self.set_scrollback(allocator, offset - far, -1);
+                }
+            } else {
+                self.spring.position = cast<f32>(far);
+                for 0..far |offset| {
+                    self.set_scrollback(allocator, self.lines.len() + offset, -1);
+                }
+            }
+        } else {
+            let limit = cast<f32>(max_delta);
+            let position = self.spring.position - cast<f32>(delta);
+            self.spring.position = math::clamp<f32>(position, zero() - limit, limit);
+        }
+    }
+    self.scroll_delta = 0;
+    return;
+}
+
+pub fn (self: &var WindowCache) advance_animation(dt: f32) -> bool {
+    return self.spring.update(dt, scroll_animation_seconds());
+}
+
+pub fn (self: &WindowCache) has_active_animation() -> bool {
+    return self.spring.position != zero();
+}

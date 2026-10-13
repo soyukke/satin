@@ -1,0 +1,493 @@
+// The pane layout of one tab: a binary tree of splits whose leaves are panes.
+//
+// The tree is a flat array of nodes that name their children by index, the
+// arena-and-handle shape Kizu gives graphs. Edits that drop a subtree leave
+// its nodes unreferenced; `compact` rebuilds the array from the root when an
+// edit may have dropped one.
+import std::array;
+import std::mem;
+
+pub fn min_split_ratio() -> f64 {
+    return 0.05;
+}
+
+pub fn max_split_ratio() -> f64 {
+    return 0.95;
+}
+
+pub enum Axis {
+    Vertical,
+    Horizontal,
+}
+
+pub enum Direction {
+    Left,
+    Right,
+    Up,
+    Down,
+}
+
+pub enum DropPosition {
+    Center,
+    Left,
+    Right,
+    Top,
+    Bottom,
+}
+
+/// One node: a leaf names a pane, a split names its two children by index.
+pub struct Node {
+    pub leaf: bool,
+    pub pane: i64,
+    pub axis: Axis,
+    pub ratio: f64,
+    pub first: i64,
+    pub second: i64,
+}
+
+pub struct Layout {
+    pub nodes: array::Array<Node>,
+    pub root: i64,
+}
+
+pub fn (self: Layout) deinit(allocator: Allocator) -> void {
+    self.nodes.deinit(allocator);
+}
+
+pub fn leaf_node(pane: i64) -> Node {
+    return Node { leaf: true, pane: pane, axis: Axis::Vertical, ratio: 0.5, first: -1, second: -1 };
+}
+
+pub fn split_node(axis: Axis, ratio: f64, first: i64, second: i64) -> Node {
+    return Node { leaf: false, pane: -1, axis: axis, ratio: ratio, first: first, second: second };
+}
+
+/// A layout holding one pane.
+pub fn single(allocator: Allocator, pane: i64) -> mem::Error!Layout {
+    var nodes = array::new<Node>(allocator);
+    errdefer nodes.deinit(allocator);
+    try nodes.append(allocator, leaf_node(pane));
+    return Layout { nodes: move nodes, root: 0 };
+}
+
+pub fn (self: &Layout) node(index: i64) -> Node {
+    return self.nodes.get_or_panic(index);
+}
+
+fn (self: &var Layout) put(index: i64, value: Node) -> void {
+    self.nodes.set(index, value) catch return;
+}
+
+fn (self: &var Layout) push(allocator: Allocator, value: Node) -> mem::Error!i64 {
+    try self.nodes.append(allocator, value);
+    return self.nodes.len() - 1;
+}
+
+/// Finds the node of the leaf that holds pane, or -1.
+pub fn (self: &Layout) find_leaf(index: i64, pane: i64) -> i64 {
+    let current = self.node(index);
+    if current.leaf {
+        if current.pane == pane {
+            return index;
+        }
+        return -1;
+    }
+    let found = self.find_leaf(current.first, pane);
+    if found >= 0 {
+        return found;
+    }
+    return self.find_leaf(current.second, pane);
+}
+
+pub fn (self: &Layout) contains(pane: i64) -> bool {
+    return self.find_leaf(self.root, pane) >= 0;
+}
+
+/// Replaces the leaf of target with a split of it and new_pane, the new
+/// pane second.
+pub fn (self: &var Layout) split_leaf(allocator: Allocator, target: i64, new_pane: i64, axis: Axis) -> mem::Error!bool {
+    return self.insert_leaf_relative(allocator, target, new_pane, axis, false);
+}
+
+/// Replaces the leaf of target with a split of it and inserted, inserted
+/// first when before is set.
+fn (self: &var Layout) insert_leaf_relative(
+    allocator: Allocator,
+    target: i64,
+    inserted: i64,
+    axis: Axis,
+    before: bool
+) -> mem::Error!bool {
+    let at = self.find_leaf(self.root, target);
+    if at < 0 {
+        return false;
+    }
+    let target_leaf = try self.push(allocator, leaf_node(target));
+    let inserted_leaf = try self.push(allocator, leaf_node(inserted));
+    if before {
+        self.put(at, split_node(axis, 0.5, inserted_leaf, target_leaf));
+    } else {
+        self.put(at, split_node(axis, 0.5, target_leaf, inserted_leaf));
+    }
+    return true;
+}
+
+/// Sets the ratio of the innermost split whose first side holds
+/// first_marker and whose second side holds second_marker.
+pub fn (self: &var Layout) set_split_ratio(first_marker: i64, second_marker: i64, ratio: f64) -> bool {
+    return self.set_split_ratio_at(self.root, first_marker, second_marker, ratio);
+}
+
+fn (self: &var Layout) set_split_ratio_at(index: i64, first_marker: i64, second_marker: i64, ratio: f64) -> bool {
+    var current = self.node(index);
+    if current.leaf {
+        return false;
+    }
+    if self.find_leaf(current.first, first_marker) >= 0 and
+        self.find_leaf(current.second, second_marker) >= 0 {
+        current.ratio = ratio;
+        self.put(index, current);
+        return true;
+    }
+    if self.set_split_ratio_at(current.first, first_marker, second_marker, ratio) {
+        return true;
+    }
+    return self.set_split_ratio_at(current.second, first_marker, second_marker, ratio);
+}
+
+/// Drops the leaf of target, a split with one side left becoming that side.
+/// Returns false when target was the last leaf, leaving the layout as it was.
+pub fn (self: &var Layout) remove_leaf(allocator: Allocator, target: i64) -> mem::Error!bool {
+    let root = self.prune(self.root, target);
+    if root < 0 {
+        return false;
+    }
+    self.root = root;
+    try self.compact(allocator);
+    return true;
+}
+
+/// Returns where the subtree at index now starts once target is dropped, or
+/// -1 when nothing of it is left.
+fn (self: &var Layout) prune(index: i64, target: i64) -> i64 {
+    var current = self.node(index);
+    if current.leaf {
+        if current.pane == target {
+            return -1;
+        }
+        return index;
+    }
+    let first = self.prune(current.first, target);
+    let second = self.prune(current.second, target);
+    if first >= 0 and second >= 0 {
+        current.first = first;
+        current.second = second;
+        self.put(index, current);
+        return index;
+    }
+    if first >= 0 {
+        return first;
+    }
+    return second;
+}
+
+/// Rebuilds the node array from the root so no unreferenced node is kept.
+fn (self: &var Layout) compact(allocator: Allocator) -> mem::Error!void {
+    var nodes = array::new<Node>(allocator);
+    errdefer nodes.deinit(allocator);
+    let root = try copy_subtree(allocator, self, self.root, &var nodes);
+    self.nodes.clear(allocator);
+    var index = 0;
+    while nodes.get(index) |value| {
+        try self.nodes.append(allocator, value);
+        index = index + 1;
+    }
+    nodes.deinit(allocator);
+    self.root = root;
+    return;
+}
+
+fn copy_subtree(allocator: Allocator, from: &Layout, index: i64, into: &var array::Array<Node>) -> mem::Error!i64 {
+    var current = from.node(index);
+    if !current.leaf {
+        current.first = try copy_subtree(allocator, from, current.first, into);
+        current.second = try copy_subtree(allocator, from, current.second, into);
+    }
+    try into.append(allocator, current);
+    return into.len() - 1;
+}
+
+fn (self: &var Layout) swap_leaves(index: i64, first_pane: i64, second_pane: i64) -> void {
+    var current = self.node(index);
+    if current.leaf {
+        if current.pane == first_pane {
+            current.pane = second_pane;
+            self.put(index, current);
+        } else if current.pane == second_pane {
+            current.pane = first_pane;
+            self.put(index, current);
+        }
+        return;
+    }
+    self.swap_leaves(current.first, first_pane, second_pane);
+    self.swap_leaves(current.second, first_pane, second_pane);
+}
+
+/// How two panes that are the two leaves of one split sit in it.
+struct SiblingRelation {
+    axis: Axis,
+    source_first: bool,
+}
+
+fn (self: &Layout) direct_sibling_relation(index: i64, source: i64, target: i64) -> ?SiblingRelation {
+    let current = self.node(index);
+    if current.leaf {
+        return null;
+    }
+    let first = self.node(current.first);
+    let second = self.node(current.second);
+    if first.leaf and second.leaf {
+        if first.pane == source and second.pane == target {
+            return SiblingRelation { axis: current.axis, source_first: true };
+        }
+        if first.pane == target and second.pane == source {
+            return SiblingRelation { axis: current.axis, source_first: false };
+        }
+    }
+    if self.direct_sibling_relation(current.first, source, target) |relation| {
+        return relation;
+    }
+    return self.direct_sibling_relation(current.second, source, target);
+}
+
+/// Moves the leaf of source next to target, or swaps the two for a center
+/// drop. Nothing changes when the move is refused.
+pub fn (self: &var Layout) move_leaf(allocator: Allocator, source: i64, target: i64, position: DropPosition) -> mem::Error!bool {
+    if source == target or !self.contains(source) or !self.contains(target) {
+        return false;
+    }
+    if position == DropPosition::Center {
+        self.swap_leaves(self.root, source, target);
+        return true;
+    }
+    var axis = Axis::Horizontal;
+    var before = false;
+    if position == DropPosition::Left {
+        axis = Axis::Vertical;
+        before = true;
+    } else if position == DropPosition::Right {
+        axis = Axis::Vertical;
+    } else if position == DropPosition::Top {
+        before = true;
+    }
+    if self.direct_sibling_relation(self.root, source, target) |relation| {
+        if relation.axis == axis {
+            if relation.source_first != before {
+                self.swap_leaves(self.root, source, target);
+            }
+            return true;
+        }
+    }
+    if !try self.remove_leaf(allocator, source) {
+        return false;
+    }
+    if !try self.insert_leaf_relative(allocator, target, source, axis, before) {
+        return false;
+    }
+    return true;
+}
+
+/// Appends the panes of the subtree at index, first side first.
+pub fn (self: &Layout) leaves(allocator: Allocator, index: i64, out: &var array::Array<i64>) -> mem::Error!void {
+    let current = self.node(index);
+    if current.leaf {
+        return out.append(allocator, current.pane);
+    }
+    try self.leaves(allocator, current.first, out);
+    return self.leaves(allocator, current.second, out);
+}
+
+pub fn (self: &Layout) first_leaf(index: i64) -> i64 {
+    let current = self.node(index);
+    if current.leaf {
+        return current.pane;
+    }
+    return self.first_leaf(current.first);
+}
+
+struct Rect {
+    min_x: f64,
+    max_x: f64,
+    min_y: f64,
+    max_y: f64,
+}
+
+struct PaneRect {
+    pane: i64,
+    rect: Rect,
+}
+
+fn (self: Rect) mid_x() -> f64 {
+    return (self.min_x + self.max_x) / 2.0;
+}
+
+fn (self: Rect) mid_y() -> f64 {
+    return (self.min_y + self.max_y) / 2.0;
+}
+
+fn (self: &Layout) collect_rects(allocator: Allocator, index: i64, rect: Rect, out: &var array::Array<PaneRect>) -> mem::Error!void {
+    let current = self.node(index);
+    if current.leaf {
+        return out.append(allocator, PaneRect { pane: current.pane, rect: rect });
+    }
+    var first = rect;
+    var second = rect;
+    if current.axis == Axis::Vertical {
+        let boundary = rect.min_x + (rect.max_x - rect.min_x) * current.ratio;
+        first.max_x = boundary;
+        second.min_x = boundary;
+    } else {
+        let boundary = rect.min_y + (rect.max_y - rect.min_y) * current.ratio;
+        first.max_y = boundary;
+        second.min_y = boundary;
+    }
+    try self.collect_rects(allocator, current.first, first, out);
+    return self.collect_rects(allocator, current.second, second, out);
+}
+
+/// The gap between 1.0 and the next f64, Rust's `f64::EPSILON`.
+fn epsilon() -> f64 {
+    return 2.220446049250313e-16;
+}
+
+struct Candidate {
+    pane: i64,
+    primary_gap: f64,
+    orthogonal_gap: f64,
+    orthogonal_center_distance: f64,
+}
+
+fn abs(value: f64) -> f64 {
+    if value < 0.0 {
+        return 0.0 - value;
+    }
+    return value;
+}
+
+fn max(first: f64, second: f64) -> f64 {
+    if first > second {
+        return first;
+    }
+    return second;
+}
+
+fn min(first: f64, second: f64) -> f64 {
+    if first < second {
+        return first;
+    }
+    return second;
+}
+
+fn interval_gap(first_min: f64, first_max: f64, second_min: f64, second_max: f64) -> f64 {
+    return max(max(first_min, second_min) - min(first_max, second_max), 0.0);
+}
+
+fn candidate(pane: i64, rect: Rect, active: Rect, direction: Direction) -> ?Candidate {
+    var forward = 0.0;
+    var primary = 0.0;
+    var orthogonal = 0.0;
+    var center = 0.0;
+    if direction == Direction::Left or direction == Direction::Right {
+        if direction == Direction::Left {
+            forward = active.mid_x() - rect.mid_x();
+            primary = active.min_x - rect.max_x;
+        } else {
+            forward = rect.mid_x() - active.mid_x();
+            primary = rect.min_x - active.max_x;
+        }
+        orthogonal = interval_gap(active.min_y, active.max_y, rect.min_y, rect.max_y);
+        center = abs(active.mid_y() - rect.mid_y());
+    } else {
+        if direction == Direction::Up {
+            forward = active.mid_y() - rect.mid_y();
+            primary = active.min_y - rect.max_y;
+        } else {
+            forward = rect.mid_y() - active.mid_y();
+            primary = rect.min_y - active.max_y;
+        }
+        orthogonal = interval_gap(active.min_x, active.max_x, rect.min_x, rect.max_x);
+        center = abs(active.mid_x() - rect.mid_x());
+    }
+    if forward <= epsilon() {
+        return null;
+    }
+    return Candidate {
+        pane: pane,
+        primary_gap: max(primary, 0.0),
+        orthogonal_gap: orthogonal,
+        orthogonal_center_distance: center
+    };
+}
+
+/// Orders two metrics, treating ones within epsilon() of each other as equal:
+/// -1, 0 or 1.
+fn metric_order(first: f64, second: f64) -> i64 {
+    if abs(first - second) <= epsilon() {
+        return 0;
+    }
+    if first < second {
+        return -1;
+    }
+    return 1;
+}
+
+fn (self: Candidate) before(other: Candidate) -> bool {
+    var order = metric_order(self.primary_gap, other.primary_gap);
+    if order == 0 {
+        order = metric_order(self.orthogonal_gap, other.orthogonal_gap);
+    }
+    if order == 0 {
+        order = metric_order(self.orthogonal_center_distance, other.orthogonal_center_distance);
+    }
+    if order == 0 {
+        return self.pane < other.pane;
+    }
+    return order < 0;
+}
+
+/// The pane nearest active in direction, or -1.
+pub fn (self: &Layout) pane_in_direction(allocator: Allocator, active: i64, direction: Direction) -> mem::Error!i64 {
+    var rects = array::new<PaneRect>(allocator);
+    defer rects.deinit(allocator);
+    let unit = Rect { min_x: 0.0, max_x: 1.0, min_y: 0.0, max_y: 1.0 };
+    try self.collect_rects(allocator, self.root, unit, &var rects);
+    var active_rect = unit;
+    var found = false;
+    var index = 0;
+    while rects.get(index) |entry| {
+        if entry.pane == active {
+            active_rect = entry.rect;
+            found = true;
+        }
+        index = index + 1;
+    }
+    if !found {
+        return -1;
+    }
+    var best_pane: i64 = -1;
+    var best = Candidate { pane: -1, primary_gap: 0.0, orthogonal_gap: 0.0, orthogonal_center_distance: 0.0 };
+    index = 0;
+    while rects.get(index) |entry| {
+        index = index + 1;
+        if entry.pane == active {
+            continue;
+        }
+        if candidate(entry.pane, entry.rect, active_rect, direction) |next| {
+            if best_pane < 0 or next.before(best) {
+                best = next;
+                best_pane = next.pane;
+            }
+        }
+    }
+    return best_pane;
+}

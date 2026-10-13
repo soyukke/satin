@@ -2,7 +2,7 @@
 
 Date: 2026-07-02
 
-Status: Accepted
+Status: Superseded by [0019](0019-replace-the-rust-core-with-kizu.md)
 
 ## Context
 

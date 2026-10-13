@@ -1,0 +1,432 @@
+// Scroll tracking over a pane's output: which CSI scrolls (SU / SD / IL / DL)
+// and which Satin scroll OSC it carries, and in which scroll region, so the
+// host can animate a scroll it did not draw. The Rust `terminal_scroll`.
+import std::mem;
+import std::string;
+
+pub fn max_scroll_rows() -> i64 {
+    return 24;
+}
+
+fn max_osc_bytes() -> i64 {
+    return 96;
+}
+
+enum ScrollState {
+    Ground,
+    Escape,
+    Csi,
+    Osc,
+    OscEscape,
+    Text,
+    TextEscape,
+}
+
+/// A scroll region; left and right are zero when the region spans the rows.
+pub struct Region {
+    pub top: i64,
+    pub bottom: i64,
+    pub left: i64,
+    pub right: i64,
+}
+
+/// Rows scrolled, positive up, and the region they scrolled in when there
+/// was one.
+pub struct ScrollUpdate {
+    pub rows: i64,
+    pub has_region: bool,
+    pub region: Region,
+}
+
+fn no_region() -> Region {
+    return Region { top: 0, bottom: 0, left: 0, right: 0 };
+}
+
+fn no_update() -> ScrollUpdate {
+    return ScrollUpdate { rows: 0, has_region: false, region: no_region() };
+}
+
+fn same_region(first: &ScrollUpdate, second: &ScrollUpdate) -> bool {
+    if first.has_region != second.has_region {
+        return false;
+    }
+    if !first.has_region {
+        return true;
+    }
+    return first.region.top == second.region.top and first.region.bottom == second.region.bottom and
+        first.region.left == second.region.left and first.region.right == second.region.right;
+}
+
+pub struct ScrollTracker {
+    pub pane: i64,
+    state: ScrollState,
+    first: i64,
+    second: i64,
+    first_present: bool,
+    second_present: bool,
+    parameter_index: i64,
+    csi_valid: bool,
+    has_scroll_region: bool,
+    scroll_region: Region,
+    osc_payload: string::String,
+    osc_valid: bool,
+}
+
+pub fn (self: ScrollTracker) deinit(allocator: Allocator) -> void {
+    self.osc_payload.deinit(allocator);
+}
+
+pub fn new_tracker(allocator: Allocator, pane: i64) -> ScrollTracker {
+    return ScrollTracker {
+        pane: pane,
+        state: ScrollState::Ground,
+        first: 0,
+        second: 0,
+        first_present: false,
+        second_present: false,
+        parameter_index: 0,
+        csi_valid: false,
+        has_scroll_region: false,
+        scroll_region: no_region(),
+        osc_payload: string::new(allocator),
+        osc_valid: true
+    };
+}
+
+/// Forgets the sequence in progress and the scroll region, as a fresh
+/// tracker would.
+pub fn (self: &var ScrollTracker) reset() -> void {
+    self.state = ScrollState::Ground;
+    self.first = 0;
+    self.second = 0;
+    self.first_present = false;
+    self.second_present = false;
+    self.parameter_index = 0;
+    self.csi_valid = false;
+    self.has_scroll_region = false;
+    self.scroll_region = no_region();
+    self.osc_payload.clear();
+    self.osc_valid = true;
+}
+
+/// Feeds bytes and returns the scroll they carried. Scrolls in one region
+/// add up; a scroll in another region replaces what came before it.
+pub fn (self: &var ScrollTracker) feed(allocator: Allocator, bytes: []u8) -> mem::Error!ScrollUpdate {
+    var update = no_update();
+    var index = 0;
+    while index < mem::len(bytes) {
+        let next = try self.feed_byte(allocator, bytes[index]);
+        index = index + 1;
+        if next.rows == 0 {
+            continue;
+        }
+        if update.rows == 0 or same_region(&update, &next) {
+            update.rows = update.rows + next.rows;
+            update.has_region = next.has_region;
+            update.region = next.region;
+        } else {
+            update = next;
+        }
+    }
+    return update;
+}
+
+fn (self: &var ScrollTracker) feed_byte(allocator: Allocator, byte: u8) -> mem::Error!ScrollUpdate {
+    if self.state == ScrollState::Ground {
+        self.feed_ground(byte);
+        return no_update();
+    }
+    if self.state == ScrollState::Escape {
+        self.feed_escape(byte);
+        return no_update();
+    }
+    if self.state == ScrollState::Csi {
+        return self.feed_csi(byte);
+    }
+    if self.state == ScrollState::Osc {
+        return self.feed_control_string(allocator, byte, true);
+    }
+    if self.state == ScrollState::OscEscape {
+        return self.feed_control_string_escape(byte, true);
+    }
+    if self.state == ScrollState::Text {
+        return self.feed_control_string(allocator, byte, false);
+    }
+    return self.feed_control_string_escape(byte, false);
+}
+
+fn (self: &var ScrollTracker) feed_ground(byte: u8) -> void {
+    let value = cast<i64>(byte);
+    if value == 27 {
+        self.state = ScrollState::Escape;
+    } else if value == 155 {
+        self.start_csi();
+    } else if value == 157 {
+        self.start_osc();
+    } else if value == 144 or value == 152 or value == 158 or value == 159 {
+        self.state = ScrollState::Text;
+    }
+}
+
+fn (self: &var ScrollTracker) feed_escape(byte: u8) -> void {
+    let value = cast<i64>(byte);
+    if value == 91 {
+        self.start_csi();
+    } else if value == 93 {
+        self.start_osc();
+    } else if value == 80 or value == 88 or value == 94 or value == 95 {
+        self.state = ScrollState::Text;
+    } else if value != 27 {
+        self.state = ScrollState::Ground;
+    }
+}
+
+fn (self: &var ScrollTracker) start_csi() -> void {
+    self.state = ScrollState::Csi;
+    self.first = 0;
+    self.second = 0;
+    self.first_present = false;
+    self.second_present = false;
+    self.parameter_index = 0;
+    self.csi_valid = true;
+}
+
+fn (self: &var ScrollTracker) start_osc() -> void {
+    self.state = ScrollState::Osc;
+    self.osc_payload.clear();
+    self.osc_valid = true;
+}
+
+/// Adds a decimal digit to a u16 parameter, saturating at its maximum.
+fn push_digit(value: i64, digit: i64) -> i64 {
+    let next = value * 10 + digit;
+    if next > 65535 {
+        return 65535;
+    }
+    return next;
+}
+
+fn (self: &var ScrollTracker) feed_csi(byte: u8) -> ScrollUpdate {
+    let value = cast<i64>(byte);
+    if value >= 48 and value <= 57 and self.parameter_index < 2 {
+        if self.parameter_index == 0 {
+            self.first_present = true;
+            self.first = push_digit(self.first, value - 48);
+        } else {
+            self.second_present = true;
+            self.second = push_digit(self.second, value - 48);
+        }
+        return no_update();
+    }
+    if value == 59 {
+        self.parameter_index = self.parameter_index + 1;
+        if self.parameter_index >= 2 {
+            self.csi_valid = false;
+        }
+        return no_update();
+    }
+    if value >= 32 and value <= 47 or value >= 58 and value <= 63 {
+        self.csi_valid = false;
+        return no_update();
+    }
+    if value >= 64 and value <= 126 {
+        self.state = ScrollState::Ground;
+        return self.update_for_final(value);
+    }
+    if value == 27 {
+        self.state = ScrollState::Escape;
+        return no_update();
+    }
+    self.state = ScrollState::Ground;
+    return no_update();
+}
+
+fn (self: &var ScrollTracker) update_for_final(value: i64) -> ScrollUpdate {
+    if !self.csi_valid {
+        return no_update();
+    }
+    if value == 114 {
+        self.has_scroll_region = false;
+        if self.parameter_index == 1 and self.first_present and self.second_present and
+            self.first > 0 and self.second >= self.first {
+            self.has_scroll_region = true;
+            self.scroll_region = Region { top: self.first, bottom: self.second, left: 0, right: 0 };
+        }
+        return no_update();
+    }
+    if self.parameter_index != 0 {
+        return no_update();
+    }
+    var count: i64 = 1;
+    if self.first_present and self.first != 0 {
+        count = self.first;
+    }
+    if count > max_scroll_rows() {
+        count = max_scroll_rows();
+    }
+    var rows: i64 = 0;
+    if value == 77 or value == 83 {
+        rows = count;
+    } else if value == 76 or value == 84 {
+        rows = 0 - count;
+    }
+    return ScrollUpdate { rows: rows, has_region: self.has_scroll_region, region: self.scroll_region };
+}
+
+fn (self: &var ScrollTracker) feed_control_string(allocator: Allocator, byte: u8, osc: bool) -> mem::Error!ScrollUpdate {
+    let value = cast<i64>(byte);
+    if osc and (value == 7 or value == 156) {
+        return self.finish_osc();
+    }
+    if value == 156 {
+        self.state = ScrollState::Ground;
+    } else if value == 27 {
+        if osc {
+            self.state = ScrollState::OscEscape;
+        } else {
+            self.state = ScrollState::TextEscape;
+        }
+    } else if osc {
+        if self.osc_payload.len() >= max_osc_bytes() {
+            self.osc_valid = false;
+        } else {
+            try self.osc_payload.append_byte(allocator, byte);
+        }
+    }
+    return no_update();
+}
+
+fn (self: &var ScrollTracker) feed_control_string_escape(byte: u8, osc: bool) -> ScrollUpdate {
+    if cast<i64>(byte) == 92 {
+        if osc {
+            return self.finish_osc();
+        }
+        self.state = ScrollState::Ground;
+        return no_update();
+    }
+    if osc {
+        self.osc_valid = false;
+        self.state = ScrollState::Osc;
+    } else {
+        self.state = ScrollState::Text;
+    }
+    return no_update();
+}
+
+fn (self: &var ScrollTracker) finish_osc() -> ScrollUpdate {
+    self.state = ScrollState::Ground;
+    let update = self.parse_scroll_osc();
+    self.osc_payload.clear();
+    self.osc_valid = true;
+    return update;
+}
+
+/// Reads `777;SatinScroll;1;rows;top;bottom;left;right`.
+fn (self: &ScrollTracker) parse_scroll_osc() -> ScrollUpdate {
+    if !self.osc_valid {
+        return no_update();
+    }
+    let payload = self.osc_payload.as_bytes();
+    let prefix = "777;SatinScroll;1;";
+    if !mem::starts_with(payload, prefix) {
+        return no_update();
+    }
+    var rows: i64 = 0;
+    var top: i64 = 0;
+    var bottom: i64 = 0;
+    var left: i64 = 0;
+    var right: i64 = 0;
+    var field = 0;
+    var start = mem::len(prefix);
+    var index = start;
+    while index <= mem::len(payload) {
+        if index == mem::len(payload) or payload[index] == cast<u8>(59) {
+            let text = payload[start..index];
+            var parsed: i64 = 0;
+            if field == 0 {
+                if !parse_signed(text, &var parsed) {
+                    return no_update();
+                }
+                rows = parsed;
+            } else if field < 5 {
+                if !parse_unsigned(text, 65535, &var parsed) {
+                    return no_update();
+                }
+                if field == 1 {
+                    top = parsed;
+                } else if field == 2 {
+                    bottom = parsed;
+                } else if field == 3 {
+                    left = parsed;
+                } else {
+                    right = parsed;
+                }
+            } else {
+                return no_update();
+            }
+            field = field + 1;
+            start = index + 1;
+        }
+        index = index + 1;
+    }
+    if field != 5 {
+        return no_update();
+    }
+    if rows == 0 or top == 0 or bottom < top or left == 0 or right < left {
+        return no_update();
+    }
+    var clamped = rows;
+    if clamped > max_scroll_rows() {
+        clamped = max_scroll_rows();
+    }
+    if clamped < 0 - max_scroll_rows() {
+        clamped = 0 - max_scroll_rows();
+    }
+    return ScrollUpdate {
+        rows: clamped,
+        has_region: true,
+        region: Region { top: top, bottom: bottom, left: left, right: right }
+    };
+}
+
+/// Parses a decimal number no larger than max, as Rust's `str::parse` does
+/// for an unsigned type: an optional `+`, then one or more digits.
+pub fn parse_unsigned(bytes: []u8, max: i64, out: &var i64) -> bool {
+    var index = 0;
+    if mem::len(bytes) > 0 and bytes[0] == cast<u8>(43) {
+        index = 1;
+    }
+    if index >= mem::len(bytes) {
+        return false;
+    }
+    var value: i64 = 0;
+    while index < mem::len(bytes) {
+        let digit = cast<i64>(bytes[index]) - 48;
+        if digit < 0 or digit > 9 {
+            return false;
+        }
+        value = value * 10 + digit;
+        if value > max {
+            return false;
+        }
+        index = index + 1;
+    }
+    out = value;
+    return true;
+}
+
+/// Parses a decimal i64 with an optional sign.
+fn parse_signed(bytes: []u8, out: &var i64) -> bool {
+    if mem::len(bytes) > 0 and bytes[0] == cast<u8>(45) {
+        var magnitude: i64 = 0;
+        if !parse_unsigned(bytes[1..mem::len(bytes)], 9223372036854775807, &var magnitude) {
+            return false;
+        }
+        if mem::len(bytes) > 1 and bytes[1] == cast<u8>(43) {
+            return false;
+        }
+        out = 0 - magnitude;
+        return true;
+    }
+    return parse_unsigned(bytes, 9223372036854775807, out);
+}

@@ -1,0 +1,425 @@
+// Unix sockets, the kernel queue that waits on them, and the checks a
+// socket path has to pass, straight on libc.
+import std::mem;
+import std::string;
+
+extern "c" fn malloc(size: usize) -> ?ptr<u8>
+extern "c" fn free(p: ptr<u8>) -> void
+extern "c" fn socket(domain: i32, kind: i32, protocol: i32) -> i32
+extern "c" fn bind(descriptor: i32, address: ptr<const u8>, length: u32) -> i32
+extern "c" fn connect(descriptor: i32, address: ptr<const u8>, length: u32) -> i32
+extern "c" fn listen(descriptor: i32, backlog: i32) -> i32
+extern "c" fn accept(descriptor: i32, address: ?ptr<u8>, length: ?ptr<u8>) -> i32
+extern "c" fn recv(descriptor: i32, buffer: ptr<u8>, length: usize, flags: i32) -> isize
+extern "c" fn send(descriptor: i32, buffer: ptr<const u8>, length: usize, flags: i32) -> isize
+extern "c" fn close(descriptor: i32) -> i32
+extern "c" fn setsockopt(descriptor: i32, level: i32, name: i32, value: &SocketOption, length: u32) -> i32
+extern "c" fn getpeereid(descriptor: i32, user: &var UserId, group: &var UserId) -> i32
+extern "c" fn geteuid() -> u32
+extern "c" fn lstat(path: ptr<const u8>, out: ptr<u8>) -> i32
+extern "c" fn mkdir(path: ptr<const u8>, mode: u16) -> i32
+extern "c" fn chmod(path: ptr<const u8>, mode: u16) -> i32
+extern "c" fn unlink(path: ptr<const u8>) -> i32
+extern "c" fn rmdir(path: ptr<const u8>) -> i32
+extern "c" fn kqueue() -> i32
+extern "c" fn kevent(
+    queue: i32,
+    changes: &KernelEvent,
+    change_count: i32,
+    events: &var KernelEvent,
+    event_count: i32,
+    timeout: &TimeSpec
+) -> i32
+extern "c" fn __error() -> ptr<i32>
+
+/// A socket option's value: a `struct timeval` as seconds and
+/// microseconds, or an int in the low bytes of first.
+extern "c" struct SocketOption {
+    first: i64,
+    second: i64,
+}
+
+extern "c" struct UserId {
+    value: u32,
+}
+
+/// Darwin's `struct kevent`.
+extern "c" struct KernelEvent {
+    ident: usize,
+    filter: i16,
+    flags: u16,
+    fflags: u32,
+    data: isize,
+    udata: usize,
+}
+
+extern "c" struct TimeSpec {
+    seconds: i64,
+    nanoseconds: i64,
+}
+
+pub error ControlError {
+    /// The socket path is not absolute, or too long for a socket address.
+    InvalidPath,
+    /// The path or its directory is not the caller's own, or open to others.
+    UnsafePath,
+    /// Another process is listening on the socket.
+    InUse,
+    Unavailable,
+}
+
+pub error ControlFailure = ControlError or mem::Error;
+
+fn errno() -> i32 {
+    // SAFETY: __error returns this thread's errno, which is always readable.
+    return unsafe ptr_read(__error());
+}
+
+/// `EVFILT_READ`.
+fn filter_read() -> i16 {
+    return -1;
+}
+
+/// `EVFILT_TIMER`.
+fn filter_timer() -> i16 {
+    return -7;
+}
+
+/// `EV_ADD`.
+fn event_add() -> u16 {
+    return 1;
+}
+
+/// `EV_DELETE`.
+fn event_delete() -> u16 {
+    return 2;
+}
+
+/// `EV_ADD | EV_ONESHOT`.
+fn event_add_once() -> u16 {
+    return 17;
+}
+
+fn no_event() -> KernelEvent {
+    return KernelEvent { ident: 0, filter: 0, flags: 0, fflags: 0, data: 0, udata: 0 };
+}
+
+/// Applies one change to a kernel queue. A timer's data is milliseconds.
+fn change_event(queue: i32, ident: i64, filter: i16, flags: u16, data: i64) -> bool {
+    let change = KernelEvent {
+        ident: cast<usize>(ident),
+        filter: filter,
+        flags: flags,
+        fflags: 0,
+        data: cast<isize>(data),
+        udata: 0
+    };
+    var unused = no_event();
+    let now = TimeSpec { seconds: 0, nanoseconds: 0 };
+    // SAFETY: change is one readable event; no event is read back.
+    return unsafe kevent(queue, &change, 1, &var unused, 0, &now) == 0;
+}
+
+/// Takes one pending event of a kernel queue without waiting; false when
+/// none is pending.
+fn next_event(queue: i32, out: &var KernelEvent) -> bool {
+    let unused = no_event();
+    let now = TimeSpec { seconds: 0, nanoseconds: 0 };
+    // SAFETY: out is one writable event; no change is read.
+    return unsafe kevent(queue, &unused, 0, out, 1, &now) == 1;
+}
+
+/// path with a NUL after it, for a C call.
+fn c_path(allocator: Allocator, path: []u8) -> mem::Error!string::String {
+    var out = try string::from_bytes(allocator, path);
+    errdefer out.deinit(allocator);
+    try out.append_byte(allocator, 0);
+    return move out;
+}
+
+/// What lstat says of path: its mode and owner through the outs; false
+/// when nothing is there.
+fn path_status(allocator: Allocator, path: []u8, mode: &var i64, owner: &var i64) -> mem::Error!bool {
+    let name = try c_path(allocator, path);
+    defer name.deinit(allocator);
+    // SAFETY: malloc returns 512 bytes, more than a struct stat, or null.
+    let storage = unsafe malloc(512) orelse return mem::Error::OutOfMemory;
+    let name_bytes = name.as_bytes();
+    // SAFETY: name ends in NUL; storage holds a struct stat.
+    let result = unsafe lstat(ptr_of(name_bytes), storage);
+    if result == 0 {
+        // SAFETY: lstat wrote the struct, whose st_mode is the u16 four bytes in.
+        mode = cast<i64>(unsafe ptr_read(cast<ptr<u16>>(ptr_offset(storage, 4))));
+        // SAFETY: as above; st_uid is the u32 sixteen bytes in.
+        owner = cast<i64>(unsafe ptr_read(cast<ptr<u32>>(ptr_offset(storage, 16))));
+    }
+    // SAFETY: storage came from malloc and nothing reads it after this.
+    unsafe free(storage);
+    return result == 0;
+}
+
+fn is_kind(mode: i64, kind: i64) -> bool {
+    return mode / 4096 == kind;
+}
+
+fn is_directory_mode(mode: i64) -> bool {
+    return is_kind(mode, 4);
+}
+
+fn is_socket_mode(mode: i64) -> bool {
+    return is_kind(mode, 12);
+}
+
+fn effective_user() -> i64 {
+    // SAFETY: geteuid has no preconditions.
+    return cast<i64>(unsafe geteuid());
+}
+
+/// Where the last `/` of an absolute path is.
+fn parent_length(path: []u8) -> i64 {
+    var index = mem::len(path) - 1;
+    while index > 0 and path[index] != cast<u8>(47) {
+        index = index - 1;
+    }
+    return index;
+}
+
+/// Creates directory and the directories above it that are missing, each
+/// for its owner alone.
+fn create_directories(allocator: Allocator, directory: []u8) -> ControlFailure!void {
+    var mode: i64 = 0;
+    var owner: i64 = 0;
+    if mem::len(directory) <= 1 or try path_status(allocator, directory, &var mode, &var owner) {
+        return;
+    }
+    try create_directories(allocator, directory[0..parent_length(directory)]);
+    let name = try c_path(allocator, directory);
+    defer name.deinit(allocator);
+    let name_bytes = name.as_bytes();
+    // SAFETY: name ends in NUL; 448 is 0700.
+    if unsafe mkdir(ptr_of(name_bytes), 448) != 0 {
+        return ControlError::Unavailable;
+    }
+    return;
+}
+
+fn remove_path(allocator: Allocator, path: []u8, directory: bool) -> void {
+    if c_path(allocator, path) |name| {
+        defer name.deinit(allocator);
+        let name_bytes = name.as_bytes();
+        if directory {
+            // SAFETY: name ends in NUL.
+            let _ = unsafe rmdir(ptr_of(name_bytes));
+        } else {
+            // SAFETY: name ends in NUL.
+            let _ = unsafe unlink(ptr_of(name_bytes));
+        }
+    } else |_| {}
+    return;
+}
+
+/// A `sockaddr_un` naming path: 106 bytes.
+fn socket_address(allocator: Allocator, path: []u8) -> ControlFailure!string::String {
+    if mem::len(path) > 103 {
+        return ControlError::InvalidPath;
+    }
+    var address = string::new(allocator);
+    errdefer address.deinit(allocator);
+    try address.append_byte(allocator, 106);
+    // AF_UNIX.
+    try address.append_byte(allocator, 1);
+    try address.append_bytes(allocator, path);
+    while address.len() < 106 {
+        try address.append_byte(allocator, 0);
+    }
+    return move address;
+}
+
+pub fn close_descriptor(descriptor: i32) -> void {
+    if descriptor >= 0 {
+        // SAFETY: the descriptor is the caller's own and closed once.
+        let _ = unsafe close(descriptor);
+    }
+    return;
+}
+
+/// Sets a socket's send or receive timeout; zero or less waits for ever.
+fn set_timeout(descriptor: i32, receive: bool, millis: i64) -> void {
+    var wait = millis;
+    if wait < 0 {
+        wait = 0;
+    }
+    let value = SocketOption { first: wait / 1000, second: wait % 1000 * 1000 };
+    // SO_SNDTIMEO, or SO_RCVTIMEO.
+    var name: i32 = 4101;
+    if receive {
+        name = 4102;
+    }
+    // SAFETY: value is a timeval's 16 bytes; 65535 is SOL_SOCKET.
+    let _ = unsafe setsockopt(descriptor, 65535, name, &value, 16);
+    return;
+}
+
+/// A stream socket that fails a write to a closed peer instead of raising
+/// SIGPIPE; -1 when there is none.
+fn new_socket() -> i32 {
+    // SAFETY: AF_UNIX, SOCK_STREAM.
+    let descriptor = unsafe socket(1, 1, 0);
+    if descriptor >= 0 {
+        quiet_pipe(descriptor);
+    }
+    return descriptor;
+}
+
+fn quiet_pipe(descriptor: i32) -> void {
+    let enabled = SocketOption { first: 1, second: 0 };
+    // SAFETY: the value's first four bytes are the int 1; 4130 is SO_NOSIGPIPE.
+    let _ = unsafe setsockopt(descriptor, 65535, 4130, &enabled, 4);
+    return;
+}
+
+/// Connects to the socket at path.
+pub fn connect_to(allocator: Allocator, path: []u8) -> ControlFailure!i32 {
+    let address = try socket_address(allocator, path);
+    defer address.deinit(allocator);
+    let descriptor = new_socket();
+    if descriptor < 0 {
+        return ControlError::Unavailable;
+    }
+    let bytes = address.as_bytes();
+    // SAFETY: bytes is a sockaddr_un of 106 bytes.
+    if unsafe connect(descriptor, ptr_of(bytes), 106) != 0 {
+        close_descriptor(descriptor);
+        return ControlError::Unavailable;
+    }
+    return descriptor;
+}
+
+/// Whether the peer of a connected socket runs as this process's user.
+fn peer_is_this_user(descriptor: i32) -> bool {
+    var user = UserId { value: 0 };
+    var group = UserId { value: 0 };
+    // SAFETY: both outs are writable ids.
+    if unsafe getpeereid(descriptor, &var user, &var group) != 0 {
+        return false;
+    }
+    return cast<i64>(user.value) == effective_user();
+}
+
+/// Sends all of bytes; false when the peer is gone or does not read in
+/// time.
+pub fn send_all(descriptor: i32, bytes: []u8) -> bool {
+    var sent: i64 = 0;
+    while sent < mem::len(bytes) {
+        let rest = bytes[sent..mem::len(bytes)];
+        // SAFETY: rest is its length in readable bytes.
+        let count = unsafe send(descriptor, ptr_of(rest), cast<usize>(mem::len(rest)), 0);
+        if count > 0 {
+            sent = sent + cast<i64>(count);
+            continue;
+        }
+        // EINTR.
+        if errno() == 4 {
+            continue;
+        }
+        return false;
+    }
+    return true;
+}
+
+/// Appends what the socket has to out. The bytes read, 0 at its end, -1
+/// when nothing is there to read yet, and -2 on an error. Without wait it
+/// returns at once.
+pub fn receive(allocator: Allocator, descriptor: i32, wait: bool, out: &var string::String) -> mem::Error!i64 {
+    // SAFETY: malloc returns 4096 bytes of storage or null.
+    let storage = unsafe malloc(4096) orelse return mem::Error::OutOfMemory;
+    // MSG_DONTWAIT.
+    var flags: i32 = 128;
+    if wait {
+        flags = 0;
+    }
+    // SAFETY: storage holds 4096 writable bytes.
+    let count = cast<i64>(unsafe recv(descriptor, storage, 4096, flags));
+    var result = count;
+    if count > 0 {
+        // SAFETY: recv wrote count bytes to storage.
+        let bytes = unsafe view_from_ptr(cast<ptr<const u8>>(storage), count);
+        if out.append_bytes(allocator, bytes) {} else |_| {
+            result = -2;
+        }
+    } else if count < 0 {
+        let reason = errno();
+        // EAGAIN, or EINTR.
+        if reason == 35 or reason == 4 {
+            result = -1;
+        } else {
+            result = -2;
+        }
+    }
+    // SAFETY: storage came from malloc and nothing reads it after this.
+    unsafe free(storage);
+    return result;
+}
+
+/// Checks that a socket may be made at path, creating its directory for
+/// the owner alone when it is missing, and removes the socket a process no
+/// longer listens on. Whether it created the directory.
+fn prepare_socket_path(allocator: Allocator, path: []u8) -> ControlFailure!bool {
+    if mem::len(path) < 2 or path[0] != cast<u8>(47) {
+        return ControlError::InvalidPath;
+    }
+    let parent = path[0..parent_length(path)];
+    if mem::len(parent) == 0 {
+        return ControlError::InvalidPath;
+    }
+    var mode: i64 = 0;
+    var owner: i64 = 0;
+    let parent_created = !try path_status(allocator, parent, &var mode, &var owner);
+    try create_directories(allocator, parent);
+    if !try path_status(allocator, parent, &var mode, &var owner) {
+        return ControlError::Unavailable;
+    }
+    if !is_directory_mode(mode) or owner != effective_user() or mode % 64 != 0 {
+        return ControlError::UnsafePath;
+    }
+    if !try path_status(allocator, path, &var mode, &var owner) {
+        return parent_created;
+    }
+    if !is_socket_mode(mode) or owner != effective_user() {
+        return ControlError::UnsafePath;
+    }
+    if connect_to(allocator, path) |descriptor| {
+        close_descriptor(descriptor);
+        return ControlError::InUse;
+    } else |_| {}
+    remove_path(allocator, path, false);
+    return parent_created;
+}
+
+/// A socket listening at path, which only its owner may connect to.
+fn listen_at(allocator: Allocator, path: []u8) -> ControlFailure!i32 {
+    let address = try socket_address(allocator, path);
+    defer address.deinit(allocator);
+    let name = try c_path(allocator, path);
+    defer name.deinit(allocator);
+    let descriptor = new_socket();
+    if descriptor < 0 {
+        return ControlError::Unavailable;
+    }
+    let bytes = address.as_bytes();
+    // SAFETY: bytes is a sockaddr_un of 106 bytes.
+    if unsafe bind(descriptor, ptr_of(bytes), 106) != 0 {
+        close_descriptor(descriptor);
+        return ControlError::Unavailable;
+    }
+    let name_bytes = name.as_bytes();
+    // SAFETY: name ends in NUL; 384 is 0600.
+    let restricted = unsafe chmod(ptr_of(name_bytes), 384) == 0;
+    // SAFETY: descriptor is the bound socket.
+    if !restricted or unsafe listen(descriptor, 64) != 0 {
+        close_descriptor(descriptor);
+        remove_path(allocator, path, false);
+        return ControlError::Unavailable;
+    }
+    return descriptor;
+}

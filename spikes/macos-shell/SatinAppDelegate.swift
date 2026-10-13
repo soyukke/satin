@@ -98,7 +98,7 @@ final class SatinAppDelegate: NSObject, NSApplicationDelegate {
             presentFatalError(
                 title: "Terminal Core Failed",
                 message:
-                    "The Rust terminal core could not be initialized. Check Console for details."
+                    "The terminal core could not be initialized. Check Console for details."
             )
             return
         }
@@ -112,7 +112,7 @@ final class SatinAppDelegate: NSObject, NSApplicationDelegate {
         else {
             presentFatalError(
                 title: "Metal Renderer Unavailable",
-                message: "A Metal-capable GPU and the bundled Skia renderer are required."
+                message: "A Metal-capable GPU is required."
             )
             return
         }
@@ -299,6 +299,8 @@ final class SatinAppDelegate: NSObject, NSApplicationDelegate {
             settingsWindowController?.present()
         case .showWorkSwitcher:
             shellController?.showWorkSwitcher(nil)
+        case .jumpToWaitingAgent:
+            shellController?.jumpToWaitingAgent(nil)
         case .newTab:
             shellController?.newTab(nil)
         case .splitVertical:

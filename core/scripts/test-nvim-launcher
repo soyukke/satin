@@ -1,0 +1,117 @@
+#!/bin/sh
+# Runs the built `satin-nvim` command: against a stand-in `nvim` on PATH,
+# and, on a terminal scripts/on-terminal provides, against a stand-in for
+# the app.
+#
+#   scripts/test-nvim-launcher path/to/satin-nvim
+set -eu
+launcher="$(cd "$(dirname "$1")" && pwd)/$(basename "$1")"
+on_terminal="$(cd "$(dirname "$0")" && pwd)/on-terminal"
+# The launches below run with a short PATH; keep the python found here.
+python="$(command -v python3)"
+work="$(mktemp -d /tmp/satin-nvim-test.XXXXXX)"
+trap '{ kill "$server"; wait "$server"; } 2>/dev/null || true; rm -rf "$work"' EXIT
+socket="$work/control.sock"
+mkdir "$work/bin" "$work/project"
+cat > "$work/bin/nvim" <<'SH'
+#!/bin/sh
+printf 'real nvim:'
+for argument in "$@"; do printf ' [%s]' "$argument"; done
+printf '\n'
+SH
+chmod +x "$work/bin/nvim"
+
+python3 - "$socket" "$work" <<'PY' &
+import os, socket, sys
+path, work = sys.argv[1], sys.argv[2]
+server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+server.bind(path)
+server.listen(8)
+while True:
+    client, _ = server.accept()
+    line = b""
+    while not line.endswith(b"\n"):
+        chunk = client.recv(65536)
+        if not chunk:
+            break
+        line += chunk
+    with open(os.path.join(work, "request"), "wb") as out:
+        out.write(line)
+    with open(os.path.join(work, "answer"), "rb") as answer:
+        client.sendall(answer.read() + b"\n")
+    client.close()
+PY
+server=$!
+while [ ! -S "$socket" ]; do sleep 0.05; done
+sleep 0.2
+
+failures=0
+check() {
+    label="$1"; expected="$2"; actual="$3"
+    if [ "$expected" != "$actual" ]; then
+        failures=$((failures + 1))
+        printf 'FAIL %s\n  expected: %s\n  actual:   %s\n' "$label" "$expected" "$actual"
+    fi
+}
+
+check "the launcher names its version" "satin-nvim 0.2.37" "$("$launcher" --satin-launcher-version)"
+
+out="$(PATH="$work/bin:/usr/bin:/bin" "$launcher" -u NONE "file name" < /dev/null)"
+check "without a terminal the real nvim runs" "real nvim: [-u] [NONE] [file name]" "$out"
+
+status=0
+out="$(PATH="/nonexistent" "$launcher" file 2>&1 < /dev/null)" || status=$?
+check "no real nvim is reported" "satin-nvim: could not find the real nvim after the Satin launcher" "$out"
+check "no real nvim exits with 127" "127" "$status"
+
+# On a terminal, from the pane's shell, the app opens Neovim itself.
+printf '{"ok":true,"result":{"exitCode":7}}' > "$work/answer"
+status=0
+(cd "$work/project" && env -u TMUX -u STY -u SSH_TTY -u SSH_CONNECTION -u SATIN_NVIM_TUI \
+    PATH="$work/bin:/usr/bin:/bin" SATIN_PANE_ID=4 SATIN_SOCKET="$socket" \
+    LAUNCH_MARK=here \
+    "$python" "$on_terminal" "$launcher" -u NONE "file name" > "$work/native.out" 2>&1) || status=$?
+check "the app's exit code is the launcher's" "7" "$status"
+check "the real nvim did not run" "" "$(grep -c 'real nvim' "$work/native.out" | grep -v '^0$' || true)"
+[ "$status" = 7 ] || { echo "native launch printed:"; cat "$work/native.out"; }
+python3 - "$work/request" "$work" <<'PY' > "$work/request.summary" 2>&1 || true
+import json, os, sys
+request = json.load(open(sys.argv[1]))
+print(request["version"], request["command"], request["pane"], request["arguments"])
+print(os.path.realpath(request["cwd"]) == os.path.realpath(os.path.join(sys.argv[2], "project")))
+print(os.path.realpath(request["executable"]) == os.path.realpath(os.path.join(sys.argv[2], "bin", "nvim")))
+print(request["environment"].get("LAUNCH_MARK"), request["environment"].get("SATIN_PANE_ID"))
+PY
+check "the open-neovim request carries the launch" "1 open-neovim 4 ['-u', 'NONE', 'file name']
+True
+True
+here 4" "$(cat "$work/request.summary")"
+
+# The app refusing falls back to the real nvim.
+printf '{"ok":false,"error":{"code":"no_pane","message":"gone"}}' > "$work/answer"
+(cd "$work/project" && env -u TMUX -u STY -u SSH_TTY -u SSH_CONNECTION -u SATIN_NVIM_TUI \
+    PATH="$work/bin:/usr/bin:/bin" SATIN_PANE_ID=4 SATIN_SOCKET="$socket" \
+    "$python" "$on_terminal" "$launcher" file > "$work/fallback.out" 2>&1) || true
+check "a refusal runs the real nvim" "real nvim: [file]" "$(cat "$work/fallback.out")"
+
+# Arguments that are not the UI never ask the app.
+rm -f "$work/request"
+(cd "$work/project" && env -u TMUX -u STY -u SSH_TTY -u SSH_CONNECTION -u SATIN_NVIM_TUI \
+    PATH="$work/bin:/usr/bin:/bin" SATIN_PANE_ID=4 SATIN_SOCKET="$socket" \
+    "$python" "$on_terminal" "$launcher" --headless > "$work/headless.out" 2>&1) || true
+check "--headless runs the real nvim" "real nvim: [--headless]" "$(cat "$work/headless.out")"
+check "--headless sends no request" "absent" "$([ -e "$work/request" ] && echo present || echo absent)"
+
+# Inside tmux a terminal nvim gets the bridge preloaded.
+(cd "$work/project" && env -u STY -u SSH_TTY -u SSH_CONNECTION TMUX=1 \
+    PATH="$work/bin:/usr/bin:/bin" \
+    "$python" "$on_terminal" "$launcher" file > "$work/tmux.out" 2>&1) || true
+check "inside tmux the bridge is preloaded" "1" "$(grep -c 'real nvim: \[--cmd\] \[lua assert(load("' "$work/tmux.out")"
+check "the bridge is one quoted Lua string" "1" "$(grep -c '777;SatinScroll;1' "$work/tmux.out")"
+check "the bridge command ends the call" "1" "$(grep -c '"))()\] \[file\]$' "$work/tmux.out")"
+
+if [ "$failures" -ne 0 ]; then
+    echo "$failures failed"
+    exit 1
+fi
+echo "nvim launcher: ok"

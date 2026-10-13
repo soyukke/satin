@@ -140,9 +140,8 @@ Markdown uses a terminal-native CommonMark/GFM presentation. It renders
 headings, paragraphs, ordered and unordered lists, task markers, blockquotes,
 strong, emphasis, strikethrough, links, inline and fenced code, thematic rules,
 and GFM tables instead of displaying their source punctuation. Inline styles
-remain local to their text span. A fenced language token selects bundled
-syntax highlighting; unknown languages remain readable as uniformly accented
-code. Raw HTML is not executed. A report can embed relative PNG files below the
+remain local to their text span. Fenced code is drawn in one uniform style
+whatever its language token; there is no syntax highlighter. Raw HTML is not executed. A report can embed relative PNG files below the
 Markdown file's directory:
 
 ````markdown

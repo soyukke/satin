@@ -1,0 +1,414 @@
+// How many terminal cells text takes, and the cutting, padding and wrapping
+// that count them. The Rust `unicode-width` crate, as a compact table: wide
+// CJK and emoji ranges, and the marks that take no cell.
+import std::array;
+import std::mem;
+import std::string;
+
+fn in_range(scalar: i64, first: i64, last: i64) -> bool {
+    return scalar >= first and scalar <= last;
+}
+
+/// The bytes of the UTF-8 sequence that starts at index; 0 when the bytes
+/// there are not one.
+fn sequence_length(bytes: []u8, index: i64) -> i64 {
+    let rest = mem::len(bytes) - index;
+    let lead = cast<i64>(bytes[index]);
+    if lead < 128 {
+        return 1;
+    }
+    if lead < 194 or lead > 244 or rest < 2 {
+        return 0;
+    }
+    let second = cast<i64>(bytes[index + 1]);
+    if lead < 224 {
+        if in_range(second, 128, 191) {
+            return 2;
+        }
+        return 0;
+    }
+    var low: i64 = 128;
+    var high: i64 = 191;
+    if lead == 224 {
+        low = 160;
+    } else if lead == 237 {
+        high = 159;
+    } else if lead == 240 {
+        low = 144;
+    } else if lead == 244 {
+        high = 143;
+    }
+    if !in_range(second, low, high) or rest < 3 or !in_range(cast<i64>(bytes[index + 2]), 128, 191) {
+        return 0;
+    }
+    if lead < 240 {
+        return 3;
+    }
+    if rest < 4 or !in_range(cast<i64>(bytes[index + 3]), 128, 191) {
+        return 0;
+    }
+    return 4;
+}
+
+/// Reads the scalar that starts at index into scalar and returns its
+/// length in bytes. A byte that starts no sequence reads as U+FFFD, one
+/// byte long.
+fn decode_scalar(bytes: []u8, index: i64, scalar: &var i64) -> i64 {
+    let length = sequence_length(bytes, index);
+    let lead = cast<i64>(bytes[index]);
+    if length == 0 {
+        scalar = 65533;
+        return 1;
+    }
+    if length == 1 {
+        scalar = lead;
+        return 1;
+    }
+    var value = lead & 31;
+    if length == 3 {
+        value = lead & 15;
+    } else if length == 4 {
+        value = lead & 7;
+    }
+    for 1..length |offset| {
+        value = value << 6 | cast<i64>(bytes[index + offset]) & 63;
+    }
+    scalar = value;
+    return length;
+}
+
+fn is_valid_utf8(bytes: []u8) -> bool {
+    var index: i64 = 0;
+    while index < mem::len(bytes) {
+        let length = sequence_length(bytes, index);
+        if length == 0 {
+            return false;
+        }
+        index = index + length;
+    }
+    return true;
+}
+
+fn append_scalar(allocator: Allocator, out: &var string::String, scalar: i64) -> mem::Error!void {
+    if scalar < 128 {
+        try out.append_byte(allocator, cast<u8>(scalar));
+        return;
+    }
+    if scalar < 2048 {
+        try out.append_byte(allocator, cast<u8>(192 | scalar >> 6));
+        try out.append_byte(allocator, cast<u8>(128 | scalar & 63));
+        return;
+    }
+    if scalar < 65536 {
+        try out.append_byte(allocator, cast<u8>(224 | scalar >> 12));
+        try out.append_byte(allocator, cast<u8>(128 | scalar >> 6 & 63));
+        try out.append_byte(allocator, cast<u8>(128 | scalar & 63));
+        return;
+    }
+    try out.append_byte(allocator, cast<u8>(240 | scalar >> 18));
+    try out.append_byte(allocator, cast<u8>(128 | scalar >> 12 & 63));
+    try out.append_byte(allocator, cast<u8>(128 | scalar >> 6 & 63));
+    try out.append_byte(allocator, cast<u8>(128 | scalar & 63));
+    return;
+}
+
+/// Appends text to out, each byte that starts no UTF-8 sequence as U+FFFD.
+fn append_lossy(allocator: Allocator, out: &var string::String, text: []u8) -> mem::Error!void {
+    if is_valid_utf8(text) {
+        try out.append_bytes(allocator, text);
+        return;
+    }
+    var index: i64 = 0;
+    while index < mem::len(text) {
+        var scalar: i64 = 0;
+        index = index + decode_scalar(text, index, &var scalar);
+        try append_scalar(allocator, out, scalar);
+    }
+    return;
+}
+
+/// Cc: the C0 and C1 controls and DEL.
+fn is_control(scalar: i64) -> bool {
+    return scalar < 32 or in_range(scalar, 127, 159);
+}
+
+/// The Unicode White_Space code points.
+fn is_white_space(scalar: i64) -> bool {
+    if scalar < 128 {
+        return in_range(scalar, 9, 13) or scalar == 32;
+    }
+    return scalar == 133 or scalar == 160 or scalar == 5760 or in_range(scalar, 8192, 8202) or scalar == 8232
+        or scalar == 8233 or scalar == 8239 or scalar == 8287 or scalar == 12288;
+}
+
+/// Whether scalar is a letter or a digit, near enough to name a directory:
+/// outside ASCII everything is one but spaces, controls, the Latin-1
+/// signs, and the punctuation, symbol and emoji blocks.
+fn is_alphanumeric(scalar: i64) -> bool {
+    if scalar < 128 {
+        return in_range(scalar, 48, 57) or in_range(scalar, 65, 90) or in_range(scalar, 97, 122);
+    }
+    if is_control(scalar) or is_white_space(scalar) or is_zero_width(scalar) {
+        return false;
+    }
+    if scalar < 192 {
+        return scalar == 170 or scalar == 178 or scalar == 179 or scalar == 181 or in_range(scalar, 185, 190)
+            and scalar != 187;
+    }
+    if scalar == 215 or scalar == 247 {
+        return false;
+    }
+    // General punctuation to the dingbats and supplemental symbols, CJK
+    // punctuation, the surrogates and private use, the fullwidth signs,
+    // and the emoji planes.
+    return !in_range(scalar, 8192, 11263) and !in_range(scalar, 11776, 11903) and !in_range(scalar, 12288, 12292)
+        and !in_range(scalar, 12296, 12320) and !in_range(scalar, 55296, 63743) and !in_range(scalar, 65040, 65135)
+        and !in_range(scalar, 65281, 65295) and !in_range(scalar, 65306, 65312) and !in_range(scalar, 65339, 65344)
+        and !in_range(scalar, 65371, 65381) and !in_range(scalar, 65504, 65533) and !in_range(scalar, 126976, 131071)
+        and scalar < 983040;
+}
+
+/// Combining marks, joiners, variation selectors and the other code points
+/// a terminal draws in no cell of their own.
+fn is_zero_width(scalar: i64) -> bool {
+    if scalar < 768 {
+        return false;
+    }
+    return in_range(scalar, 768, 879) or in_range(scalar, 1155, 1161) or in_range(scalar, 1425, 1469)
+        or scalar == 1471 or in_range(scalar, 1473, 1474) or in_range(scalar, 1476, 1477) or scalar == 1479
+        or in_range(scalar, 1552, 1562) or in_range(scalar, 1611, 1631) or scalar == 1648
+        or in_range(scalar, 1750, 1756) or in_range(scalar, 1759, 1764) or in_range(scalar, 1767, 1768)
+        or in_range(scalar, 1770, 1773) or in_range(scalar, 2304, 2306) or scalar == 2362 or scalar == 2364
+        or in_range(scalar, 2369, 2376) or scalar == 2381 or scalar == 3633 or in_range(scalar, 3636, 3642)
+        or in_range(scalar, 3655, 3662) or in_range(scalar, 4448, 4607) or in_range(scalar, 6832, 6911)
+        or in_range(scalar, 7616, 7679) or in_range(scalar, 8203, 8207) or in_range(scalar, 8232, 8238)
+        or in_range(scalar, 8288, 8292) or in_range(scalar, 8400, 8432) or in_range(scalar, 12330, 12333)
+        or in_range(scalar, 12441, 12442) or in_range(scalar, 65024, 65039) or in_range(scalar, 65056, 65071)
+        or scalar == 65279 or in_range(scalar, 917536, 917631) or in_range(scalar, 917760, 917999);
+}
+
+/// East Asian Wide and Fullwidth: Hangul Jamo, CJK and its punctuation,
+/// kana, Hangul syllables, the fullwidth forms, and emoji that present as
+/// emoji.
+fn is_wide(scalar: i64) -> bool {
+    if scalar < 4352 {
+        return false;
+    }
+    if scalar < 11904 {
+        return in_range(scalar, 4352, 4447) or in_range(scalar, 8986, 8987) or in_range(scalar, 9001, 9002)
+            or in_range(scalar, 9193, 9196) or scalar == 9200 or scalar == 9203 or in_range(scalar, 9725, 9726)
+            or in_range(scalar, 9748, 9749) or in_range(scalar, 9800, 9811) or scalar == 9855 or scalar == 9875
+            or scalar == 9889 or in_range(scalar, 9898, 9899) or in_range(scalar, 9917, 9918)
+            or in_range(scalar, 9924, 9925) or scalar == 9934 or scalar == 9940 or scalar == 9962
+            or in_range(scalar, 9970, 9971) or scalar == 9973 or scalar == 9978 or scalar == 9981
+            or scalar == 9989 or in_range(scalar, 9994, 9995) or scalar == 10024 or scalar == 10060
+            or scalar == 10062 or in_range(scalar, 10067, 10069) or scalar == 10071
+            or in_range(scalar, 10133, 10135) or scalar == 10160 or scalar == 10175
+            or in_range(scalar, 11035, 11036) or scalar == 11088 or scalar == 11093;
+    }
+    if scalar < 65536 {
+        return in_range(scalar, 11904, 12350) or in_range(scalar, 12353, 13311) or in_range(scalar, 13312, 19903)
+            or in_range(scalar, 19968, 42191) or in_range(scalar, 43360, 43391) or in_range(scalar, 44032, 55203)
+            or in_range(scalar, 63744, 64255) or in_range(scalar, 65040, 65049) or in_range(scalar, 65072, 65135)
+            or in_range(scalar, 65281, 65376) or in_range(scalar, 65504, 65510);
+    }
+    return in_range(scalar, 94176, 101119) or in_range(scalar, 110592, 111359) or scalar == 126980
+        or scalar == 127183 or scalar == 127374 or in_range(scalar, 127377, 127386)
+        or in_range(scalar, 127488, 127569) or in_range(scalar, 127584, 127589) or in_range(scalar, 127744, 127776)
+        or in_range(scalar, 127789, 127797) or in_range(scalar, 127799, 127868)
+        or in_range(scalar, 127870, 127891) or in_range(scalar, 127904, 127946)
+        or in_range(scalar, 127951, 127955) or in_range(scalar, 127968, 127984) or scalar == 127988
+        or in_range(scalar, 127992, 128062) or scalar == 128064 or in_range(scalar, 128066, 128252)
+        or in_range(scalar, 128255, 128317) or in_range(scalar, 128331, 128334)
+        or in_range(scalar, 128336, 128359) or scalar == 128378 or in_range(scalar, 128405, 128406)
+        or scalar == 128420 or in_range(scalar, 128507, 128591) or in_range(scalar, 128640, 128709)
+        or scalar == 128716 or in_range(scalar, 128720, 128722) or in_range(scalar, 128725, 128727)
+        or in_range(scalar, 128732, 128735) or in_range(scalar, 128747, 128748)
+        or in_range(scalar, 128756, 128764) or in_range(scalar, 128992, 129003) or scalar == 129008
+        or in_range(scalar, 129292, 129338) or in_range(scalar, 129340, 129349)
+        or in_range(scalar, 129351, 129535) or in_range(scalar, 129648, 129784)
+        or in_range(scalar, 131072, 196605) or in_range(scalar, 196608, 262141);
+}
+
+/// The cells a terminal gives scalar: 0, 1 or 2.
+fn scalar_width(scalar: i64) -> i64 {
+    if scalar < 127 {
+        if scalar < 32 {
+            return 0;
+        }
+        return 1;
+    }
+    if scalar < 160 or is_zero_width(scalar) {
+        return 0;
+    }
+    if is_wide(scalar) {
+        return 2;
+    }
+    return 1;
+}
+
+/// The cells text takes on one line.
+fn display_width(text: []u8) -> i64 {
+    var width: i64 = 0;
+    var index: i64 = 0;
+    while index < mem::len(text) {
+        var scalar: i64 = 0;
+        index = index + decode_scalar(text, index, &var scalar);
+        if is_control(scalar) {
+            // A control takes no cell of its own but one in a line.
+            width = width + 1;
+        } else {
+            width = width + scalar_width(scalar);
+        }
+    }
+    return width;
+}
+
+/// Where text begins once the white space before it is dropped.
+fn trimmed_start(text: []u8) -> i64 {
+    var index: i64 = 0;
+    while index < mem::len(text) {
+        var scalar: i64 = 0;
+        let length = decode_scalar(text, index, &var scalar);
+        if !is_white_space(scalar) {
+            break;
+        }
+        index = index + length;
+    }
+    return index;
+}
+
+/// Where text ends once the white space after it is dropped.
+fn trimmed_end(text: []u8) -> i64 {
+    var end = mem::len(text);
+    while end > 0 {
+        var start = end - 1;
+        while start > 0 and cast<i64>(text[start]) & 192 == 128 {
+            start = start - 1;
+        }
+        var scalar: i64 = 0;
+        let length = decode_scalar(text, start, &var scalar);
+        if start + length != end or !is_white_space(scalar) {
+            break;
+        }
+        end = start;
+    }
+    return end;
+}
+
+/// Finds the line that starts at cursor: its bytes are text[start..end],
+/// without the line feed or the carriage return before it. False when no
+/// line is left. A line feed at the very end starts no line.
+fn next_line(text: []u8, cursor: &var i64, start: &var i64, end: &var i64) -> bool {
+    let length = mem::len(text);
+    if cursor >= length {
+        return false;
+    }
+    var index = cursor.*;
+    while index < length and text[index] != cast<u8>(10) {
+        index = index + 1;
+    }
+    start = cursor.*;
+    end = index;
+    if index > cursor and text[index - 1] == cast<u8>(13) and index < length {
+        end = index - 1;
+    }
+    cursor = index + 1;
+    return true;
+}
+
+fn count_lines(text: []u8) -> i64 {
+    var count: i64 = 0;
+    var cursor: i64 = 0;
+    var start: i64 = 0;
+    var end: i64 = 0;
+    while next_line(text, &var cursor, &var start, &var end) {
+        count = count + 1;
+    }
+    return count;
+}
+
+fn append_spaces(allocator: Allocator, out: &var string::String, count: i64) -> mem::Error!void {
+    for 0..count |_| {
+        try out.append_byte(allocator, 32);
+    }
+    return;
+}
+
+/// Appends value to out, cut to width cells with an ellipsis in the last
+/// one when it is wider. The cells it appended.
+fn append_truncated(allocator: Allocator, out: &var string::String, value: []u8, width: i64) -> mem::Error!i64 {
+    let full = display_width(value);
+    if full <= width {
+        try out.append_bytes(allocator, value);
+        return full;
+    }
+    if width <= 0 {
+        return 0;
+    }
+    var used: i64 = 0;
+    var index: i64 = 0;
+    while index < mem::len(value) {
+        var scalar: i64 = 0;
+        let length = decode_scalar(value, index, &var scalar);
+        let cells = scalar_width(scalar);
+        if used + cells > width - 1 {
+            break;
+        }
+        try out.append_bytes(allocator, value[index..index + length]);
+        used = used + cells;
+        index = index + length;
+    }
+    // U+2026.
+    try append_scalar(allocator, out, 8230);
+    return used + 1;
+}
+
+/// Appends value to out in exactly width cells: cut when wider, and
+/// followed by spaces when narrower.
+fn append_fitted(allocator: Allocator, out: &var string::String, value: []u8, width: i64) -> mem::Error!void {
+    let used = try append_truncated(allocator, out, value, width);
+    try append_spaces(allocator, out, width - used);
+    return;
+}
+
+fn append_text(allocator: Allocator, items: &var array::Array<string::String>, text: []u8) -> mem::Error!void {
+    var owned = try string::from_bytes(allocator, text);
+    errdefer owned.deinit(allocator);
+    try items.append(allocator, move owned);
+    return;
+}
+
+/// Appends value to lines, broken where the next scalar would pass width
+/// cells; each line loses the white space at its end. An empty value is
+/// one empty line.
+fn wrap_display(
+    allocator: Allocator,
+    lines: &var array::Array<string::String>,
+    value: []u8,
+    width: i64
+) -> mem::Error!void {
+    if mem::len(value) == 0 {
+        try append_text(allocator, lines, "");
+        return;
+    }
+    var line_start: i64 = 0;
+    var line_width: i64 = 0;
+    var index: i64 = 0;
+    while index < mem::len(value) {
+        var scalar: i64 = 0;
+        let length = decode_scalar(value, index, &var scalar);
+        let cells = scalar_width(scalar);
+        if line_width > 0 and line_width + cells > width {
+            let line = value[line_start..index];
+            try append_text(allocator, lines, line[0..trimmed_end(line)]);
+            line_start = index;
+            line_width = 0;
+        }
+        line_width = line_width + cells;
+        index = index + length;
+    }
+    let line = value[line_start..index];
+    try append_text(allocator, lines, line[0..trimmed_end(line)]);
+    return;
+}

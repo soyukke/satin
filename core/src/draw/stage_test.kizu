@@ -1,0 +1,258 @@
+// What the renderer's tests share: a scene whose windows the test fills,
+// and what a display list paints at a pixel.
+import satin::term;
+import std::array;
+import std::mem;
+
+fn rgb(r: u8, g: u8, b: u8) -> term::Color {
+    return term::Color { r: r, g: g, b: b };
+}
+
+fn same_rgba(first: Rgba, second: Rgba) -> bool {
+    return first.r == second.r and first.g == second.g and first.b == second.b and first.a == second.a;
+}
+
+/// A pane that is all of a width x height target, with cells of the size.
+fn pane_geometry(width: i64, height: i64, cell_width: f64, cell_height: f64) -> Geometry {
+    return Geometry {
+        width: width,
+        height: height,
+        origin_x: lit(0.0),
+        origin_y: lit(0.0),
+        content_width: span(width),
+        content_height: span(height),
+        cell_width: lit(cell_width),
+        cell_height: lit(cell_height)
+    };
+}
+
+/// A pane set in from the target's top left.
+fn inset_geometry() -> Geometry {
+    return Geometry {
+        width: 800,
+        height: 600,
+        origin_x: lit(10.0),
+        origin_y: lit(20.0),
+        content_width: lit(780.0),
+        content_height: lit(560.0),
+        cell_width: lit(10.0),
+        cell_height: lit(20.0)
+    };
+}
+
+fn test_layout(geometry: Geometry) -> Layout {
+    return new_layout(geometry, fallback_metrics(geometry), 0);
+}
+
+fn styled_cell(start: i64, length: i64, fg: term::Color, style: term::CellStyle) -> term::Cell {
+    return term::Cell {
+        text_start: start,
+        text_len: length,
+        fg: fg,
+        has_bg: false,
+        bg: rgb(0, 0, 0),
+        blend: 0,
+        style: style
+    };
+}
+
+/// A scene and the retained lines of its windows: caches[i] is the window
+/// of grid grids[i].
+struct Stage {
+    scene: Scene,
+    grids: array::Array<i64>,
+    caches: array::Array<term::WindowCache>,
+}
+
+fn new_stage(allocator: Allocator) -> Stage {
+    return Stage {
+        scene: new_scene(allocator),
+        grids: array::new<i64>(allocator),
+        caches: array::new<term::WindowCache>(allocator)
+    };
+}
+
+fn (self: Stage) deinit(allocator: Allocator) -> void {
+    self.scene.deinit(allocator);
+    self.grids.deinit(allocator);
+    self.caches.deinit(allocator);
+}
+
+/// A stage of one window, grid 1, that fills a pane of width x height cells.
+fn main_stage(allocator: Allocator, width: i64, height: i64) -> mem::Error!Stage {
+    var stage = new_stage(allocator);
+    errdefer stage.deinit(allocator);
+    try stage.add(allocator, main_view(1, width, height));
+    return move stage;
+}
+
+fn (self: &var Stage) add(allocator: Allocator, view: WindowView) -> mem::Error!void {
+    var cache = try term::new_window_cache(allocator, view.width, view.height);
+    errdefer cache.deinit(allocator);
+    try self.grids.append(allocator, view.grid);
+    try self.caches.append(allocator, move cache);
+    try self.scene.add_window(allocator, view);
+    return;
+}
+
+fn (self: &Stage) cache_index(grid: i64) -> i64 {
+    let grids = self.grids.as_slice();
+    for 0..mem::count<i64>(grids) |index| {
+        if grids[index] == grid {
+            return index;
+        }
+    }
+    return -1;
+}
+
+/// Draws cells, whose text is in text, as row of grid's window, and brings
+/// its scrollback up to them.
+fn (self: &var Stage) set_row(
+    allocator: Allocator,
+    grid: i64,
+    row: i64,
+    cells: []term::Cell,
+    text: []u8
+) -> mem::Error!void {
+    if self.caches.at_mut(self.cache_index(grid)) |cache| {
+        let id = try cache.line_from_cells(allocator, cells, text);
+        cache.draw_line(allocator, row, id);
+        try cache.flush(allocator, 1);
+    }
+    return;
+}
+
+/// set_row of one cell a byte of text, in fg, on bg when has_bg is set.
+fn (self: &var Stage) set_text(
+    allocator: Allocator,
+    grid: i64,
+    row: i64,
+    text: []u8,
+    fg: term::Color,
+    has_bg: bool,
+    bg: term::Color
+) -> mem::Error!void {
+    var cells = array::new<term::Cell>(allocator);
+    defer cells.deinit(allocator);
+    for 0..mem::len(text) |index| {
+        var cell = styled_cell(index, 1, fg, plain_style());
+        cell.has_bg = has_bg;
+        cell.bg = bg;
+        try cells.append(allocator, cell);
+    }
+    let view = cells.as_slice();
+    try self.set_row(allocator, grid, row, view, text);
+    return;
+}
+
+/// Makes list the stage's commands as its pane's only one, with preedit
+/// being composed (empty for none) and the cursor not shown.
+fn (self: &var Stage) draw(
+    allocator: Allocator,
+    list: &var DisplayList,
+    geometry: Geometry,
+    preedit: []u8
+) -> mem::Error!void {
+    list.reset(allocator);
+    try self.scene.plan(allocator);
+    let layout = test_layout(geometry);
+    var pane = new_pane_state(allocator);
+    defer pane.deinit(allocator);
+    let has_preedit = try pane.preedit.prepare(
+        allocator,
+        preedit,
+        self.scene.background,
+        self.scene.cursor_color,
+        self.scene.preedit_available_columns(geometry)
+    );
+    try begin_scene(allocator, list, &self.scene, &layout, true);
+    for 0..self.scene.step_count() |index| {
+        if self.caches.at(self.cache_index(self.scene.step_grid(index))) |cache| {
+            try draw_step(allocator, list, &self.scene, index, cache, &layout);
+        }
+    }
+    try finish_scene(allocator, list, &self.scene, &layout, &pane.cursor, false, has_preedit, &pane.preedit.line);
+    return;
+}
+
+fn rect_holds(rect: Rect, x: f32, y: f32) -> bool {
+    return x >= rect.x and x < rect.x + rect.width and y >= rect.y and y < rect.y + rect.height;
+}
+
+fn mixed(over: u8, under: u8, alpha: u8) -> u8 {
+    let kept = 255 - cast<i64>(alpha);
+    return cast<u8>((cast<i64>(over) * cast<i64>(alpha) + cast<i64>(under) * kept) / 255);
+}
+
+/// The color the list's clear and its filled rectangles leave at the pixel,
+/// which is what a backend shows there where no text, line or image is.
+fn painted_at(list: &DisplayList, x: i64, y: i64) -> Rgba {
+    let commands = list.commands.as_slice();
+    let center_x = span(x) + lit(0.5);
+    let center_y = span(y) + lit(0.5);
+    var color = Rgba { r: 0, g: 0, b: 0, a: 0 };
+    var depth = 0;
+    // The depth of the first clip the pixel is outside of; zero for none.
+    var blocked = 0;
+    for 0..mem::count<Command>(commands) |index| {
+        let command = commands[index];
+        if command.kind == CommandKind::Clear {
+            color = command.color;
+        } else if command.kind == CommandKind::PushClip {
+            depth = depth + 1;
+            if blocked == 0 and !rect_holds(command.rect, center_x, center_y) {
+                blocked = depth;
+            }
+        } else if command.kind == CommandKind::PopClip {
+            if blocked == depth {
+                blocked = 0;
+            }
+            depth = depth - 1;
+        } else if command.kind == CommandKind::FillRect {
+            if blocked == 0 and rect_holds(command.rect, center_x, center_y) {
+                color = Rgba {
+                    r: mixed(command.color.r, color.r, command.color.a),
+                    g: mixed(command.color.g, color.g, command.color.a),
+                    b: mixed(command.color.b, color.b, command.color.a),
+                    a: 255
+                };
+            }
+        }
+    }
+    return color;
+}
+
+/// Whether the cluster at index of the list's clusters is expected.
+fn cluster_is(list: &DisplayList, index: i64, expected: []u8) -> bool {
+    let cluster = list.clusters.get(index) orelse return false;
+    let text = list.text.as_bytes();
+    return mem::equal_bytes(text[cluster.text_start..cluster.text_start + cluster.text_len], expected);
+}
+
+/// The index in runs of the run whose first cluster is expected; -1
+/// without one.
+fn run_starting(list: &DisplayList, expected: []u8) -> i64 {
+    let runs = list.runs.as_slice();
+    for 0..mem::count<TextRun>(runs) |index| {
+        if cluster_is(list, runs[index].first, expected) {
+            return index;
+        }
+    }
+    return -1;
+}
+
+/// The color of the Text command that draws the run at index of runs.
+fn run_color(list: &DisplayList, run: i64) -> Rgba {
+    let commands = list.commands.as_slice();
+    for 0..mem::count<Command>(commands) |index| {
+        if commands[index].kind == CommandKind::Text and commands[index].first == run {
+            return commands[index].color;
+        }
+    }
+    return Rgba { r: 0, g: 0, b: 0, a: 0 };
+}
+
+/// The list's command at index, which must be one.
+fn command_at(list: &DisplayList, index: i64) -> Command {
+    return list.commands.get_or_panic(index);
+}

@@ -1,0 +1,599 @@
+// The `nvim` a Satin pane finds first. Run from the pane's own shell, with
+// arguments that open the editor's UI, it asks the app to open Neovim in
+// its own UI and waits for it; otherwise it becomes the real nvim. The
+// Rust `satin-nvim` binary.
+import satin::control;
+import std::array;
+import std::fs;
+import std::io;
+import std::json;
+import std::mem;
+import std::process;
+import std::string;
+
+extern "c" fn malloc(size: usize) -> ?ptr<u8>
+extern "c" fn free(p: ptr<u8>) -> void
+extern "c" fn strlen(text: ptr<const u8>) -> usize
+extern "c" fn isatty(descriptor: i32) -> i32
+extern "c" fn getppid() -> i32
+extern "c" fn proc_pidpath(process_id: i32, buffer: ptr<u8>, size: u32) -> i32
+extern "c" fn getcwd(buffer: ptr<u8>, size: usize) -> ?ptr<u8>
+extern "c" fn execv(path: ptr<const u8>, arguments: ptr<u8>) -> i32
+extern "c" fn stat(path: ptr<const u8>, out: ptr<u8>) -> i32
+extern "c" fn _NSGetEnviron() -> ptr<usize>
+fn version() -> []u8 {
+    return "0.2.37";
+}
+
+fn report(first: []u8, second: []u8) -> void {
+    if io::write_stderr(io::blocking(), "satin-nvim: ") {} else |_| {}
+    if io::write_stderr(io::blocking(), first) {} else |_| {}
+    if io::write_stderr_line(io::blocking(), second) {} else |_| {}
+    return;
+}
+
+fn starts_with(text: []u8, prefix: []u8) -> bool {
+    return mem::starts_with(text, prefix);
+}
+
+/// Whether an argument asks nvim for something other than its UI in this
+/// terminal: a script, a server, a remote, stdin, or just its version.
+fn needs_terminal_mode(argument: []u8) -> bool {
+    if !control::is_text(argument) {
+        return true;
+    }
+    return mem::equal_bytes(argument, "-") or mem::equal_bytes(argument, "-e") or mem::equal_bytes(argument, "-E") or
+        mem::equal_bytes(argument, "-es") or mem::equal_bytes(argument, "-Es") or mem::equal_bytes(argument, "-s") or
+        mem::equal_bytes(argument, "-v") or mem::equal_bytes(argument, "--embed") or
+        mem::equal_bytes(argument, "--headless") or mem::equal_bytes(argument, "--api-info") or
+        mem::equal_bytes(argument, "--version") or mem::equal_bytes(argument, "-h") or
+        mem::equal_bytes(argument, "--help") or mem::equal_bytes(argument, "--server") or
+        starts_with(argument, "--server=") or starts_with(argument, "--remote");
+}
+
+fn arguments_need_terminal_mode(arguments: &array::Array<string::String>) -> bool {
+    for 0..arguments.len() |index| {
+        if arguments.at(index) |argument| {
+            let bytes = argument.as_bytes();
+            if needs_terminal_mode(bytes) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+fn stdin_and_stdout_are_terminals() -> bool {
+    // SAFETY: isatty only inspects the two standard descriptors.
+    return unsafe isatty(0) == 1 and unsafe isatty(1) == 1;
+}
+
+fn is_set(key: []u8) -> bool {
+    if process::env(key) |_| {
+        return true;
+    }
+    return false;
+}
+
+/// Whether key is set to something other than a spelling of "off".
+fn environment_flag(key: []u8) -> bool {
+    if process::env(key) |value| {
+        if mem::len(value) == 0 or mem::equal_bytes(value, "0") {
+            return false;
+        }
+        return !equals_ignoring_case(value, "false") and !equals_ignoring_case(value, "no");
+    }
+    return false;
+}
+
+fn equals_ignoring_case(text: []u8, lowered: []u8) -> bool {
+    if mem::len(text) != mem::len(lowered) {
+        return false;
+    }
+    for 0..mem::len(text) |index| {
+        var byte = cast<i64>(text[index]);
+        if byte >= 65 and byte <= 90 {
+            byte = byte + 32;
+        }
+        if byte != cast<i64>(lowered[index]) {
+            return false;
+        }
+    }
+    return true;
+}
+
+/// path with a NUL after it, for a C call.
+fn c_path(allocator: Allocator, path: []u8) -> mem::Error!string::String {
+    var out = try string::from_bytes(allocator, path);
+    errdefer out.deinit(allocator);
+    try out.append_byte(allocator, 0);
+    return move out;
+}
+
+/// Whether path is a regular file someone may execute.
+fn is_executable_file(allocator: Allocator, path: []u8) -> mem::Error!bool {
+    let name = try c_path(allocator, path);
+    defer name.deinit(allocator);
+    // SAFETY: malloc returns 512 bytes, more than a struct stat, or null.
+    let storage = unsafe malloc(512) orelse return mem::Error::OutOfMemory;
+    let name_bytes = name.as_bytes();
+    // SAFETY: name ends in NUL; storage holds a struct stat.
+    let result = unsafe stat(ptr_of(name_bytes), storage);
+    var mode: i64 = 0;
+    if result == 0 {
+        // SAFETY: stat wrote the struct, whose st_mode is the u16 four bytes in.
+        mode = cast<i64>(unsafe ptr_read(cast<ptr<u16>>(ptr_offset(storage, 4))));
+    }
+    // SAFETY: storage came from malloc and nothing reads it after this.
+    unsafe free(storage);
+    let regular = mode / 4096 == 8;
+    let executable = mode % 2 == 1 or mode / 8 % 2 == 1 or mode / 64 % 2 == 1;
+    return result == 0 and regular and executable;
+}
+
+/// Appends path with its links resolved to out, or path itself when it
+/// cannot be resolved.
+fn append_resolved(allocator: Allocator, path: []u8, out: &var string::String) -> mem::Error!bool {
+    if fs::real_path(io::blocking(), allocator, &path) |resolved| {
+        defer resolved.deinit(allocator);
+        try out.append_string(allocator, &resolved);
+        return true;
+    } else |_| {}
+    try out.append_bytes(allocator, path);
+    return false;
+}
+
+fn file_name(path: []u8) -> []u8 {
+    var start = mem::len(path);
+    while start > 0 and path[start - 1] != cast<u8>(47) {
+        start = start - 1;
+    }
+    return path[start..mem::len(path)];
+}
+
+/// Whether two paths name one executable: the same file when both resolve,
+/// the same name otherwise.
+fn same_executable(allocator: Allocator, first: []u8, second: []u8) -> mem::Error!bool {
+    var first_resolved = string::new(allocator);
+    defer first_resolved.deinit(allocator);
+    var second_resolved = string::new(allocator);
+    defer second_resolved.deinit(allocator);
+    let first_found = try append_resolved(allocator, first, &var first_resolved);
+    let second_found = try append_resolved(allocator, second, &var second_resolved);
+    if first_found and second_found {
+        let left = first_resolved.as_bytes();
+        let right = second_resolved.as_bytes();
+        return mem::equal_bytes(left, right);
+    }
+    return mem::equal_bytes(file_name(first), file_name(second));
+}
+
+/// Appends the executable of this process's parent to out; false when the
+/// system does not say.
+fn append_parent_executable(allocator: Allocator, out: &var string::String) -> mem::Error!bool {
+    // SAFETY: malloc returns 4096 bytes, PROC_PIDPATHINFO_MAXSIZE, or null.
+    let storage = unsafe malloc(4096) orelse return mem::Error::OutOfMemory;
+    // SAFETY: storage holds 4096 writable bytes.
+    let length = unsafe proc_pidpath(getppid(), storage, 4096);
+    var failed = false;
+    if length > 0 {
+        // SAFETY: proc_pidpath wrote length bytes to storage.
+        let bytes = unsafe view_from_ptr(cast<ptr<const u8>>(storage), cast<i64>(length));
+        if out.append_bytes(allocator, bytes) {} else |_| {
+            failed = true;
+        }
+    }
+    // SAFETY: storage came from malloc and nothing reads it after this.
+    unsafe free(storage);
+    if failed {
+        return mem::Error::OutOfMemory;
+    }
+    return length > 0;
+}
+
+/// Whether this is the place the app's own Neovim may open: a terminal on
+/// both ends, no multiplexer or remote shell in between, and the pane's own
+/// shell as the parent.
+fn native_launch_is_safe(allocator: Allocator) -> mem::Error!bool {
+    if !stdin_and_stdout_are_terminals() or environment_flag("SATIN_NVIM_TUI") or is_set("TMUX") or is_set("STY") or
+        is_set("SSH_TTY") or is_set("SSH_CONNECTION") {
+        return false;
+    }
+    var parent = string::new(allocator);
+    defer parent.deinit(allocator);
+    if !try append_parent_executable(allocator, &var parent) {
+        return false;
+    }
+    let parent_path = parent.as_bytes();
+    if process::env("SATIN_SHELL_EXECUTABLE") |expected| {
+        return try same_executable(allocator, parent_path, expected);
+    }
+    return false;
+}
+
+/// Appends the first `nvim` on PATH that is not this launcher to out.
+fn append_real_nvim(allocator: Allocator, out: &var string::String) -> mem::Error!bool {
+    var current = string::new(allocator);
+    defer current.deinit(allocator);
+    if process::executable_path(allocator) |own| {
+        defer own.deinit(allocator);
+        let own_path = own.as_bytes();
+        let _ = try append_resolved(allocator, own_path, &var current);
+    } else |_| {
+        return false;
+    }
+    let this = current.as_bytes();
+    var candidate = string::new(allocator);
+    defer candidate.deinit(allocator);
+    var resolved = string::new(allocator);
+    defer resolved.deinit(allocator);
+    if process::env("PATH") |path| {
+        var start = 0;
+        for 0..mem::len(path) + 1 |index| {
+            if index < mem::len(path) and path[index] != cast<u8>(58) {
+                continue;
+            }
+            candidate.clear();
+            try candidate.append_bytes(allocator, path[start..index]);
+            try candidate.append_bytes(allocator, "/nvim");
+            start = index + 1;
+            let candidate_path = candidate.as_bytes();
+            if !try is_executable_file(allocator, candidate_path) {
+                continue;
+            }
+            resolved.clear();
+            let _ = try append_resolved(allocator, candidate_path, &var resolved);
+            let found = resolved.as_bytes();
+            if !mem::equal_bytes(found, this) {
+                try out.append_bytes(allocator, found);
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+/// Appends the working directory to out; false when there is none to name.
+fn append_working_directory(allocator: Allocator, out: &var string::String) -> mem::Error!bool {
+    // SAFETY: malloc returns 4096 bytes of storage or null.
+    let storage = unsafe malloc(4096) orelse return mem::Error::OutOfMemory;
+    var found = false;
+    var failed = false;
+    // SAFETY: storage holds 4096 writable bytes.
+    if unsafe getcwd(storage, 4096) |_| {
+        // SAFETY: getcwd wrote a NUL-terminated path to storage.
+        let length = unsafe strlen(cast<ptr<const u8>>(storage));
+        // SAFETY: the path is length bytes long.
+        let bytes = unsafe view_from_ptr(cast<ptr<const u8>>(storage), cast<i64>(length));
+        if out.append_bytes(allocator, bytes) {} else |_| {
+            failed = true;
+        }
+        found = true;
+    }
+    // SAFETY: storage came from malloc and nothing reads it after this.
+    unsafe free(storage);
+    if failed {
+        return mem::Error::OutOfMemory;
+    }
+    return found;
+}
+
+/// Writes every environment variable that is text as a member of the open
+/// object. A name set twice is written once.
+fn write_environment(allocator: Allocator, encoder: &var json::Encoder) -> mem::Error!void {
+    // SAFETY: _NSGetEnviron returns the address of `environ`, which is always readable.
+    let table = unsafe ptr_read(_NSGetEnviron());
+    if table == 0 {
+        return;
+    }
+    var names = array::new<string::String>(allocator);
+    defer names.deinit(allocator);
+    // SAFETY: environ points at a NULL-terminated array of string addresses.
+    var cursor = unsafe ptr_from_int<ptr<usize>>(table);
+    while true {
+        // SAFETY: cursor is inside the array, at or before its NULL.
+        let address = unsafe ptr_read(cursor);
+        if address == 0 {
+            break;
+        }
+        // SAFETY: the next slot is inside the array, at or before its NULL.
+        cursor = unsafe ptr_from_int<ptr<usize>>(int_from_ptr<usize>(cursor) + 8);
+        // SAFETY: address is a NUL-terminated entry of environ.
+        let text = unsafe ptr_from_int<ptr<const u8>>(address);
+        // SAFETY: as above.
+        let length = unsafe strlen(text);
+        // SAFETY: the entry is length bytes long.
+        let entry = unsafe view_from_ptr(text, cast<i64>(length));
+        var split: i64 = -1;
+        for 0..mem::len(entry) |index| {
+            if split < 0 and entry[index] == cast<u8>(61) {
+                split = index;
+            }
+        }
+        if split <= 0 or !control::is_text(entry) {
+            continue;
+        }
+        let name = entry[0..split];
+        var seen = false;
+        for 0..names.len() |index| {
+            if names.at(index) |earlier| {
+                let earlier_name = earlier.as_bytes();
+                if mem::equal_bytes(earlier_name, name) {
+                    seen = true;
+                }
+            }
+        }
+        if seen {
+            continue;
+        }
+        var owned = try string::from_bytes(allocator, name);
+        errdefer owned.deinit(allocator);
+        try names.append(allocator, move owned);
+        try encoder.write_bytes_field(name, entry[split + 1..mem::len(entry)]);
+    }
+    return;
+}
+
+/// Appends the request that asks the app to open Neovim for pane to out.
+fn append_open_request(
+    allocator: Allocator,
+    pane: i64,
+    cwd: []u8,
+    executable: []u8,
+    arguments: &array::Array<string::String>,
+    out: &var string::String
+) -> mem::Error!void {
+    var encoder = json::encoder(allocator);
+    defer encoder.deinit(allocator);
+    try encoder.begin_object();
+    try encoder.write_i64_field("version", control::protocol_version());
+    try encoder.write_bytes_field("command", "open-neovim");
+    try encoder.write_i64_field("pane", pane);
+    try encoder.write_bytes_field("cwd", cwd);
+    try encoder.write_bytes_field("executable", executable);
+    try encoder.begin_array_field("arguments");
+    for 0..arguments.len() |index| {
+        if arguments.at(index) |argument| {
+            let bytes = argument.as_bytes();
+            try encoder.write_bytes(bytes);
+        }
+    }
+    try encoder.end_array();
+    try encoder.begin_object_field("environment");
+    try write_environment(allocator, &var encoder);
+    try encoder.end_object();
+    try encoder.end_object();
+    try encoder.finish_into(allocator, out);
+    return;
+}
+
+/// The exit code an answer to open-neovim carries: its result's exitCode,
+/// 0 without one, and -1 when the answer reports a failure.
+fn exit_code_of(allocator: Allocator, answer: []u8) -> i64 {
+    var code: i64 = -1;
+    if json::decode<json::Value>(allocator, answer) |document| {
+        defer document.deinit(allocator);
+        match &document {
+            Obj(entries) => {
+                if entries.at("ok") |value| {
+                    match value {
+                        Bool(set) => {
+                            if set {
+                                code = 0;
+                            }
+                        },
+                        _ => {},
+                    }
+                }
+                if code == 0 {
+                    if entries.at("result") |result| {
+                        match result {
+                            Obj(members) => {
+                                if members.at("exitCode") |member| {
+                                    match member {
+                                        I64(number) => {
+                                            if number >= -2147483648 and number <= 2147483647 {
+                                                code = (number % 256 + 256) % 256;
+                                            }
+                                        },
+                                        _ => {},
+                                    }
+                                }
+                            },
+                            _ => {},
+                        }
+                    }
+                }
+            },
+            _ => {},
+        }
+    } else |_| {}
+    return code;
+}
+
+/// Asks the app to open Neovim in its own UI and waits for it to close.
+/// The exit code to leave with, or -1 when the app did not open it and the
+/// real nvim should run here instead.
+fn native_launch(allocator: Allocator, real_nvim: []u8, arguments: &array::Array<string::String>) -> mem::Error!i64 {
+    if arguments_need_terminal_mode(arguments) or !try native_launch_is_safe(allocator) {
+        return -1;
+    }
+    var pane: i64 = -1;
+    if process::env("SATIN_PANE_ID") |value| {
+        pane = control::parse_index(value);
+    }
+    if pane < 0 or !control::is_text(real_nvim) {
+        return -1;
+    }
+    var cwd = string::new(allocator);
+    defer cwd.deinit(allocator);
+    if !try append_working_directory(allocator, &var cwd) {
+        report("the current working directory is unavailable", "");
+        return 72;
+    }
+    let directory = cwd.as_bytes();
+    if !control::is_text(directory) {
+        report("the current working directory is not valid UTF-8", "");
+        return 72;
+    }
+    var request = string::new(allocator);
+    defer request.deinit(allocator);
+    try append_open_request(allocator, pane, directory, real_nvim, arguments, &var request);
+    let line = request.as_bytes();
+    var answer = string::new(allocator);
+    defer answer.deinit(allocator);
+    if process::env("SATIN_SOCKET") |socket| {
+        if control::send_request(allocator, socket, line, -1, &var answer) {} else |_| {
+            return -1;
+        }
+    } else {
+        return -1;
+    }
+    let bytes = answer.as_bytes();
+    return exit_code_of(allocator, bytes);
+}
+
+/// Appends text to out as a double-quoted Lua string.
+fn append_quoted(allocator: Allocator, text: []u8, out: &var string::String) -> mem::Error!void {
+    try out.append_byte(allocator, 34);
+    for 0..mem::len(text) |index| {
+        let byte = text[index];
+        if byte == cast<u8>(34) or byte == cast<u8>(92) {
+            try out.append_byte(allocator, 92);
+            try out.append_byte(allocator, byte);
+        } else if byte == cast<u8>(10) {
+            try out.append_bytes(allocator, "\n");
+        } else if byte == cast<u8>(13) {
+            try out.append_bytes(allocator, "\r");
+        } else if byte == cast<u8>(9) {
+            try out.append_bytes(allocator, "\t");
+        } else {
+            try out.append_byte(allocator, byte);
+        }
+    }
+    try out.append_byte(allocator, 34);
+    return;
+}
+
+/// Appends the `--cmd` that gives a terminal nvim inside tmux the app's
+/// image and scroll bridge to out.
+fn append_bridge_command(allocator: Allocator, out: &var string::String) -> mem::Error!void {
+    var lua = try string::from_bytes(allocator, bridge_text());
+    defer lua.deinit(allocator);
+    try lua.append_byte(allocator, 10);
+    let source = lua.as_bytes();
+    try out.append_bytes(allocator, "lua assert(load(");
+    try append_quoted(allocator, source, out);
+    try out.append_bytes(allocator, "))()");
+    return;
+}
+
+/// Becomes the real nvim with arguments. Returns only when that failed.
+fn exec_real_nvim(allocator: Allocator, real_nvim: []u8, arguments: &array::Array<string::String>) -> mem::Error!void {
+    var bytes = mem::len(real_nvim) + 1;
+    for 0..arguments.len() |index| {
+        if arguments.at(index) |argument| {
+            bytes = bytes + argument.len() + 1;
+        }
+    }
+    let slots = arguments.len() + 2;
+    // SAFETY: malloc returns the block's bytes or null.
+    let storage = unsafe malloc(cast<usize>(slots * 8 + bytes)) orelse return mem::Error::OutOfMemory;
+    var next = slots * 8;
+    for 0..arguments.len() + 1 |slot| {
+        // SAFETY: the block holds a pointer at each slot.
+        let cell = unsafe cast<ptr<usize>>(ptr_offset(storage, slot * 8));
+        // SAFETY: the string starts at next, inside the block.
+        unsafe ptr_write(cell, int_from_ptr<usize>(ptr_offset(storage, next)));
+        if slot == 0 {
+            // SAFETY: the block reserves the program's bytes at next.
+            next = unsafe write_c_string(storage, next, real_nvim);
+        } else if arguments.at(slot - 1) |argument| {
+            let text = argument.as_bytes();
+            // SAFETY: the block reserves the argument's bytes at next.
+            next = unsafe write_c_string(storage, next, text);
+        }
+    }
+    // SAFETY: the last slot is reserved for the array's NULL.
+    unsafe ptr_write(cast<ptr<usize>>(ptr_offset(storage, (slots - 1) * 8)), 0);
+    // SAFETY: the program string is the first one, right after the slots.
+    let program = unsafe cast<ptr<const u8>>(ptr_offset(storage, slots * 8));
+    // SAFETY: program and the array are laid out for exec; on success this does not return.
+    let _ = unsafe execv(program, storage);
+    // SAFETY: storage came from malloc and nothing reads it after this.
+    unsafe free(storage);
+    return;
+}
+
+/// Writes text and a NUL at offset of storage, and returns the offset
+/// after them.
+///
+/// storage must hold the text's length + 1 writable bytes at offset.
+unsafe fn write_c_string(storage: ptr<u8>, offset: i64, text: []u8) -> i64 {
+    let length = mem::len(text);
+    // SAFETY: the caller reserves length + 1 bytes at offset.
+    let target = unsafe mut_view_from_ptr(ptr_offset(storage, offset), length + 1);
+    for 0..length |index| {
+        target[index] = text[index];
+    }
+    target[length] = 0;
+    return offset + length + 1;
+}
+
+/// Runs the command line this process was started with.
+pub fn run_main() -> !process::ExitStatus {
+    let allocator = mem::page_allocator();
+    var arguments = array::new<string::String>(allocator);
+    defer arguments.deinit(allocator);
+    for 0..process::arg_count() |index| {
+        let word = try process::arg(index);
+        var owned = try string::from_bytes(allocator, word);
+        errdefer owned.deinit(allocator);
+        try arguments.append(allocator, move owned);
+    }
+    if arguments.len() == 1 {
+        if arguments.at(0) |only| {
+            let word = only.as_bytes();
+            if mem::equal_bytes(word, "--satin-launcher-version") {
+                if io::write_stdout(io::blocking(), "satin-nvim ") {} else |_| {}
+                if io::write_stdout_line(io::blocking(), version()) {} else |_| {}
+                return process::ExitStatus::Success;
+            }
+        }
+    }
+    var real_nvim = string::new(allocator);
+    defer real_nvim.deinit(allocator);
+    if !try append_real_nvim(allocator, &var real_nvim) {
+        report("could not find the real nvim after the Satin launcher", "");
+        return process::ExitStatus::Specific(127);
+    }
+    let program = real_nvim.as_bytes();
+    let code = try native_launch(allocator, program, &arguments);
+    if code >= 0 {
+        return process::ExitStatus::Specific(cast<u8>(code));
+    }
+    if is_set("TMUX") and stdin_and_stdout_are_terminals() and !arguments_need_terminal_mode(&arguments) {
+        var bridged = array::new<string::String>(allocator);
+        defer bridged.deinit(allocator);
+        var flag = try string::from_bytes(allocator, "--cmd");
+        errdefer flag.deinit(allocator);
+        try bridged.append(allocator, move flag);
+        var command = string::new(allocator);
+        errdefer command.deinit(allocator);
+        try append_bridge_command(allocator, &var command);
+        try bridged.append(allocator, move command);
+        for 0..arguments.len() |index| {
+            if arguments.at(index) |argument| {
+                let bytes = argument.as_bytes();
+                var copy = try string::from_bytes(allocator, bytes);
+                errdefer copy.deinit(allocator);
+                try bridged.append(allocator, move copy);
+            }
+        }
+        try exec_real_nvim(allocator, program, &bridged);
+    } else {
+        try exec_real_nvim(allocator, program, &arguments);
+    }
+    report("failed to execute ", program);
+    return process::ExitStatus::Specific(126);
+}

@@ -10,13 +10,13 @@ it against `Satin Dev`, not an installed release build.
 
 - [ ] Start the current development build with `just terminal`.
 - [ ] Confirm the window title and menu identify the application as `Satin Dev`.
-- [ ] Open a file longer than two screens, such as `src/terminal_runtime.rs`.
+- [ ] Open a file longer than two screens, such as `core/src/nvim/editor.kizu`.
 - [ ] Use the normal user Neovim configuration for Neo-tree checks. Use
   `:vsplit` as the plugin-independent fallback.
 
 ## Local Neovim scrolling
 
-- [ ] From a local Satin terminal, run `nvim src/terminal_runtime.rs` and confirm
+- [ ] From a local Satin terminal, run `nvim core/src/nvim/editor.kizu` and confirm
   it opens in the native Neovim pane.
 - [ ] Wait two seconds, press `Ctrl-D` once, and confirm the first input animates.
 - [ ] Press `Ctrl-D` five more times with a short pause between inputs. Confirm
@@ -43,7 +43,7 @@ it against `Satin Dev`, not an installed release build.
 ## tmux Neovim scrolling
 
 - [ ] From a local terminal, attach to or create a tmux session and run
-  `nvim src/terminal_runtime.rs` inside tmux.
+  `nvim core/src/nvim/editor.kizu` inside tmux.
 - [ ] In a full-width tmux Neovim window, wait two seconds and repeat `Ctrl-D`
   and `Ctrl-U` five times each. Confirm the first and every later input animate.
 - [ ] Open Neo-tree or `:vsplit` inside tmux and repeat the scrolling checks.

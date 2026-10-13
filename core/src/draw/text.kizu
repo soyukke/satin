@@ -1,0 +1,222 @@
+// A line's text as runs: the neighboring cells that share a color and a
+// style, which is what the Rust `neovide_text` shaped and cached as one.
+//
+// A run is one command rather than one a cell. Its cells keep their own
+// clusters, so a backend places every cell on the grid without knowing
+// where a cell's text ends, and the run stays whole for a backend that
+// shapes ligatures across cells; key is what such a backend caches by.
+import satin::term;
+import std::math;
+import std::mem;
+
+/// The key of an empty run of this weight and slant: the Rust `ShapeKey`
+/// was the cells' texts and the two flags, and this is their FNV-1a hash.
+fn run_key(bold: bool, italic: bool) -> u64 {
+    // 14695981039346656037, which is past what a literal holds.
+    var key = cast<u64>(1469598103934665603) * 10 + 7;
+    var flags: i64 = 0;
+    if bold {
+        flags = 1;
+    }
+    if italic {
+        flags = flags | 2;
+    }
+    key = (key ^ cast<u64>(flags)) * 1099511628211;
+    return key;
+}
+
+/// key with one more cell's text in it. Texts are told apart by a byte no
+/// UTF-8 text holds.
+fn run_key_add(key: u64, bytes: []u8) -> u64 {
+    var next = key;
+    for 0..mem::len(bytes) |index| {
+        next = (next ^ cast<u64>(bytes[index])) * 1099511628211;
+    }
+    return (next ^ 255) * 1099511628211;
+}
+
+fn same_style(first: term::CellStyle, second: term::CellStyle) -> bool {
+    return first.bold == second.bold and first.italic == second.italic and first.underline == second.underline and
+        first.has_underline_color == second.has_underline_color and
+        term::same_color(first.underline_color, second.underline_color) and
+        first.faint == second.faint and
+        first.blink == second.blink and
+        first.strikethrough == second.strikethrough and
+        first.overline == second.overline;
+}
+
+/// The run a line's cells are in as they are read: it began at start_col
+/// with the cluster at first, and hidden says it blinks and is off.
+struct OpenText {
+    open: bool,
+    hidden: bool,
+    start_col: i64,
+    fg: term::Color,
+    style: term::CellStyle,
+    first: i64,
+    key: u64,
+}
+
+fn plain_style() -> term::CellStyle {
+    return term::CellStyle {
+        bold: false,
+        italic: false,
+        underline: term::Underline::None,
+        has_underline_color: false,
+        underline_color: term::Color { r: 0, g: 0, b: 0 },
+        faint: false,
+        blink: false,
+        strikethrough: false,
+        overline: false
+    };
+}
+
+fn no_text() -> OpenText {
+    return OpenText {
+        open: false,
+        hidden: false,
+        start_col: 0,
+        fg: term::Color { r: 0, g: 0, b: 0 },
+        style: plain_style(),
+        first: 0,
+        key: 0
+    };
+}
+
+/// Ends the open run before the line's column end_col: its text command,
+/// then its decorations.
+fn end_text(
+    allocator: Allocator,
+    list: &var DisplayList,
+    run: &var OpenText,
+    end_col: i64,
+    spot: LineSpot,
+    layout: &Layout
+) -> mem::Error!void {
+    if !run.open {
+        return;
+    }
+    run.open = false;
+    if run.hidden {
+        return;
+    }
+    let start = spot.left + run.start_col;
+    let cells = end_col - run.start_col;
+    try list.text_run(
+        allocator,
+        TextRun {
+        first: run.first,
+        count: list.clusters.len() - run.first,
+        x: layout.column_x(start),
+        baseline: math::round<f32>(layout.row_y(spot.row) + layout.baseline) + spot.y_offset,
+        advance: layout.geometry.cell_width,
+        cells: cells,
+        bold: run.style.bold,
+        italic: run.style.italic,
+        key: run.key
+    },
+        opaque(run.fg)
+    );
+    try draw_decorations(allocator, list, start, start + cells, run.style, run.fg, spot, layout);
+    return;
+}
+
+/// Draws the text of the line's cells that show at the spot. An empty cell
+/// and a block element end a run, as does a new color or style.
+fn draw_line_runs(
+    allocator: Allocator,
+    list: &var DisplayList,
+    cells: []term::Cell,
+    text: []u8,
+    spot: LineSpot,
+    layout: &Layout
+) -> mem::Error!void {
+    let width = math::min<i64>(spot.width, mem::count<term::Cell>(cells));
+    var run = no_text();
+    for 0..width |col| {
+        let cell = cells[col];
+        let bytes = text[cell.text_start..cell.text_start + cell.text_len];
+        if cell.text_len == 0 or is_block_element(bytes) {
+            try end_text(allocator, list, &var run, col, spot, layout);
+            continue;
+        }
+        if !run.open or !term::same_color(run.fg, cell.fg) or !same_style(run.style, cell.style) {
+            try end_text(allocator, list, &var run, col, spot, layout);
+            run.open = true;
+            run.hidden = cell.style.blink and !layout.blink_visible;
+            run.start_col = col;
+            run.fg = cell.fg;
+            run.style = cell.style;
+            run.first = list.clusters.len();
+            run.key = run_key(cell.style.bold, cell.style.italic);
+        }
+        if !run.hidden {
+            try list.add_cluster(allocator, bytes, col - run.start_col);
+            run.key = run_key_add(run.key, bytes);
+        }
+    }
+    try end_text(allocator, list, &var run, width, spot, layout);
+    return;
+}
+
+/// Fills the backgrounds of the line's runs that show at the spot.
+fn draw_line_backgrounds(
+    allocator: Allocator,
+    list: &var DisplayList,
+    runs: []term::BackgroundRun,
+    spot: LineSpot,
+    layout: &Layout
+) -> mem::Error!void {
+    let y = layout.row_y(spot.row) + spot.y_offset;
+    for 0..mem::count<term::BackgroundRun>(runs) |index| {
+        let run = runs[index];
+        let start_col = math::min<i64>(run.start_col, spot.width);
+        let end_col = math::min<i64>(run.end_col, spot.width);
+        if start_col >= end_col {
+            continue;
+        }
+        try list.fill_rect(
+            allocator,
+            Rect {
+            x: layout.column_x(spot.left + start_col),
+            y: y,
+            width: span(end_col - start_col) * layout.geometry.cell_width,
+            height: layout.geometry.cell_height
+        },
+            blended(run.background, run.blend)
+        );
+    }
+    return;
+}
+
+/// Draws a line at the spot: its backgrounds, its block elements, then its
+/// text. A cell's text is text_len bytes of text at text_start.
+fn draw_cells(
+    allocator: Allocator,
+    list: &var DisplayList,
+    cells: []term::Cell,
+    text: []u8,
+    runs: []term::BackgroundRun,
+    spot: LineSpot,
+    layout: &Layout
+) -> mem::Error!void {
+    try draw_line_backgrounds(allocator, list, runs, spot, layout);
+    try draw_line_blocks(allocator, list, cells, text, spot, layout);
+    try draw_line_runs(allocator, list, cells, text, spot, layout);
+    return;
+}
+
+/// draw_cells of a retained line.
+fn draw_line(
+    allocator: Allocator,
+    list: &var DisplayList,
+    line: &term::Line,
+    spot: LineSpot,
+    layout: &Layout
+) -> mem::Error!void {
+    let cells = line.cells.as_slice();
+    let text = line.text.as_bytes();
+    let runs = line.runs.as_slice();
+    try draw_cells(allocator, list, cells, text, runs, spot, layout);
+    return;
+}

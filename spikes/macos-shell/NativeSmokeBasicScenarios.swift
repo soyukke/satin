@@ -738,7 +738,15 @@ import Foundation
             }
         }
 
-        func applyTerminalNvimHandoffSmokeScenario(resultPath: String) {
+        func applyTerminalNvimHandoffSmokeScenario(resultPath: String, retries: Int = 40) {
+            // The scenario starts with the app: wait for the first pane.
+            guard activePaneId != nil || retries == 0 else {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
+                    self?.applyTerminalNvimHandoffSmokeScenario(
+                        resultPath: resultPath, retries: retries - 1)
+                }
+                return
+            }
             openNativeNeovim(nil)
 
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in

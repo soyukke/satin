@@ -1,0 +1,95 @@
+// Terminal input bytes as the key notation `nvim_input` reads.
+import std::mem;
+import std::string;
+
+/// The notation of the escape sequence that starts bytes at index, with
+/// its length through length; an empty notation when none does.
+fn special_key(bytes: []u8, index: i64, length: &var i64) -> []u8 {
+    let rest = bytes[index..mem::len(bytes)];
+    length = 3;
+    if mem::len(rest) >= 3 and rest[0] == cast<u8>(27) and rest[1] == cast<u8>(91) {
+        let last = cast<i64>(rest[2]);
+        if last == 65 {
+            return "<Up>";
+        }
+        if last == 66 {
+            return "<Down>";
+        }
+        if last == 67 {
+            return "<Right>";
+        }
+        if last == 68 {
+            return "<Left>";
+        }
+        if last == 72 {
+            return "<Home>";
+        }
+        if last == 70 {
+            return "<End>";
+        }
+        if mem::len(rest) >= 4 and rest[3] == cast<u8>(126) {
+            length = 4;
+            if last == 51 {
+                return "<Del>";
+            }
+            if last == 53 {
+                return "<PageUp>";
+            }
+            if last == 54 {
+                return "<PageDown>";
+            }
+        }
+    }
+    length = 0;
+    return "";
+}
+
+fn is_control(byte: u8) -> bool {
+    return cast<i64>(byte) < 32 or cast<i64>(byte) == 127;
+}
+
+/// Appends the notation of one control byte; a byte with none appends
+/// nothing.
+fn append_control_notation(allocator: Allocator, out: &var string::String, byte: u8) -> mem::Error!void {
+    let code = cast<i64>(byte);
+    if code == 13 or code == 10 {
+        try out.append_bytes(allocator, "<CR>");
+    } else if code == 9 {
+        try out.append_bytes(allocator, "<Tab>");
+    } else if code == 27 {
+        try out.append_bytes(allocator, "<Esc>");
+    } else if code == 127 or code == 8 {
+        try out.append_bytes(allocator, "<BS>");
+    } else if code >= 1 and code <= 26 {
+        try out.append_bytes(allocator, "<C-");
+        try out.append_byte(allocator, cast<u8>(96 + code));
+        try out.append_bytes(allocator, ">");
+    }
+    return;
+}
+
+/// Appends bytes, as a terminal sends typed input, to out as `nvim_input`
+/// notation: cursor and editing keys by name, control bytes as `<C-x>`,
+/// and text as itself with `<` spelled `<lt>`.
+pub fn append_input_notation(allocator: Allocator, out: &var string::String, bytes: []u8) -> mem::Error!void {
+    var index = 0;
+    while index < mem::len(bytes) {
+        var consumed: i64 = 0;
+        let notation = special_key(bytes, index, &var consumed);
+        if consumed > 0 {
+            try out.append_bytes(allocator, notation);
+            index = index + consumed;
+            continue;
+        }
+        let byte = bytes[index];
+        if is_control(byte) {
+            try append_control_notation(allocator, out, byte);
+        } else if byte == cast<u8>(60) {
+            try out.append_bytes(allocator, "<lt>");
+        } else {
+            try out.append_byte(allocator, byte);
+        }
+        index = index + 1;
+    }
+    return;
+}

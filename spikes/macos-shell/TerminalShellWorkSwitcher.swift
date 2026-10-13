@@ -53,6 +53,12 @@ extension TerminalShellViewController {
     }
 
     func paneStatusDidChange(paneId: Int, status: NativePaneControlStatus?) {
+        if settings.partyFrames, status?.status == "waiting",
+            !paneIsVisibleForAttention(paneId),
+            let tab = lastSnapshot?.tabs.first(where: { $0.panes.contains(paneId) })
+        {
+            raidWarningView.show(tabTitle: tab.title, summary: status?.summary ?? "")
+        }
         if let status {
             workAttentionStore.observe(
                 paneId: paneId,
@@ -89,6 +95,66 @@ extension TerminalShellViewController {
             )
         }
         tabControl.setStatusBadges(badges)
+        refreshPartyFrames(snapshot)
+    }
+
+    func setPartyFramesVisible(_ visible: Bool) {
+        partyFramesView.isHidden = !visible
+        if !visible {
+            raidWarningView.dismiss()
+        }
+        partyFramesWidthConstraint?.constant = visible ? NativePartyFramesView.width : 0
+        if visible, let snapshot = lastSnapshot {
+            refreshPartyFrames(snapshot)
+        }
+    }
+
+    private func refreshPartyFrames(_ snapshot: TerminalCoreSnapshot) {
+        guard !partyFramesView.isHidden else {
+            return
+        }
+        partyFramesView.update(
+            nativePartyMembers(
+                tabs: snapshot.tabs.map(NativePartyTab.init),
+                activeTabIndex: snapshot.active_tab,
+                status: { [paneStatuses] in paneStatuses.status(for: $0) },
+                isUnread: { [workAttentionStore] in workAttentionStore.isUnread(paneId: $0) }
+            )
+        )
+    }
+
+    /// Focuses the longest-waiting agent pane, cycling on repeated presses.
+    @objc func jumpToWaitingAgent(_ sender: Any?) {
+        let attentionStatuses: Set<String> = ["waiting", "blocked", "failed"]
+        let candidates = (lastSnapshot?.tabs ?? []).flatMap { tab in
+            tab.panes.compactMap { paneId -> NativeAttentionPane? in
+                guard let status = paneStatuses.status(for: paneId),
+                    attentionStatuses.contains(status.status)
+                else {
+                    return nil
+                }
+                return NativeAttentionPane(tabId: tab.id, paneId: paneId, since: status.updatedAt)
+            }
+        }
+        guard let target = nativeNextAttentionPane(candidates, activePaneId: activePaneId)
+        else {
+            NSSound.beep()
+            return
+        }
+        guard focusWorkPane(tabId: target.tabId, paneId: target.paneId) else {
+            return
+        }
+        dismissWorkSwitcher()
+        refreshWorkSwitcherPresentation()
+        focusTerminal()
+    }
+
+    func selectPartyMember(_ member: NativePartyMember) {
+        guard focusWorkPane(tabId: member.tabId, paneId: member.targetPaneId) else {
+            return
+        }
+        refreshWorkSwitcherPresentation()
+        focusTerminal()
     }
 
     func dismissAgentWaitingOnEscape(paneId: Int) {
@@ -198,36 +264,44 @@ extension TerminalShellViewController {
     }
 
     private func selectWorkItem(_ item: NativeWorkItem) {
-        guard let snapshot = lastSnapshot,
-            let tab = snapshot.tabs.first(where: { $0.id == item.tabId }),
-            tab.panes.contains(item.paneId)
-        else {
-            NSSound.beep()
-            refreshWorkSwitcherPresentation()
+        guard focusWorkPane(tabId: item.tabId, paneId: item.paneId) else {
             return
-        }
-        if let session = tmuxSession {
-            guard let windowId = session.tmuxWindowIds[item.tabId],
-                let tmuxPaneId = session.tmuxPaneIds[item.paneId],
-                session.gateway.tmuxCommand("select-window -t @\(windowId)"),
-                session.gateway.tmuxCommand("select-pane -t %\(tmuxPaneId)")
-            else {
-                NSSound.beep()
-                return
-            }
-        } else {
-            guard core.selectTab(tab.index), core.selectPane(item.paneId) else {
-                NSSound.beep()
-                return
-            }
-            syncFromCore()
-        }
-        workAttentionStore.markSeen(paneId: item.paneId)
-        if let snapshot = lastSnapshot {
-            syncTabStatusBadges(snapshot)
         }
         dismissWorkSwitcher()
         refreshWorkSwitcherPresentation()
         focusTerminal()
+    }
+
+    /// Selects the tab and pane together, beeping when either no longer exists.
+    private func focusWorkPane(tabId: Int, paneId: Int) -> Bool {
+        guard let snapshot = lastSnapshot,
+            let tab = snapshot.tabs.first(where: { $0.id == tabId }),
+            tab.panes.contains(paneId)
+        else {
+            NSSound.beep()
+            refreshWorkSwitcherPresentation()
+            return false
+        }
+        if let session = tmuxSession {
+            guard let windowId = session.tmuxWindowIds[tabId],
+                let tmuxPaneId = session.tmuxPaneIds[paneId],
+                session.gateway.tmuxCommand("select-window -t @\(windowId)"),
+                session.gateway.tmuxCommand("select-pane -t %\(tmuxPaneId)")
+            else {
+                NSSound.beep()
+                return false
+            }
+        } else {
+            guard core.selectTab(tab.index), core.selectPane(paneId) else {
+                NSSound.beep()
+                return false
+            }
+            syncFromCore()
+        }
+        workAttentionStore.markSeen(paneId: paneId)
+        if let snapshot = lastSnapshot {
+            syncTabStatusBadges(snapshot)
+        }
+        return true
     }
 }

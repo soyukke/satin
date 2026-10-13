@@ -1,0 +1,419 @@
+import satin::term;
+import std::array;
+import std::mem;
+import std::testing;
+
+fn float_view(grid: i64, top: i64, left: i64, width: i64, height: i64, compindex: i64) -> WindowView {
+    var view = main_view(grid, width, height);
+    view.top = top;
+    view.left = left;
+    view.kind = WindowKind::Float;
+    view.zindex = 50;
+    view.compindex = compindex;
+    return view;
+}
+
+/// The rectangle of the list's number-th PushClip, counted from one.
+fn clip_rect(list: &DisplayList, number: i64) -> Rect {
+    let commands = list.commands.as_slice();
+    var seen = 0;
+    for 0..mem::count<Command>(commands) |index| {
+        if commands[index].kind == CommandKind::PushClip {
+            seen = seen + 1;
+            if seen == number {
+                return commands[index].rect;
+            }
+        }
+    }
+    return Rect { x: lit(0.0), y: lit(0.0), width: lit(0.0), height: lit(0.0) };
+}
+
+test "foreground window background masks stale root grid cells" {
+    let allocator = mem::page_allocator();
+    let background = rgb(3, 5, 7);
+    let stale = rgb(220, 210, 200);
+    var stage = new_stage(allocator);
+    defer stage.deinit(allocator);
+    stage.scene.background = background;
+    try stage.add(allocator, main_view(1, 2, 1));
+    try stage.add(allocator, main_view(2, 2, 1));
+    try stage.set_text(allocator, 1, 0, " ", stale, true, stale);
+    var list = new_display_list(allocator);
+    defer list.deinit(allocator);
+    try stage.draw(allocator, &var list, pane_geometry(20, 10, 10.0, 10.0), "");
+
+    testing::expect(same_rgba(painted_at(&list, 5, 5), opaque(background)));
+    // The root grid's cell was drawn, and then covered.
+    testing::expect_equal<i64>(4, list.count_of(CommandKind::FillRect));
+}
+
+test "overlapping float border keeps content grid visible" {
+    let allocator = mem::page_allocator();
+    let background = rgb(3, 5, 7);
+    let result_background = rgb(180, 40, 70);
+    var stage = new_stage(allocator);
+    defer stage.deinit(allocator);
+    stage.scene.background = background;
+    // Added out of order: the plan sorts them.
+    try stage.add(allocator, float_view(3, 0, 0, 3, 3, 1));
+    try stage.add(allocator, float_view(2, 1, 1, 1, 1, 0));
+    try stage.add(allocator, main_view(1, 3, 3));
+    try stage.set_text(allocator, 2, 0, " ", result_background, true, result_background);
+    var list = new_display_list(allocator);
+    defer list.deinit(allocator);
+    try stage.draw(allocator, &var list, pane_geometry(30, 30, 10.0, 10.0), "");
+
+    testing::expect(same_rgba(painted_at(&list, 15, 15), opaque(result_background)));
+    testing::expect(same_rgba(painted_at(&list, 5, 5), opaque(background)));
+    testing::expect_equal<i64>(1, stage.scene.step_grid(0));
+    testing::expect_equal<i64>(5, stage.scene.step_count());
+    // Both floats are cleared before either is drawn.
+    let steps = stage.scene.steps.as_slice();
+    testing::expect(steps[1].fill and !steps[1].draw and steps[2].fill and !steps[2].draw);
+    testing::expect(steps[3].draw and !steps[3].fill and steps[4].draw);
+    testing::expect_equal<i64>(2, stage.scene.step_grid(3));
+    testing::expect_equal<i64>(3, stage.scene.step_grid(4));
+}
+
+test "a window between two floats ends their layer, and a hidden one is skipped" {
+    let allocator = mem::page_allocator();
+    var scene = new_scene(allocator);
+    defer scene.deinit(allocator);
+    try scene.add_window(allocator, float_view(4, 0, 0, 1, 1, 0));
+    var message = main_view(5, 1, 1);
+    message.kind = WindowKind::Message;
+    message.zindex = 60;
+    try scene.add_window(allocator, message);
+    var above = float_view(6, 0, 0, 1, 1, 0);
+    above.zindex = 70;
+    try scene.add_window(allocator, above);
+    var hidden = float_view(7, 0, 0, 1, 1, 0);
+    hidden.hidden = true;
+    try scene.add_window(allocator, hidden);
+    try scene.add_window(allocator, main_view(1, 1, 1));
+    try scene.plan(allocator);
+
+    testing::expect_equal<i64>(6, scene.step_count());
+    testing::expect_equal<i64>(1, scene.step_grid(0));
+    testing::expect_equal<i64>(4, scene.step_grid(1));
+    testing::expect_equal<i64>(4, scene.step_grid(2));
+    testing::expect_equal<i64>(5, scene.step_grid(3));
+    testing::expect_equal<i64>(6, scene.step_grid(4));
+    testing::expect_equal<i64>(6, scene.step_grid(5));
+    let steps = scene.steps.as_slice();
+    testing::expect(steps[3].fill and steps[3].draw);
+}
+
+test "message selection overlay only covers selected cells" {
+    let allocator = mem::page_allocator();
+    let background = rgb(0, 0, 0);
+    var stage = new_stage(allocator);
+    defer stage.deinit(allocator);
+    stage.scene.background = background;
+    stage.scene.cursor_color = rgb(255, 255, 255);
+    var view = main_view(2, 4, 2);
+    view.kind = WindowKind::Message;
+    view.zindex = 200;
+    try stage.add(allocator, view);
+    stage.scene.has_selection = true;
+    stage.scene.selection = Selection { grid: 2, start_row: 0, start_col: 1, end_row: 1, end_col: 2 };
+    var list = new_display_list(allocator);
+    defer list.deinit(allocator);
+    try stage.draw(allocator, &var list, pane_geometry(40, 20, 10.0, 10.0), "");
+
+    testing::expect(same_rgba(painted_at(&list, 5, 5), opaque(background)));
+    testing::expect(!same_rgba(painted_at(&list, 15, 5), opaque(background)));
+    testing::expect(!same_rgba(painted_at(&list, 5, 15), opaque(background)));
+    testing::expect(!same_rgba(painted_at(&list, 25, 15), opaque(background)));
+    testing::expect(same_rgba(painted_at(&list, 35, 15), opaque(background)));
+    // White at 89 of 255 over black.
+    testing::expect_equal<i64>(89, cast<i64>(painted_at(&list, 15, 5).r));
+
+    // A selection of a window that shows no messages is not drawn.
+    if stage.scene.windows.at_mut(0) |window| {
+        window.kind = WindowKind::Normal;
+    }
+    try stage.draw(allocator, &var list, pane_geometry(40, 20, 10.0, 10.0), "");
+    testing::expect(same_rgba(painted_at(&list, 15, 5), opaque(background)));
+}
+
+test "kitty row uses the same scroll animation as terminal text" {
+    let allocator = mem::page_allocator();
+    var scene = new_scene(allocator);
+    defer scene.deinit(allocator);
+    var view = main_view(1, 8, 6);
+    view.scroll_position = lit(-2.0);
+    try scene.add_window(allocator, view);
+
+    testing::expect(scene.animated_kitty_row(3, 2) == lit(5.0));
+    if scene.windows.at_mut(0) |window| {
+        window.scroll_position = lit(-1.0);
+    }
+    testing::expect(scene.animated_kitty_row(3, 2) == lit(4.0));
+    if scene.windows.at_mut(0) |window| {
+        window.scroll_position = lit(0.0);
+    }
+    testing::expect(scene.animated_kitty_row(3, 2) == lit(3.0));
+
+    if scene.windows.at_mut(0) |window| {
+        window.scroll_position = lit(-2.0);
+        window.margins.left = 3;
+    }
+    testing::expect(scene.animated_kitty_row(3, 2) == lit(3.0));
+    testing::expect(scene.animated_kitty_row(3, 3) == lit(5.0));
+}
+
+test "images are placed on the grid, under or over the text by their z" {
+    let allocator = mem::page_allocator();
+    var scene = new_scene(allocator);
+    defer scene.deinit(allocator);
+    var view = main_view(1, 8, 6);
+    view.scroll_position = lit(-1.0);
+    try scene.add_window(allocator, view);
+    var placements = array::new<term::Placement>(allocator);
+    defer placements.deinit(allocator);
+    var placement = term::Placement {
+        image_id: 7,
+        image_number: 3,
+        z: -1,
+        viewport_col: 2,
+        viewport_row: 1,
+        x_offset: 4,
+        y_offset: 5,
+        pixel_width: 30,
+        pixel_height: 40,
+        source_x: 1,
+        source_y: 2,
+        source_width: 6,
+        source_height: 8,
+        image_width: 16,
+        image_height: 12
+    };
+    try placements.append(allocator, placement);
+    placement.image_id = 8;
+    placement.z = 0;
+    try placements.append(allocator, placement);
+    var list = new_display_list(allocator);
+    defer list.deinit(allocator);
+    let layout = test_layout(inset_geometry());
+    let found = placements.as_slice();
+    try draw_kitty_images(allocator, &var list, &scene, &layout, found, 99, false);
+
+    testing::expect_equal<i64>(1, list.count_of(CommandKind::Image));
+    let images = list.images.as_slice();
+    testing::expect(images[0].image_id == 7 and images[0].image_number == 3 and images[0].owner == 99);
+    testing::expect(images[0].width == 16 and images[0].height == 12);
+    testing::expect(images[0].source.x == lit(1.0) and images[0].source.height == lit(8.0));
+    if list.commands.get(0) |command| {
+        // Column 2 of 10 pixel cells from an origin of 10, 4 pixels in;
+        // row 1 slid one row down, of 20 pixel rows from 20, 5 pixels in.
+        testing::expect(command.rect.x == lit(34.0) and command.rect.y == lit(65.0));
+        testing::expect(command.rect.width == lit(30.0) and command.rect.height == lit(40.0));
+    }
+    try draw_kitty_images(allocator, &var list, &scene, &layout, found, 99, true);
+    testing::expect_equal<i64>(2, list.count_of(CommandKind::Image));
+}
+
+test "text scroll offset is rounded to device pixels like neovide" {
+    testing::expect(scroll_offset_pixels(lit(0.0), lit(20.0)) == lit(0.0));
+    testing::expect(scroll_offset_pixels(lit(-0.55), lit(20.0)) == lit(-9.0));
+    testing::expect(scroll_offset_pixels(lit(-0.017), lit(20.0)) == lit(-20.0));
+}
+
+test "rectangular scroll clip excludes neighboring split columns" {
+    var view = main_view(1, 8, 6);
+    view.margins = term::Margins { top: 1, bottom: 1, left: 3, right: 1 };
+    let layout = test_layout(inset_geometry());
+    let rect = scroll_clip_rect(view, 1, 5, &layout);
+
+    testing::expect(rect.x == lit(40.0));
+    testing::expect(rect.y == lit(40.0));
+    testing::expect(rect.width == lit(40.0));
+    testing::expect(rect.height == lit(80.0));
+}
+
+test "a scrolling window draws its rows slid, inside its margins" {
+    let allocator = mem::page_allocator();
+    var stage = try main_stage(allocator, 4, 4);
+    defer stage.deinit(allocator);
+    if stage.caches.at_mut(0) |cache| {
+        cache.set_margins(term::Margins { top: 1, bottom: 0, left: 1, right: 0 });
+    }
+    try stage.set_text(allocator, 1, 0, "head", rgb(9, 9, 9), false, rgb(0, 0, 0));
+    try stage.set_text(allocator, 1, 1, "|one", rgb(9, 9, 9), false, rgb(0, 0, 0));
+    try stage.set_text(allocator, 1, 2, "|two", rgb(9, 9, 9), false, rgb(0, 0, 0));
+    if stage.scene.windows.at_mut(0) |window| {
+        window.margins = term::Margins { top: 1, bottom: 0, left: 1, right: 0 };
+        window.scroll_position = lit(-0.5);
+    }
+    var list = new_display_list(allocator);
+    defer list.deinit(allocator);
+    try stage.draw(allocator, &var list, pane_geometry(40, 80, 10.0, 20.0), "");
+
+    // The content's clip, the fixed column's and the scrolling rows'.
+    testing::expect_equal<i64>(3, list.count_of(CommandKind::PushClip));
+    testing::expect_equal<i64>(3, list.count_of(CommandKind::PopClip));
+    let runs = list.runs.as_slice();
+    // head; the two rows again for the fixed column; then the scrollback
+    // from the row before the first, which nothing drew.
+    testing::expect_equal<i64>(5, mem::count<TextRun>(runs));
+    testing::expect(cluster_is(&list, runs[0].first, "h"));
+    let head_baseline = runs[0].baseline;
+    testing::expect(runs[1].baseline == head_baseline + lit(20.0));
+    testing::expect(runs[2].baseline == head_baseline + lit(40.0));
+    // Half a row of scroll left: the rows are one up and slid ten pixels
+    // down... which is row one's place plus ten.
+    testing::expect(cluster_is(&list, runs[3].first, "|"));
+    testing::expect(cluster_is(&list, runs[3].first + 1, "o"));
+    testing::expect(runs[3].baseline == head_baseline + lit(30.0));
+    testing::expect(runs[4].baseline == head_baseline + lit(50.0));
+    let second = clip_rect(&list, 2);
+    testing::expect(second.x == lit(0.0) and second.width == lit(10.0));
+    testing::expect(second.y == lit(20.0) and second.height == lit(60.0));
+    let third = clip_rect(&list, 3);
+    testing::expect(third.x == lit(10.0) and third.width == lit(30.0));
+}
+
+/// Whether the text of the line's cell at index is expected.
+fn preedit_cell_is(line: &PreeditLine, index: i64, expected: []u8) -> bool {
+    let cell = line.cells.get(index) orelse return false;
+    let text = line.text.as_bytes();
+    return mem::equal_bytes(text[cell.text_start..cell.text_start + cell.text_len], expected);
+}
+
+test "ime preedit cells keep graphemes and terminal width" {
+    let allocator = mem::page_allocator();
+    let foreground = rgb(3, 5, 7);
+    let background = rgb(210, 220, 230);
+    var line = new_preedit_line(allocator);
+    defer line.deinit(allocator);
+    try line.fill(allocator, "日本é", foreground, background, 5);
+
+    testing::expect_equal<i64>(5, line.cells.len());
+    testing::expect(preedit_cell_is(&line, 0, "日"));
+    testing::expect(preedit_cell_is(&line, 1, " "));
+    testing::expect(preedit_cell_is(&line, 2, "本"));
+    testing::expect(preedit_cell_is(&line, 3, " "));
+    // e and a combining acute accent: three bytes in one cell.
+    testing::expect(preedit_cell_is(&line, 4, "é"));
+    for 0..5 |index| {
+        if line.cells.get(index) |cell| {
+            testing::expect(cell.style.underline == term::Underline::Single);
+            testing::expect(term::same_color(cell.style.underline_color, foreground));
+            testing::expect(cell.has_bg and term::same_color(cell.bg, background));
+        }
+    }
+}
+
+test "a composed cluster that does not fit whole is left out" {
+    let allocator = mem::page_allocator();
+    var line = new_preedit_line(allocator);
+    defer line.deinit(allocator);
+    try line.fill(allocator, "日本é", rgb(3, 5, 7), rgb(210, 220, 230), 3);
+    testing::expect_equal<i64>(2, line.cells.len());
+    testing::expect_equal<i64>(1, line.runs.len());
+    try line.fill(allocator, "日本é", rgb(3, 5, 7), rgb(210, 220, 230), 1);
+    testing::expect_equal<i64>(0, line.cells.len());
+    testing::expect_equal<i64>(0, line.runs.len());
+}
+
+test "ime preedit reuses its retained line until content changes" {
+    let allocator = mem::page_allocator();
+    let foreground = rgb(3, 5, 7);
+    let background = rgb(210, 220, 230);
+    var cache = new_preedit_cache(allocator);
+    defer cache.deinit(allocator);
+    testing::expect(!try cache.prepare(allocator, "", foreground, background, 8));
+    testing::expect(try cache.prepare(allocator, "日本", foreground, background, 8));
+    testing::expect_equal<i64>(1, cache.generation);
+    testing::expect(try cache.prepare(allocator, "日本", foreground, background, 8));
+    testing::expect_equal<i64>(1, cache.generation);
+    testing::expect(try cache.prepare(allocator, "日本語", foreground, background, 8));
+    testing::expect_equal<i64>(2, cache.generation);
+    testing::expect_equal<i64>(6, cache.line.cells.len());
+    testing::expect(try cache.prepare(allocator, "日本語", foreground, background, 4));
+    testing::expect_equal<i64>(3, cache.generation);
+    testing::expect_equal<i64>(4, cache.line.cells.len());
+}
+
+test "ime preedit is drawn as committed text at the cursor would be" {
+    let allocator = mem::page_allocator();
+    let geometry = pane_geometry(80, 60, 10.0, 20.0);
+    let background = rgb(3, 5, 7);
+    let cursor_color = rgb(210, 220, 230);
+    var composing = try main_stage(allocator, 8, 3);
+    defer composing.deinit(allocator);
+    composing.scene.background = background;
+    composing.scene.cursor_color = cursor_color;
+    composing.scene.has_cursor = true;
+    composing.scene.cursor = block_cursor(2, 1);
+    var preedit = new_display_list(allocator);
+    defer preedit.deinit(allocator);
+    try composing.draw(allocator, &var preedit, geometry, "日本");
+
+    var committed = try main_stage(allocator, 8, 3);
+    defer committed.deinit(allocator);
+    committed.scene.background = background;
+    committed.scene.cursor_color = cursor_color;
+    var cells = array::new<term::Cell>(allocator);
+    defer cells.deinit(allocator);
+    var style = plain_style();
+    style.underline = term::Underline::Single;
+    style.has_underline_color = true;
+    style.underline_color = background;
+    // Two blanks, 日 and its spacer, 本 and its spacer, two blanks.
+    try cells.append(allocator, styled_cell(0, 1, cursor_color, plain_style()));
+    try cells.append(allocator, styled_cell(0, 1, cursor_color, plain_style()));
+    try cells.append(allocator, styled_cell(1, 3, background, style));
+    try cells.append(allocator, styled_cell(0, 1, background, style));
+    try cells.append(allocator, styled_cell(4, 3, background, style));
+    try cells.append(allocator, styled_cell(0, 1, background, style));
+    try cells.append(allocator, styled_cell(0, 1, cursor_color, plain_style()));
+    try cells.append(allocator, styled_cell(0, 1, cursor_color, plain_style()));
+    for 2..6 |index| {
+        if cells.at_mut(index) |cell| {
+            cell.has_bg = true;
+            cell.bg = cursor_color;
+        }
+    }
+    let view = cells.as_slice();
+    try committed.set_row(allocator, 1, 1, view, " 日本");
+    var list = new_display_list(allocator);
+    defer list.deinit(allocator);
+    try committed.draw(allocator, &var list, geometry, "");
+
+    let composed_run = run_starting(&preedit, "日");
+    let committed_run = run_starting(&list, "日");
+    testing::expect(composed_run >= 0 and committed_run >= 0);
+    let composed = preedit.runs.get(composed_run) orelse return;
+    let written = list.runs.get(committed_run) orelse return;
+    testing::expect(composed.x == written.x and composed.x == lit(20.0));
+    testing::expect(composed.baseline == written.baseline);
+    testing::expect(composed.count == written.count and composed.cells == 4);
+    testing::expect(composed.key == written.key);
+    testing::expect(same_rgba(run_color(&preedit, composed_run), run_color(&list, committed_run)));
+    testing::expect(same_rgba(run_color(&preedit, composed_run), opaque(background)));
+    // The same pixels are filled either way: the cursor's color behind
+    // the text, the background's in the underline, and nothing else.
+    for 0..60 |y| {
+        for 0..80 |x| {
+            testing::expect(same_rgba(painted_at(&preedit, x, y), painted_at(&list, x, y)));
+        }
+    }
+    testing::expect(same_rgba(painted_at(&preedit, 25, 25), opaque(cursor_color)));
+    testing::expect(same_rgba(painted_at(&preedit, 25, 37), opaque(background)));
+    testing::expect(same_rgba(painted_at(&preedit, 65, 25), opaque(background)));
+}
+
+test "composed text has the cells from the cursor to the pane's edge" {
+    let allocator = mem::page_allocator();
+    var scene = new_scene(allocator);
+    defer scene.deinit(allocator);
+    let geometry = pane_geometry(80, 60, 10.0, 20.0);
+    testing::expect_equal<i64>(0, scene.preedit_available_columns(geometry));
+    scene.has_cursor = true;
+    scene.cursor = block_cursor(5, 1);
+    testing::expect_equal<i64>(3, scene.preedit_available_columns(geometry));
+    scene.cursor = block_cursor(9, 1);
+    testing::expect_equal<i64>(0, scene.preedit_available_columns(geometry));
+}

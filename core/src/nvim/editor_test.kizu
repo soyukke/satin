@@ -1,0 +1,989 @@
+import satin::term;
+import std::array;
+import std::mem;
+import std::string;
+import std::testing;
+
+fn is_digit(byte: u8) -> bool {
+    return cast<i64>(byte) >= 48 and cast<i64>(byte) <= 57;
+}
+
+/// The value written at index of text, and index moved past it. The
+/// notation is JSON's with single-quoted strings and `nil`: `1`, `-2`,
+/// `3.5`, `true`, `'text'`, `[1, 'a']`, `{'key': 1}`.
+fn noted_value(allocator: Allocator, text: []u8, index: &var i64) -> mem::Error!Value {
+    let length = mem::len(text);
+    while index < length and (text[index] == cast<u8>(32) or text[index] == cast<u8>(44) or text[index] == cast<u8>(58)) {
+        index = index + 1;
+    }
+    if index >= length {
+        return Value::Nil;
+    }
+    let lead = text[index];
+    if lead == cast<u8>(91) {
+        index = index + 1;
+        var items = array::new<Value>(allocator);
+        errdefer items.deinit(allocator);
+        while index < length and text[index] != cast<u8>(93) {
+            let item = try noted_value(allocator, text, index);
+            errdefer item.deinit(allocator);
+            try items.append(allocator, move item);
+            while index < length and (text[index] == cast<u8>(32) or text[index] == cast<u8>(44)) {
+                index = index + 1;
+            }
+        }
+        index = index + 1;
+        return Value::Arr(move items);
+    }
+    if lead == cast<u8>(123) {
+        index = index + 1;
+        var entries = array::new<Entry>(allocator);
+        errdefer entries.deinit(allocator);
+        while index < length and text[index] != cast<u8>(125) {
+            let key = try noted_value(allocator, text, index);
+            errdefer key.deinit(allocator);
+            let value = try noted_value(allocator, text, index);
+            errdefer value.deinit(allocator);
+            try entries.append(allocator, Entry { key: move key, value: move value });
+            while index < length and (text[index] == cast<u8>(32) or text[index] == cast<u8>(44)) {
+                index = index + 1;
+            }
+        }
+        index = index + 1;
+        return Value::Map(move entries);
+    }
+    if lead == cast<u8>(39) {
+        let start = index + 1;
+        index = start;
+        while index < length and text[index] != cast<u8>(39) {
+            index = index + 1;
+        }
+        var owned = try string::from_bytes(allocator, text[start..index]);
+        index = index + 1;
+        return Value::Str(move owned);
+    }
+    if lead == cast<u8>(116) {
+        index = index + 4;
+        return Value::Bool(true);
+    }
+    if lead == cast<u8>(102) {
+        index = index + 5;
+        return Value::Bool(false);
+    }
+    if lead == cast<u8>(110) {
+        index = index + 3;
+        return Value::Nil;
+    }
+    var negative = false;
+    if lead == cast<u8>(45) {
+        negative = true;
+        index = index + 1;
+    }
+    var whole: i64 = 0;
+    while index < length and is_digit(text[index]) {
+        whole = whole * 10 + cast<i64>(text[index]) - 48;
+        index = index + 1;
+    }
+    if index < length and text[index] == cast<u8>(46) {
+        index = index + 1;
+        var number = cast<f64>(whole);
+        var scale = 0.1;
+        while index < length and is_digit(text[index]) {
+            number = number + cast<f64>(cast<i64>(text[index]) - 48) * scale;
+            scale = scale / 10.0;
+            index = index + 1;
+        }
+        if negative {
+            number = 0.0 - number;
+        }
+        return Value::Float(number);
+    }
+    if negative {
+        whole = 0 - whole;
+    }
+    return Value::Int(whole);
+}
+
+/// Sends the editor one event whose arguments are written in text.
+fn send(allocator: Allocator, editor: &var Editor, event: []u8, text: []u8) -> mem::Error!bool {
+    var index: i64 = 0;
+    let args = try noted_value(allocator, text, &var index);
+    defer args.deinit(allocator);
+    return try editor.handle_event(allocator, event, &args);
+}
+
+fn test_fg() -> term::Color {
+    return term::Color { r: 1, g: 2, b: 3 };
+}
+
+/// Writes text into the grid's row, a cell a byte.
+fn set_row(allocator: Allocator, grid: &var Grid, row: i64, text: []u8) -> mem::Error!void {
+    for 0..mem::len(text) |col| {
+        try grid.put(allocator, row, col, 1, blank_cell(test_fg()), text[col..col + 1]);
+    }
+    return;
+}
+
+/// Whether the texts of cells, which text holds, spell expected.
+fn cells_spell(cells: []term::Cell, text: []u8, expected: []u8) -> bool {
+    var at = 0;
+    for 0..mem::count<term::Cell>(cells) |col| {
+        let cell = cells[col];
+        if at + cell.text_len > mem::len(expected) {
+            return false;
+        }
+        if !mem::equal_bytes(text[cell.text_start..cell.text_start + cell.text_len], expected[at..at + cell.text_len]) {
+            return false;
+        }
+        at = at + cell.text_len;
+    }
+    return at == mem::len(expected);
+}
+
+fn row_is(grid: &Grid, row: i64, expected: []u8) -> bool {
+    if grid.rows.at(row) |cells| {
+        let view = cells.cells.as_slice();
+        let text = cells.text.as_bytes();
+        return cells_spell(view, text, expected);
+    }
+    return false;
+}
+
+fn scroll_of(top: i64, bot: i64, left: i64, right: i64, rows: i64, cols: i64) -> ScrollRegion {
+    return ScrollRegion { top: top, bot: bot, left: left, right: right, rows: rows, cols: cols };
+}
+
+/// Sizes grid and shows its window there, without going through events.
+fn place(
+    allocator: Allocator,
+    editor: &var Editor,
+    grid: i64,
+    position: WindowPosition,
+    kind: WindowKind,
+    zindex: i64,
+    compindex: i64
+) -> mem::Error!void {
+    try editor.ensure_grid(allocator, grid);
+    if editor.grids.at_mut(grid) |found| {
+        try found.resize(allocator, position.width, position.height, test_fg());
+    }
+    try editor.show_window(allocator, grid, position, kind, zindex, compindex);
+    try editor.sync_order(allocator);
+    return;
+}
+
+/// A window at top, left showing the rows in text, which `/` ends.
+fn show_rows(
+    allocator: Allocator,
+    editor: &var Editor,
+    grid: i64,
+    top: i64,
+    left: i64,
+    width: i64,
+    kind: WindowKind,
+    zindex: i64,
+    text: []u8
+) -> mem::Error!void {
+    var height = 1;
+    for 0..mem::len(text) |index| {
+        if text[index] == cast<u8>(47) {
+            height = height + 1;
+        }
+    }
+    try place(allocator, editor, grid, WindowPosition { top: top, left: left, width: width, height: height }, kind, zindex, 0);
+    var row = 0;
+    var start = 0;
+    for 0..mem::len(text) + 1 |index| {
+        if index < mem::len(text) and text[index] != cast<u8>(47) {
+            continue;
+        }
+        if editor.grids.at_mut(grid) |found| {
+            try set_row(allocator, found, row, text[start..index]);
+        }
+        try editor.draw_row(allocator, grid, row);
+        row = row + 1;
+        start = index + 1;
+    }
+    return;
+}
+
+/// A whole-window placement of grid 2 on a cols x rows screen whose layout
+/// has settled.
+fn settled(allocator: Allocator, cols: i64, rows: i64, top: i64, left: i64) -> mem::Error!Editor {
+    var editor = try new_editor(allocator, cols, rows);
+    errdefer editor.deinit(allocator);
+    let position = WindowPosition { top: top, left: left, width: cols - left, height: rows - top };
+    try place(allocator, &var editor, 2, position, WindowKind::Normal, 0, 0);
+    editor.layout_changed = false;
+    return move editor;
+}
+
+fn set_pending(editor: &var Editor, grid: i64, rows: i64) -> void {
+    if editor.windows.at_mut(grid) |window| {
+        window.pending_scroll_rows = rows;
+    }
+    return;
+}
+
+/// The rows of the pending scroll hint, taking it; zero when there is none.
+fn taken_rows(editor: &var Editor) -> i64 {
+    if editor.take_scroll_hint() |hint| {
+        return hint.rows;
+    }
+    return 0;
+}
+
+fn line_starts(editor: &Editor, grid: i64, row: i64, expected: []u8) -> bool {
+    if editor.window(grid) |cache| {
+        if cache.line(cache.line_id(row)) |line| {
+            let text = line.text.as_bytes();
+            return mem::starts_with(text, expected);
+        }
+    }
+    return false;
+}
+
+/// The cell at col of the row of grid's retained window; a blank one in
+/// black when there is none.
+fn drawn_cell(editor: &Editor, grid: i64, row: i64, col: i64) -> term::Cell {
+    if editor.window(grid) |cache| {
+        if cache.line(cache.line_id(row)) |line| {
+            if line.cells.get(col) |cell| {
+                return cell;
+            }
+        }
+    }
+    return blank_cell(term::Color { r: 0, g: 0, b: 0 });
+}
+
+fn scroll_position(editor: &Editor, grid: i64) -> f32 {
+    if editor.window(grid) |cache| {
+        return cache.spring.position;
+    }
+    return cast<f32>(99.0);
+}
+
+fn has_window(editor: &Editor, grid: i64) -> bool {
+    for 0..editor.window_count() |index| {
+        if editor.window_grid(index) == grid {
+            return true;
+        }
+    }
+    return false;
+}
+
+fn press(allocator: Allocator, editor: &var Editor, action: []u8, row: i64, col: i64, text: &var string::String) -> mem::Error!SelectionOutcome {
+    return try editor.handle_message_selection(allocator, "left", action, row, col, text);
+}
+
+fn popupmenu_show(allocator: Allocator, editor: &var Editor, row: i64, col: i64) -> mem::Error!bool {
+    if row == 1 {
+        return try send(allocator, editor, "popupmenu_show", "[[['POPUPONE', 'k', 'menu', ''], ['POPUPTWO', 'k', 'menu', '']], 0, 1, 2, 1]");
+    }
+    if col == 4 {
+        return try send(allocator, editor, "popupmenu_show", "[[['POPUPONE', 'k', 'menu', ''], ['POPUPTWO', 'k', 'menu', '']], 0, 2, 4, 1]");
+    }
+    return false;
+}
+
+test "a message selection starts only on the topmost message window" {
+    let allocator = mem::page_allocator();
+    var editor = try new_editor(allocator, 12, 6);
+    defer editor.deinit(allocator);
+    var text = string::new(allocator);
+    defer text.deinit(allocator);
+    try show_rows(allocator, &var editor, 2, 1, 2, 5, WindowKind::Normal, 10, "lower/pane ");
+    testing::expect(try press(allocator, &var editor, "press", 1, 2, &var text) == SelectionOutcome::Ignored);
+
+    try show_rows(allocator, &var editor, 3, 1, 2, 5, WindowKind::Message, 200, "first/msg  ");
+    try show_rows(allocator, &var editor, 4, 1, 2, 5, WindowKind::Message, 201, "top  /msg  ");
+    try show_rows(allocator, &var editor, 5, 1, 2, 5, WindowKind::Float, 300, "float/pane ");
+    testing::expect(try press(allocator, &var editor, "press", 1, 3, &var text) == SelectionOutcome::Ignored);
+    if editor.windows.at_mut(5) |window| {
+        window.hidden = true;
+    }
+    testing::expect(try popupmenu_show(allocator, &var editor, 1, 2));
+    testing::expect(try press(allocator, &var editor, "press", 1, 3, &var text) == SelectionOutcome::Ignored);
+    testing::expect(try send(allocator, &var editor, "popupmenu_hide", "[]"));
+
+    testing::expect(try press(allocator, &var editor, "press", 1, 3, &var text) == SelectionOutcome::Updated);
+    var grid: i64 = 0;
+    if editor.message_selection() |selection| {
+        grid = selection.grid;
+        testing::expect(selection.start.row == 0 and selection.start.col == 1);
+        testing::expect(selection.end.row == 0 and selection.end.col == 1);
+    }
+    testing::expect(grid == 4);
+    testing::expect(try editor.handle_message_selection(allocator, "right", "press", 1, 3, &var text) == SelectionOutcome::Ignored);
+}
+
+test "a message selection clamps its drag and copies its lines" {
+    let allocator = mem::page_allocator();
+    var editor = try new_editor(allocator, 12, 6);
+    defer editor.deinit(allocator);
+    var text = string::new(allocator);
+    defer text.deinit(allocator);
+    try show_rows(allocator, &var editor, 7, 1, 2, 5, WindowKind::Message, 200, "hello/world");
+
+    testing::expect(try press(allocator, &var editor, "press", 1, 3, &var text) == SelectionOutcome::Updated);
+    testing::expect(try press(allocator, &var editor, "drag", -99, -99, &var text) == SelectionOutcome::Updated);
+    var seen = 0;
+    if editor.message_selection() |selection| {
+        testing::expect(selection.end.row == 0 and selection.end.col == 0);
+        seen = seen + 1;
+    }
+    testing::expect(try press(allocator, &var editor, "drag", 99, 99, &var text) == SelectionOutcome::Updated);
+    if editor.message_selection() |selection| {
+        testing::expect(selection.end.row == 1 and selection.end.col == 4);
+        seen = seen + 1;
+    }
+    testing::expect(seen == 2);
+    testing::expect(try press(allocator, &var editor, "release", 99, 99, &var text) == SelectionOutcome::Finished);
+    let copied = text.as_bytes();
+    testing::expect(mem::equal_bytes(copied,
+        \\ello
+        \\world
+    ));
+    if editor.message_selection() |_| {
+        testing::fail("the selection outlived its release");
+    }
+    testing::expect(try press(allocator, &var editor, "release", 1, 3, &var text) == SelectionOutcome::Ignored);
+}
+
+test "a selection of blank cells copies nothing" {
+    let allocator = mem::page_allocator();
+    var editor = try new_editor(allocator, 12, 6);
+    defer editor.deinit(allocator);
+    var text = string::new(allocator);
+    defer text.deinit(allocator);
+    try text.append_bytes(allocator, "stale");
+    try show_rows(allocator, &var editor, 7, 1, 2, 5, WindowKind::Message, 200, "a    /b    ");
+    testing::expect(try press(allocator, &var editor, "press", 1, 4, &var text) == SelectionOutcome::Updated);
+    testing::expect(try press(allocator, &var editor, "release", 1, 6, &var text) == SelectionOutcome::Finished);
+    testing::expect(text.len() == 0);
+}
+
+test "hiding the selected message window drops the selection" {
+    let allocator = mem::page_allocator();
+    var editor = try new_editor(allocator, 12, 6);
+    defer editor.deinit(allocator);
+    var text = string::new(allocator);
+    defer text.deinit(allocator);
+    try show_rows(allocator, &var editor, 9, 1, 0, 5, WindowKind::Message, 200, "hello");
+    testing::expect(try press(allocator, &var editor, "press", 1, 0, &var text) == SelectionOutcome::Updated);
+
+    testing::expect(try send(allocator, &var editor, "win_hide", "[9]"));
+    if editor.message_selection() |_| {
+        testing::fail("the selection outlived its window");
+    }
+    testing::expect(editor.placement(9).hidden);
+}
+
+test "a grid scroll moves rows up" {
+    let allocator = mem::page_allocator();
+    var grid = try new_grid(allocator, 3, 3, test_fg());
+    defer grid.deinit(allocator);
+    try set_row(allocator, &var grid, 0, "aaa");
+    try set_row(allocator, &var grid, 1, "bbb");
+    try set_row(allocator, &var grid, 2, "ccc");
+
+    try grid.scroll(allocator, scroll_of(0, 3, 0, 3, 1, 0), test_fg());
+
+    testing::expect(row_is(&grid, 0, "bbb"));
+    testing::expect(row_is(&grid, 1, "ccc"));
+    testing::expect(row_is(&grid, 2, "   "));
+}
+
+test "a grid scroll moves rows down" {
+    let allocator = mem::page_allocator();
+    var grid = try new_grid(allocator, 3, 4, test_fg());
+    defer grid.deinit(allocator);
+    try set_row(allocator, &var grid, 0, "aaa");
+    try set_row(allocator, &var grid, 1, "bbb");
+    try set_row(allocator, &var grid, 2, "ccc");
+    try set_row(allocator, &var grid, 3, "ddd");
+
+    try grid.scroll(allocator, scroll_of(1, 4, 0, 3, -2, 0), test_fg());
+
+    testing::expect(row_is(&grid, 0, "aaa"));
+    testing::expect(row_is(&grid, 1, "   "));
+    testing::expect(row_is(&grid, 2, "   "));
+    testing::expect(row_is(&grid, 3, "bbb"));
+}
+
+test "a grid scroll moves part of the rows down and leaves the edges" {
+    let allocator = mem::page_allocator();
+    var grid = try new_grid(allocator, 5, 3, test_fg());
+    defer grid.deinit(allocator);
+    try set_row(allocator, &var grid, 0, "abcde");
+    try set_row(allocator, &var grid, 1, "fghij");
+    try set_row(allocator, &var grid, 2, "klmno");
+
+    try grid.scroll(allocator, scroll_of(0, 3, 1, 4, -1, 0), test_fg());
+
+    testing::expect(row_is(&grid, 0, "a   e"));
+    testing::expect(row_is(&grid, 1, "fbcdj"));
+    testing::expect(row_is(&grid, 2, "kghio"));
+}
+
+test "a grid scroll moves columns in place" {
+    let allocator = mem::page_allocator();
+    var grid = try new_grid(allocator, 5, 2, test_fg());
+    defer grid.deinit(allocator);
+    try set_row(allocator, &var grid, 0, "abcde");
+    try set_row(allocator, &var grid, 1, "fghij");
+
+    try grid.scroll(allocator, scroll_of(0, 2, 1, 5, 0, 2), test_fg());
+
+    testing::expect(row_is(&grid, 0, "ade  "));
+    testing::expect(row_is(&grid, 1, "fij  "));
+
+    try grid.scroll(allocator, scroll_of(0, 2, 0, 5, 0, -1), test_fg());
+
+    testing::expect(row_is(&grid, 0, " ade "));
+    testing::expect(row_is(&grid, 1, " fij "));
+}
+
+test "a grid scroll moves rows and columns together" {
+    let allocator = mem::page_allocator();
+    var grid = try new_grid(allocator, 4, 3, test_fg());
+    defer grid.deinit(allocator);
+    try set_row(allocator, &var grid, 0, "abcd");
+    try set_row(allocator, &var grid, 1, "efgh");
+    try set_row(allocator, &var grid, 2, "ijkl");
+
+    try grid.scroll(allocator, scroll_of(0, 3, 0, 4, 1, 1), test_fg());
+
+    testing::expect(row_is(&grid, 0, "fgh "));
+    testing::expect(row_is(&grid, 1, "jkl "));
+    testing::expect(row_is(&grid, 2, "    "));
+}
+
+test "a row rewritten many times keeps its text short" {
+    let allocator = mem::page_allocator();
+    var grid = try new_grid(allocator, 4, 1, test_fg());
+    defer grid.deinit(allocator);
+    for 0..200 |round| {
+        if round % 2 == 0 {
+            try set_row(allocator, &var grid, 0, "abcd");
+        } else {
+            try set_row(allocator, &var grid, 0, "wxyz");
+        }
+    }
+    try grid.put(allocator, 0, 1, 1, blank_cell(test_fg()), "é");
+    testing::expect(row_is(&grid, 0, "wéyz"));
+    var length: i64 = 0;
+    if grid.rows.at(0) |cells| {
+        length = cells.text.len();
+    }
+    testing::expect(length > 0 and length <= 64 + 4 * 8 + 4);
+}
+
+test "resizing a grid keeps the cells it still holds" {
+    let allocator = mem::page_allocator();
+    var grid = try new_grid(allocator, 3, 2, test_fg());
+    defer grid.deinit(allocator);
+    try set_row(allocator, &var grid, 0, "abc");
+    try set_row(allocator, &var grid, 1, "def");
+    try grid.resize(allocator, 2, 3, test_fg());
+    testing::expect(row_is(&grid, 0, "ab"));
+    testing::expect(row_is(&grid, 1, "de"));
+    testing::expect(row_is(&grid, 2, "  "));
+    try grid.resize(allocator, 4, 1, test_fg());
+    testing::expect(grid.rows.len() == 1);
+    testing::expect(row_is(&grid, 0, "ab  "));
+}
+
+test "several grid scroll hints fall back to the viewport hint" {
+    let allocator = mem::page_allocator();
+    var editor = try settled(allocator, 10, 6, 0, 0);
+    defer editor.deinit(allocator);
+    editor.pending_hint_count = 2;
+    set_pending(&var editor, 2, 18);
+
+    testing::expect(taken_rows(&var editor) == 5);
+}
+
+test "one grid scroll gives its own hint" {
+    let allocator = mem::page_allocator();
+    var editor = try settled(allocator, 10, 6, 1, 3);
+    defer editor.deinit(allocator);
+    testing::expect(try send(allocator, &var editor, "grid_scroll", "[2, 1, 4, 0, 7, 9, 0]"));
+    var rows: i64 = 0;
+    if editor.take_scroll_hint() |hint| {
+        rows = hint.rows;
+        testing::expect(hint.start_row == 2 and hint.end_row == 4);
+        testing::expect(hint.start_col == 3 and hint.end_col == 9);
+    }
+    testing::expect(rows == 2);
+    testing::expect(try send(allocator, &var editor, "grid_scroll", "[2, 1, 4, 0, 7, 1, 0]"));
+    testing::expect(try send(allocator, &var editor, "grid_scroll", "[2, 1, 4, 0, 7, 1, 0]"));
+    testing::expect(taken_rows(&var editor) == 0);
+    testing::expect(!try send(allocator, &var editor, "grid_scroll", "[2, 1, 4, 0]"));
+}
+
+test "a viewport scroll hint covers the window inside its margins" {
+    let allocator = mem::page_allocator();
+    var editor = try new_editor(allocator, 10, 6);
+    defer editor.deinit(allocator);
+    try place(allocator, &var editor, 2, WindowPosition { top: 1, left: 2, width: 6, height: 4 }, WindowKind::Normal, 0, 0);
+    if editor.windows.at_mut(2) |window| {
+        window.margins = term::Margins { top: 1, bottom: 1, left: 1, right: 1 };
+        window.pending_scroll_rows = 2;
+    }
+    editor.layout_changed = false;
+
+    var rows: i64 = 0;
+    if editor.take_scroll_hint() |hint| {
+        rows = hint.rows;
+        testing::expect(hint.start_row == 2);
+        testing::expect(hint.end_row == 3);
+        testing::expect(hint.start_col == 3);
+        testing::expect(hint.end_col == 6);
+    }
+    testing::expect(rows == 1);
+}
+
+test "win_viewport records its scroll delta" {
+    let allocator = mem::page_allocator();
+    var editor = try settled(allocator, 10, 6, 0, 0);
+    defer editor.deinit(allocator);
+
+    testing::expect(try send(allocator, &var editor, "win_viewport", "[2, 1000, 20, 55, 21, 0, 300, 18]"));
+
+    testing::expect(taken_rows(&var editor) == 5);
+}
+
+test "a viewport scroll of less than a screen starts the spring by its delta" {
+    let allocator = mem::page_allocator();
+    var editor = try settled(allocator, 10, 6, 0, 0);
+    defer editor.deinit(allocator);
+    testing::expect(try send(allocator, &var editor, "win_viewport", "[2, 1000, 0, 5, 1, 0, 5, 3]"));
+    try editor.flush_renderer(allocator);
+
+    testing::expect(scroll_position(&editor, 2) == cast<f32>(-3.0));
+    testing::expect(editor.has_active_renderer_animation());
+    testing::expect(taken_rows(&var editor) == 3);
+    testing::expect(!editor.advance_renderer_animations(cast<f32>(0.3)));
+    testing::expect(!editor.has_active_renderer_animation());
+}
+
+test "a viewport delta of zero leaves the scroll going" {
+    let allocator = mem::page_allocator();
+    var editor = try settled(allocator, 10, 6, 0, 0);
+    defer editor.deinit(allocator);
+    if editor.rendered.at_mut(2) |cache| {
+        cache.viewport(2);
+    }
+    try editor.flush_renderer(allocator);
+
+    testing::expect(try send(allocator, &var editor, "win_viewport", "[2, 1000, 0, 5, 1, 0, 5, 0]"));
+    try editor.flush_renderer(allocator);
+
+    testing::expect(scroll_position(&editor, 2) == cast<f32>(-2.0));
+    if editor.take_scroll_hint() |_| {
+        testing::fail("a zero delta gave a scroll hint");
+    }
+}
+
+test "a duplicate msg_set_pos for grid zero is ignored" {
+    let allocator = mem::page_allocator();
+    var editor = try new_editor(allocator, 10, 6);
+    defer editor.deinit(allocator);
+
+    testing::expect(!try send(allocator, &var editor, "msg_set_pos", "[0, 5, false, ' ', 0]"));
+    testing::expect(!has_window(&editor, 0));
+    testing::expect(has_window(&editor, 1));
+}
+
+test "msg_set_pos places a message window across the screen" {
+    let allocator = mem::page_allocator();
+    var editor = try new_editor(allocator, 10, 6);
+    defer editor.deinit(allocator);
+    testing::expect(try send(allocator, &var editor, "grid_resize", "[3, 10, 2]"));
+    testing::expect(try send(allocator, &var editor, "msg_set_pos", "[3, 4, false, ' ']"));
+    let placement = editor.placement(3);
+    testing::expect(placement.kind == WindowKind::Message);
+    testing::expect(placement.top == 4 and placement.left == 0);
+    testing::expect(placement.width == 10 and placement.height == 2);
+    testing::expect(placement.zindex == 200 and !placement.hidden);
+}
+
+test "the pending scroll hint is taken once" {
+    let allocator = mem::page_allocator();
+    var editor = try settled(allocator, 10, 6, 0, 3);
+    defer editor.deinit(allocator);
+    set_pending(&var editor, 2, 2);
+
+    var rows: i64 = 0;
+    if editor.take_scroll_hint() |hint| {
+        rows = hint.rows;
+        testing::expect(hint.start_col == 3);
+    }
+    testing::expect(rows == 2);
+    testing::expect(taken_rows(&var editor) == 0);
+}
+
+test "the cursor is placed on screen by its window" {
+    let allocator = mem::page_allocator();
+    var editor = try settled(allocator, 10, 6, 1, 3);
+    defer editor.deinit(allocator);
+    testing::expect(try send(allocator, &var editor, "grid_cursor_goto", "[2, 2, 1]"));
+    editor.layout_changed = false;
+    set_pending(&var editor, 2, 2);
+
+    var parent: i64 = 0;
+    if editor.cursor() |cursor| {
+        testing::expect(cursor.x == 4 and cursor.y == 3);
+        testing::expect(cursor.shape == term::CursorShape::Block);
+        testing::expect(cursor.cell_percentage == cast<u8>(100));
+        parent = cursor.grid;
+    }
+    testing::expect(parent == 2);
+    testing::expect((editor.cursor_parent_grid() orelse 0) == 2);
+    testing::expect(taken_rows(&var editor) == 2);
+    testing::expect(taken_rows(&var editor) == 0);
+
+    testing::expect(try send(allocator, &var editor, "win_hide", "[2]"));
+    if editor.cursor() |_| {
+        testing::fail("the cursor of a hidden window was shown");
+    }
+    testing::expect((editor.cursor_parent_grid() orelse 0) == 2);
+}
+
+test "a layout change suppresses the scroll hint" {
+    let allocator = mem::page_allocator();
+    var editor = try new_editor(allocator, 8, 4);
+    defer editor.deinit(allocator);
+    try place(allocator, &var editor, 2, WindowPosition { top: 0, left: 0, width: 8, height: 4 }, WindowKind::Normal, 0, 0);
+    set_pending(&var editor, 2, 1);
+
+    testing::expect(taken_rows(&var editor) == 0);
+}
+
+test "grid_line draws into the grid's retained window" {
+    let allocator = mem::page_allocator();
+    var editor = try new_editor(allocator, 3, 2);
+    defer editor.deinit(allocator);
+    testing::expect(try send(allocator, &var editor, "grid_line", "[1, 1, 0, [['x', 0, 3]]]"));
+
+    testing::expect(term::same_color(editor.background(), term::Color { r: 20, g: 22, b: 26 }));
+    testing::expect(editor.window_count() == 1);
+    testing::expect(editor.window_grid(0) == 1);
+    var length: i64 = 0;
+    var cells: i64 = 0;
+    if editor.window(1) |cache| {
+        testing::expect(cache.line_id(0) == -1);
+        if cache.line(cache.line_id(1)) |line| {
+            let text = line.text.as_bytes();
+            testing::expect(mem::equal_bytes(text, "xxx"));
+            length = mem::len(text);
+            cells = line.cells.len();
+        }
+    }
+    testing::expect(length == 3 and cells == 3);
+    testing::expect(term::same_color(drawn_cell(&editor, 1, 1, 0).fg, term::Color { r: 229, g: 229, b: 229 }));
+    testing::expect(!try send(allocator, &var editor, "grid_line", "[1, 1, 0]"));
+    testing::expect(!try send(allocator, &var editor, "no_such_event", "[1]"));
+}
+
+test "grid_line keeps the highlight for the cells after it and reads wide text" {
+    let allocator = mem::page_allocator();
+    var editor = try new_editor(allocator, 6, 1);
+    defer editor.deinit(allocator);
+    testing::expect(!try send(allocator, &var editor, "hl_attr_define", "[4, {'background': 255, 'bold': true}]"));
+    testing::expect(try send(allocator, &var editor, "grid_line", "[1, 0, 1, [['a', 4], ['日'], [''], ['b', 0]]]"));
+
+    testing::expect(line_starts(&editor, 1, 0, " a日b "));
+    testing::expect(!drawn_cell(&editor, 1, 0, 0).has_bg);
+    testing::expect(drawn_cell(&editor, 1, 0, 1).has_bg);
+    testing::expect(drawn_cell(&editor, 1, 0, 2).has_bg and drawn_cell(&editor, 1, 0, 2).style.bold);
+    testing::expect(drawn_cell(&editor, 1, 0, 2).text_len == 3);
+    testing::expect(drawn_cell(&editor, 1, 0, 3).text_len == 0);
+    testing::expect(!drawn_cell(&editor, 1, 0, 4).has_bg);
+    var runs: i64 = 0;
+    var run_end: i64 = 0;
+    if editor.window(1) |cache| {
+        if cache.line(cache.line_id(0)) |line| {
+            runs = line.runs.len();
+            if line.runs.get(0) |run| {
+                testing::expect(run.start_col == 1);
+                run_end = run.end_col;
+            }
+        }
+    }
+    testing::expect(runs == 1 and run_end == 4);
+}
+
+test "a grid keeps the lines drawn after viewport margins arrived first" {
+    let allocator = mem::page_allocator();
+    var editor = try new_editor(allocator, 80, 35);
+    defer editor.deinit(allocator);
+
+    testing::expect(try send(allocator, &var editor, "win_viewport_margins", "[5, 1000, 0, 0, 0, 0]"));
+    testing::expect(try send(allocator, &var editor, "grid_resize", "[5, 30, 35]"));
+    for 0..35 |row| {
+        var args = string::new(allocator);
+        defer args.deinit(allocator);
+        try args.append_bytes(allocator, "[5, ");
+        try args.append_byte(allocator, cast<u8>(48 + row / 10));
+        try args.append_byte(allocator, cast<u8>(48 + row % 10));
+        try args.append_bytes(allocator, ", 0, [['row-");
+        try args.append_byte(allocator, cast<u8>(48 + row / 10));
+        try args.append_byte(allocator, cast<u8>(48 + row % 10));
+        try args.append_bytes(allocator, "', 0]]]");
+        let noted = args.as_bytes();
+        testing::expect(try send(allocator, &var editor, "grid_line", noted));
+    }
+    testing::expect(try send(allocator, &var editor, "win_pos", "[5, 1000, 0, 0, 30, 35]"));
+
+    var height: i64 = 0;
+    if editor.window(5) |cache| {
+        height = cache.height;
+    }
+    testing::expect(height == 35);
+    var drawn = 0;
+    for 0..35 |row| {
+        if line_starts(&editor, 5, row, "row-") {
+            drawn = drawn + 1;
+        }
+    }
+    testing::expect(drawn == 35);
+    testing::expect(line_starts(&editor, 5, 34, "row-34"));
+    testing::expect(line_starts(&editor, 5, 7, "row-07"));
+}
+
+test "a window is placed where it was shown" {
+    let allocator = mem::page_allocator();
+    var editor = try new_editor(allocator, 10, 4);
+    defer editor.deinit(allocator);
+    try place(allocator, &var editor, 2, WindowPosition { top: 1, left: 3, width: 4, height: 2 }, WindowKind::Float, 50, 2);
+
+    let placement = editor.placement(2);
+    testing::expect(placement.top == 1);
+    testing::expect(placement.left == 3);
+    testing::expect(placement.kind == WindowKind::Float);
+    testing::expect(placement.zindex == 50);
+    testing::expect(placement.compindex == 2);
+    testing::expect(!placement.hidden);
+    let main = editor.placement(1);
+    testing::expect(main.width == 10 and main.height == 4 and !main.hidden);
+}
+
+test "windows are listed in draw order" {
+    let allocator = mem::page_allocator();
+    var editor = try new_editor(allocator, 20, 8);
+    defer editor.deinit(allocator);
+    testing::expect(try send(allocator, &var editor, "grid_resize", "[4, 4, 2]"));
+    testing::expect(try send(allocator, &var editor, "grid_resize", "[3, 4, 2]"));
+    testing::expect(try send(allocator, &var editor, "grid_resize", "[2, 4, 2]"));
+    testing::expect(try send(allocator, &var editor, "win_float_pos", "[2, 100, 'NW', 1, 0.0, 0.0, true, 300]"));
+    testing::expect(try send(allocator, &var editor, "win_float_pos", "[3, 100, 'NW', 1, 0.0, 0.0, true, 50, 1]"));
+    testing::expect(try send(allocator, &var editor, "win_float_pos", "[4, 100, 'NW', 1, 0.0, 0.0, true, 50, 0]"));
+    testing::expect(try popupmenu_show(allocator, &var editor, 2, 4));
+
+    testing::expect(editor.window_count() == 5);
+    testing::expect(editor.window_grid(0) == 1);
+    testing::expect(editor.window_grid(1) == 4);
+    testing::expect(editor.window_grid(2) == 3);
+    testing::expect(editor.window_grid(3) == popupmenu_grid());
+    testing::expect(editor.window_grid(4) == 2);
+
+    testing::expect(try send(allocator, &var editor, "win_close", "[3]"));
+    testing::expect(editor.window_count() == 4);
+    testing::expect(!has_window(&editor, 3));
+    testing::expect(try send(allocator, &var editor, "grid_destroy", "[4]"));
+    testing::expect(editor.window_count() == 3);
+    testing::expect(editor.window_grid(1) == popupmenu_grid());
+}
+
+test "a float is placed by its anchor without composed coordinates" {
+    let allocator = mem::page_allocator();
+    var editor = try new_editor(allocator, 40, 12);
+    defer editor.deinit(allocator);
+    testing::expect(try send(allocator, &var editor, "grid_resize", "[2, 4, 2]"));
+
+    testing::expect(try send(allocator, &var editor, "win_float_pos", "[2, 100, 'NW', 1, 3.0, 20.0, true, 50]"));
+
+    testing::expect(editor.placement(2).top == 3 and editor.placement(2).left == 20);
+
+    testing::expect(try send(allocator, &var editor, "win_float_pos", "[2, 100, 'SE', 1, 3.0, 20.0, true, 50]"));
+    testing::expect(editor.placement(2).top == 1 and editor.placement(2).left == 16);
+    testing::expect(!try send(allocator, &var editor, "win_float_pos", "[2, 100, 'XX', 1, 3.0, 20.0, true, 50]"));
+}
+
+test "a float prefers the composed screen coordinates" {
+    let allocator = mem::page_allocator();
+    var editor = try new_editor(allocator, 40, 12);
+    defer editor.deinit(allocator);
+    testing::expect(try send(allocator, &var editor, "grid_resize", "[2, 4, 2]"));
+
+    testing::expect(try send(allocator, &var editor, "win_float_pos", "[2, 100, 'SE', 1, 3.0, 20.0, true, 50, 4, 6, 7]"));
+
+    let placement = editor.placement(2);
+    testing::expect(placement.top == 6 and placement.left == 7);
+    testing::expect(placement.compindex == 4);
+    testing::expect(placement.width == 4 and placement.height == 2);
+}
+
+test "a highlight's style reaches its cells" {
+    var highlight = no_highlight();
+    highlight.style.bold = true;
+    highlight.style.italic = true;
+    highlight.style.underline = term::Underline::Single;
+    highlight.style.strikethrough = true;
+
+    let cell = highlighted_cell(highlight, term::Color { r: 229, g: 229, b: 229 }, term::Color { r: 20, g: 22, b: 26 });
+
+    testing::expect(cell.style.bold);
+    testing::expect(cell.style.italic);
+    testing::expect(cell.style.underline == term::Underline::Single);
+    testing::expect(cell.style.strikethrough);
+}
+
+test "a blending highlight keeps a background that is the default one" {
+    let default_fg = term::Color { r: 229, g: 229, b: 229 };
+    let default_bg = term::Color { r: 20, g: 22, b: 26 };
+    var highlight = no_highlight();
+    highlight.has_bg = true;
+    highlight.bg = default_bg;
+    testing::expect(!highlighted_cell(highlight, default_fg, default_bg).has_bg);
+    highlight.blend = 35;
+
+    let cell = highlighted_cell(highlight, default_fg, default_bg);
+
+    testing::expect(cell.has_bg and term::same_color(cell.bg, default_bg));
+    testing::expect(cell.blend == cast<u8>(35));
+}
+
+test "a reverse highlight swaps its colors" {
+    let default_fg = term::Color { r: 229, g: 229, b: 229 };
+    let default_bg = term::Color { r: 20, g: 22, b: 26 };
+    var highlight = no_highlight();
+    highlight.reverse = true;
+    let cell = highlighted_cell(highlight, default_fg, default_bg);
+    testing::expect(cell.has_bg and term::same_color(cell.bg, default_fg));
+    testing::expect(term::same_color(cell.fg, default_bg));
+}
+
+test "grid_line draws a highlight's background and blend" {
+    let allocator = mem::page_allocator();
+    var editor = try new_editor(allocator, 4, 1);
+    defer editor.deinit(allocator);
+    testing::expect(!try send(allocator, &var editor, "hl_attr_define", "[9, {'background': 5267568, 'blend': 35, 'undercurl': true}]"));
+
+    testing::expect(try send(allocator, &var editor, "grid_line", "[1, 0, 0, [[' ', 9, 1]]]"));
+
+    let cell = drawn_cell(&editor, 1, 0, 0);
+    testing::expect(cell.has_bg and term::same_color(cell.bg, term::Color { r: 80, g: 96, b: 112 }));
+    testing::expect(cell.blend == cast<u8>(35));
+    testing::expect(cell.style.underline == term::Underline::Single);
+}
+
+test "mode_info_set gives the cursor its shape and blink times" {
+    let allocator = mem::page_allocator();
+    var editor = try new_editor(allocator, 4, 1);
+    defer editor.deinit(allocator);
+    testing::expect(
+        try send(
+            allocator,
+            &var editor,
+            "mode_info_set",
+            "[true, [{'cursor_shape': 'vertical', 'cell_percentage': 25, 'blinkwait': 300, 'blinkon': 200, 'blinkoff': 150}]]"
+        )
+    );
+    testing::expect(try send(allocator, &var editor, "mode_change", "['insert', 0]"));
+    if editor.cursor() |_| {
+        testing::fail("a cursor before grid_cursor_goto");
+    }
+    testing::expect(try send(allocator, &var editor, "grid_cursor_goto", "[1, 0, 2]"));
+
+    var seen = false;
+    if editor.cursor() |cursor| {
+        seen = true;
+        testing::expect(cursor.x == 2 and cursor.y == 0);
+        testing::expect(cursor.shape == term::CursorShape::Bar);
+        testing::expect(cursor.cell_percentage == cast<u8>(25));
+        testing::expect(cursor.blinkwait_ms == cast<u64>(300));
+        testing::expect(cursor.blinkon_ms == cast<u64>(200));
+        testing::expect(cursor.blinkoff_ms == cast<u64>(150));
+    }
+    testing::expect(seen);
+}
+
+test "a horizontal cursor is an underline" {
+    let allocator = mem::page_allocator();
+    var editor = try new_editor(allocator, 4, 1);
+    defer editor.deinit(allocator);
+    testing::expect(try send(allocator, &var editor, "mode_info_set", "[true, [{'cursor_shape': 'horizontal', 'cell_percentage': 20}]]"));
+    testing::expect(try send(allocator, &var editor, "mode_change", "['replace', 0]"));
+    testing::expect(try send(allocator, &var editor, "grid_cursor_goto", "[1, 0, 2]"));
+
+    var seen = false;
+    if editor.cursor() |cursor| {
+        seen = true;
+        testing::expect(cursor.shape == term::CursorShape::Underline);
+        testing::expect(cursor.cell_percentage == cast<u8>(20));
+    }
+    testing::expect(seen);
+
+    // With the cursor styles off, every mode is a block.
+    testing::expect(try send(allocator, &var editor, "mode_info_set", "[false, [{'cursor_shape': 'horizontal'}]]"));
+    if editor.cursor() |cursor| {
+        testing::expect(cursor.shape == term::CursorShape::Block);
+    }
+}
+
+test "the popupmenu is a float window of its items" {
+    let allocator = mem::page_allocator();
+    var editor = try new_editor(allocator, 24, 8);
+    defer editor.deinit(allocator);
+    testing::expect(try popupmenu_show(allocator, &var editor, 2, 4));
+
+    testing::expect(has_window(&editor, popupmenu_grid()));
+    let placement = editor.placement(popupmenu_grid());
+    testing::expect(placement.top == 2);
+    testing::expect(placement.left == 4);
+    testing::expect(placement.width == 15 and placement.height == 2);
+    testing::expect(placement.kind == WindowKind::Float);
+    testing::expect(placement.zindex == 250 and !placement.hidden);
+    testing::expect(line_starts(&editor, popupmenu_grid(), 0, "POPUPONE k menu"));
+    testing::expect(line_starts(&editor, popupmenu_grid(), 1, "POPUPTWO k menu"));
+    testing::expect(drawn_cell(&editor, popupmenu_grid(), 0, 0).has_bg);
+    testing::expect(!drawn_cell(&editor, popupmenu_grid(), 1, 0).has_bg);
+
+    testing::expect(try send(allocator, &var editor, "popupmenu_select", "[1]"));
+    testing::expect(drawn_cell(&editor, popupmenu_grid(), 1, 0).has_bg);
+    testing::expect(!drawn_cell(&editor, popupmenu_grid(), 0, 0).has_bg);
+
+    testing::expect(try send(allocator, &var editor, "popupmenu_hide", "[]"));
+    testing::expect(!has_window(&editor, popupmenu_grid()));
+    if editor.window(popupmenu_grid()) |_| {
+        testing::fail("a hidden popupmenu kept its window");
+    }
+    testing::expect(!try send(allocator, &var editor, "popupmenu_hide", "[]"));
+    testing::expect(!try send(allocator, &var editor, "popupmenu_select", "[0]"));
+}
+
+test "grid_clear and resize_screen keep the default grid's window in step" {
+    let allocator = mem::page_allocator();
+    var editor = try new_editor(allocator, 3, 2);
+    defer editor.deinit(allocator);
+    testing::expect(try send(allocator, &var editor, "grid_line", "[1, 0, 0, [['x', 0, 3]]]"));
+    testing::expect(try send(allocator, &var editor, "default_colors_set", "[16777215, 0, -1]"));
+    testing::expect(term::same_color(editor.cursor_color(), term::Color { r: 255, g: 255, b: 255 }));
+    testing::expect(term::same_color(editor.background(), term::Color { r: 0, g: 0, b: 0 }));
+    testing::expect(try send(allocator, &var editor, "grid_clear", "[1]"));
+    var id: i64 = 0;
+    if editor.window(1) |cache| {
+        id = cache.line_id(0);
+    }
+    testing::expect(id == -1);
+    try editor.resize_screen(allocator, 5, 4);
+    testing::expect(editor.placement(1).width == 5 and editor.placement(1).height == 4);
+    var height: i64 = 0;
+    if editor.window(1) |cache| {
+        height = cache.height;
+    }
+    testing::expect(height == 4);
+}

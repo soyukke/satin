@@ -36,6 +36,7 @@ extension NativeSettingsStore {
         let initial = store.load()
         guard initial.optionAsAlt,
             initial.notifications,
+            !initial.partyFrames,
             initial.sessionRestore,
             initial.confirmBeforeQuit,
             initial.automaticUpdateChecks,

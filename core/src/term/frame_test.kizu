@@ -1,0 +1,102 @@
+import std::mem;
+import std::string;
+import std::testing;
+
+/// Collects one frame of a cols x rows terminal fed text, with `^` read as
+/// ESC, which a string literal cannot hold.
+fn collected(allocator: Allocator, cols: u16, rows: u16, text: []u8) -> !Frame {
+    var input = string::new(allocator);
+    defer input.deinit(allocator);
+    for 0..mem::len(text) |index| {
+        if text[index] == cast<u8>(94) {
+            try input.append_byte(allocator, cast<u8>(27));
+        } else {
+            try input.append_byte(allocator, text[index]);
+        }
+    }
+    let terminal = new_terminal(cols, rows, 1000) orelse return GhosttyError::Refused;
+    let bytes = input.as_bytes();
+    // SAFETY: terminal is live until free_terminal below.
+    unsafe write_terminal(terminal, bytes);
+    var frame = new_frame(allocator);
+    errdefer frame.deinit(allocator);
+    var renderer = try new_frame_renderer();
+    // SAFETY: terminal is live until free_terminal below.
+    let result = unsafe renderer.collect(allocator, terminal, &var frame);
+    renderer.deinit();
+    // SAFETY: terminal came from new_terminal and nothing uses it after this.
+    unsafe free_terminal(terminal);
+    try result;
+    return move frame;
+}
+
+fn cell_text_is(frame: &Frame, row: i64, column: i64, expected: []u8) -> bool {
+    let cell = frame.cells.get(frame.row_start(row) + column) orelse return false;
+    let text = frame.text.as_bytes();
+    return mem::equal_bytes(text[cell.text_start..cell.text_start + cell.text_len], expected);
+}
+
+test "collects a plain text frame" {
+    let allocator = mem::page_allocator();
+    let frame = try collected(allocator, 8, 2, "hi");
+    defer frame.deinit(allocator);
+    testing::expect(frame.row_count() == 2);
+    testing::expect(frame.row_end(0) == 8);
+    testing::expect(frame.cells.len() == 16);
+    testing::expect(cell_text_is(&frame, 0, 0, "h"));
+    testing::expect(cell_text_is(&frame, 0, 1, "i"));
+    testing::expect(cell_text_is(&frame, 0, 2, ""));
+    testing::expect(frame.has_cursor);
+    testing::expect(frame.cursor.x == 2 and frame.cursor.y == 0);
+    testing::expect(frame.scrollbar.visible == 2);
+    testing::expect(!frame.alternate);
+}
+
+test "keeps the extended styles of a cell" {
+    let allocator = mem::page_allocator();
+    let frame = try collected(allocator, 8, 2, "^[1;3;4:3;9;53;58;2;10;20;30mA^[0mB");
+    defer frame.deinit(allocator);
+    let styled = frame.cells.get(0) orelse return GhosttyError::Refused;
+    testing::expect(styled.style.bold and styled.style.italic);
+    testing::expect(styled.style.underline == Underline::Curly);
+    testing::expect(styled.style.strikethrough and styled.style.overline);
+    testing::expect(styled.style.has_underline_color);
+    testing::expect(same_color(styled.style.underline_color, Color { r: 10, g: 20, b: 30 }));
+    let plain = frame.cells.get(1) orelse return GhosttyError::Refused;
+    testing::expect(!plain.style.bold and plain.style.underline == Underline::None);
+}
+
+test "resolves colors, inverse and the alternate screen" {
+    let allocator = mem::page_allocator();
+    let frame = try collected(allocator, 8, 2, "^[?1049h^[38;2;1;2;3;48;2;4;5;6mA^[7mB");
+    defer frame.deinit(allocator);
+    testing::expect(frame.alternate);
+    let direct = frame.cells.get(0) orelse return GhosttyError::Refused;
+    testing::expect(same_color(direct.fg, Color { r: 1, g: 2, b: 3 }));
+    testing::expect(direct.has_bg and same_color(direct.bg, Color { r: 4, g: 5, b: 6 }));
+    let inverse = frame.cells.get(1) orelse return GhosttyError::Refused;
+    testing::expect(same_color(inverse.fg, Color { r: 4, g: 5, b: 6 }));
+    testing::expect(inverse.has_bg and same_color(inverse.bg, Color { r: 1, g: 2, b: 3 }));
+}
+
+test "joins a grapheme cluster into one cell" {
+    let allocator = mem::page_allocator();
+    let frame = try collected(allocator, 8, 1, "éx");
+    defer frame.deinit(allocator);
+    testing::expect(cell_text_is(&frame, 0, 0, "é"));
+    testing::expect(cell_text_is(&frame, 0, 1, "x"));
+}
+
+test "reads the screen as lines without trailing blanks" {
+    let allocator = mem::page_allocator();
+    let frame = try collected(allocator, 8, 3, "ab  ^[2;1Hc d");
+    defer frame.deinit(allocator);
+    var out = string::new(allocator);
+    defer out.deinit(allocator);
+    try frame.screen_text(allocator, &var out);
+    let bytes = out.as_bytes();
+    testing::expect(mem::len(bytes) == 7);
+    testing::expect(mem::starts_with(bytes, "ab"));
+    testing::expect(bytes[2] == cast<u8>(10) and bytes[6] == cast<u8>(10));
+    testing::expect(mem::equal_bytes(bytes[3..6], "c d"));
+}

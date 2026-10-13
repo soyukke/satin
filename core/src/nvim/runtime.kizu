@@ -1,0 +1,512 @@
+// One embedded Neovim as the host drives it: the process, the UI state its
+// redraw events build, the images it shows, and the requests the host's
+// input becomes. The Rust `NativeNeovimRuntime`.
+import satin::term;
+import std::mem;
+import std::string;
+
+extern "c" fn getcwd(buffer: ptr<u8>, size: usize) -> ?ptr<u8>
+pub error NvimFailure = ProcessError or PackError or term::GhosttyError or mem::Error;
+
+fn max_kitty_notification_bytes() -> i64 {
+    return 65536;
+}
+
+/// One embedded Neovim. directory is read when has_directory is set, and
+/// is still to be reported to the host while directory_pending is;
+/// selection_text is the message text a finished selection left, while
+/// has_selection_text is set.
+pub struct Runtime {
+    process: Process,
+    next_id: i64,
+    pub editor: Editor,
+    screen: term::Screen,
+    pub kitty: term::KittyImages,
+    has_directory: bool,
+    directory: string::String,
+    directory_pending: bool,
+    has_selection_text: bool,
+    selection_text: string::String,
+    exited: bool,
+    request: string::String,
+    arguments: string::String,
+}
+
+/// Appends the directory this process runs in to out; false when the
+/// system does not say.
+fn append_current_directory(allocator: Allocator, out: &var string::String) -> mem::Error!bool {
+    // SAFETY: malloc returns 4096 bytes of storage or null.
+    let storage = unsafe malloc(4096) orelse return mem::Error::OutOfMemory;
+    var found = false;
+    var failed = false;
+    // SAFETY: storage holds 4096 writable bytes.
+    if unsafe getcwd(storage, 4096) |_| {
+        // SAFETY: getcwd wrote a NUL-terminated path to storage.
+        let length = unsafe strlen(cast<ptr<const u8>>(storage));
+        // SAFETY: the path is length bytes long.
+        let bytes = unsafe view_from_ptr(cast<ptr<const u8>>(storage), cast<i64>(length));
+        if out.append_bytes(allocator, bytes) {
+            found = true;
+        } else |_| {
+            failed = true;
+        }
+    }
+    // SAFETY: storage came from malloc and nothing reads it after this.
+    unsafe free(storage);
+    if failed {
+        return mem::Error::OutOfMemory;
+    }
+    return found;
+}
+
+/// Starts Neovim for launch with a UI of size attached.
+pub fn spawn_runtime(allocator: Allocator, size: term::GridSize, launch: &Launch) -> NvimFailure!Runtime {
+    var directory = string::new(allocator);
+    errdefer directory.deinit(allocator);
+    var has_directory = launch.has_cwd;
+    if launch.has_cwd {
+        try directory.append_string(allocator, &launch.cwd);
+    } else {
+        has_directory = try append_current_directory(allocator, &var directory);
+    }
+    let editor = try new_editor(allocator, cast<i64>(size.cols), cast<i64>(size.rows));
+    errdefer editor.deinit(allocator);
+    let screen = try term::new_screen(allocator, size.cols, size.rows, 0);
+    errdefer screen.deinit(allocator);
+    // SAFETY: the screen's terminal is live.
+    try unsafe term::configure_kitty_graphics(screen.handle());
+    let kitty = try term::new_kitty_images(allocator);
+    errdefer kitty.deinit(allocator);
+    let process = try spawn_process(allocator, launch);
+    var runtime = Runtime {
+        process: move process,
+        next_id: 1,
+        editor: move editor,
+        screen: move screen,
+        kitty: move kitty,
+        has_directory: has_directory,
+        directory: move directory,
+        directory_pending: has_directory,
+        has_selection_text: false,
+        selection_text: string::new(allocator),
+        exited: false,
+        request: string::new(allocator),
+        arguments: string::new(allocator)
+    };
+    errdefer runtime.deinit(allocator);
+    try runtime.resize_images(size);
+    try runtime.attach(allocator, size);
+    if has_directory {
+        try runtime.set_current_directory(allocator);
+    }
+    return move runtime;
+}
+
+pub fn (self: Runtime) deinit(allocator: Allocator) -> void {
+    self.process.deinit(allocator);
+    self.editor.deinit(allocator);
+    self.kitty.deinit(allocator);
+    self.screen.deinit(allocator);
+    self.directory.deinit(allocator);
+    self.selection_text.deinit(allocator);
+    self.request.deinit(allocator);
+    self.arguments.deinit(allocator);
+}
+
+/// Sends the request method with arguments, an encoded array. A Neovim
+/// that has exited takes nothing.
+fn (self: &var Runtime) send(allocator: Allocator, method: []u8) -> NvimFailure!void {
+    if self.is_exited() {
+        return;
+    }
+    self.request.clear();
+    try append_array(allocator, &var self.request, 4);
+    try append_int(allocator, &var self.request, 0);
+    try append_int(allocator, &var self.request, self.next_id);
+    try append_str(allocator, &var self.request, method);
+    try self.request.append_string(allocator, &self.arguments);
+    self.next_id = self.next_id + 1;
+    if self.write_request() {
+        return;
+    }
+    let _ = self.is_exited();
+    return ProcessError::Unavailable;
+}
+
+fn (self: &Runtime) write_request() -> bool {
+    let bytes = self.request.as_bytes();
+    if self.process.write_all(bytes) {
+        return true;
+    } else |_| {}
+    return false;
+}
+
+/// Starts the arguments of the next request: an array of count values.
+fn (self: &var Runtime) begin_arguments(allocator: Allocator, count: i64) -> mem::Error!void {
+    self.arguments.clear();
+    try append_array(allocator, &var self.arguments, count);
+    return;
+}
+
+fn (self: &var Runtime) set_variable(allocator: Allocator, name: []u8, value: i64) -> NvimFailure!void {
+    try self.begin_arguments(allocator, 2);
+    try append_str(allocator, &var self.arguments, name);
+    try append_int(allocator, &var self.arguments, value);
+    try self.send(allocator, "nvim_set_var");
+    return;
+}
+
+fn (self: &var Runtime) update_image_geometry(allocator: Allocator, size: term::GridSize) -> NvimFailure!void {
+    try self.set_variable(allocator, "satin_pixel_width", cast<i64>(size.pixel_width));
+    try self.set_variable(allocator, "satin_pixel_height", cast<i64>(size.pixel_height));
+    return;
+}
+
+fn (self: &var Runtime) attach(allocator: Allocator, size: term::GridSize) -> NvimFailure!void {
+    try self.update_image_geometry(allocator, size);
+    try self.begin_arguments(allocator, 3);
+    try append_int(allocator, &var self.arguments, cast<i64>(size.cols));
+    try append_int(allocator, &var self.arguments, cast<i64>(size.rows));
+    try append_map(allocator, &var self.arguments, 4);
+    try append_str(allocator, &var self.arguments, "ext_linegrid");
+    try append_bool(allocator, &var self.arguments, true);
+    try append_str(allocator, &var self.arguments, "ext_multigrid");
+    try append_bool(allocator, &var self.arguments, true);
+    try append_str(allocator, &var self.arguments, "ext_popupmenu");
+    try append_bool(allocator, &var self.arguments, true);
+    try append_str(allocator, &var self.arguments, "rgb");
+    try append_bool(allocator, &var self.arguments, true);
+    try self.send(allocator, "nvim_ui_attach");
+    return;
+}
+
+fn (self: &var Runtime) set_current_directory(allocator: Allocator) -> NvimFailure!void {
+    try self.begin_arguments(allocator, 1);
+    let directory = self.directory.as_bytes();
+    try append_str(allocator, &var self.arguments, directory);
+    try self.send(allocator, "nvim_set_current_dir");
+    return;
+}
+
+/// Resizes the terminal the images are placed in.
+fn (self: &Runtime) resize_images(size: term::GridSize) -> term::GhosttyError!void {
+    var cols: u32 = cast<u32>(size.cols);
+    var rows: u32 = cast<u32>(size.rows);
+    if cols == 0 {
+        cols = 1;
+    }
+    if rows == 0 {
+        rows = 1;
+    }
+    // SAFETY: the screen's terminal is live.
+    try unsafe term::resize_terminal(
+        self.screen.handle(),
+        size.cols,
+        size.rows,
+        cast<u32>(size.pixel_width) / cols,
+        cast<u32>(size.pixel_height) / rows
+    );
+    return;
+}
+
+pub fn (self: &var Runtime) resize(allocator: Allocator, size: term::GridSize) -> NvimFailure!void {
+    try self.editor.resize_screen(allocator, cast<i64>(size.cols), cast<i64>(size.rows));
+    try self.resize_images(size);
+    try self.update_image_geometry(allocator, size);
+    try self.begin_arguments(allocator, 2);
+    try append_int(allocator, &var self.arguments, cast<i64>(size.cols));
+    try append_int(allocator, &var self.arguments, cast<i64>(size.rows));
+    try self.send(allocator, "nvim_ui_try_resize");
+    return;
+}
+
+/// Types bytes, as a terminal sends input, into Neovim.
+pub fn (self: &var Runtime) input_bytes(allocator: Allocator, bytes: []u8) -> NvimFailure!void {
+    var notation = string::new(allocator);
+    defer notation.deinit(allocator);
+    try append_input_notation(allocator, &var notation, bytes);
+    if notation.len() == 0 {
+        return;
+    }
+    let keys = notation.as_bytes();
+    try self.begin_arguments(allocator, 1);
+    try append_str(allocator, &var self.arguments, keys);
+    try self.send(allocator, "nvim_input");
+    return;
+}
+
+/// A mouse event over a grid cell. True when it only moved the message
+/// selection, which Neovim is not told of.
+pub fn (self: &var Runtime) mouse_input(
+    allocator: Allocator,
+    button: []u8,
+    action: []u8,
+    modifier: []u8,
+    grid: i64,
+    row: i64,
+    col: i64
+) -> NvimFailure!bool {
+    if mem::equal_bytes(button, "left") and mem::equal_bytes(action, "press") {
+        self.has_selection_text = false;
+        self.selection_text.clear();
+    }
+    var selected = string::new(allocator);
+    defer selected.deinit(allocator);
+    let outcome = try self.editor.handle_message_selection(allocator, button, action, row, col, &var selected);
+    if outcome != SelectionOutcome::Ignored {
+        if outcome == SelectionOutcome::Finished and selected.len() > 0 {
+            self.selection_text.clear();
+            try self.selection_text.append_string(allocator, &selected);
+            self.has_selection_text = true;
+        }
+        return true;
+    }
+    try self.begin_arguments(allocator, 6);
+    try append_str(allocator, &var self.arguments, button);
+    try append_str(allocator, &var self.arguments, action);
+    try append_str(allocator, &var self.arguments, modifier);
+    try append_int(allocator, &var self.arguments, grid);
+    try append_int(allocator, &var self.arguments, row);
+    try append_int(allocator, &var self.arguments, col);
+    try self.send(allocator, "nvim_input_mouse");
+    return false;
+}
+
+/// Appends the message text the last finished selection left to out, once.
+pub fn (self: &var Runtime) take_message_selection_text(
+    allocator: Allocator,
+    out: &var string::String
+) -> mem::Error!bool {
+    if !self.has_selection_text {
+        return false;
+    }
+    try out.append_string(allocator, &self.selection_text);
+    self.has_selection_text = false;
+    self.selection_text.clear();
+    return true;
+}
+
+/// Runs an Ex command.
+pub fn (self: &var Runtime) command(allocator: Allocator, command: []u8) -> NvimFailure!void {
+    try self.begin_arguments(allocator, 1);
+    try append_str(allocator, &var self.arguments, command);
+    try self.send(allocator, "nvim_command");
+    return;
+}
+
+/// Appends Neovim's working directory to out; false when it is not known.
+pub fn (self: &Runtime) working_directory(allocator: Allocator, out: &var string::String) -> mem::Error!bool {
+    if !self.has_directory {
+        return false;
+    }
+    try out.append_string(allocator, &self.directory);
+    return true;
+}
+
+/// Appends the working directory to out when it changed since the last
+/// take.
+pub fn (self: &var Runtime) take_working_directory_update(
+    allocator: Allocator,
+    out: &var string::String
+) -> mem::Error!bool {
+    if !self.directory_pending {
+        return false;
+    }
+    try out.append_string(allocator, &self.directory);
+    self.directory_pending = false;
+    return true;
+}
+
+/// The string that is the first element of an array value, appended to
+/// out; false when the value has none.
+fn append_first_text(allocator: Allocator, value: &Value, out: &var string::String) -> mem::Error!bool {
+    match value {
+        Arr(items) => {
+            if items.at(0) |first| {
+                match first {
+                    Str(text) => {
+                        try out.append_string(allocator, text);
+                        return true;
+                    },
+                    _ => {},
+                }
+            }
+        },
+        _ => {},
+    }
+    return false;
+}
+
+/// Applies one batch of redraw events, `[name, args, args, ...]`.
+fn (self: &var Runtime) handle_redraw_batch(allocator: Allocator, batch: &Value) -> mem::Error!bool {
+    var changed = false;
+    match batch {
+        Arr(items) => {
+            var flush = false;
+            var known = false;
+            if items.at(0) |name| {
+                match name {
+                    Str(text) => {
+                        let event = text.as_bytes();
+                        known = true;
+                        flush = mem::equal_bytes(event, "flush");
+                        if !flush {
+                            for 1..items.len() |index| {
+                                if items.at(index) |arguments| {
+                                    if try self.editor.handle_event(allocator, event, arguments) {
+                                        changed = true;
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    _ => {},
+                }
+            }
+            if known and flush {
+                try self.editor.flush_renderer(allocator);
+                changed = true;
+            }
+        },
+        _ => {},
+    }
+    return changed;
+}
+
+/// Applies one message Neovim sent. Whether what the host shows changed.
+fn (self: &var Runtime) handle_message(allocator: Allocator, message: &Value) -> NvimFailure!bool {
+    var changed = false;
+    match message {
+        Arr(items) => {
+            if items.len() < 3 {
+                return false;
+            }
+            var notification = false;
+            if items.at(0) |kind| {
+                match kind {
+                    Int(number) => {
+                        notification = number == 2;
+                    },
+                    _ => {},
+                }
+            }
+            if !notification {
+                return false;
+            }
+            // 1 redraw, 2 images, 3 the working directory.
+            var method = 0;
+            if items.at(1) |name| {
+                match name {
+                    Str(text) => {
+                        let bytes = text.as_bytes();
+                        if mem::equal_bytes(bytes, "redraw") {
+                            method = 1;
+                        } else if mem::equal_bytes(bytes, "satin_kitty_graphics") {
+                            method = 2;
+                        } else if mem::equal_bytes(bytes, "satin_cwd_changed") {
+                            method = 3;
+                        }
+                    },
+                    _ => {},
+                }
+            }
+            if items.at(2) |payload| {
+                if method == 1 {
+                    match payload {
+                        Arr(batches) => {
+                            for 0..batches.len() |index| {
+                                if batches.at(index) |batch| {
+                                    if try self.handle_redraw_batch(allocator, batch) {
+                                        changed = true;
+                                    }
+                                }
+                            }
+                        },
+                        _ => {},
+                    }
+                } else if method == 2 or method == 3 {
+                    var text = string::new(allocator);
+                    defer text.deinit(allocator);
+                    if try append_first_text(allocator, payload, &var text) {
+                        let bytes = text.as_bytes();
+                        if method == 2 {
+                            if mem::len(bytes) <= max_kitty_notification_bytes() {
+                                try self.screen.feed(allocator, bytes);
+                                self.screen.clear_replies();
+                                changed = true;
+                            }
+                        } else if mem::len(bytes) > 0 and bytes[0] == cast<u8>(47) {
+                            let current = self.directory.as_bytes();
+                            let moved = !self.has_directory or !mem::equal_bytes(current, bytes);
+                            if moved {
+                                self.directory.clear();
+                                try self.directory.append_bytes(allocator, bytes);
+                                self.has_directory = true;
+                                self.directory_pending = true;
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        _ => {},
+    }
+    return changed;
+}
+
+/// Applies what Neovim sent since the last drain. Whether anything the
+/// host shows changed.
+pub fn (self: &var Runtime) drain(allocator: Allocator) -> NvimFailure!bool {
+    var changed = false;
+    let _ = try self.process.read_available(allocator);
+    var found = true;
+    while found {
+        let message = try self.process.next_value(allocator, &var found);
+        defer message.deinit(allocator);
+        if found {
+            if try self.handle_message(allocator, &message) {
+                changed = true;
+            }
+        }
+    }
+    let was_exited = self.exited;
+    if self.is_exited() and !was_exited {
+        changed = true;
+    }
+    return changed;
+}
+
+/// The descriptor that is readable when drain has something to read.
+pub fn (self: &Runtime) wakeup_fd() -> i32 {
+    return self.process.wakeup_fd();
+}
+
+pub fn (self: &var Runtime) is_exited() -> bool {
+    if !self.exited and self.process.poll_exited() {
+        self.exited = true;
+    }
+    return self.exited;
+}
+
+/// Neovim's exit code; -1 while it runs.
+pub fn (self: &var Runtime) exit_code() -> i64 {
+    if !self.is_exited() {
+        return -1;
+    }
+    return self.process.exit_code();
+}
+
+/// Reads the image placements into kitty.
+pub fn (self: &var Runtime) collect_kitty(allocator: Allocator) -> term::Failure!void {
+    // SAFETY: the screen's terminal is live.
+    try unsafe self.kitty.collect(allocator, self.screen.handle());
+    return;
+}
+
+pub fn (self: &var Runtime) advance_renderer_animations(dt: f32) -> bool {
+    return self.editor.advance_renderer_animations(dt);
+}
+
+pub fn (self: &Runtime) has_active_renderer_animation() -> bool {
+    return self.editor.has_active_renderer_animation();
+}

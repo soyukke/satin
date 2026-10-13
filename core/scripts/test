@@ -1,0 +1,21 @@
+#!/bin/sh
+# Runs every test of this repository: the Kizu tests of each package, then
+# the built commands against stand-ins for the app.
+#
+#   KIZU=path/to/kizu scripts/test
+set -eu
+root="$(cd "$(dirname "$0")/.." && pwd)"
+kizu="${KIZU:-kizu}"
+cd "$root"
+
+# The renderer's tests assume the default fonts, not a developer's override.
+unset SATIN_FONT NVTERM_FONT
+
+scripts/build
+for package in . host cli nvim; do
+    echo "== kizu test $package"
+    "$kizu" test "$package"
+done
+scripts/test-cli target/bin/satin
+scripts/test-nvim-launcher target/bin/satin-nvim
+scripts/test-drawable

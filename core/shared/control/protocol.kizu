@@ -1,0 +1,496 @@
+// The control protocol: one JSON object a line. A request names its
+// command and carries that command's fields; the host answers
+// `{"ok":true,"result":...}` or `{"ok":false,"error":{"code":...,"message":...}}`.
+// The Rust `control` types.
+import std::array;
+import std::json;
+import std::map;
+import std::mem;
+import std::string;
+
+pub fn protocol_version() -> i64 {
+    return 1;
+}
+
+/// The longest request or response line, in bytes.
+pub fn max_line_bytes() -> i64 {
+    return 1048576;
+}
+
+fn default_timeout_millis() -> i64 {
+    return 30000;
+}
+
+fn max_wait_millis() -> i64 {
+    return 3600000;
+}
+
+pub error ProtocolError {
+    /// The line is no request: not an object, no command the protocol has,
+    /// or a field of the wrong shape.
+    Invalid,
+    UnsupportedVersion,
+}
+
+pub error ProtocolFailure = ProtocolError or json::DecodeError;
+
+/// What a field of a command holds. Optional kinds may be left out or
+/// null; a Flag left out is false.
+enum Kind {
+    Index,
+    Text,
+    OptionalText,
+    Flag,
+    OptionalFlag,
+    Axis,
+    TextList,
+    TextMap,
+}
+
+fn write_text_list(
+    encoder: &var json::Encoder,
+    name: []u8,
+    items: &array::Array<json::Value>
+) -> ProtocolFailure!void {
+    try encoder.begin_array_field(name);
+    for 0..items.len() |index| {
+        if items.at(index) |item| {
+            match item {
+                Str(text) => {
+                    let bytes = text.as_bytes();
+                    try encoder.write_bytes(bytes);
+                },
+                _ => return ProtocolError::Invalid,
+            }
+        }
+    }
+    try encoder.end_array();
+    return;
+}
+
+fn write_text_map(
+    encoder: &var json::Encoder,
+    name: []u8,
+    entries: &map::Map<[]u8, json::Value>
+) -> ProtocolFailure!void {
+    try encoder.begin_object_field(name);
+    for 0..entries.len() |index| {
+        if entries.key_at(index) |key| {
+            if entries.at(key) |value| {
+                match value {
+                    Str(text) => {
+                        let bytes = text.as_bytes();
+                        try encoder.write_bytes_field(key, bytes);
+                    },
+                    _ => return ProtocolError::Invalid,
+                }
+            }
+        }
+    }
+    try encoder.end_object();
+    return;
+}
+
+/// Writes the request's field name as its kind reads it.
+fn write_field(
+    encoder: &var json::Encoder,
+    entries: &map::Map<[]u8, json::Value>,
+    name: []u8,
+    kind: Kind
+) -> ProtocolFailure!void {
+    if entries.at(name) |value| {
+        match value {
+            Null => {
+                if kind == Kind::OptionalText {
+                    try encoder.write_null_field(name);
+                    return;
+                }
+                if kind == Kind::OptionalFlag {
+                    return;
+                }
+                return ProtocolError::Invalid;
+            },
+            Bool(set) => {
+                if kind != Kind::Flag and kind != Kind::OptionalFlag {
+                    return ProtocolError::Invalid;
+                }
+                try encoder.write_bool_field(name, set);
+                return;
+            },
+            I64(number) => {
+                if kind != Kind::Index or number < 0 {
+                    return ProtocolError::Invalid;
+                }
+                try encoder.write_i64_field(name, number);
+                return;
+            },
+            Str(text) => {
+                let bytes = text.as_bytes();
+                if kind == Kind::Axis {
+                    if !mem::equal_bytes(bytes, "vertical") and !mem::equal_bytes(bytes, "horizontal") {
+                        return ProtocolError::Invalid;
+                    }
+                } else if kind != Kind::Text and kind != Kind::OptionalText {
+                    return ProtocolError::Invalid;
+                }
+                try encoder.write_bytes_field(name, bytes);
+                return;
+            },
+            Arr(items) => {
+                if kind != Kind::TextList {
+                    return ProtocolError::Invalid;
+                }
+                try write_text_list(encoder, name, items);
+                return;
+            },
+            Obj(members) => {
+                if kind != Kind::TextMap {
+                    return ProtocolError::Invalid;
+                }
+                try write_text_map(encoder, name, members);
+                return;
+            },
+            F64(_) => return ProtocolError::Invalid,
+        }
+    }
+    if kind == Kind::OptionalText {
+        try encoder.write_null_field(name);
+        return;
+    }
+    if kind == Kind::Flag {
+        try encoder.write_bool_field(name, false);
+        return;
+    }
+    if kind == Kind::OptionalFlag {
+        return;
+    }
+    return ProtocolError::Invalid;
+}
+
+/// Writes the fields of command, in the order the protocol declares them.
+fn write_command_fields(
+    encoder: &var json::Encoder,
+    entries: &map::Map<[]u8, json::Value>,
+    command: []u8
+) -> ProtocolFailure!void {
+    if mem::equal_bytes(command, "list") {
+        return;
+    }
+    if mem::equal_bytes(command, "read-screen") or mem::equal_bytes(command, "select-pane") or
+        mem::equal_bytes(command, "close-pane") {
+        try write_field(encoder, entries, "pane", Kind::Index);
+        return;
+    }
+    if mem::equal_bytes(command, "send") {
+        try write_field(encoder, entries, "pane", Kind::Index);
+        try write_field(encoder, entries, "text", Kind::Text);
+        return;
+    }
+    if mem::equal_bytes(command, "key") {
+        try write_field(encoder, entries, "pane", Kind::Index);
+        try write_field(encoder, entries, "key", Kind::Text);
+        return;
+    }
+    if mem::equal_bytes(command, "status-set") {
+        try write_field(encoder, entries, "pane", Kind::Index);
+        try write_field(encoder, entries, "status", Kind::Text);
+        try write_field(encoder, entries, "summary", Kind::Text);
+        try write_field(encoder, entries, "agent_session_start", Kind::OptionalFlag);
+        return;
+    }
+    if mem::equal_bytes(command, "status-wait") {
+        try write_field(encoder, entries, "pane", Kind::Index);
+        try write_field(encoder, entries, "timeout_ms", Kind::Index);
+        return;
+    }
+    if mem::equal_bytes(command, "new-tab") {
+        try write_field(encoder, entries, "cwd", Kind::OptionalText);
+        try write_field(encoder, entries, "title", Kind::OptionalText);
+        try write_field(encoder, entries, "background", Kind::Flag);
+        return;
+    }
+    if mem::equal_bytes(command, "split") {
+        try write_field(encoder, entries, "pane", Kind::Index);
+        try write_field(encoder, entries, "axis", Kind::Axis);
+        try write_field(encoder, entries, "cwd", Kind::OptionalText);
+        try write_field(encoder, entries, "background", Kind::Flag);
+        return;
+    }
+    if mem::equal_bytes(command, "artifact-show") {
+        try write_field(encoder, entries, "pane", Kind::Index);
+        try write_field(encoder, entries, "artifact", Kind::Text);
+        try write_field(encoder, entries, "axis", Kind::Axis);
+        try write_field(encoder, entries, "background", Kind::Flag);
+        return;
+    }
+    if mem::equal_bytes(command, "select-tab") or mem::equal_bytes(command, "close-tab") {
+        try write_field(encoder, entries, "tab", Kind::Index);
+        return;
+    }
+    if mem::equal_bytes(command, "move-tab") {
+        try write_field(encoder, entries, "tab", Kind::Index);
+        try write_field(encoder, entries, "index", Kind::Index);
+        return;
+    }
+    if mem::equal_bytes(command, "open-neovim") {
+        try write_field(encoder, entries, "pane", Kind::Index);
+        try write_field(encoder, entries, "cwd", Kind::Text);
+        try write_field(encoder, entries, "executable", Kind::Text);
+        try write_field(encoder, entries, "arguments", Kind::TextList);
+        try write_field(encoder, entries, "environment", Kind::TextMap);
+        return;
+    }
+    if mem::equal_bytes(command, "rename-tab") {
+        try write_field(encoder, entries, "tab", Kind::Index);
+        try write_field(encoder, entries, "title", Kind::Text);
+        return;
+    }
+    if mem::equal_bytes(command, "set-theme") {
+        try write_field(encoder, entries, "tab", Kind::Index);
+        try write_field(encoder, entries, "theme", Kind::Text);
+        return;
+    }
+    return ProtocolError::Invalid;
+}
+
+/// How long the host has to answer command, in milliseconds; -1 for as
+/// long as it takes.
+fn response_timeout(entries: &map::Map<[]u8, json::Value>, command: []u8) -> i64 {
+    if mem::equal_bytes(command, "open-neovim") {
+        return -1;
+    }
+    if mem::equal_bytes(command, "status-wait") {
+        var wait: i64 = 0;
+        if entries.at("timeout_ms") |value| {
+            match value {
+                I64(number) => {
+                    wait = number;
+                },
+                _ => {},
+            }
+        }
+        if wait > max_wait_millis() {
+            wait = max_wait_millis();
+        }
+        return wait + 2000;
+    }
+    return default_timeout_millis();
+}
+
+/// A request as the protocol reads it.
+pub struct Request {
+    /// The request with every field of its command, defaults filled in and
+    /// anything else dropped. With an id it starts `{"id":N,`.
+    pub json: string::String,
+    /// How long the host has to answer, in milliseconds; -1 for as long as
+    /// it takes.
+    pub timeout_millis: i64,
+}
+
+pub fn (self: Request) deinit(allocator: Allocator) -> void {
+    self.json.deinit(allocator);
+}
+
+fn write_request(
+    allocator: Allocator,
+    entries: &map::Map<[]u8, json::Value>,
+    id: i64,
+    out: &var Request
+) -> ProtocolFailure!void {
+    var version: i64 = -1;
+    if entries.at("version") |value| {
+        match value {
+            I64(number) => {
+                version = number;
+            },
+            _ => return ProtocolError::Invalid,
+        }
+    }
+    if version < 0 {
+        return ProtocolError::Invalid;
+    }
+    if version != protocol_version() {
+        return ProtocolError::UnsupportedVersion;
+    }
+    var encoder = json::encoder(allocator);
+    defer encoder.deinit(allocator);
+    try encoder.begin_object();
+    if id >= 0 {
+        try encoder.write_i64_field("id", id);
+    }
+    try encoder.write_i64_field("version", version);
+    var known = false;
+    if entries.at("command") |value| {
+        match value {
+            Str(text) => {
+                let command = text.as_bytes();
+                try encoder.write_bytes_field("command", command);
+                try write_command_fields(&var encoder, entries, command);
+                out.timeout_millis = response_timeout(entries, command);
+                known = true;
+            },
+            _ => return ProtocolError::Invalid,
+        }
+    }
+    if !known {
+        return ProtocolError::Invalid;
+    }
+    try encoder.end_object();
+    try encoder.finish_into(allocator, &var out.json);
+    return;
+}
+
+/// Reads one request line. A non-negative id is written into the request,
+/// as the host reads it.
+pub fn read_request(allocator: Allocator, line: []u8, id: i64) -> ProtocolFailure!Request {
+    var document = try json::decode<json::Value>(allocator, line);
+    defer document.deinit(allocator);
+    var request = Request { json: string::new(allocator), timeout_millis: default_timeout_millis() };
+    errdefer request.deinit(allocator);
+    match &document {
+        Obj(entries) => {
+            try write_request(allocator, entries, id, &var request);
+        },
+        _ => return ProtocolError::Invalid,
+    }
+    return move request;
+}
+
+fn is_error_body(value: &json::Value) -> bool {
+    match value {
+        Obj(entries) => {
+            var texts = 0;
+            if entries.at("code") |code| {
+                match code {
+                    Str(_) => {
+                        texts = texts + 1;
+                    },
+                    _ => {},
+                }
+            }
+            if entries.at("message") |message| {
+                match message {
+                    Str(_) => {
+                        texts = texts + 1;
+                    },
+                    _ => {},
+                }
+            }
+            return texts == 2;
+        },
+        Null => return true,
+        _ => return false,
+    }
+}
+
+/// Reads a response and appends it to out as one line without its newline.
+/// ok is whether it reports success.
+pub fn read_response(allocator: Allocator, text: []u8, out: &var string::String, ok: &var bool) -> ProtocolFailure!void {
+    var document = try json::decode<json::Value>(allocator, text);
+    defer document.deinit(allocator);
+    var has_ok = false;
+    match &document {
+        Obj(entries) => {
+            if entries.at("ok") |value| {
+                match value {
+                    Bool(set) => {
+                        has_ok = true;
+                        ok = set;
+                    },
+                    _ => {},
+                }
+            }
+            if entries.at("error") |value| {
+                if !is_error_body(value) {
+                    return ProtocolError::Invalid;
+                }
+            }
+        },
+        _ => return ProtocolError::Invalid,
+    }
+    if !has_ok {
+        return ProtocolError::Invalid;
+    }
+    try json::encode<json::Value>(allocator, &document, out);
+    return;
+}
+
+/// Appends a failure response to out, without a newline.
+pub fn append_failure(allocator: Allocator, out: &var string::String, code: []u8, message: []u8) -> mem::Error!void {
+    var encoder = json::encoder(allocator);
+    defer encoder.deinit(allocator);
+    try encoder.begin_object();
+    try encoder.write_bool_field("ok", false);
+    try encoder.begin_object_field("error");
+    try encoder.write_bytes_field("code", code);
+    try encoder.write_bytes_field("message", message);
+    try encoder.end_object();
+    try encoder.end_object();
+    try encoder.finish_into(allocator, out);
+    return;
+}
+
+/// A whole number of decimal digits; -1 for anything else.
+pub fn parse_index(text: []u8) -> i64 {
+    if mem::len(text) == 0 or mem::len(text) > 18 {
+        return -1;
+    }
+    var value: i64 = 0;
+    for 0..mem::len(text) |index| {
+        let digit = cast<i64>(text[index]) - 48;
+        if digit < 0 or digit > 9 {
+            return -1;
+        }
+        value = value * 10 + digit;
+    }
+    return value;
+}
+
+/// Whether bytes are UTF-8, which every text the protocol carries is.
+pub fn is_text(bytes: []u8) -> bool {
+    var index = 0;
+    let length = mem::len(bytes);
+    while index < length {
+        let first = cast<i64>(bytes[index]);
+        var extra = 0;
+        var low: i64 = 128;
+        var high: i64 = 191;
+        if first < 128 {
+            index = index + 1;
+            continue;
+        } else if first >= 194 and first <= 223 {
+            extra = 1;
+        } else if first >= 224 and first <= 239 {
+            extra = 2;
+            if first == 224 {
+                low = 160;
+            } else if first == 237 {
+                high = 159;
+            }
+        } else if first >= 240 and first <= 244 {
+            extra = 3;
+            if first == 240 {
+                low = 144;
+            } else if first == 244 {
+                high = 143;
+            }
+        } else {
+            return false;
+        }
+        if index + extra >= length {
+            return false;
+        }
+        for 1..extra + 1 |offset| {
+            let next = cast<i64>(bytes[index + offset]);
+            if offset == 1 {
+                if next < low or next > high {
+                    return false;
+                }
+            } else if next < 128 or next > 191 {
+                return false;
+            }
+        }
+        index = index + extra + 1;
+    }
+    return true;
+}

@@ -34,8 +34,9 @@ Every change must preserve all of the following.
 
 ### Reproducibility and change safety
 
-- `flake.lock` and `Cargo.lock` are committed. Development tools are supplied
-  by the Nix flake; Homebrew is not part of the build contract.
+- `flake.lock` is committed and pins the Kizu compiler, zig, and every other
+  development tool; `core/scripts/build-ghostty` pins the `libghostty-vt`
+  commit. Homebrew is not part of the build contract.
 - `justfile` is the supported command surface for build, lint, test, smoke, and
   release operations.
 - Behavior changes add automated tests. Native rendering changes also run the
@@ -44,7 +45,11 @@ Every change must preserve all of the following.
 
 ### Language and repository lint coverage
 
-- Rust: `rustfmt`, `cargo check`, Clippy with denied warnings, and tests.
+- Kizu core: `kizu check` on the four packages (`just check`) and
+  `core/scripts/test` (`just test`), which runs each package's Kizu tests, the
+  `satin` and `satin-nvim` commands against stand-ins, and an offscreen render
+  into a Metal drawable that is read back. Kizu has no separate formatter or
+  linter in this gate.
 - Swift: repository-pinned `swift-format` default lint rules plus explicit bans
   on force unwraps, force tries, and implicitly unwrapped optionals; Swift
   compiler warnings as errors, updater self-test, and native smoke.
@@ -52,15 +57,14 @@ Every change must preserve all of the following.
   files.
 - Nix: `nixfmt` and `deadnix`.
 - Documentation and metadata: markdownlint, typos, Actionlint, and zizmor.
-- Rust dependencies: `cargo-audit` against the RustSec advisory database.
 
 `just fmt-check` and `just swift-lint` are scoped formatting and Swift gates.
 `just lint` includes every supported formatter and linter, while `just verify`
 adds type checking, tests, and license validation. All four commands are
-non-mutating. `just ci-static` and `just ci-rust` expose the two CI subsets that
+non-mutating. `just ci-static` and `just ci-core` expose the two CI subsets that
 `just verify` composes. `just precommit` adds staged secret scanning. `just
 quality` is the local publication gate and adds worktree secret scanning,
-dependency auditing, native build, updater self-test, and every
+native build, updater self-test, and every
 app-launching smoke that does not capture the screen. The smokes that do
 (settings, kitty, Neovim UI surfaces, and pixel native smoke) need
 screen-recording permission, so they live in the explicit `just
@@ -93,13 +97,14 @@ Lint suppressions must be scoped to the smallest affected expression or rule
 site and include a reason. Repository-wide warning suppression is not allowed.
 The `swift-format` `rules` object replaces rather than extends its defaults, so
 `.swift-format` records the pinned tool's complete default rule map explicitly.
-Review that map when upgrading the tool. Snake-case Rust and control-protocol
+Review that map when upgrading the tool. Snake-case core and control-protocol
 keys use type-scoped naming exceptions; Swift FFI identifiers remain camel-case
 while `@_silgen_name` preserves the exported C ABI symbol.
 
 ### Complexity and size ratchet
 
-New Rust and Swift source files may not exceed 1,000 lines. Files already over
+New Swift source files may not exceed 1,000 lines; the lint does not cover the
+Kizu sources under `core/`. Files already over
 that limit are listed with their current ceilings in `scripts/source-size-lint`.
 They may shrink but may not grow. A change that reduces one of those files must
 lower its ceiling in the same change.
@@ -111,20 +116,21 @@ artificial file splitting, or abstractions without a clear owner and purpose.
 
 - Pull requests run the same checks composed by local `just verify`. CI runs
   the platform-independent `just ci-static` subset on Linux in parallel with
-  `just ci-rust` and the native build, signing, and packaging lane on macOS.
+  `just ci-core` and the native build, signing, and packaging lane on macOS.
   The app-launching smoke suite is a local gate instead, because a CI runner
   does not composite the application window. A release PR
-  skips the macOS lane only when CI proves that `Cargo.toml` and `Cargo.lock`
-  differ exclusively at the root Satin package version; the tag workflow still
+  skips the macOS lane only when CI proves that `VERSION` is the only changed
+  file and holds a different `X.Y.Z` version; the tag workflow still
   rebuilds and verifies the release from the resulting `main` commit.
 - GitHub Actions are pinned to full commit SHAs and checked by zizmor.
 - Workflow permissions default to read-only; write permissions are scoped to
   the job that needs them.
-- CodeQL analyzes Rust on pull requests, `main`, and a schedule.
-- Gitleaks scans history and the worktree; RustSec audits run on pull requests,
-  `main`, and a schedule.
-- Dependabot checks Cargo and GitHub Actions weekly with a seven-day cooldown.
-- Release tags must match the package version. CI builds, signs, attests, and
+- Gitleaks scans history and the worktree on pull requests, `main`, and a
+  schedule. No CodeQL or dependency-advisory job runs: the Rust jobs were
+  removed with the Rust core.
+- Dependabot checks GitHub Actions weekly with a seven-day cooldown. The Kizu
+  compiler and `libghostty-vt` pins are updated by hand.
+- Release tags must match the `VERSION` file. CI builds, signs, attests, and
   publishes the arm64 archive, update manifest, and offline provenance bundle.
 
 ## External and time-dependent controls
@@ -144,16 +150,7 @@ These controls cannot be proven by a local lint command:
 
 ## Deferred controls
 
-REUSE compliance, SBOM publication, notarization, fuzzing, and expanded Swift
+REUSE compliance, SBOM publication, notarization, fuzzing, and Swift
 CodeQL coverage are valuable follow-up work. They are not added merely to
 collect badges; each should enter the required baseline when its workflow is
 reliable and its operational owner is clear.
-
-## Accepted dependency warning
-
-RustSec currently reports `RUSTSEC-2025-0141` because `bincode 1.3.3` is
-unmaintained. It is a transitive dependency of `syntect`'s bundled syntax data,
-not a reported exploitable vulnerability, so `cargo audit` reports it as an
-allowed warning and still fails on vulnerability findings. Remove this
-exception when `syntect` can provide the required syntax sets without
-`bincode 1.x`; do not add another direct use of that crate.

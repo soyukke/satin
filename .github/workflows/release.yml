@@ -29,10 +29,7 @@ jobs:
 
       - name: Validate release ref and architecture
         run: |
-          version="$(
-            sed -nE 's/^version = "([^"]+)"$/\1/p' Cargo.toml |
-              head -n 1
-          )"
+          version="$(tr -d '[:space:]' <VERSION)"
           test -n "$version"
           test "$GITHUB_REF_NAME" = "v$version"
           test "$(uname -m)" = "arm64"

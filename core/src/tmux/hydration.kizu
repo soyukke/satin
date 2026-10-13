@@ -1,0 +1,191 @@
+// Hydration: the escape sequences that repaint a pane from a `capture-pane`
+// answer and restore the terminal modes tmux reported for it.
+import std::array;
+import std::fmt;
+import std::mem;
+import std::string;
+
+fn max_history_lines() -> i64 {
+    return 100000;
+}
+
+fn max_capture_bytes() -> i64 {
+    return 8 * 1024 * 1024;
+}
+
+/// How many history lines to capture: none on the alternate screen, and no
+/// more than the byte budget allows at four escaped bytes per cell.
+pub fn history_lines(pane: &Pane) -> i64 {
+    if pane.alternate_on {
+        return 0;
+    }
+    let row_bytes = pane.cols * 4 + 1;
+    var lines = pane.history_size;
+    if lines > max_history_lines() {
+        lines = max_history_lines();
+    }
+    let byte_limited = max_capture_bytes() / row_bytes;
+    if lines > byte_limited {
+        lines = byte_limited;
+    }
+    return lines;
+}
+
+fn append_esc(allocator: Allocator, out: &var string::String, rest: []u8) -> mem::Error!void {
+    try out.append_byte(allocator, cast<u8>(27));
+    return out.append_bytes(allocator, rest);
+}
+
+/// Appends CR LF; Kizu string literals have no escapes.
+pub fn append_crlf(allocator: Allocator, out: &var string::String) -> mem::Error!void {
+    try out.append_byte(allocator, cast<u8>(13));
+    return out.append_byte(allocator, cast<u8>(10));
+}
+
+fn append_bool_mode(allocator: Allocator, out: &var string::String, mode: i64, enabled: bool) -> mem::Error!void {
+    try append_esc(allocator, out, "[?");
+    try fmt::append_i64(allocator, out, mode);
+    if enabled {
+        return out.append_bytes(allocator, "h");
+    }
+    return out.append_bytes(allocator, "l");
+}
+
+fn append_cursor_shape(allocator: Allocator, out: &var string::String, pane: &Pane) -> mem::Error!void {
+    let shape = pane.cursor_shape.as_bytes();
+    var code = "0";
+    if mem::equal_bytes(shape, "block") {
+        code = "2";
+        if pane.cursor_blinking {
+            code = "1";
+        }
+    } else if mem::equal_bytes(shape, "underline") {
+        code = "4";
+        if pane.cursor_blinking {
+            code = "3";
+        }
+    } else if mem::equal_bytes(shape, "bar") {
+        code = "6";
+        if pane.cursor_blinking {
+            code = "5";
+        }
+    }
+    try append_esc(allocator, out, "[");
+    try out.append_bytes(allocator, code);
+    return out.append_bytes(allocator, " q");
+}
+
+/// Writes the captured lines, then clears and repaints the visible rows: the
+/// last visible_rows lines when the capture includes history, else the first.
+fn append_capture(
+    allocator: Allocator,
+    out: &var string::String,
+    lines: &array::Array<string::String>,
+    visible_rows: i64,
+    includes_history: bool,
+    why: &var string::String
+) -> Failure!void {
+    var index = 0;
+    while lines.at(index) |line| {
+        let bytes = line.as_bytes();
+        try decode_escaped(allocator, bytes, true, out, why);
+        if index + 1 < lines.len() {
+            try append_crlf(allocator, out);
+        }
+        index = index + 1;
+    }
+    try append_esc(allocator, out, "[0m");
+    try append_esc(allocator, out, "[2J");
+    var visible_count = visible_rows;
+    if visible_count > lines.len() {
+        visible_count = lines.len();
+    }
+    var visible_start = 0;
+    if includes_history {
+        visible_start = lines.len() - visible_count;
+    }
+    var row = 0;
+    while row < visible_count {
+        try append_esc(allocator, out, "[");
+        try fmt::append_i64(allocator, out, row + 1);
+        try out.append_bytes(allocator, ";1H");
+        if lines.at(visible_start + row) |line| {
+            let bytes = line.as_bytes();
+            try decode_escaped(allocator, bytes, true, out, why);
+        }
+        row = row + 1;
+    }
+    return;
+}
+
+/// Builds the bytes that repaint pane from its capture, the alternate screen's
+/// primary backing first when there is one.
+pub fn build_hydration(
+    allocator: Allocator,
+    lines: &array::Array<string::String>,
+    has_backing: bool,
+    backing: &array::Array<string::String>,
+    pane: &Pane,
+    out: &var string::String,
+    why: &var string::String
+) -> Failure!void {
+    try append_esc(allocator, out, "c");
+    try append_esc(allocator, out, "[?25l");
+    if has_backing {
+        try append_capture(allocator, out, backing, pane.rows, false, why);
+        try append_esc(allocator, out, "[?1049h");
+    }
+    let includes_history = !pane.alternate_on and history_lines(pane) > 0;
+    try append_capture(allocator, out, lines, pane.rows, includes_history, why);
+    try append_esc(allocator, out, "[");
+    try fmt::append_i64(allocator, out, pane.scroll_region_upper + 1);
+    try out.append_bytes(allocator, ";");
+    try fmt::append_i64(allocator, out, pane.scroll_region_lower + 1);
+    try out.append_bytes(allocator, "r");
+    try append_esc(allocator, out, "[?6l");
+    try append_esc(allocator, out, "[");
+    try fmt::append_i64(allocator, out, pane.cursor_y + 1);
+    try out.append_bytes(allocator, ";");
+    try fmt::append_i64(allocator, out, pane.cursor_x + 1);
+    try out.append_bytes(allocator, "H");
+    try append_bool_mode(allocator, out, 1, pane.application_cursor);
+    try append_bool_mode(allocator, out, 6, pane.origin_mode);
+    try append_bool_mode(allocator, out, 7, pane.wrap_mode);
+    if pane.insert_mode {
+        try append_esc(allocator, out, "[4h");
+    } else {
+        try append_esc(allocator, out, "[4l");
+    }
+    if pane.application_keypad {
+        try append_esc(allocator, out, "=");
+    } else {
+        try append_esc(allocator, out, ">");
+    }
+    try append_bool_mode(allocator, out, 1000, false);
+    try append_bool_mode(allocator, out, 1002, false);
+    try append_bool_mode(allocator, out, 1003, false);
+    try append_bool_mode(allocator, out, 1005, false);
+    try append_bool_mode(allocator, out, 1006, false);
+    try append_bool_mode(allocator, out, 1000, pane.mouse_standard);
+    try append_bool_mode(allocator, out, 1002, pane.mouse_button);
+    try append_bool_mode(allocator, out, 1003, pane.mouse_any);
+    try append_bool_mode(allocator, out, 1005, pane.mouse_utf8);
+    try append_bool_mode(allocator, out, 1006, pane.mouse_sgr);
+    try append_bool_mode(allocator, out, 1004, pane.has_private_mode(1004));
+    try append_bool_mode(allocator, out, 2004, pane.has_private_mode(2004));
+    try append_bool_mode(allocator, out, 2026, pane.has_private_mode(2026));
+    try append_bool_mode(allocator, out, 2031, pane.has_private_mode(2031));
+    let key_mode = pane.key_mode.as_bytes();
+    if mem::equal_bytes(key_mode, "Ext 1") {
+        try append_esc(allocator, out, "[>4;1m");
+    } else if mem::equal_bytes(key_mode, "Ext 2") {
+        try append_esc(allocator, out, "[>4;2m");
+    } else {
+        try append_esc(allocator, out, "[>4;0m");
+    }
+    try append_cursor_shape(allocator, out, pane);
+    if pane.cursor_visible {
+        try append_esc(allocator, out, "[?25h");
+    }
+    return;
+}

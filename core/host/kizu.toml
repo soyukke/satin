@@ -1,0 +1,12 @@
+[package]
+name = "satin"
+version = "0.1.0"
+
+# The whole app core: every module of ../src, and the C boundary the Swift
+# host calls in place of the Rust library. The package one directory up
+# stays what the Rust app links until that library is gone.
+[modules]
+paths = ["../src", "../shared", "src"]
+
+[native]
+library_search = ["../target/native"]

@@ -1,0 +1,98 @@
+import std::mem;
+import std::string;
+import std::testing;
+
+fn feed_text(handle: ?ptr<Vt>, text: []u8) -> void {
+    satin_vt_feed(handle, ptr_of(text), cast<usize>(mem::len(text)));
+}
+
+/// Feeds text with `^` read as ESC and `~` as BEL, which a string literal
+/// cannot hold.
+fn feed_escaped(handle: ?ptr<Vt>, text: []u8) -> !void {
+    let allocator = mem::page_allocator();
+    var out = string::new(allocator);
+    defer out.deinit(allocator);
+    var index = 0;
+    while index < mem::len(text) {
+        let byte = text[index];
+        index = index + 1;
+        if byte == cast<u8>(94) {
+            try out.append_byte(allocator, cast<u8>(27));
+        } else if byte == cast<u8>(126) {
+            try out.append_byte(allocator, cast<u8>(7));
+        } else {
+            try out.append_byte(allocator, byte);
+        }
+    }
+    let bytes = out.as_bytes();
+    feed_text(handle, bytes);
+    return;
+}
+
+fn is_live(handle: ?ptr<Vt>) -> bool {
+    if handle |_live| {
+        return true;
+    }
+    return false;
+}
+
+fn is_live_bytes(address: ?ptr<u8>) -> bool {
+    if address |_live| {
+        return true;
+    }
+    return false;
+}
+
+/// Takes the pending replies and reports how many bytes there were.
+fn take_reply_length(handle: ?ptr<Vt>) -> usize {
+    // SAFETY: malloc returns storage for one usize or null.
+    let storage = unsafe malloc(mem::size_of<usize>()) orelse return 0;
+    // SAFETY: storage holds one usize.
+    let length_cell = unsafe cast<ptr<usize>>(storage);
+    let replies = satin_vt_take_replies(handle, length_cell);
+    // SAFETY: take_replies wrote the length through length_cell.
+    let length = unsafe ptr_read(length_cell);
+    if replies |bytes| {
+        // SAFETY: bytes came from malloc in take_replies.
+        unsafe free(bytes);
+    }
+    // SAFETY: storage came from malloc and nothing reads it after this.
+    unsafe free(storage);
+    return length;
+}
+
+test "the terminal answers a device attributes query through the PTY callback" {
+    let handle = satin_vt_create(80, 24, 1000);
+    testing::expect(is_live(handle));
+    testing::expect(is_live_bytes(satin_vt_terminal(handle)));
+    testing::expect_equal<usize>(0, take_reply_length(handle));
+    feed_text(handle, "hello");
+    testing::expect_equal<usize>(0, take_reply_length(handle));
+    // ESC [ c asks for the primary device attributes.
+    try feed_escaped(handle, "^[c");
+    testing::expect(take_reply_length(handle) > 0);
+    testing::expect_equal<usize>(0, take_reply_length(handle));
+    satin_vt_destroy(handle);
+}
+
+test "the terminal counts bells through the bell callback" {
+    let handle = satin_vt_create(80, 24, 1000);
+    testing::expect(is_live(handle));
+    try feed_escaped(handle, "~~");
+    testing::expect_equal<u64>(2, satin_vt_take_bell_count(handle));
+    testing::expect_equal<u64>(0, satin_vt_take_bell_count(handle));
+    satin_vt_destroy(handle);
+}
+
+test "the feed tracks semantic prompts beside the terminal" {
+    let handle = satin_vt_create(80, 24, 1000);
+    testing::expect(is_live(handle));
+    testing::expect_equal<u8>(0, satin_vt_prompt_seen(handle));
+    // ESC ] 133;B BEL marks a prompt ready for input.
+    try feed_escaped(handle, "^]133;B~");
+    testing::expect_equal<u8>(1, satin_vt_prompt_seen(handle));
+    testing::expect_equal<u64>(1, satin_vt_prompt_generation(handle));
+    satin_vt_reset_prompt(handle);
+    testing::expect_equal<u8>(0, satin_vt_prompt_seen(handle));
+    satin_vt_destroy(handle);
+}
