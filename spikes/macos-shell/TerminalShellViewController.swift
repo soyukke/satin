@@ -339,9 +339,16 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
     )
     let sessionControlButton = NSButton(frame: .zero)
     let backdropView = NativeTerminalBackdropView(frame: .zero)
-    let partyFramesView = NativePartyFramesView(frame: .zero)
-    let raidWarningView = NativeRaidWarningView(frame: .zero)
-    var partyFramesWidthConstraint: NSLayoutConstraint?
+    let attentionHandView = NativeAttentionHandView(frame: .zero)
+    var attentionHandStripConstraint: NSLayoutConstraint?
+    var attentionHandRun = NativeHandRun()
+    /// The pane whose card ⌘J just played, until the hand shows it gone.
+    var attentionHandPendingPlay: Int?
+    /// Panes whose played card has left the hand but not yet reached them.
+    var attentionHandInFlight = Set<Int>()
+    /// Watches the keyboard while ⌘J holds the hand open.
+    var attentionSelectionMonitor: Any?
+    var attentionHandArt: [Int: (revision: UInt64, lines: [String])] = [:]
     let metalView: TerminalMetalView
     let terminalTextView = TerminalTextView(frame: .zero)
     let defaultPaneMode = NativePaneMode.current()
@@ -444,11 +451,17 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
         }
         configureTabControl()
         configureToolbarControls()
-        self.partyFramesView.onSelect = { [weak self] member in
-            self?.selectPartyMember(member)
+        self.attentionHandView.onSelect = { [weak self] card in
+            self?.playAttentionCard(card)
         }
-        self.raidWarningView.onSelect = { [weak self] in
-            self?.jumpToWaitingAgent(nil)
+        self.attentionHandView.tabMidX = { [weak self] tabId in
+            self?.attentionTabMidX(tabId: tabId)
+        }
+        self.attentionHandView.previewText = { [weak self] paneId in
+            self?.attentionPreviewText(paneId: paneId)
+        }
+        self.attentionHandView.onSelectionChange = { [weak self] card in
+            self?.attentionSelectionDidChange(card)
         }
         self.metalView.contextMenuProvider = self
         self.terminalTextView.onPaneSelected = { [weak self] paneId in
@@ -583,16 +596,14 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
         view = NSView()
         backdropView.translatesAutoresizingMaskIntoConstraints = false
         metalView.translatesAutoresizingMaskIntoConstraints = false
-        partyFramesView.translatesAutoresizingMaskIntoConstraints = false
         configureTerminalTextView()
         view.addSubview(backdropView)
         view.addSubview(metalView)
-        view.addSubview(partyFramesView)
         metalView.addSubview(terminalTextView)
-        raidWarningView.translatesAutoresizingMaskIntoConstraints = false
-        view.addSubview(raidWarningView)
-        let partyWidth = partyFramesView.widthAnchor.constraint(equalToConstant: 0)
-        partyFramesWidthConstraint = partyWidth
+        attentionHandView.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(attentionHandView)
+        let handStrip = metalView.bottomAnchor.constraint(equalTo: view.bottomAnchor)
+        attentionHandStripConstraint = handStrip
 
         NSLayoutConstraint.activate([
             backdropView.topAnchor.constraint(equalTo: view.topAnchor),
@@ -601,22 +612,18 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
             backdropView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
             metalView.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
             metalView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            metalView.trailingAnchor.constraint(equalTo: partyFramesView.leadingAnchor),
-            metalView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
-            partyFramesView.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
-            partyFramesView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            partyFramesView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
-            partyWidth,
-            raidWarningView.topAnchor.constraint(equalTo: metalView.topAnchor, constant: 36),
-            raidWarningView.centerXAnchor.constraint(equalTo: metalView.centerXAnchor),
-            raidWarningView.widthAnchor.constraint(
-                lessThanOrEqualTo: metalView.widthAnchor, constant: -48),
+            metalView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            handStrip,
+            attentionHandView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            attentionHandView.trailingAnchor.constraint(equalTo: metalView.trailingAnchor),
+            attentionHandView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            attentionHandView.topAnchor.constraint(equalTo: metalView.topAnchor),
             terminalTextView.topAnchor.constraint(equalTo: metalView.topAnchor),
             terminalTextView.leadingAnchor.constraint(equalTo: metalView.leadingAnchor),
             terminalTextView.trailingAnchor.constraint(equalTo: metalView.trailingAnchor),
             terminalTextView.bottomAnchor.constraint(equalTo: metalView.bottomAnchor),
         ])
-        setPartyFramesVisible(settings.partyFrames)
+        setAttentionHandVisible(settings.attentionHand)
     }
 
     override func viewDidLayout() {
@@ -732,8 +739,8 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
             metalView.setFontFamily(settings.fontFamily)
             resizeTerminalPanesToGrid()
         }
-        if previous.partyFrames != settings.partyFrames {
-            setPartyFramesVisible(settings.partyFrames)
+        if previous.attentionHand != settings.attentionHand {
+            setAttentionHandVisible(settings.attentionHand)
         }
         if previous.defaultTheme != settings.defaultTheme {
             if core.applyThemePreference(settings.defaultTheme) {

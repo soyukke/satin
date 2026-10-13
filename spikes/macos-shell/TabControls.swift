@@ -200,6 +200,18 @@ final class NativeTabControl: NSSegmentedControl {
     private var dragTargetSegment: Int?
     private var draggingTab = false
     private var statusBadges = [Int: NativeTabStatusBadge]()
+    /// Whether tabs waiting for the user burn a fuse round their edge.
+    var showsFuses = false {
+        didSet {
+            updateFuses()
+        }
+    }
+    private(set) lazy var fuseView: NativeTabFuseView = {
+        let view = NativeTabFuseView(frame: bounds)
+        view.segmentRect = { [weak self] in self?.segmentFrameForNavigation($0) }
+        addSubview(view)
+        return view
+    }()
     private var activityTimer: Timer?
 
     deinit {
@@ -540,7 +552,22 @@ final class NativeTabControl: NSSegmentedControl {
         }
         statusBadges = next
         updateActivityTimer()
+        updateFuses()
         needsDisplay = true
+    }
+
+    private func updateFuses() {
+        var colors = [Int: NSColor]()
+        if showsFuses {
+            for (segment, badge) in statusBadges {
+                switch badge {
+                case .waiting: colors[segment] = .systemOrange
+                case .failed: colors[segment] = .systemRed
+                case .running, .done: break
+                }
+            }
+        }
+        fuseView.update(colors)
     }
 
     func runningActivityReadyForSmoke(segment: Int) -> Bool {
@@ -560,6 +587,7 @@ final class NativeTabControl: NSSegmentedControl {
     }
 
     func finishSnapshotSync(previousFrame: NSRect) {
+        fuseView.needsLayout = true
         sizeToFit()
         invalidateIntrinsicContentSize()
         needsLayout = true
