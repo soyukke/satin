@@ -157,8 +157,8 @@ fn skill_text() -> []u8 {
         \\tables and PNG images also receive a Markdown document beside their retained source snapshot.
         \\
         \\Use GFM tables for compact records and fenced code blocks for exact commands, code, logs, or errors.
-        \\Always put a language token on code that has one so Satin can syntax-highlight it. Use strong and
-        \\emphasis sparingly to mark decisions or exceptions, and inline code for exact identifiers and commands.
+        \\Always put a language token on code that has one; Satin draws a code block in one style and does
+        \\not syntax-highlight it. Use strong and emphasis sparingly to mark decisions or exceptions, and inline code for exact identifiers and commands.
         \\Satin preserves those inline styles through terminal-aware wrapping; do not use raw HTML for layout. A
         \\Markdown report may embed up to four PNG files, 32 MiB combined, through paths relative to the report and
         \\below its directory. Keep those images in the workspace until registration completes. Satin snapshots

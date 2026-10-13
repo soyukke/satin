@@ -26,6 +26,7 @@ allowed to differ from the target design during a migration.
 - [0016: Bridge Kitty graphics into native Neovim](0016-bridge-kitty-graphics-into-native-neovim.md)
 - [0017: Store versioned Markdown artifacts and present them through Satin](0017-present-bounded-artifacts-through-satin.md)
 - [0018: Split the native host by responsibility](0018-split-native-host-by-responsibility.md)
+- [0019: Replace the Rust core with Kizu](0019-replace-the-rust-core-with-kizu.md)
 
 ## Workflow
 

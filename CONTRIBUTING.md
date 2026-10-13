@@ -73,7 +73,7 @@ just quality
 ```
 
 `just quality` includes formatting, static analysis, tests, license checks,
-secret scanning, dependency auditing, the native build, the updater self-test,
+secret scanning, the native build, the updater self-test,
 the native smoke test, frame-liveness, repeated terminal input, multi-tab
 toolbar placement, full tmux control-mode coverage, and the pane/grid matrix.
 The complete policy and tool mapping are in

@@ -569,7 +569,7 @@ install-hooks:
     @chmod +x .githooks/pre-commit
     @echo "Git hooks installed from .githooks"
 
-# Format Rust, Swift, shell, and Nix sources.
+# Format Swift, shell, and Nix sources.
 fmt:
     @if [[ -z "${IN_NIX_SHELL:-}" ]]; then exec nix develop --command just fmt; else swift-format format --in-place --recursive --configuration .swift-format spikes/macos-shell scripts/native-window-record.swift; mapfile -t shell_scripts < <(rg -l '^#!.*(bash|/sh)' scripts --glob '*' | sort); shfmt -w -i 2 -ci "${shell_scripts[@]}"; nixfmt flake.nix; fi
 

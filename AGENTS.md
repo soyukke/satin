@@ -17,7 +17,7 @@
 - Homebrew で依存を追加しない。開発環境と依存は Nix flake / repo 管理に寄せる。
 - コマンド導線は `justfile` に追加する。ユーザーに長い直接コマンドを覚えさせない。
 - 大きな設計変更は実装とあわせて ADR を更新する。
-- Rust は zero-debt を守る。clippy warning、fmt 差分、幅超過、長すぎる関数を放置しない。
+- Kizu core(`core/`)は zero-debt を守る。`just check` の診断、失敗する test、長すぎる関数を放置しない。
 - 既存の未関係な dirty change は戻さない。
 - self-host 中は screen / system-audio 権限を使う visual smoke や
   `native-window-capture` を実行しない。pixel capture が必要な場合は、ユーザーの明示確認後に
@@ -32,9 +32,10 @@ Neovim pane の描画品質は Neovide parity を目標にする。
 - snapshot 後の差分推測による新しい nvim スクロール検出を追加しない。
 - nvim のスクロール、ジャンプ、ウィンドウ移動は Neovim UI event 起点の retained command model に寄せる。
 - Neovide 由来の `DrawCommand` / `WindowDrawCommand` / `RenderedWindow` / line cache /
-  scrollback animation / font shaping / Skia-Metal 境界を優先して移植する。
+  scrollback animation / font shaping の構造を優先して移植する。描画は display list を
+  CoreText + CoreGraphics で CPU rasterize し、drawable の `MTLTexture` に upload する。
 - AppKit/Swift は macOS window、tabs、menus、pane layout、native UI を担当する。
-- Rust 側は terminal runtime、Neovim compositor、renderer state、FFI 境界を担当する。
+- Kizu core 側は terminal runtime、Neovim compositor、renderer state、FFI 境界を担当する。
 - terminal pane は `libghostty-vt` を尊重する。Neovim 専用設計で terminal path を壊さない。
 - Macroquad は最終構成に戻さない。
 
@@ -42,7 +43,7 @@ Neovim pane の描画品質は Neovide parity を目標にする。
 
 - `Command-+/-/0` は Satin window 全体で共有する。pane、tab、runtime、tmux window ごとの
   font size / zoom offset を追加しない。
-- font、cell、PTY/Neovim grid、Skia geometry、cursor、mouse、IME は
+- font、cell、PTY/Neovim grid、renderer geometry、cursor、mouse、IME は
   `TerminalTextView.terminalCellSize()` の同じ値から導出する。glyph と配置用 cell を分けない。
 - tmux control client は window ごとに一つの grid を持つ。renderer-only scale や crop で
   pane ごとの差を吸収せず、全 leaf の content frame と pane header を layout 時に合成する。
@@ -53,10 +54,11 @@ Neovim pane の描画品質は Neovide parity を目標にする。
 ## 主要コマンド
 
 - `just terminal`: native AppKit terminal host を起動する。
-- `just native-build`: Swift/AppKit host をビルドする。
+- `just native-build`: Kizu core と Swift/AppKit host をビルドする。
 - `just native-smoke`: native host の基本表示スモークを実行する。
 - `just pane-grid-smoke`: local/tmux terminal と native/tmux Neovim の grid 契約を検証する。
-- `just verify`: Rust fmt / lint / test gate を実行する。
+- `just verify`: fmt / lint(`just ci-static`)と Kizu core の test / license gate
+  (`just ci-core`)を実行する。
 - `just precommit`: pre-commit 相当の検証を実行する。
 
 Neovim pane の描画変更では、通常 smoke に加えて nvim scroll / jump smoke も確認する。
@@ -67,7 +69,7 @@ Neovim pane の描画変更では、通常 smoke に加えて nvim scroll / jump
 合成しないため、描画がほとんど進まず、frame / present / アニメーションの判定が
 環境依存で落ちる。テスト側を緩める対応はしない。
 
-- CI: `just ci-static`、`just ci-rust`、ネイティブビルドと署名・パッケージ・
+- CI: `just ci-static`、`just ci-core`、ネイティブビルドと署名・パッケージ・
   リリース成果物(`just native-ci-build`)。
 - ローカル: アプリを起動する smoke 全て。push 前に `just quality` を通す。
   `just quality` は `just native-smoke-suite` と `just pane-grid-smoke` を含む。
