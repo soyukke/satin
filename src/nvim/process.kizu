@@ -1,0 +1,605 @@
+// An embedded Neovim: `nvim --embed` as a child whose standard input and
+// output are pipes carrying MessagePack RPC.
+//
+// Nothing reads in the background. The host waits on the output pipe and
+// calls read_available when it is readable; at the pipe's end a pipe
+// nothing writes to takes its place, so the wait goes quiet.
+import std::array;
+import std::json;
+import std::mem;
+import std::process;
+import std::string;
+
+extern "c" fn malloc(size: usize) -> ?ptr<u8>
+extern "c" fn free(p: ptr<u8>) -> void
+extern "c" fn strlen(text: ptr<const u8>) -> usize
+extern "c" fn pipe(ends: &var PipeEnds) -> i32
+extern "c" fn close(descriptor: i32) -> i32
+extern "c" fn dup2(from: i32, to: i32) -> i32
+extern "c" fn read(descriptor: i32, buffer: ptr<u8>, length: usize) -> isize
+extern "c" fn write(descriptor: i32, buffer: ptr<const u8>, length: usize) -> isize
+extern "c" fn poll(entries: &var PollEntry, count: u32, wait_millis: i32) -> i32
+extern "c" fn waitpid(child: i32, status: &var ExitWord, options: i32) -> i32
+extern "c" fn kill(target: i32, signal: i32) -> i32
+extern "c" fn usleep(microseconds: u32) -> i32
+extern "c" fn __error() -> ptr<i32>
+extern "c" fn _NSGetEnviron() -> ptr<usize>
+extern "c" fn posix_spawnp(
+    child: &var ExitWord,
+    file: ptr<const u8>,
+    actions: &SpawnHandle,
+    attributes: &SpawnHandle,
+    arguments: ptr<u8>,
+    environment: ptr<u8>
+) -> i32
+extern "c" fn posix_spawn_file_actions_init(actions: &var SpawnHandle) -> i32
+extern "c" fn posix_spawn_file_actions_destroy(actions: &var SpawnHandle) -> i32
+extern "c" fn posix_spawn_file_actions_adddup2(actions: &var SpawnHandle, from: i32, to: i32) -> i32
+extern "c" fn posix_spawn_file_actions_addopen(
+    actions: &var SpawnHandle,
+    descriptor: i32,
+    path: ptr<const u8>,
+    flags: i32,
+    mode: u16
+) -> i32
+extern "c" fn posix_spawn_file_actions_addchdir_np(actions: &var SpawnHandle, path: ptr<const u8>) -> i32
+extern "c" fn posix_spawnattr_init(attributes: &var SpawnHandle) -> i32
+extern "c" fn posix_spawnattr_destroy(attributes: &var SpawnHandle) -> i32
+extern "c" fn posix_spawnattr_setflags(attributes: &var SpawnHandle, flags: i16) -> i32
+extern "c" fn posix_spawnattr_setpgroup(attributes: &var SpawnHandle, group: i32) -> i32
+// `fcntl` is variadic, which Kizu cannot declare. On arm64 Darwin a
+// variadic argument travels on the stack, where a ninth integer argument
+// also goes, so six unused register arguments put the real one there. This
+// declaration is wrong on any other target.
+extern "c" fn fcntl(
+    descriptor: i32,
+    command: i32,
+    unused2: u64,
+    unused3: u64,
+    unused4: u64,
+    unused5: u64,
+    unused6: u64,
+    unused7: u64,
+    argument: i64
+) -> i32
+extern "c" struct PipeEnds {
+    read_end: i32,
+    write_end: i32,
+}
+
+extern "c" struct PollEntry {
+    descriptor: i32,
+    events: i16,
+    returned: i16,
+}
+
+extern "c" struct ExitWord {
+    value: i32,
+}
+
+/// A `posix_spawnattr_t` or `posix_spawn_file_actions_t`: one pointer the
+/// library owns.
+extern "c" struct SpawnHandle {
+    value: usize,
+}
+
+pub error ProcessError {
+    /// Neovim could not be started, or is gone.
+    Unavailable,
+}
+
+pub error ProcessFailure = ProcessError or mem::Error;
+
+fn errno() -> i32 {
+    // SAFETY: __error returns this thread's errno, which is always readable.
+    return unsafe ptr_read(__error());
+}
+
+/// How Neovim is started. cwd and executable are read only when their
+/// has_ flag is set; environment_values[i] is the value of
+/// environment_keys[i].
+pub struct Launch {
+    pub has_cwd: bool,
+    pub cwd: string::String,
+    pub has_executable: bool,
+    pub executable: string::String,
+    pub arguments: array::Array<string::String>,
+    pub environment_keys: array::Array<string::String>,
+    pub environment_values: array::Array<string::String>,
+}
+
+pub fn new_launch(allocator: Allocator) -> Launch {
+    return Launch {
+        has_cwd: false,
+        cwd: string::new(allocator),
+        has_executable: false,
+        executable: string::new(allocator),
+        arguments: array::new<string::String>(allocator),
+        environment_keys: array::new<string::String>(allocator),
+        environment_values: array::new<string::String>(allocator)
+    };
+}
+
+pub fn (self: Launch) deinit(allocator: Allocator) -> void {
+    self.cwd.deinit(allocator);
+    self.executable.deinit(allocator);
+    self.arguments.deinit(allocator);
+    self.environment_keys.deinit(allocator);
+    self.environment_values.deinit(allocator);
+}
+
+fn append_word(allocator: Allocator, list: &var array::Array<string::String>, text: []u8) -> mem::Error!void {
+    var owned = try string::from_bytes(allocator, text);
+    errdefer owned.deinit(allocator);
+    try list.append(allocator, move owned);
+    return;
+}
+
+/// Appends the `--cmd` that runs a bridge's Lua before the user's
+/// configuration, under the chunk name errors report.
+fn append_bridge_command(
+    allocator: Allocator,
+    list: &var array::Array<string::String>,
+    lua: []u8,
+    chunk: []u8
+) -> mem::Error!void {
+    var source = try string::from_bytes(allocator, lua);
+    defer source.deinit(allocator);
+    try source.append_byte(allocator, 10);
+    var quoted = json::encoder(allocator);
+    defer quoted.deinit(allocator);
+    let source_bytes = source.as_bytes();
+    try quoted.write_bytes(source_bytes);
+    var command = try string::from_bytes(allocator, "lua assert(load(");
+    errdefer command.deinit(allocator);
+    try quoted.finish_into(allocator, &var command);
+    try command.append_bytes(allocator, ", '@");
+    try command.append_bytes(allocator, chunk);
+    try command.append_bytes(allocator, "'))()");
+    try list.append(allocator, move command);
+    return;
+}
+
+/// The command line Neovim is started with: the program, the flags that
+/// embed it and load the bridges, then the launch's own arguments.
+fn command_line(allocator: Allocator, launch: &Launch) -> mem::Error!array::Array<string::String> {
+    var words = array::new<string::String>(allocator);
+    errdefer words.deinit(allocator);
+    if launch.has_executable {
+        let program = launch.executable.as_bytes();
+        try append_word(allocator, &var words, program);
+    } else if process::env("SATIN_NVIM") |program| {
+        try append_word(allocator, &var words, program);
+    } else if process::env("NVTERM_NVIM") |program| {
+        try append_word(allocator, &var words, program);
+    } else {
+        try append_word(allocator, &var words, "nvim");
+    }
+    try append_word(allocator, &var words, "--embed");
+    try append_word(allocator, &var words, "--cmd");
+    try append_word(allocator, &var words, "let g:neovide = v:true");
+    try append_word(allocator, &var words, "--cmd");
+    try append_word(allocator, &var words, "let g:satin = v:true");
+    try append_word(allocator, &var words, "--cmd");
+    try append_bridge_command(allocator, &var words, image_bridge_text(), "satin-image-bridge");
+    try append_word(allocator, &var words, "--cmd");
+    try append_bridge_command(allocator, &var words, cwd_bridge_text(), "satin-cwd-bridge");
+    try append_word(allocator, &var words, "--cmd");
+    try append_word(allocator, &var words, "let g:auto_session_enabled = v:false");
+    for 0..launch.arguments.len() |index| {
+        if launch.arguments.at(index) |argument| {
+            let bytes = argument.as_bytes();
+            try append_word(allocator, &var words, bytes);
+        }
+    }
+    return move words;
+}
+
+/// Sets key to value in a list of `KEY=VALUE` entries.
+fn set_entry(allocator: Allocator, entries: &var array::Array<string::String>, key: []u8, value: []u8) -> mem::Error!void {
+    var found: i64 = -1;
+    for 0..entries.len() |index| {
+        if entries.at(index) |entry| {
+            let bytes = entry.as_bytes();
+            if mem::len(bytes) > mem::len(key) and mem::starts_with(bytes, key) and
+                bytes[mem::len(key)] == cast<u8>(61) {
+                found = index;
+            }
+        }
+    }
+    if found >= 0 {
+        if entries.remove(found) |old| {
+            old.deinit(allocator);
+        } else |_| {}
+    }
+    var entry = try string::from_bytes(allocator, key);
+    errdefer entry.deinit(allocator);
+    try entry.append_byte(allocator, 61);
+    try entry.append_bytes(allocator, value);
+    try entries.append(allocator, move entry);
+    return;
+}
+
+/// The environment Neovim runs in: this process's, with PWD naming the
+/// launch's directory and the launch's own variables over it.
+fn child_environment(allocator: Allocator, launch: &Launch) -> mem::Error!array::Array<string::String> {
+    var entries = array::new<string::String>(allocator);
+    errdefer entries.deinit(allocator);
+    // SAFETY: _NSGetEnviron returns the address of `environ`, which is always readable.
+    let table = unsafe ptr_read(_NSGetEnviron());
+    if table != 0 {
+        // SAFETY: environ points at a NULL-terminated array of string addresses.
+        var cursor = unsafe ptr_from_int<ptr<usize>>(table);
+        var reading = true;
+        while reading {
+            // SAFETY: cursor is inside the array, at or before its NULL.
+            let address = unsafe ptr_read(cursor);
+            if address == 0 {
+                reading = false;
+            } else {
+                // SAFETY: the next slot is inside the array, at or before its NULL.
+                cursor = unsafe ptr_from_int<ptr<usize>>(int_from_ptr<usize>(cursor) + 8);
+                // SAFETY: address is a NUL-terminated entry of environ.
+                let text = unsafe ptr_from_int<ptr<const u8>>(address);
+                // SAFETY: as above.
+                let length = unsafe strlen(text);
+                // SAFETY: the entry is length bytes long.
+                let entry = unsafe view_from_ptr(text, cast<i64>(length));
+                try append_word(allocator, &var entries, entry);
+            }
+        }
+    }
+    if launch.has_cwd {
+        let cwd = launch.cwd.as_bytes();
+        try set_entry(allocator, &var entries, "PWD", cwd);
+    }
+    for 0..launch.environment_keys.len() |index| {
+        if launch.environment_keys.at(index) |key| {
+            if launch.environment_values.at(index) |value| {
+                let key_bytes = key.as_bytes();
+                let value_bytes = value.as_bytes();
+                try set_entry(allocator, &var entries, key_bytes, value_bytes);
+            }
+        }
+    }
+    return move entries;
+}
+
+/// How many bytes list takes as a NULL-terminated pointer array followed
+/// by its NUL-terminated strings.
+fn block_bytes(list: &array::Array<string::String>) -> i64 {
+    var total = (list.len() + 1) * 8;
+    for 0..list.len() |index| {
+        if list.at(index) |element| {
+            total = total + element.len() + 1;
+        }
+    }
+    return total;
+}
+
+/// list as a NULL-terminated pointer array followed by its strings, in one
+/// malloc block the caller frees; null without storage.
+fn pointer_block(list: &array::Array<string::String>) -> ?ptr<u8> {
+    // SAFETY: malloc returns the block's bytes or null.
+    let storage = unsafe malloc(cast<usize>(block_bytes(list))) orelse return null;
+    var next = (list.len() + 1) * 8;
+    for 0..list.len() |index| {
+        // SAFETY: the block holds a pointer at each slot.
+        let cell = unsafe cast<ptr<usize>>(ptr_offset(storage, index * 8));
+        // SAFETY: the string starts at next, inside the block.
+        unsafe ptr_write(cell, int_from_ptr<usize>(ptr_offset(storage, next)));
+        if list.at(index) |element| {
+            let text = element.as_bytes();
+            let length = mem::len(text);
+            // SAFETY: the block reserves length + 1 bytes at next.
+            let target = unsafe mut_view_from_ptr(ptr_offset(storage, next), length + 1);
+            for 0..length |position| {
+                target[position] = text[position];
+            }
+            target[length] = 0;
+            next = next + length + 1;
+        }
+    }
+    // SAFETY: the last slot is reserved for the array's NULL.
+    unsafe ptr_write(cast<ptr<usize>>(ptr_offset(storage, list.len() * 8)), 0);
+    return storage;
+}
+
+fn close_descriptor(descriptor: i32) -> void {
+    if descriptor >= 0 {
+        // SAFETY: the descriptor is the caller's own and closed once.
+        let _ = unsafe close(descriptor);
+    }
+    return;
+}
+
+/// Starts words[0] with words as its arguments and entries as its
+/// environment, in a process group of its own, reading input and writing
+/// output and nothing else of this process's. The child's id, or -1.
+fn spawn_child(
+    allocator: Allocator,
+    words: &array::Array<string::String>,
+    entries: &array::Array<string::String>,
+    launch: &Launch,
+    input: i32,
+    output: i32
+) -> mem::Error!i32 {
+    var cwd = try string::from_bytes(allocator, "");
+    defer cwd.deinit(allocator);
+    try cwd.append_string(allocator, &launch.cwd);
+    try cwd.append_byte(allocator, 0);
+    let cwd_bytes = cwd.as_bytes();
+    let arguments = pointer_block(words) orelse return mem::Error::OutOfMemory;
+    let environment = pointer_block(entries);
+    var child = ExitWord { value: -1 };
+    var actions = SpawnHandle { value: 0 };
+    var attributes = SpawnHandle { value: 0 };
+    var result: i32 = -1;
+    if environment |variables| {
+        // SAFETY: both handles are writable storage the library initializes.
+        let prepared = unsafe posix_spawn_file_actions_init(&var actions) == 0 and
+            unsafe posix_spawnattr_init(&var attributes) == 0;
+        if prepared {
+            // SAFETY: attributes is initialized; 0x4002 is POSIX_SPAWN_SETPGROUP | POSIX_SPAWN_CLOEXEC_DEFAULT.
+            let _ = unsafe posix_spawnattr_setflags(&var attributes, 16386);
+            // SAFETY: as above; group 0 is a group of the child's own.
+            let _ = unsafe posix_spawnattr_setpgroup(&var attributes, 0);
+            // SAFETY: actions is initialized and input is open.
+            let _ = unsafe posix_spawn_file_actions_adddup2(&var actions, input, 0);
+            // SAFETY: actions is initialized and output is open.
+            let _ = unsafe posix_spawn_file_actions_adddup2(&var actions, output, 1);
+            // SAFETY: actions is initialized; the path is a C string and 1 is O_WRONLY.
+            let _ = unsafe posix_spawn_file_actions_addopen(&var actions, 2, c"/dev/null", 1, 0);
+            if launch.has_cwd {
+                // SAFETY: cwd_bytes ends in NUL.
+                let _ = unsafe posix_spawn_file_actions_addchdir_np(&var actions, ptr_of(cwd_bytes));
+            }
+            // SAFETY: the first pointer of the block is the program's string.
+            let program = unsafe ptr_from_int<ptr<const u8>>(ptr_read(cast<ptr<usize>>(arguments)));
+            // SAFETY: the handles are initialized and both blocks are NULL-terminated arrays.
+            result = unsafe posix_spawnp(&var child, program, &actions, &attributes, arguments, variables);
+            // SAFETY: actions was initialized above.
+            let _ = unsafe posix_spawn_file_actions_destroy(&var actions);
+            // SAFETY: attributes was initialized above.
+            let _ = unsafe posix_spawnattr_destroy(&var attributes);
+        }
+        // SAFETY: the block came from malloc and the child has its own copy.
+        unsafe free(variables);
+    }
+    // SAFETY: as above.
+    unsafe free(arguments);
+    if result != 0 {
+        return -1;
+    }
+    return child.value;
+}
+
+/// An embedded Neovim. quiet_end is the write end of a pipe that stands in
+/// for the output pipe once it reaches its end, or -1 before; pending is
+/// what Neovim wrote that no value was decoded from yet, from consumed on.
+pub struct Process {
+    child: i32,
+    input: i32,
+    output: i32,
+    quiet_end: i32,
+    ended: bool,
+    exited: bool,
+    exit_code: i64,
+    pending: string::String,
+    consumed: i64,
+}
+
+/// Starts Neovim for launch.
+pub fn spawn_process(allocator: Allocator, launch: &Launch) -> ProcessFailure!Process {
+    let words = try command_line(allocator, launch);
+    defer words.deinit(allocator);
+    let entries = try child_environment(allocator, launch);
+    defer entries.deinit(allocator);
+    var to_child = PipeEnds { read_end: -1, write_end: -1 };
+    var from_child = PipeEnds { read_end: -1, write_end: -1 };
+    // SAFETY: each is two writable ints.
+    let piped = unsafe pipe(&var to_child) == 0 and unsafe pipe(&var from_child) == 0;
+    var child: i32 = -1;
+    if piped {
+        if spawn_child(allocator, &words, &entries, launch, to_child.read_end, from_child.write_end) |started| {
+            child = started;
+        } else |_| {}
+    }
+    close_descriptor(to_child.read_end);
+    close_descriptor(from_child.write_end);
+    if child < 0 {
+        close_descriptor(to_child.write_end);
+        close_descriptor(from_child.read_end);
+        return ProcessError::Unavailable;
+    }
+    // A write to a Neovim that is gone fails instead of raising SIGPIPE.
+    // SAFETY: the descriptor is this process's own; 73 is F_SETNOSIGPIPE.
+    let _ = unsafe fcntl(to_child.write_end, 73, 0, 0, 0, 0, 0, 0, 1);
+    return Process {
+        child: child,
+        input: to_child.write_end,
+        output: from_child.read_end,
+        quiet_end: -1,
+        ended: false,
+        exited: false,
+        exit_code: 0,
+        pending: string::new(allocator),
+        consumed: 0
+    };
+}
+
+/// Ends Neovim and everything in its process group, and closes its pipes.
+pub fn (self: Process) deinit(allocator: Allocator) -> void {
+    if !self.exited {
+        terminate(self.child);
+    }
+    close_descriptor(self.input);
+    close_descriptor(self.output);
+    close_descriptor(self.quiet_end);
+    self.pending.deinit(allocator);
+}
+
+/// What a wait status says the child left with: its exit code, or 128
+/// plus the signal that ended it.
+fn exit_code_of(status: i64) -> i64 {
+    let signal = status % 128;
+    if signal == 0 {
+        return status / 256 % 256;
+    }
+    return 128 + signal;
+}
+
+/// Whether child has exited, reaping it when it has; its exit code goes
+/// through code.
+fn reap(child: i32, code: &var i64) -> bool {
+    var status = ExitWord { value: 0 };
+    // SAFETY: child is a child of this process; 1 is WNOHANG; status is a writable int.
+    let result = unsafe waitpid(child, &var status, 1);
+    if result == 0 {
+        return false;
+    }
+    code = 1;
+    if result > 0 {
+        code = exit_code_of(cast<i64>(status.value));
+    }
+    return true;
+}
+
+/// Ends child, which has not been reaped, and its process group: waits a
+/// fifth of a second for it, asks, waits again, then kills.
+fn terminate(child: i32) -> void {
+    var code: i64 = 0;
+    for 0..2 |round| {
+        for 0..20 |_| {
+            if reap(child, &var code) {
+                return;
+            }
+            // SAFETY: sleeping takes no memory of ours.
+            let _ = unsafe usleep(10000);
+        }
+        if round == 0 {
+            // SAFETY: the child leads its own process group; 15 is SIGTERM.
+            let _ = unsafe kill(0 - child, 15);
+        }
+    }
+    // SAFETY: as above; 9 is SIGKILL.
+    let _ = unsafe kill(0 - child, 9);
+    var status = ExitWord { value: 0 };
+    // SAFETY: child is a child of this process; this waits for the kill to land.
+    let _ = unsafe waitpid(child, &var status, 0);
+    return;
+}
+
+/// The descriptor that is readable when Neovim has written output.
+pub fn (self: &Process) wakeup_fd() -> i32 {
+    return self.output;
+}
+
+/// Whether Neovim has exited; its exit code is then exit_code's.
+pub fn (self: &var Process) poll_exited() -> bool {
+    if !self.exited {
+        var code: i64 = 0;
+        if reap(self.child, &var code) {
+            self.exited = true;
+            self.exit_code = code;
+        }
+    }
+    return self.exited;
+}
+
+pub fn (self: &Process) exit_code() -> i64 {
+    return self.exit_code;
+}
+
+/// Writes all of bytes to Neovim.
+pub fn (self: &Process) write_all(bytes: []u8) -> ProcessError!void {
+    var sent: i64 = 0;
+    while sent < mem::len(bytes) {
+        let rest = bytes[sent..mem::len(bytes)];
+        // SAFETY: input is the live pipe; rest is its length in readable bytes.
+        let count = unsafe write(self.input, ptr_of(rest), cast<usize>(mem::len(rest)));
+        if count > 0 {
+            sent = sent + cast<i64>(count);
+            continue;
+        }
+        // EINTR.
+        if errno() == 4 {
+            continue;
+        }
+        return ProcessError::Unavailable;
+    }
+    return;
+}
+
+fn is_readable(descriptor: i32) -> bool {
+    var entry = PollEntry { descriptor: descriptor, events: 1, returned: 0 };
+    // SAFETY: entry is one writable pollfd.
+    return unsafe poll(&var entry, 1, 0) > 0;
+}
+
+/// The output pipe reached its end, where it would read as ready for ever.
+/// Puts a pipe nothing writes to in its place, so the host's wait on
+/// wakeup_fd goes quiet while the descriptor stays valid.
+fn (self: &var Process) quiet() -> void {
+    self.ended = true;
+    var ends = PipeEnds { read_end: -1, write_end: -1 };
+    // SAFETY: ends is two writable ints.
+    if unsafe pipe(&var ends) != 0 {
+        return;
+    }
+    // SAFETY: both descriptors are open; dup2 closes the old pipe as it replaces it.
+    let _ = unsafe dup2(ends.read_end, self.output);
+    close_descriptor(ends.read_end);
+    self.quiet_end = ends.write_end;
+    return;
+}
+
+/// Takes what Neovim has written into pending, without waiting for more.
+/// Whether there was any.
+pub fn (self: &var Process) read_available(allocator: Allocator) -> mem::Error!bool {
+    if self.consumed > 0 and self.consumed == self.pending.len() {
+        self.pending.clear();
+        self.consumed = 0;
+    }
+    // SAFETY: malloc returns 65536 bytes of storage or null.
+    let storage = unsafe malloc(65536) orelse return mem::Error::OutOfMemory;
+    var changed = false;
+    var failed = false;
+    var reads = 0;
+    while !self.ended and !failed and reads < 64 and is_readable(self.output) {
+        reads = reads + 1;
+        // SAFETY: output is the live pipe; storage holds 65536 writable bytes.
+        let count = cast<i64>(unsafe read(self.output, storage, 65536));
+        if count > 0 {
+            // SAFETY: read wrote count bytes to storage.
+            let bytes = unsafe view_from_ptr(cast<ptr<const u8>>(storage), count);
+            if self.pending.append_bytes(allocator, bytes) {
+                changed = true;
+            } else |_| {
+                failed = true;
+            }
+        } else if count == 0 or (errno() != 4 and errno() != 35) {
+            self.quiet();
+        }
+    }
+    // SAFETY: storage came from malloc and nothing reads it after this.
+    unsafe free(storage);
+    if failed {
+        return mem::Error::OutOfMemory;
+    }
+    return changed;
+}
+
+/// Decodes the next whole value Neovim wrote. found is false, and the
+/// value Nil, when none is whole yet.
+pub fn (self: &var Process) next_value(allocator: Allocator, found: &var bool) -> PackFailure!Value {
+    found = false;
+    let bytes = self.pending.as_bytes();
+    var used: i64 = 0;
+    let value = try decode(allocator, bytes[self.consumed..mem::len(bytes)], &var used);
+    if used > 0 {
+        self.consumed = self.consumed + used;
+        found = true;
+    }
+    return move value;
+}

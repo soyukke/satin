@@ -1,0 +1,476 @@
+// MessagePack as Neovim's RPC speaks it: values decoded from bytes that
+// arrive in pieces, and the few shapes a request is written in.
+import std::array;
+import std::float;
+import std::mem;
+import std::string;
+
+pub error PackError {
+    /// The bytes are no MessagePack value, or nest deeper than a message
+    /// has reason to.
+    Invalid,
+}
+
+pub error PackFailure = PackError or mem::Error;
+
+/// 2^63, which no integer literal can spell.
+fn high_bit() -> u64 {
+    return cast<u64>(9223372036854775807) + 1;
+}
+
+fn max_depth() -> i64 {
+    return 64;
+}
+
+/// One decoded value. Int holds every integer that fits an i64, and UInt
+/// the unsigned ones above it; an extension type is kept as its bytes.
+pub union Value {
+    Nil,
+    Bool(bool),
+    Int(i64),
+    UInt(u64),
+    Float(f64),
+    Str(string::String),
+    Bin(string::String),
+    Arr(array::Array<Value>),
+    Map(array::Array<Entry>),
+    Ext(string::String),
+}
+
+pub struct Entry {
+    pub key: Value,
+    pub value: Value,
+}
+
+pub fn (self: Entry) deinit(allocator: Allocator) -> void {
+    self.key.deinit(allocator);
+    self.value.deinit(allocator);
+}
+
+pub fn (self: Value) deinit(allocator: Allocator) -> void {
+    match self {
+        Nil => {},
+        Bool(_) => {},
+        Int(_) => {},
+        UInt(_) => {},
+        Float(_) => {},
+        Str(text) => text.deinit(allocator),
+        Bin(bytes) => bytes.deinit(allocator),
+        Arr(items) => items.deinit(allocator),
+        Map(entries) => entries.deinit(allocator),
+        Ext(bytes) => bytes.deinit(allocator),
+    }
+    return;
+}
+
+/// The big-endian unsigned integer of width bytes at index.
+fn unsigned_at(bytes: []u8, index: i64, width: i64) -> u64 {
+    var value: u64 = 0;
+    for 0..width |offset| {
+        value = value * 256 + cast<u64>(bytes[index + offset]);
+    }
+    return value;
+}
+
+/// What a value's first byte says of it: how many bytes after it hold its
+/// length or its number (head), how many bytes of payload it then has when
+/// that is fixed (payload, -1 when the head gives a length), and how many
+/// values it holds (a map's count is of pairs).
+struct Shape {
+    head: i64,
+    payload: i64,
+    container: i64,
+    fixed_count: i64,
+}
+
+fn shape(head: i64, payload: i64) -> Shape {
+    return Shape { head: head, payload: payload, container: 0, fixed_count: -1 };
+}
+
+fn container(kind: i64, head: i64, fixed_count: i64) -> Shape {
+    return Shape { head: head, payload: 0, container: kind, fixed_count: fixed_count };
+}
+
+/// The shape of the value whose first byte is tag; a head of -1 for 0xc1,
+/// which starts no value.
+fn shape_of(tag: i64) -> Shape {
+    if tag <= 127 or tag >= 224 {
+        return shape(0, 0);
+    }
+    if tag <= 143 {
+        return container(2, 0, tag - 128);
+    }
+    if tag <= 159 {
+        return container(1, 0, tag - 144);
+    }
+    if tag <= 191 {
+        return shape(0, tag - 160);
+    }
+    if tag == 192 or tag == 194 or tag == 195 {
+        return shape(0, 0);
+    }
+    if tag == 193 {
+        return shape(-1, 0);
+    }
+    // bin 8 / 16 / 32.
+    if tag <= 198 {
+        return shape(lengths(tag - 196), -1);
+    }
+    // ext 8 / 16 / 32: a length, then a type byte.
+    if tag <= 201 {
+        return shape(lengths(tag - 199), -2);
+    }
+    if tag == 202 {
+        return shape(4, 0);
+    }
+    if tag == 203 {
+        return shape(8, 0);
+    }
+    // uint 8 / 16 / 32 / 64, then int 8 / 16 / 32 / 64.
+    if tag <= 207 {
+        return shape(lengths(tag - 204), 0);
+    }
+    if tag <= 211 {
+        return shape(lengths(tag - 208), 0);
+    }
+    // fixext 1 / 2 / 4 / 8 / 16: a type byte, then the data.
+    if tag <= 216 {
+        return shape(1, lengths(tag - 212));
+    }
+    // str 8 / 16 / 32.
+    if tag <= 219 {
+        return shape(lengths(tag - 217), -1);
+    }
+    // array 16 / 32, then map 16 / 32.
+    if tag <= 221 {
+        return container(1, (tag - 219) * 2, -1);
+    }
+    return container(2, (tag - 221) * 2, -1);
+}
+
+/// 1, 2, 4, 8, 16 for 0..4.
+fn lengths(step: i64) -> i64 {
+    var value = 1;
+    for 0..step |_| {
+        value = value * 2;
+    }
+    return value;
+}
+
+/// Where the value at index ends: one past its last byte. -1 when bytes
+/// end before it does, and -2 when it is no value.
+pub fn value_end(bytes: []u8, index: i64, depth: i64) -> i64 {
+    let length = mem::len(bytes);
+    if index >= length {
+        return -1;
+    }
+    if depth > max_depth() {
+        return -2;
+    }
+    let found = shape_of(cast<i64>(bytes[index]));
+    if found.head < 0 {
+        return -2;
+    }
+    var next = index + 1;
+    if next + found.head > length {
+        return -1;
+    }
+    if found.container != 0 {
+        var count = found.fixed_count;
+        if count < 0 {
+            count = cast<i64>(unsigned_at(bytes, next, found.head));
+        }
+        next = next + found.head;
+        for 0..count * found.container |_| {
+            next = value_end(bytes, next, depth + 1);
+            if next < 0 {
+                return next;
+            }
+        }
+        return next;
+    }
+    var payload = found.payload;
+    if payload == -1 {
+        payload = cast<i64>(unsigned_at(bytes, next, found.head));
+    } else if payload == -2 {
+        payload = cast<i64>(unsigned_at(bytes, next, found.head)) + 1;
+    }
+    next = next + found.head + payload;
+    if next > length {
+        return -1;
+    }
+    return next;
+}
+
+fn text_value(allocator: Allocator, bytes: []u8, from: i64, length: i64, kind: i64) -> mem::Error!Value {
+    var owned = try string::from_bytes(allocator, bytes[from..from + length]);
+    if kind == 0 {
+        return Value::Str(move owned);
+    }
+    if kind == 1 {
+        return Value::Bin(move owned);
+    }
+    return Value::Ext(move owned);
+}
+
+/// A two's complement integer of width bytes, read from its unsigned bits.
+fn signed(bits: u64, width: i64) -> i64 {
+    if width == 8 {
+        if bits >= high_bit() {
+            return cast<i64>(bits - high_bit()) - 9223372036854775807 - 1;
+        }
+        return cast<i64>(bits);
+    }
+    var limit: i64 = 1;
+    for 0..width * 8 - 1 |_| {
+        limit = limit * 2;
+    }
+    let value = cast<i64>(bits);
+    if value >= limit {
+        return value - limit * 2;
+    }
+    return value;
+}
+
+/// The value of a 32-bit float's bits.
+fn single(bits: u64) -> f64 {
+    let sign = bits / 2147483648;
+    let exponent = cast<i64>(bits / 8388608 % 256);
+    var fraction = bits % 8388608;
+    // A double's exponent field, biased by 1023.
+    var biased: i64 = exponent - 127 + 1023;
+    if exponent == 255 {
+        biased = 2047;
+    } else if exponent == 0 and fraction == 0 {
+        biased = 0;
+    } else if exponent == 0 {
+        // A subnormal single is a normal double: shift its leading one out.
+        biased = -126 + 1023;
+        while fraction < 8388608 {
+            fraction = fraction * 2;
+            biased = biased - 1;
+        }
+        fraction = fraction % 8388608;
+    }
+    let exponent_unit: u64 = 4503599627370496;
+    let fraction_unit: u64 = 536870912;
+    return float::from_bits(sign * high_bit() + cast<u64>(biased) * exponent_unit + fraction * fraction_unit);
+}
+
+/// Decodes the value at index, which value_end found whole, and moves
+/// index past it.
+fn decode_at(allocator: Allocator, bytes: []u8, index: &var i64) -> mem::Error!Value {
+    let tag = cast<i64>(bytes[index]);
+    let found = shape_of(tag);
+    let next = index + 1;
+    if found.container != 0 {
+        var count = found.fixed_count;
+        if count < 0 {
+            count = cast<i64>(unsigned_at(bytes, next, found.head));
+        }
+        index = next + found.head;
+        if found.container == 1 {
+            var items = array::new<Value>(allocator);
+            errdefer items.deinit(allocator);
+            for 0..count |_| {
+                let item = try decode_at(allocator, bytes, index);
+                errdefer item.deinit(allocator);
+                try items.append(allocator, move item);
+            }
+            return Value::Arr(move items);
+        }
+        var entries = array::new<Entry>(allocator);
+        errdefer entries.deinit(allocator);
+        for 0..count |_| {
+            let key = try decode_at(allocator, bytes, index);
+            errdefer key.deinit(allocator);
+            let value = try decode_at(allocator, bytes, index);
+            errdefer value.deinit(allocator);
+            try entries.append(allocator, Entry { key: move key, value: move value });
+        }
+        return Value::Map(move entries);
+    }
+    if tag <= 127 {
+        index = next;
+        return Value::Int(tag);
+    }
+    if tag >= 224 {
+        index = next;
+        return Value::Int(tag - 256);
+    }
+    if tag == 192 {
+        index = next;
+        return Value::Nil;
+    }
+    if tag == 194 or tag == 195 {
+        index = next;
+        return Value::Bool(tag == 195);
+    }
+    if tag <= 191 {
+        index = next + found.payload;
+        return try text_value(allocator, bytes, next, found.payload, 0);
+    }
+    if tag == 202 or tag == 203 {
+        let bits = unsigned_at(bytes, next, found.head);
+        index = next + found.head;
+        if tag == 202 {
+            return Value::Float(single(bits));
+        }
+        return Value::Float(float::from_bits(bits));
+    }
+    if tag >= 204 and tag <= 207 {
+        let bits = unsigned_at(bytes, next, found.head);
+        index = next + found.head;
+        if bits > 9223372036854775807 {
+            return Value::UInt(bits);
+        }
+        return Value::Int(cast<i64>(bits));
+    }
+    if tag >= 208 and tag <= 211 {
+        let bits = unsigned_at(bytes, next, found.head);
+        index = next + found.head;
+        return Value::Int(signed(bits, found.head));
+    }
+    if tag >= 212 and tag <= 216 {
+        index = next + 1 + found.payload;
+        return try text_value(allocator, bytes, next + 1, found.payload, 2);
+    }
+    let length = cast<i64>(unsigned_at(bytes, next, found.head));
+    let from = next + found.head;
+    if found.payload == -2 {
+        index = from + 1 + length;
+        return try text_value(allocator, bytes, from + 1, length, 2);
+    }
+    index = from + length;
+    if tag >= 217 {
+        return try text_value(allocator, bytes, from, length, 0);
+    }
+    return try text_value(allocator, bytes, from, length, 1);
+}
+
+/// Decodes the value that starts bytes and writes how many bytes it took
+/// to used. used is 0, and the value Nil, when bytes end before the value
+/// does.
+pub fn decode(allocator: Allocator, bytes: []u8, used: &var i64) -> PackFailure!Value {
+    used = 0;
+    let end = value_end(bytes, 0, 0);
+    if end == -2 {
+        return PackError::Invalid;
+    }
+    if end < 0 {
+        return Value::Nil;
+    }
+    var index: i64 = 0;
+    let value = try decode_at(allocator, bytes, &var index);
+    used = end;
+    return move value;
+}
+
+fn append_unsigned(allocator: Allocator, out: &var string::String, value: u64, width: i64) -> mem::Error!void {
+    var divisor: u64 = 1;
+    for 0..width - 1 |_| {
+        divisor = divisor * 256;
+    }
+    for 0..width |_| {
+        try out.append_byte(allocator, cast<u8>(value / divisor % 256));
+        divisor = divisor / 256;
+    }
+    return;
+}
+
+/// Appends an integer in its shortest form.
+pub fn append_int(allocator: Allocator, out: &var string::String, value: i64) -> mem::Error!void {
+    if value >= 0 {
+        let bits = cast<u64>(value);
+        if value <= 127 {
+            try out.append_byte(allocator, cast<u8>(value));
+        } else if value <= 255 {
+            try out.append_byte(allocator, 204);
+            try append_unsigned(allocator, out, bits, 1);
+        } else if value <= 65535 {
+            try out.append_byte(allocator, 205);
+            try append_unsigned(allocator, out, bits, 2);
+        } else if value <= 4294967295 {
+            try out.append_byte(allocator, 206);
+            try append_unsigned(allocator, out, bits, 4);
+        } else {
+            try out.append_byte(allocator, 207);
+            try append_unsigned(allocator, out, bits, 8);
+        }
+        return;
+    }
+    if value >= -32 {
+        try out.append_byte(allocator, cast<u8>(value + 256));
+    } else if value >= -128 {
+        try out.append_byte(allocator, 208);
+        try append_unsigned(allocator, out, cast<u64>(value + 256), 1);
+    } else if value >= -32768 {
+        try out.append_byte(allocator, 209);
+        try append_unsigned(allocator, out, cast<u64>(value + 65536), 2);
+    } else if value >= -2147483648 {
+        try out.append_byte(allocator, 210);
+        try append_unsigned(allocator, out, cast<u64>(value + 4294967296), 4);
+    } else {
+        try out.append_byte(allocator, 211);
+        // value + 2^64, taken in two steps an i64 can hold.
+        let bits = cast<u64>(value + 9223372036854775807 + 1) + high_bit();
+        try append_unsigned(allocator, out, bits, 8);
+    }
+    return;
+}
+
+pub fn append_bool(allocator: Allocator, out: &var string::String, value: bool) -> mem::Error!void {
+    if value {
+        try out.append_byte(allocator, 195);
+    } else {
+        try out.append_byte(allocator, 194);
+    }
+    return;
+}
+
+/// Appends text as a string.
+pub fn append_str(allocator: Allocator, out: &var string::String, text: []u8) -> mem::Error!void {
+    let length = mem::len(text);
+    if length <= 31 {
+        try out.append_byte(allocator, cast<u8>(160 + length));
+    } else if length <= 255 {
+        try out.append_byte(allocator, 217);
+        try append_unsigned(allocator, out, cast<u64>(length), 1);
+    } else if length <= 65535 {
+        try out.append_byte(allocator, 218);
+        try append_unsigned(allocator, out, cast<u64>(length), 2);
+    } else {
+        try out.append_byte(allocator, 219);
+        try append_unsigned(allocator, out, cast<u64>(length), 4);
+    }
+    try out.append_bytes(allocator, text);
+    return;
+}
+
+/// Appends the start of an array of count values, which follow it.
+pub fn append_array(allocator: Allocator, out: &var string::String, count: i64) -> mem::Error!void {
+    if count <= 15 {
+        try out.append_byte(allocator, cast<u8>(144 + count));
+    } else if count <= 65535 {
+        try out.append_byte(allocator, 220);
+        try append_unsigned(allocator, out, cast<u64>(count), 2);
+    } else {
+        try out.append_byte(allocator, 221);
+        try append_unsigned(allocator, out, cast<u64>(count), 4);
+    }
+    return;
+}
+
+/// Appends the start of a map of count pairs, which follow it.
+pub fn append_map(allocator: Allocator, out: &var string::String, count: i64) -> mem::Error!void {
+    if count <= 15 {
+        try out.append_byte(allocator, cast<u8>(128 + count));
+    } else if count <= 65535 {
+        try out.append_byte(allocator, 222);
+        try append_unsigned(allocator, out, cast<u64>(count), 2);
+    } else {
+        try out.append_byte(allocator, 223);
+        try append_unsigned(allocator, out, cast<u64>(count), 4);
+    }
+    return;
+}

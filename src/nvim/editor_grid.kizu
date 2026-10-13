@@ -1,0 +1,343 @@
+// One Neovim grid: the cells its grid_line events wrote, moved by its
+// grid_scroll events.
+import satin::term;
+import std::array;
+import std::math;
+import std::mem;
+import std::string;
+
+fn plain_style() -> term::CellStyle {
+    return term::CellStyle {
+        bold: false,
+        italic: false,
+        underline: term::Underline::None,
+        has_underline_color: false,
+        underline_color: term::Color { r: 0, g: 0, b: 0 },
+        faint: false,
+        blink: false,
+        strikethrough: false,
+        overline: false
+    };
+}
+
+/// A space in fg with no background, whose text is the space every row's
+/// text starts with.
+fn blank_cell(fg: term::Color) -> term::Cell {
+    return term::Cell {
+        text_start: 0,
+        text_len: 1,
+        fg: fg,
+        has_bg: false,
+        bg: term::Color { r: 0, g: 0, b: 0 },
+        blend: 0,
+        style: plain_style()
+    };
+}
+
+/// A grid's width or height: at least one cell, and no more than a u16 holds.
+fn grid_extent(value: i64) -> i64 {
+    return math::clamp<i64>(value, 1, 65535);
+}
+
+/// One row of a grid. A cell's text is text_len bytes of text at text_start.
+/// text starts with a space, which blank cells share; a cell written anew
+/// appends its text, and what that leaves unused is dropped once it outgrows
+/// the row.
+struct GridRow {
+    cells: array::Array<term::Cell>,
+    text: string::String,
+}
+
+fn new_grid_row(allocator: Allocator) -> GridRow {
+    return GridRow { cells: array::new<term::Cell>(allocator), text: string::new(allocator) };
+}
+
+fn (self: GridRow) deinit(allocator: Allocator) -> void {
+    self.cells.deinit(allocator);
+    self.text.deinit(allocator);
+}
+
+/// Makes the row width blank cells.
+fn (self: &var GridRow) blank(allocator: Allocator, width: i64, fg: term::Color) -> mem::Error!void {
+    self.cells.clear(allocator);
+    self.text.clear();
+    try self.text.append_byte(allocator, 32);
+    for 0..width |_| {
+        try self.cells.append(allocator, blank_cell(fg));
+    }
+    return;
+}
+
+/// Makes the row width cells, dropping the ones past it and adding blanks.
+fn (self: &var GridRow) resize(allocator: Allocator, width: i64, fg: term::Color) -> mem::Error!void {
+    if self.cells.len() > width {
+        if self.cells.truncate(allocator, width) {} else |_| {}
+    }
+    for self.cells.len()..width |_| {
+        try self.cells.append(allocator, blank_cell(fg));
+    }
+    return;
+}
+
+/// Rewrites text as the space and then each cell's text, in order.
+fn (self: &var GridRow) compact(allocator: Allocator) -> mem::Error!void {
+    var packed = string::new(allocator);
+    defer packed.deinit(allocator);
+    try packed.append_byte(allocator, 32);
+    for 0..self.cells.len() |col| {
+        var cell = self.cells.get(col) orelse continue;
+        let old = self.text.as_bytes();
+        let piece = old[cell.text_start..cell.text_start + cell.text_len];
+        if cell.text_len == 1 and piece[0] == cast<u8>(32) {
+            cell.text_start = 0;
+        } else {
+            cell.text_start = packed.len();
+            try packed.append_bytes(allocator, piece);
+        }
+        if self.cells.set(col, cell) {} else |_| {}
+    }
+    self.text.clear();
+    try self.text.append_string(allocator, &packed);
+    return;
+}
+
+/// Writes cell with text as its text at col; a column past the row is
+/// ignored.
+fn (self: &var GridRow) set(allocator: Allocator, col: i64, cell: term::Cell, text: []u8) -> mem::Error!void {
+    if col < 0 or col >= self.cells.len() {
+        return;
+    }
+    let length = mem::len(text);
+    var placed = cell;
+    placed.text_len = length;
+    placed.text_start = -1;
+    if length == 1 and text[0] == cast<u8>(32) {
+        placed.text_start = 0;
+    } else {
+        let old = self.cells.get(col) orelse cell;
+        let bytes = self.text.as_bytes();
+        if old.text_len == length and mem::equal_bytes(bytes[old.text_start..old.text_start + length], text) {
+            placed.text_start = old.text_start;
+        }
+    }
+    if placed.text_start < 0 {
+        if self.text.len() > 64 + self.cells.len() * 8 {
+            try self.compact(allocator);
+        }
+        placed.text_start = self.text.len();
+        try self.text.append_bytes(allocator, text);
+    }
+    if self.cells.set(col, placed) {} else |_| {}
+    return;
+}
+
+/// Moves the cells from left up to right by cols columns, towards the left
+/// for a positive cols, and blanks the columns that leaves.
+fn (self: &var GridRow) shift_columns(left: i64, right: i64, cols: i64, fg: term::Color) -> void {
+    let width = right - left;
+    let shift = math::min<i64>(math::abs<i64>(cols), width);
+    let cells = self.cells.as_mut_slice();
+    if cols > 0 {
+        for left..right - shift |col| {
+            cells[col] = cells[col + shift];
+        }
+        for right - shift..right |col| {
+            cells[col] = blank_cell(fg);
+        }
+        return;
+    }
+    var col = right - 1;
+    while col >= left + shift {
+        cells[col] = cells[col - shift];
+        col = col - 1;
+    }
+    for left..left + shift |blank| {
+        cells[blank] = blank_cell(fg);
+    }
+    return;
+}
+
+/// A grid_scroll: the cells from top up to bot and left up to right move
+/// rows up and cols to the left.
+struct ScrollRegion {
+    top: i64,
+    bot: i64,
+    left: i64,
+    right: i64,
+    rows: i64,
+    cols: i64,
+}
+
+struct Grid {
+    width: i64,
+    height: i64,
+    rows: array::Array<GridRow>,
+}
+
+fn new_grid(allocator: Allocator, width: i64, height: i64, fg: term::Color) -> mem::Error!Grid {
+    var grid = Grid { width: 0, height: 0, rows: array::new<GridRow>(allocator) };
+    errdefer grid.deinit(allocator);
+    try grid.resize(allocator, width, height, fg);
+    return move grid;
+}
+
+fn (self: Grid) deinit(allocator: Allocator) -> void {
+    self.rows.deinit(allocator);
+}
+
+/// Gives the grid width x height cells, keeping the ones it still holds.
+fn (self: &var Grid) resize(allocator: Allocator, width: i64, height: i64, fg: term::Color) -> mem::Error!void {
+    self.width = grid_extent(width);
+    self.height = grid_extent(height);
+    if self.rows.len() > self.height {
+        if self.rows.truncate(allocator, self.height) {} else |_| {}
+    }
+    for 0..self.rows.len() |index| {
+        if self.rows.at_mut(index) |cells| {
+            try cells.resize(allocator, self.width, fg);
+        }
+    }
+    for self.rows.len()..self.height |_| {
+        var added = new_grid_row(allocator);
+        errdefer added.deinit(allocator);
+        try added.blank(allocator, self.width, fg);
+        try self.rows.append(allocator, move added);
+    }
+    return;
+}
+
+/// Blanks every cell.
+fn (self: &var Grid) clear(allocator: Allocator, fg: term::Color) -> mem::Error!void {
+    for 0..self.rows.len() |row| {
+        if self.rows.at_mut(row) |cells| {
+            try cells.blank(allocator, self.width, fg);
+        }
+    }
+    return;
+}
+
+/// Writes count cells of cell and text from col on in row; what falls
+/// outside the grid is ignored.
+fn (self: &var Grid) put(allocator: Allocator, row: i64, col: i64, count: i64, cell: term::Cell, text: []u8) -> mem::Error!void {
+    let end = math::min<i64>(col + count, self.width);
+    if self.rows.at_mut(row) |cells| {
+        for col..end |at| {
+            try cells.set(allocator, at, cell, text);
+        }
+    }
+    return;
+}
+
+fn (self: &var Grid) reverse_rows(from: i64, to: i64) -> void {
+    var first = from;
+    var last = to - 1;
+    while first < last {
+        if self.rows.swap(first, last) {} else |_| {}
+        first = first + 1;
+        last = last - 1;
+    }
+    return;
+}
+
+/// Applies a grid_scroll, blanking the cells nothing moved into.
+fn (self: &var Grid) scroll(allocator: Allocator, region: ScrollRegion, fg: term::Color) -> mem::Error!void {
+    var area = region;
+    area.top = math::min<i64>(region.top, self.height);
+    area.bot = math::min<i64>(region.bot, self.height);
+    area.left = math::min<i64>(region.left, self.width);
+    area.right = math::min<i64>(region.right, self.width);
+    if area.top >= area.bot or area.left >= area.right {
+        return;
+    }
+    if area.rows == 0 and area.cols == 0 {
+        return;
+    }
+    if area.cols == 0 and area.left == 0 and area.right == self.width {
+        try self.scroll_full_rows(allocator, area, fg);
+        return;
+    }
+    if area.rows == 0 {
+        for area.top..area.bot |row| {
+            if self.rows.at_mut(row) |cells| {
+                cells.shift_columns(area.left, area.right, area.cols, fg);
+            }
+        }
+        return;
+    }
+    try self.copy_scrolled(allocator, area, fg);
+    return;
+}
+
+/// Scrolls whole rows by moving them, so a row keeps its storage.
+fn (self: &var Grid) scroll_full_rows(allocator: Allocator, area: ScrollRegion, fg: term::Color) -> mem::Error!void {
+    let height = area.bot - area.top;
+    let shift = math::min<i64>(math::abs<i64>(area.rows), height);
+    var middle = area.top + shift;
+    var blank_from = area.bot - shift;
+    if area.rows < 0 {
+        middle = area.bot - shift;
+        blank_from = area.top;
+    }
+    // Rotates the rows so the one at middle comes first.
+    self.reverse_rows(area.top, middle);
+    self.reverse_rows(middle, area.bot);
+    self.reverse_rows(area.top, area.bot);
+    for blank_from..blank_from + shift |row| {
+        if self.rows.at_mut(row) |cells| {
+            try cells.blank(allocator, self.width, fg);
+        }
+    }
+    return;
+}
+
+/// Scrolls part of the rows' columns by rows and maybe columns, a row at a
+/// time from the end the cells move towards, so each source row is read
+/// before it is written.
+fn (self: &var Grid) copy_scrolled(allocator: Allocator, area: ScrollRegion, fg: term::Color) -> mem::Error!void {
+    var cells = array::new<term::Cell>(allocator);
+    defer cells.deinit(allocator);
+    var text = string::new(allocator);
+    defer text.deinit(allocator);
+    for 0..area.bot - area.top |step| {
+        var row = area.top + step;
+        if area.rows < 0 {
+            row = area.bot - 1 - step;
+        }
+        let source = row + area.rows;
+        cells.clear(allocator);
+        text.clear();
+        if source >= area.top and source < area.bot {
+            if self.rows.at(source) |from| {
+                let from_cells = from.cells.as_slice();
+                let from_text = from.text.as_bytes();
+                for area.left..area.right |col| {
+                    let source_col = col + area.cols;
+                    if source_col < area.left or source_col >= area.right {
+                        continue;
+                    }
+                    var cell = from_cells[source_col];
+                    let start = cell.text_start;
+                    cell.text_start = text.len();
+                    try text.append_bytes(allocator, from_text[start..start + cell.text_len]);
+                    try cells.append(allocator, cell);
+                }
+            }
+        }
+        if self.rows.at_mut(row) |to| {
+            let moved = cells.as_slice();
+            let moved_text = text.as_bytes();
+            var next = 0;
+            for area.left..area.right |col| {
+                let source_col = col + area.cols;
+                if next >= mem::count<term::Cell>(moved) or source_col < area.left or source_col >= area.right {
+                    try to.set(allocator, col, blank_cell(fg), " ");
+                    continue;
+                }
+                let placed = moved[next];
+                next = next + 1;
+                try to.set(allocator, col, placed, moved_text[placed.text_start..placed.text_start + placed.text_len]);
+            }
+        }
+    }
+    return;
+}

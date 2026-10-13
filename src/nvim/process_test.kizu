@@ -1,0 +1,190 @@
+import std::fmt;
+import std::fs;
+import std::io;
+import std::mem;
+import std::process;
+import std::string;
+import std::testing;
+
+extern "c" fn chmod(path: ptr<const u8>, mode: u16) -> i32
+extern "c" fn getpid() -> i32
+
+/// Writes an executable shell script that stands in for nvim and appends
+/// its path to out.
+fn write_stand_in(allocator: Allocator, label: []u8, body: []u8, out: &var string::String) -> !void {
+    try out.append_bytes(allocator, "/tmp/satin-nvim-stand-in-");
+    try out.append_bytes(allocator, label);
+    try out.append_byte(allocator, 45);
+    // SAFETY: getpid has no preconditions.
+    try fmt::append_i64(allocator, out, cast<i64>(unsafe getpid()));
+    try out.append_byte(allocator, 45);
+    try fmt::append_i64(allocator, out, process::monotonic_millis());
+    var script = try string::from_bytes(allocator,
+        \\#!/bin/sh
+        \\
+    );
+    defer script.deinit(allocator);
+    try script.append_bytes(allocator, body);
+    let path = out.as_bytes();
+    let text = script.as_bytes();
+    try fs::write_file(io::blocking(), &path, &text);
+    var name = try string::from_bytes(allocator, path);
+    defer name.deinit(allocator);
+    try name.append_byte(allocator, 0);
+    let name_bytes = name.as_bytes();
+    // SAFETY: name ends in NUL; 448 is 0700.
+    let _ = unsafe chmod(ptr_of(name_bytes), 448);
+    return;
+}
+
+fn remove_stand_in(path: &string::String) -> void {
+    let bytes = path.as_bytes();
+    if fs::remove_file(io::blocking(), &bytes) {} else |_| {}
+    return;
+}
+
+/// Reads until a whole value arrives, for up to two seconds, and returns
+/// whether it is the string expected.
+fn next_is(allocator: Allocator, nvim: &var Process, expected: []u8) -> !bool {
+    for 0..200 |_| {
+        let _ = try nvim.read_available(allocator);
+        var found = false;
+        let value = try nvim.next_value(allocator, &var found);
+        defer value.deinit(allocator);
+        if found {
+            match &value {
+                Str(text) => {
+                    let bytes = text.as_bytes();
+                    return mem::equal_bytes(bytes, expected);
+                },
+                _ => return false,
+            }
+        }
+        // SAFETY: sleeping takes no memory of ours.
+        let _ = unsafe usleep(10000);
+    }
+    return false;
+}
+
+test "an embedded process gets its flags, directory and environment, and answers over pipes" {
+    let allocator = mem::page_allocator();
+    var path = string::new(allocator);
+    defer path.deinit(allocator);
+    // Writes three strings: the first flag, the directory, a variable; then
+    // echoes what it is sent.
+    try write_stand_in(allocator, "echo",
+        \\printf '\247%s' "$1"
+        \\printf '\244%s' "$PWD"
+        \\printf '\242%s' "$MARK"
+        \\exec cat
+    , &var path);
+    var launch = new_launch(allocator);
+    defer launch.deinit(allocator);
+    launch.has_executable = true;
+    try launch.executable.append_string(allocator, &path);
+    launch.has_cwd = true;
+    try launch.cwd.append_bytes(allocator, "/tmp");
+    try append_word(allocator, &var launch.environment_keys, "MARK");
+    try append_word(allocator, &var launch.environment_values, "xy");
+    try append_word(allocator, &var launch.arguments, "file name");
+    var nvim = try spawn_process(allocator, &launch);
+    defer nvim.deinit(allocator);
+    testing::expect(nvim.wakeup_fd() >= 0);
+    testing::expect(try next_is(allocator, &var nvim, "--embed"));
+    testing::expect(try next_is(allocator, &var nvim, "/tmp"));
+    testing::expect(try next_is(allocator, &var nvim, "xy"));
+    var request = string::new(allocator);
+    defer request.deinit(allocator);
+    try append_str(allocator, &var request, "over the pipe");
+    let bytes = request.as_bytes();
+    try nvim.write_all(bytes[0..5]);
+    try nvim.write_all(bytes[5..mem::len(bytes)]);
+    testing::expect(try next_is(allocator, &var nvim, "over the pipe"));
+    testing::expect(!nvim.poll_exited());
+    remove_stand_in(&path);
+}
+
+test "a process that left reports its exit code and goes quiet" {
+    let allocator = mem::page_allocator();
+    var path = string::new(allocator);
+    defer path.deinit(allocator);
+    try write_stand_in(allocator, "exit",
+        \\printf '\243bye'
+        \\exit 3
+    , &var path);
+    var launch = new_launch(allocator);
+    defer launch.deinit(allocator);
+    launch.has_executable = true;
+    try launch.executable.append_string(allocator, &path);
+    var nvim = try spawn_process(allocator, &launch);
+    defer nvim.deinit(allocator);
+    testing::expect(try next_is(allocator, &var nvim, "bye"));
+    var exited = false;
+    for 0..200 |_| {
+        if !exited {
+            let _ = try nvim.read_available(allocator);
+            exited = nvim.poll_exited();
+            // SAFETY: sleeping takes no memory of ours.
+            let _ = unsafe usleep(10000);
+        }
+    }
+    testing::expect(exited);
+    testing::expect(nvim.exit_code() == 3);
+    let _ = try nvim.read_available(allocator);
+    testing::expect(!is_readable(nvim.wakeup_fd()));
+    var failed = false;
+    if nvim.write_all("late") {} else |_| {
+        failed = true;
+    }
+    testing::expect(failed);
+    remove_stand_in(&path);
+}
+
+test "a program that is not there is reported" {
+    let allocator = mem::page_allocator();
+    var launch = new_launch(allocator);
+    defer launch.deinit(allocator);
+    launch.has_executable = true;
+    try launch.executable.append_bytes(allocator, "/nonexistent/satin-nvim-stand-in");
+    var refused = false;
+    if spawn_process(allocator, &launch) |nvim| {
+        nvim.deinit(allocator);
+    } else |_| {
+        refused = true;
+    }
+    testing::expect(refused);
+}
+
+test "the bridges load before the user's configuration" {
+    let allocator = mem::page_allocator();
+    var launch = new_launch(allocator);
+    defer launch.deinit(allocator);
+    let words = try command_line(allocator, &launch);
+    defer words.deinit(allocator);
+    testing::expect(words.len() == 12);
+    var image = false;
+    var cwd = false;
+    if words.at(7) |command| {
+        let text = command.as_bytes();
+        image = mem::starts_with(text, "lua assert(load(") and contains(text, "satin_features") and
+            contains(text, "kitty_graphics = true") and contains(text, "'@satin-image-bridge'))()");
+    }
+    if words.at(9) |command| {
+        let text = command.as_bytes();
+        cwd = contains(text, "DirChanged") and contains(text, "satin_cwd_changed") and
+            contains(text, "'@satin-cwd-bridge'))()");
+    }
+    testing::expect(image);
+    testing::expect(cwd);
+}
+
+fn contains(text: []u8, needle: []u8) -> bool {
+    var index = 0;
+    while index + mem::len(needle) <= mem::len(text) {
+        if mem::equal_bytes(text[index..index + mem::len(needle)], needle) {
+            return true;
+        }
+        index = index + 1;
+    }
+    return false;
+}
