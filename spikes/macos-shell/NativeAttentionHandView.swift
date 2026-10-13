@@ -7,6 +7,7 @@ import QuartzCore
 final class NativeAttentionHandView: NSView {
     static let stripHeight: CGFloat = 34
     static let reach: CGFloat = 268
+    private static let hoverGrace: TimeInterval = 0.35
     private static let dealtRaise: TimeInterval = 2.2
     private static let playedRaise: TimeInterval = 1.2
     private static let allClearDuration: TimeInterval = 1.6
@@ -108,7 +109,9 @@ final class NativeAttentionHandView: NSView {
     override func mouseMoved(with event: NSEvent) {
         let point = convert(event.locationInWindow, from: nil)
         let overCard = slot(at: point)
-        setHovering(!slots.isEmpty && (point.y <= Self.stripHeight || overCard != nil))
+        setHovering(
+            !slots.isEmpty
+                && (point.y <= Self.stripHeight || overCard != nil || fanZone.contains(point)))
         if let overCard {
             setSelected(overCard.cardView.card.paneId)
         } else if !selectionOpen {
@@ -371,8 +374,18 @@ final class NativeAttentionHandView: NSView {
         if hovering {
             setRaised(true, animated: true)
         } else if lowerWorkItem == nil, !selectionOpen {
-            setRaised(false, animated: true)
+            // The fan closes toward the middle as it rises, so the pointer
+            // gets a moment to follow the card it was under.
+            raise(for: Self.hoverGrace)
         }
+    }
+
+    /// Where the pointer keeps a raised hand up: the fan and a margin around it.
+    private var fanZone: NSRect {
+        guard raised else {
+            return .zero
+        }
+        return slots.reduce(NSRect.null) { $0.union($1.frame) }.insetBy(dx: -40, dy: -40)
     }
 
     private func slot(at point: NSPoint) -> NativeHandSlotView? {

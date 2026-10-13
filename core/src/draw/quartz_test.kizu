@@ -63,6 +63,7 @@ fn add_text(
         baseline: span(baseline),
         advance: lit(12.0),
         cells: 1,
+        gap: false,
         bold: bold,
         italic: false,
         key: 0
@@ -485,6 +486,7 @@ fn add_run(
         baseline: span(baseline),
         advance: span(advance),
         cells: mem::len(texts),
+        gap: false,
         bold: bold,
         italic: false,
         key: key
@@ -527,6 +529,64 @@ test "a shaped run is kept, by its texts and its style" {
     testing::expect(larger.ascent > lit(20.0));
     testing::expect_equal<i64>(0, result.painter.cached_runs());
     testing::expect_equal<i64>(0, result.painter.shaped.len());
+}
+
+/// Adds text as a run of one cell at x, with an empty cell after it or not.
+fn add_gapped(allocator: Allocator, list: &var DisplayList, text: []u8, x: i64, gap: bool) -> mem::Error!void {
+    let first = list.clusters.len();
+    try list.add_cluster(allocator, text, 0);
+    try list.text_run(
+        allocator,
+        TextRun {
+        first: first,
+        count: 1,
+        x: span(x),
+        baseline: span(22),
+        advance: lit(12.0),
+        cells: 1,
+        gap: gap,
+        bold: false,
+        italic: false,
+        key: 0
+    },
+        white()
+    );
+    return;
+}
+
+/// The first column from left up to right that has anything in; right
+/// when none has.
+fn first_lit_column(bitmap: &Bitmap, left: i64, right: i64, height: i64) -> i64 {
+    for left..right |x| {
+        if lit_pixels(bitmap, x, 0, x + 1, height) > 0 {
+            return x;
+        }
+    }
+    return right;
+}
+
+test "a wide character sits in the middle of its two cells" {
+    let allocator = mem::page_allocator();
+    var list = new_display_list(allocator);
+    defer list.deinit(allocator);
+    try add_gapped(allocator, &var list, "漢", 0, false);
+    try add_gapped(allocator, &var list, "漢", 40, true);
+    // A letter is no wider than a cell and stays at its left edge.
+    try add_gapped(allocator, &var list, "H", 80, false);
+    try add_gapped(allocator, &var list, "H", 120, true);
+    var result = try drawn(allocator, &list, 160, 32);
+    defer result.deinit(allocator);
+
+    let packed = first_lit_column(&result.bitmap, 0, 40, 32);
+    let centered = first_lit_column(&result.bitmap, 40, 80, 32) - 40;
+    testing::expect(packed < 40 and centered < 40);
+    testing::expect(centered > packed);
+    // What is left of the two cells is the same on both sides.
+    testing::expect(centered - packed <= 4);
+    testing::expect_equal<i64>(
+        first_lit_column(&result.bitmap, 80, 120, 32) - 80,
+        first_lit_column(&result.bitmap, 120, 160, 32) - 120
+    );
 }
 
 test "ime preedit matches committed japanese text pixels" {
