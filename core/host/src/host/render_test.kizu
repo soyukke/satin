@@ -148,8 +148,10 @@ test "a terminal is drawn through the boundary without a texture" {
     testing::expect(render_pane(renderer, pane, c"日本") == 0);
     // Its cells are the cursor's color but for an underline, and strokes,
     // of the background's.
-    testing::expect_equal<i64>(190, inked(renderer, 3, 1, r, g, b));
-    testing::expect_equal<i64>(190, inked(renderer, 5, 1, r, g, b));
+    // How many of a cell's 200 pixels the strokes take is the fallback
+    // font's business, which differs between systems.
+    testing::expect(inked(renderer, 3, 1, r, g, b) > 150 and inked(renderer, 3, 1, r, g, b) <= 190);
+    testing::expect(inked(renderer, 5, 1, r, g, b) > 150 and inked(renderer, 5, 1, r, g, b) <= 190);
     testing::expect(inked(renderer, 2, 1, r, g, b) > 100 and inked(renderer, 2, 1, r, g, b) < 190);
     testing::expect_equal<i64>(0, inked(renderer, 6, 1, r, g, b));
 
