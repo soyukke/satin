@@ -70,7 +70,8 @@ pub struct Cluster {
 /// clusters from first of clusters. The first cell's left edge is x and the
 /// row's baseline is baseline; a cell is advance wide and the run spans
 /// cells of them. key is what the run's glyphs depend on: its texts and
-/// whether it is bold or italic.
+/// whether it is bold or italic. gap is set when the cell after the run is
+/// empty, which is where the second half of a wide character is.
 pub struct TextRun {
     pub first: i64,
     pub count: i64,
@@ -78,6 +79,7 @@ pub struct TextRun {
     pub baseline: f32,
     pub advance: f32,
     pub cells: i64,
+    pub gap: bool,
     pub bold: bool,
     pub italic: bool,
     pub key: u64,

@@ -520,6 +520,7 @@ struct Shaped {
     at: i64,
     dx: f32,
     dy: f32,
+    advance: f32,
 }
 
 /// What a run is drawn with: count glyphs from first of shaped. clusters
@@ -1530,7 +1531,14 @@ fn (self: &var Painter) place_glyphs(
         }
         try self.shaped.append(
             allocator,
-            Shaped { glyph: glyph, font: font, at: at, dx: cast<f32>(x - pen.origin), dy: cast<f32>(y) }
+            Shaped {
+                glyph: glyph,
+                font: font,
+                at: at,
+                dx: cast<f32>(x - pen.origin),
+                dy: cast<f32>(y),
+                advance: cast<f32>(advance)
+            }
         );
     }
     return;
@@ -1625,7 +1633,7 @@ fn (self: &var Painter) shape_symbol(allocator: Allocator, bytes: []u8, at: i64,
     if self.mapped_scalars(font, count) > 0 {
         try self.shaped.append(
             allocator,
-            Shaped { glyph: self.glyph_at(0), font: slot, at: at, dx: lit(0.0), dy: lit(0.0) }
+            Shaped { glyph: self.glyph_at(0), font: slot, at: at, dx: lit(0.0), dy: lit(0.0), advance: lit(0.0) }
         );
     }
     return;
@@ -1748,6 +1756,41 @@ fn set_antialias(context: ptr<u8>, enabled: bool) -> void {
     unsafe CGContextSetShouldAntialias(context, enabled);
 }
 
+/// How far right the glyph at at of shaped moves to sit in the middle of
+/// two cells. Only a cell's lone glyph that is wider than a cell and a half
+/// and has an empty cell after it moves: a wide character, whose font sets
+/// it narrower than the two cells the grid gives it.
+fn (self: &Painter) wide_shift(clusters: []Cluster, run: TextRun, hit: RunHit, at: i64, shaped: Shaped) -> f64 {
+    if shaped.advance <= run.advance * lit(1.5) {
+        return 0.0;
+    }
+    if at > hit.first {
+        if self.shaped.get(at - 1) |before| {
+            if before.at == shaped.at {
+                return 0.0;
+            }
+        }
+    }
+    if at + 1 < hit.first + hit.count {
+        if self.shaped.get(at + 1) |after| {
+            if after.at == shaped.at {
+                return 0.0;
+            }
+        }
+    }
+    let cell = clusters[run.first + shaped.at].cell;
+    if shaped.at + 1 < run.count {
+        if clusters[run.first + shaped.at + 1].cell < cell + 2 {
+            return 0.0;
+        }
+    } else {
+        if !run.gap {
+            return 0.0;
+        }
+    }
+    return cast<f64>(run.advance * lit(2.0) - shaped.advance) / 2.0;
+}
+
 /// Draws a text run: its shaped glyphs, each at its cell's place on the
 /// grid.
 fn (self: &var Painter) draw_run(
@@ -1779,7 +1822,8 @@ fn (self: &var Painter) draw_run(
     let baseline = 0.0 - cast<f64>(run.baseline);
     for hit.first..hit.first + hit.count |at| {
         if self.shaped.get(at) |shaped| {
-            let x = cast<f64>(run.x + span(clusters[run.first + shaped.at].cell) * run.advance);
+            let x = cast<f64>(run.x + span(clusters[run.first + shaped.at].cell) * run.advance) +
+                self.wide_shift(clusters, run, hit, at, shaped);
             self.add_glyph(context, shaped.font, shaped.glyph, x + cast<f64>(shaped.dx), baseline + cast<f64>(shaped.dy));
         }
     }

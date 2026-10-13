@@ -84,12 +84,13 @@ fn no_text() -> OpenText {
 }
 
 /// Ends the open run before the line's column end_col: its text command,
-/// then its decorations.
+/// then its decorations. gap is whether the cell at end_col is empty.
 fn end_text(
     allocator: Allocator,
     list: &var DisplayList,
     run: &var OpenText,
     end_col: i64,
+    gap: bool,
     spot: LineSpot,
     layout: &Layout
 ) -> mem::Error!void {
@@ -111,6 +112,7 @@ fn end_text(
         baseline: math::round<f32>(layout.row_y(spot.row) + layout.baseline) + spot.y_offset,
         advance: layout.geometry.cell_width,
         cells: cells,
+        gap: gap,
         bold: run.style.bold,
         italic: run.style.italic,
         key: run.key
@@ -137,11 +139,11 @@ fn draw_line_runs(
         let cell = cells[col];
         let bytes = text[cell.text_start..cell.text_start + cell.text_len];
         if cell.text_len == 0 or is_block_element(bytes) {
-            try end_text(allocator, list, &var run, col, spot, layout);
+            try end_text(allocator, list, &var run, col, cell.text_len == 0, spot, layout);
             continue;
         }
         if !run.open or !term::same_color(run.fg, cell.fg) or !same_style(run.style, cell.style) {
-            try end_text(allocator, list, &var run, col, spot, layout);
+            try end_text(allocator, list, &var run, col, false, spot, layout);
             run.open = true;
             run.hidden = cell.style.blink and !layout.blink_visible;
             run.start_col = col;
@@ -155,7 +157,7 @@ fn draw_line_runs(
             run.key = run_key_add(run.key, bytes);
         }
     }
-    try end_text(allocator, list, &var run, width, spot, layout);
+    try end_text(allocator, list, &var run, width, true, spot, layout);
     return;
 }
 
