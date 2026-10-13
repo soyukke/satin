@@ -60,7 +60,7 @@ struct SatinApplication {
                 ("tmux executable", NativeTmuxExecutableResolver.runSelfTests),
                 ("tmux session lease", NativeTmuxSessionLease.runSelfTests),
                 ("Finder editor launch", NativeFinderEditorLaunch.runSelfTests),
-                ("Rust core", RustCore.runSelfTests),
+                ("Core", NativeCore.runSelfTests),
                 ("application activation", runNativeApplicationActivationSelfTests),
                 ("quit confirmation", runNativeQuitConfirmationSelfTests),
                 ("frame scheduling", runNativeFrameSchedulingSelfTests),

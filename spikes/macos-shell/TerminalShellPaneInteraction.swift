@@ -70,7 +70,7 @@ extension TerminalShellViewController {
         paneStore.modes[paneId] = pane.kind
         paneStore.workingDirectories[paneId] = cwd
         terminalTextView.refreshPaneChromeActionAvailability(paneId: paneId)
-        (pane as? RustTerminalPane)?.setOptionAsAlt(optionAsAltEnabled)
+        (pane as? TerminalPane)?.setOptionAsAlt(optionAsAltEnabled)
         if pane.kind == .neovim {
             scheduleNvimDirectoryCorrection(
                 paneId: paneId,
@@ -90,7 +90,7 @@ extension TerminalShellViewController {
     ) -> NativePane? {
         switch mode {
         case .terminal:
-            return RustTerminalPane(
+            return TerminalPane(
                 grid: grid,
                 cwd: cwd,
                 shell: settings.shellPath,
@@ -112,7 +112,7 @@ extension TerminalShellViewController {
                     "lua dofile(vim.env.SATIN_NATIVE_PERF_NVIM_INIT)",
                 ])
             }
-            return RustNeovimPane(grid: grid, cwd: cwd, arguments: arguments)
+            return NeovimPane(grid: grid, cwd: cwd, arguments: arguments)
         }
     }
 
@@ -273,7 +273,7 @@ extension TerminalShellViewController {
         guard paneStore.artifactSelectors[paneId] == nil else {
             return true
         }
-        guard let pane = terminalPane(for: paneId) as? RustTerminalPane else {
+        guard let pane = terminalPane(for: paneId) as? TerminalPane else {
             return false
         }
         if !released, event.charactersIgnoringModifiers == "\u{1b}" {
@@ -295,7 +295,7 @@ extension TerminalShellViewController {
         else {
             return
         }
-        if let terminal = pane as? RustTerminalPane {
+        if let terminal = pane as? TerminalPane {
             terminal.writeText(text)
         } else {
             pane.write(Data(text.utf8))
@@ -308,9 +308,9 @@ extension TerminalShellViewController {
             return .unhandled
         }
         let handling =
-            if let terminal = pane as? RustTerminalPane {
+            if let terminal = pane as? TerminalPane {
                 terminal.mouse(input) ? NativeMouseHandling.handled : .unhandled
-            } else if let neovim = pane as? RustNeovimPane {
+            } else if let neovim = pane as? NeovimPane {
                 neovim.mouse(input)
             } else {
                 NativeMouseHandling.unhandled
@@ -320,7 +320,7 @@ extension TerminalShellViewController {
         }
         drainTerminalPanes()
         if handling == .messageSelection {
-            if let neovim = pane as? RustNeovimPane,
+            if let neovim = pane as? NeovimPane,
                 let text = neovim.takeMessageSelectionText(),
                 !text.isEmpty
             {
@@ -337,15 +337,15 @@ extension TerminalShellViewController {
         guard let paneId = activePaneId, let pane = paneStore.runtimes[paneId] else {
             return false
         }
-        if let terminal = pane as? RustTerminalPane {
+        if let terminal = pane as? TerminalPane {
             return terminal.isMouseTracking()
         }
-        return pane is RustNeovimPane
+        return pane is NeovimPane
     }
 
     func setTerminalFocus(_ focused: Bool) {
         guard let paneId = activePaneId,
-            let terminal = paneStore.runtimes[paneId] as? RustTerminalPane
+            let terminal = paneStore.runtimes[paneId] as? TerminalPane
         else {
             return
         }
@@ -353,7 +353,7 @@ extension TerminalShellViewController {
     }
 
     func clearTerminalSelection(paneId: Int) {
-        guard let terminal = paneStore.runtimes[paneId] as? RustTerminalPane else {
+        guard let terminal = paneStore.runtimes[paneId] as? TerminalPane else {
             return
         }
         terminal.clearSelection()
@@ -362,7 +362,7 @@ extension TerminalShellViewController {
 
     func handleTerminalSelection(_ event: NativeTerminalSelectionEvent) -> Bool {
         guard let paneId = activePaneId,
-            let pane = paneStore.runtimes[paneId] as? RustTerminalPane
+            let pane = paneStore.runtimes[paneId] as? TerminalPane
         else {
             return false
         }
@@ -382,7 +382,7 @@ extension TerminalShellViewController {
     @discardableResult
     func copySelection() -> Bool {
         guard let paneId = activePaneId,
-            let pane = paneStore.runtimes[paneId] as? RustTerminalPane
+            let pane = paneStore.runtimes[paneId] as? TerminalPane
         else {
             return false
         }
@@ -391,7 +391,7 @@ extension TerminalShellViewController {
 
     func openTerminalHyperlink(_ position: (row: Int, col: Int)) -> Bool {
         guard let paneId = activePaneId,
-            let pane = paneStore.runtimes[paneId] as? RustTerminalPane,
+            let pane = paneStore.runtimes[paneId] as? TerminalPane,
             let value = pane.hyperlink(row: position.row, col: position.col),
             let url = URL(string: value)
         else {
@@ -408,7 +408,7 @@ extension TerminalShellViewController {
         else {
             return false
         }
-        if let pane = paneStore.runtimes[paneId] as? RustTerminalPane {
+        if let pane = paneStore.runtimes[paneId] as? TerminalPane {
             pane.paste(text)
         } else {
             paneStore.runtimes[paneId]?.write(Data(text.utf8))
@@ -420,7 +420,7 @@ extension TerminalShellViewController {
     @discardableResult
     func selectAllTerminalText() -> Bool {
         guard let paneId = activePaneId,
-            let pane = paneStore.runtimes[paneId] as? RustTerminalPane
+            let pane = paneStore.runtimes[paneId] as? TerminalPane
         else {
             return false
         }
@@ -432,7 +432,7 @@ extension TerminalShellViewController {
     @discardableResult
     func findInScrollback() -> Bool {
         guard let paneId = activePaneId,
-            let pane = paneStore.runtimes[paneId] as? RustTerminalPane
+            let pane = paneStore.runtimes[paneId] as? TerminalPane
         else {
             return false
         }
@@ -486,9 +486,9 @@ extension TerminalShellViewController {
                 return unavailable("tmux_mapping")
             }
             directory = session.latestPanes[tmuxPaneId]?.current_path
-        } else if let terminal = paneStore.runtimes[paneId] as? RustTerminalPane {
+        } else if let terminal = paneStore.runtimes[paneId] as? TerminalPane {
             directory = terminal.currentWorkingDirectory()
-        } else if let neovim = paneStore.runtimes[paneId] as? RustNeovimPane {
+        } else if let neovim = paneStore.runtimes[paneId] as? NeovimPane {
             directory = neovim.currentWorkingDirectory()
         } else {
             directory = paneStore.workingDirectories[paneId]

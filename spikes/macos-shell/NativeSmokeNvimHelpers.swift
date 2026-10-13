@@ -335,7 +335,7 @@ import Foundation
 
         func activePaneRendererScrollPosition() -> Double {
             guard let paneId = activePaneId,
-                let pane = paneStore.runtimes[paneId] as? RustTerminalPane
+                let pane = paneStore.runtimes[paneId] as? TerminalPane
             else {
                 return 0
             }
@@ -376,7 +376,7 @@ import Foundation
         @discardableResult
         func runNvimCommand(_ command: String) -> Bool {
             guard let paneId = activePaneId,
-                let pane = paneStore.runtimes[paneId] as? RustNeovimPane
+                let pane = paneStore.runtimes[paneId] as? NeovimPane
             else {
                 return false
             }

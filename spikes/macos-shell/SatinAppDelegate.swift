@@ -94,7 +94,7 @@ final class SatinAppDelegate: NSObject, NSApplicationDelegate {
         }
         let initialFinderLaunch = NativeFinderEditorLaunch(paths: pendingFinderPaths)
         launchedForFinderEditor = initialFinderLaunch != nil
-        guard let core = RustCore(defaultTheme: settings.defaultTheme) else {
+        guard let core = NativeCore(defaultTheme: settings.defaultTheme) else {
             presentFatalError(
                 title: "Terminal Core Failed",
                 message:

@@ -148,7 +148,7 @@ enum NativePaneMode: Equatable {
     }
 }
 
-class RustTerminalPane: NativePane {
+class TerminalPane: NativePane {
     let kind = NativePaneMode.terminal
     let handle: UnsafeMutableRawPointer
     private let repeatedReturnGate = TerminalReturnRepeatGate()
@@ -322,11 +322,11 @@ class RustTerminalPane: NativePane {
     }
 
     func selectedText() -> String? {
-        ownedRustString(satinRuntimeSelectedText(handle))
+        ownedCoreString(satinRuntimeSelectedText(handle))
     }
 
     func hyperlink(row: Int, col: Int) -> String? {
-        ownedRustString(
+        ownedCoreString(
             satinRuntimeHyperlink(
                 handle,
                 UInt32(max(0, row)),
@@ -336,7 +336,7 @@ class RustTerminalPane: NativePane {
     }
 
     func title() -> String? {
-        ownedRustString(satinRuntimeTitle(handle))
+        ownedCoreString(satinRuntimeTitle(handle))
     }
 
     func takeBellCount() -> UInt64 {
@@ -426,7 +426,7 @@ class RustTerminalPane: NativePane {
     }
 
     func controlScreenText() -> String {
-        ownedRustString(satinRuntimeScreenText(handle)) ?? ""
+        ownedCoreString(satinRuntimeScreenText(handle)) ?? ""
     }
 
     func controlImageCount() -> Int {
@@ -451,9 +451,9 @@ class RustTerminalPane: NativePane {
 
 }
 
-final class RustTmuxPane: RustTerminalPane {
+final class TmuxPane: TerminalPane {
     let tmuxPaneId: UInt32
-    private weak var gateway: RustTerminalPane?
+    private weak var gateway: TerminalPane?
     private var currentShellCommand: String?
     private var shellOwnsPane = false
     private var semanticPromptOwnsPane = false
@@ -461,7 +461,7 @@ final class RustTmuxPane: RustTerminalPane {
     init?(
         grid: (rows: Int, cols: Int, widthPixels: Int, heightPixels: Int),
         paneId: UInt32,
-        gateway: RustTerminalPane
+        gateway: TerminalPane
     ) {
         guard
             let handle = satinRuntimeCreateExternal(
@@ -674,7 +674,7 @@ final class RustTmuxPane: RustTerminalPane {
 
 }
 
-final class RustNeovimPane: NativePane {
+final class NeovimPane: NativePane {
     let kind = NativePaneMode.neovim
     private let handle: UnsafeMutableRawPointer
 
@@ -763,7 +763,7 @@ final class RustNeovimPane: NativePane {
     }
 
     func takeMessageSelectionText() -> String? {
-        ownedRustString(satinNvimTakeMessageSelectionText(handle))
+        ownedCoreString(satinNvimTakeMessageSelectionText(handle))
     }
 
     func runCommand(_ command: String) -> Bool {
@@ -773,11 +773,11 @@ final class RustNeovimPane: NativePane {
     }
 
     func currentWorkingDirectory() -> String? {
-        ownedRustString(satinNvimCwd(handle))
+        ownedCoreString(satinNvimCwd(handle))
     }
 
     func takeWorkingDirectoryUpdate() -> String? {
-        ownedRustString(satinNvimTakeCwdUpdate(handle))
+        ownedCoreString(satinNvimTakeCwdUpdate(handle))
     }
 
     @discardableResult
@@ -910,7 +910,7 @@ private func withUtf8<Result>(
     }
 }
 
-private func ownedRustString(_ pointer: UnsafeMutablePointer<CChar>?) -> String? {
+private func ownedCoreString(_ pointer: UnsafeMutablePointer<CChar>?) -> String? {
     guard let pointer else {
         return nil
     }

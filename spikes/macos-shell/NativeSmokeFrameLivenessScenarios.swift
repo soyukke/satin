@@ -93,7 +93,7 @@ import Foundation
         ) {
             drainTerminalPanes()
             let markerVisible =
-                (terminalPane(for: paneIds[0]) as? RustTerminalPane)?
+                (terminalPane(for: paneIds[0]) as? TerminalPane)?
                 .controlScreenText()
                 .contains("SATIN_HIDDEN_SCROLL_240") == true
             let revisions = metalView.frameRequestRevisionSnapshot()
@@ -340,7 +340,7 @@ import Foundation
             retries: Int
         ) {
             drainTerminalPanes()
-            let pane = terminalPane(for: paneIds[iteration % paneIds.count]) as? RustTerminalPane
+            let pane = terminalPane(for: paneIds[iteration % paneIds.count]) as? TerminalPane
             let markerVisible = pane?.controlScreenText().contains(marker) == true
             let revisions = metalView.frameRequestRevisionSnapshot()
             let presented = metalView.presentedFrameSnapshot()

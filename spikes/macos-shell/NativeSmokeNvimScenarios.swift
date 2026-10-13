@@ -43,7 +43,7 @@ import Foundation
             drainTerminalPanes()
             let paneId = activePaneId
             let terminalCwd = paneId.flatMap {
-                (paneStore.runtimes[$0] as? RustTerminalPane)?.currentWorkingDirectory()
+                (paneStore.runtimes[$0] as? TerminalPane)?.currentWorkingDirectory()
             }
             guard terminalCwd == expected else {
                 if retries > 0 {

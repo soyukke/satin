@@ -29,10 +29,10 @@ enum NativePaneDropPosition: UInt32, CaseIterable {
 }
 
 final class NativeSuspendedTerminalSession {
-    let pane: RustTerminalPane
+    let pane: TerminalPane
     let completion: NativeControlReply?
 
-    init(pane: RustTerminalPane, completion: NativeControlReply?) {
+    init(pane: TerminalPane, completion: NativeControlReply?) {
         self.pane = pane
         self.completion = completion
     }
@@ -44,7 +44,7 @@ let nativeArtifactSidebarPaneId = 9_000_000_000_000_000
 
 final class NativeTmuxSession {
     let gatewayPaneId: Int
-    let gateway: RustTerminalPane
+    let gateway: TerminalPane
     let savedWorkspace: TerminalCoreSnapshot
     var nativePaneIds: [UInt32: Int] = [:]
     var tmuxPaneIds: [Int: UInt32] = [:]
@@ -67,7 +67,7 @@ final class NativeTmuxSession {
     var lease: NativeTmuxSessionLease?
     var activeWindowZoomed = false
 
-    init(gatewayPaneId: Int, gateway: RustTerminalPane, savedWorkspace: TerminalCoreSnapshot) {
+    init(gatewayPaneId: Int, gateway: TerminalPane, savedWorkspace: TerminalCoreSnapshot) {
         self.gatewayPaneId = gatewayPaneId
         self.gateway = gateway
         self.savedWorkspace = savedWorkspace

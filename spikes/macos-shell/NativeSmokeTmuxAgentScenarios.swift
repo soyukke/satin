@@ -5,7 +5,7 @@ import Foundation
     extension TerminalShellViewController {
         func waitForTmuxSmokeAgentRunning(
             _ resultPath: String,
-            pane: RustTmuxPane,
+            pane: TmuxPane,
             start: (x: Int, y: Int),
             tmuxPaneId: UInt32,
             runningTitle: String,
@@ -75,7 +75,7 @@ import Foundation
 
         func waitForTmuxSmokeAgentDone(
             _ resultPath: String,
-            pane: RustTmuxPane,
+            pane: TmuxPane,
             start: (x: Int, y: Int),
             tmuxPaneId: UInt32,
             idleTitle: String,

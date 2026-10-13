@@ -324,7 +324,7 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
 {
     private static let toolbarItemSpacing: CGFloat = 8
 
-    let core: RustCore
+    let core: NativeCore
     var settings: NativeSettings
     let tabControl = NativeTabControl(frame: .zero)
     let newTabButton = NativeHoverIconButton(symbolName: "plus", title: "New Tab")
@@ -421,7 +421,7 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
     }()
 
     init?(
-        core: RustCore,
+        core: NativeCore,
         settings: NativeSettings,
         initialFinderLaunch: NativeFinderEditorLaunch? = nil
     ) {
@@ -717,7 +717,7 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
         optionAsAltEnabled = settings.optionAsAlt
         notificationsEnabled = settings.notifications
         for pane in paneStore.runtimes.values {
-            (pane as? RustTerminalPane)?.setOptionAsAlt(settings.optionAsAlt)
+            (pane as? TerminalPane)?.setOptionAsAlt(settings.optionAsAlt)
         }
         if previous.fontFamily != settings.fontFamily
             || previous.fontSize != settings.fontSize

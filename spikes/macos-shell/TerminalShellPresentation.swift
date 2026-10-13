@@ -138,7 +138,7 @@ extension TerminalShellViewController {
         )
         for (paneId, frame) in frames {
             let pane = terminalPane(for: paneId)
-            if !(pane is RustTmuxPane) {
+            if !(pane is TmuxPane) {
                 pane?.resize(
                     grid: terminalTextView.terminalGridSize(for: frame)
                 )
@@ -913,8 +913,8 @@ extension TerminalShellViewController {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.1, execute: workItem)
     }
 
-    func tmuxConnectionGateway(paneId: Int) -> RustTerminalPane? {
-        (paneStore.runtimes[paneId] as? RustTerminalPane)
+    func tmuxConnectionGateway(paneId: Int) -> TerminalPane? {
+        (paneStore.runtimes[paneId] as? TerminalPane)
             ?? paneStore.suspendedSessions[paneId]?.pane
     }
 

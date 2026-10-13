@@ -25,7 +25,7 @@ extension TerminalShellViewController {
     }
 
     func runNvimCommand(_ command: String, paneId: Int, fallback: Data?) {
-        guard let pane = paneStore.runtimes[paneId] as? RustNeovimPane else {
+        guard let pane = paneStore.runtimes[paneId] as? NeovimPane else {
             return
         }
         if pane.runCommand(command) {

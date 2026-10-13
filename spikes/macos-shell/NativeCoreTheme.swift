@@ -1,4 +1,4 @@
-extension RustCore {
+extension NativeCore {
     @discardableResult
     func applyThemePreference(_ theme: String) -> Bool {
         setDefaultTheme(theme)
@@ -10,7 +10,7 @@ extension RustCore {
     }
 
     static func runSelfTests() -> Bool {
-        guard let core = RustCore(defaultTheme: "Graphite") else {
+        guard let core = NativeCore(defaultTheme: "Graphite") else {
             return false
         }
         core.setTheme("Rose", tab: 0)

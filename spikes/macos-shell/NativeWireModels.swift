@@ -87,14 +87,14 @@ struct LegacyNativeSessionTab: Codable {
     let cwd: String
 }
 
-// Properties mirror Rust's serialized schema and intentionally use snake_case.
+// Properties mirror the core's serialized schema and intentionally use snake_case.
 // swift-format-ignore: AlwaysUseLowerCamelCase
 struct TerminalCoreSnapshot: Codable {
     let active_tab: Int
     let tabs: [TerminalCoreTabSnapshot]
 }
 
-// Properties mirror Rust's serialized schema and intentionally use snake_case.
+// Properties mirror the core's serialized schema and intentionally use snake_case.
 // swift-format-ignore: AlwaysUseLowerCamelCase
 struct TerminalCoreTabSnapshot: Codable {
     let id: Int
@@ -106,7 +106,7 @@ struct TerminalCoreTabSnapshot: Codable {
     let layout: PaneLayoutSnapshot
 }
 
-// Properties mirror Rust's serialized schema and intentionally use snake_case.
+// Properties mirror the core's serialized schema and intentionally use snake_case.
 // swift-format-ignore: AlwaysUseLowerCamelCase
 final class PaneLayoutSnapshot: Codable {
     let kind: String
@@ -133,7 +133,7 @@ final class PaneLayoutSnapshot: Codable {
     }
 }
 
-// Properties mirror Rust's serialized schema and intentionally use snake_case.
+// Properties mirror the core's serialized schema and intentionally use snake_case.
 // swift-format-ignore: AlwaysUseLowerCamelCase
 struct TmuxControlEvent: Decodable {
     let kind: String
@@ -151,7 +151,7 @@ struct TmuxControlEvent: Decodable {
     let message: String?
 }
 
-// Properties mirror Rust's serialized schema and intentionally use snake_case.
+// Properties mirror the core's serialized schema and intentionally use snake_case.
 // swift-format-ignore: AlwaysUseLowerCamelCase
 struct TmuxSessionSummary: Decodable {
     let session_id: UInt32
@@ -161,7 +161,7 @@ struct TmuxSessionSummary: Decodable {
     let server_pid: UInt32
 }
 
-// Properties mirror Rust's serialized schema and intentionally use snake_case.
+// Properties mirror the core's serialized schema and intentionally use snake_case.
 // swift-format-ignore: AlwaysUseLowerCamelCase
 struct TmuxSnapshot: Decodable {
     let session_id: UInt32
@@ -172,7 +172,7 @@ struct TmuxSnapshot: Decodable {
     let windows: [TmuxWindowSnapshot]
 }
 
-// Properties mirror Rust's serialized schema and intentionally use snake_case.
+// Properties mirror the core's serialized schema and intentionally use snake_case.
 // swift-format-ignore: AlwaysUseLowerCamelCase
 struct TmuxWindowSnapshot: Decodable {
     let window_id: UInt32
@@ -184,7 +184,7 @@ struct TmuxWindowSnapshot: Decodable {
     let panes: [TmuxPaneSnapshot]
 }
 
-// Properties mirror Rust's serialized schema and intentionally use snake_case.
+// Properties mirror the core's serialized schema and intentionally use snake_case.
 // swift-format-ignore: AlwaysUseLowerCamelCase
 struct TmuxPaneSnapshot: Decodable {
     let pane_id: UInt32
@@ -202,7 +202,7 @@ struct TmuxPaneSnapshot: Decodable {
     let title: String
 }
 
-// Properties mirror Rust's serialized schema and intentionally use snake_case.
+// Properties mirror the core's serialized schema and intentionally use snake_case.
 // swift-format-ignore: AlwaysUseLowerCamelCase
 final class TmuxLayoutSnapshot: Decodable {
     let kind: String
@@ -213,7 +213,7 @@ final class TmuxLayoutSnapshot: Decodable {
     let second: TmuxLayoutSnapshot?
 }
 
-// Properties mirror Rust's serialized schema and intentionally use snake_case.
+// Properties mirror the core's serialized schema and intentionally use snake_case.
 // swift-format-ignore: AlwaysUseLowerCamelCase
 struct NeovideRendererModelSnapshot: Decodable {
     let background: TerminalColorSnapshot
@@ -225,14 +225,14 @@ struct NeovideRendererModelSnapshot: Decodable {
     let windows: [NeovideRenderedWindowSnapshot]
 }
 
-// Properties mirror Rust's serialized schema and intentionally use snake_case.
+// Properties mirror the core's serialized schema and intentionally use snake_case.
 // swift-format-ignore: AlwaysUseLowerCamelCase
 struct NeovideUiStateSnapshot: Decodable {
     let cursor: TerminalCursorSnapshot?
     let scroll_hint: FrameScrollHint?
 }
 
-// Properties mirror Rust's serialized schema and intentionally use snake_case.
+// Properties mirror the core's serialized schema and intentionally use snake_case.
 // swift-format-ignore: AlwaysUseLowerCamelCase
 struct NeovideMessageSelectionSnapshot: Decodable {
     let grid_id: Int
@@ -251,7 +251,7 @@ struct ScrollbarSnapshot: Decodable {
     let total: UInt64
 }
 
-// Properties mirror Rust's serialized schema and intentionally use snake_case.
+// Properties mirror the core's serialized schema and intentionally use snake_case.
 // swift-format-ignore: AlwaysUseLowerCamelCase
 struct NeovideRenderedWindowSnapshot: Decodable {
     let grid_id: Int
@@ -284,7 +284,7 @@ struct TerminalColorSnapshot: Decodable {
     let b: UInt8
 }
 
-// Properties mirror Rust's serialized schema and intentionally use snake_case.
+// Properties mirror the core's serialized schema and intentionally use snake_case.
 // swift-format-ignore: AlwaysUseLowerCamelCase
 struct TerminalCursorSnapshot: Decodable {
     let x: UInt16
@@ -296,7 +296,7 @@ struct TerminalCursorSnapshot: Decodable {
     let blinkoff_ms: UInt64
 }
 
-// Properties mirror Rust's serialized schema and intentionally use snake_case.
+// Properties mirror the core's serialized schema and intentionally use snake_case.
 // swift-format-ignore: AlwaysUseLowerCamelCase
 struct FrameScrollHint: Decodable {
     let start_row: Int
@@ -332,7 +332,7 @@ struct OutputScrollShift {
     }
 }
 
-// Properties mirror the Rust terminal spawn schema and intentionally use snake_case.
+// Properties mirror the core's terminal spawn schema and intentionally use snake_case.
 // swift-format-ignore: AlwaysUseLowerCamelCase
 struct NativeTerminalSpawnConfiguration: Encodable {
     let cwd: String?
