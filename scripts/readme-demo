@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ -n "${SATIN_SOCKET:-}" ]]; then
-  echo "readme-demo must run from a terminal outside Satin" >&2
+if [[ -n "${SATIN_SOCKET:-}" && -z "${SATIN_RECORDER_SIGNING_IDENTITY:-}" ]]; then
+  echo "readme-demo must run from a terminal outside Satin," >&2
+  echo "or with SATIN_RECORDER_SIGNING_IDENTITY set" >&2
   exit 64
 fi
 if [[ "${SATIN_ALLOW_SCREEN_CAPTURE:-0}" != 1 ]]; then
@@ -95,22 +96,25 @@ wait_for_socket() {
   return 1
 }
 
+# The demo application starts with the attention hand off unless the scene
+# asks for it, whatever the developer's own Satin Dev preferences say.
 launch_demo_app() {
   local root=$1
   local scene=$2
+  local hand=${3:-NO}
   local socket="$root/control.sock"
   local result="$root/ready.result"
   local window_id="$root/window-id"
   local log="$root/app.log"
   (
     cd /tmp
-    exec env \
+    exec env -u SATIN_SOCKET -u SATIN_TAB_ID -u SATIN_PANE_ID -u SATIN_CLI \
       SATIN_CONTROL_SOCKET="$socket" \
       SATIN_NATIVE_SMOKE_SCENARIO=readme-demo \
       SATIN_README_DEMO_SCENE="$scene" \
       SATIN_NATIVE_SMOKE_RESULT="$result" \
       SATIN_NATIVE_SMOKE_WINDOW_ID="$window_id" \
-      "$app"
+      "$app" -attentionHand "$hand"
   ) >"$log" 2>&1 &
   app_pid=$!
   wait_for_socket "$socket"
@@ -193,7 +197,7 @@ finish_recording() {
   local output=$1
   if ! wait "$capture_pid"; then
     capture_pid=""
-    echo "README demo capture failed; allow Screen & System Audio Recording for Terminal" >&2
+    echo "README demo capture failed; allow Screen & System Audio Recording" >&2
     return 1
   fi
   capture_pid=""
@@ -219,7 +223,7 @@ printf '\033[1;38;2;206;180;255m  SATIN\033[0m  '
 printf '\033[38;2;126;231;214mnative terminal + Neovim workspace\033[0m\n'
 printf '\033[38;2;112;199;255m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m\n\n'
 printf '  \033[1;32m✓\033[0m  libghostty-vt terminal\n'
-printf '  \033[1;32m✓\033[0m  retained Skia / Metal renderer\n'
+printf '  \033[1;32m✓\033[0m  CoreText renderer, presented by Metal\n'
 printf '  \033[1;32m✓\033[0m  animated native Neovim cursor + scroll\n\n'
 printf '  \033[48;2;255;95;135m  \033[0m '
 printf '\033[48;2;255;189;89m  \033[0m '
@@ -246,30 +250,29 @@ vim.cmd("syntax enable")
 vim.cmd("colorscheme habamax")
 LUA
 
-cat >"$main_workspace/renderer.rs" <<'RUST'
-#[derive(Clone, Debug)]
-pub struct DrawCommand {
-    pub row: usize,
-    pub text: &'static str,
+cat >"$main_workspace/renderer.ts" <<'TS'
+export interface DrawCommand {
+  row: number;
+  text: string;
 }
 
-pub fn retained_frame() -> Vec<DrawCommand> {
-    vec![
-RUST
+export function retainedFrame(): DrawCommand[] {
+  return [
+TS
 for row in {1..140}; do
-  printf '        DrawCommand { row: %3d, text: "retained pane row %03d" },\n' \
-    "$row" "$row" >>"$main_workspace/renderer.rs"
+  printf '    { row: %3d, text: "retained pane row %03d" },\n' \
+    "$row" "$row" >>"$main_workspace/renderer.ts"
 done
-cat >>"$main_workspace/renderer.rs" <<'RUST'
-    ]
+cat >>"$main_workspace/renderer.ts" <<'TS'
+  ];
 }
-RUST
+TS
 
 git -C "$main_workspace" init -q -b main
 git -C "$main_workspace" config user.name "Satin Demo"
 git -C "$main_workspace" config user.email "demo@satin.invalid"
 git -C "$main_workspace" config commit.gpgsign false
-git -C "$main_workspace" add renderer.rs demo.lua
+git -C "$main_workspace" add renderer.ts demo.lua
 GIT_AUTHOR_DATE=2026-08-01T10:00:00Z GIT_COMMITTER_DATE=2026-08-01T10:00:00Z \
   git -C "$main_workspace" commit -qm "Add retained draw commands"
 printf '%s\n' 'cursor_animation = true' >"$main_workspace/renderer.toml"
@@ -310,7 +313,7 @@ printf -v nvim_intro 'source %q' "$main_root/prompt.zsh"
 "$cli" --socket "$main_socket" send --pane "$nvim_pane" "$nvim_intro" >/dev/null
 "$cli" --socket "$main_socket" key --pane "$nvim_pane" Enter >/dev/null
 sleep 0.8
-type_into_pane "$main_socket" "$nvim_pane" "nvim -u demo.lua renderer.rs" 0.04
+type_into_pane "$main_socket" "$nvim_pane" "nvim -u demo.lua renderer.ts" 0.04
 "$cli" --socket "$main_socket" key --pane "$nvim_pane" Enter >/dev/null
 wait_for_pane_kind "$main_socket" "$nvim_pane" neovim
 sleep 0.7
@@ -357,8 +360,8 @@ cat >"$work_root/checks.zsh" <<'ZSH'
 printf '\033[2J\033[H'
 printf '\033[1;38;2;206;180;255m  Release checks\033[0m\n'
 printf '\033[38;2;112;199;255m━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m\n\n'
-printf '  \033[1;32m✓\033[0m  Rust tests          182 passed\n'
-printf '  \033[1;32m✓\033[0m  native smoke       Skia/Metal\n'
+printf '  \033[1;32m✓\033[0m  core tests          214 passed\n'
+printf '  \033[1;32m✓\033[0m  native smoke       Metal\n'
 printf '  \033[1;33m●\033[0m  approval           requested\n\n'
 printf '  \033[2mprojected tmux window · shared-grid zoom\033[0m\n\n'
 printf '  \033[38;2;126;231;214msatin-demo\033[0m ❯ '
@@ -423,15 +426,14 @@ together without embedding a browser.
 
 | Check | Result | Detail |
 | --- | --- | --- |
-| Renderer | Pass | Skia + Metal retained UI |
+| Renderer | Pass | CoreText, presented by Metal |
 | Neovim | Pass | scroll and split redraw |
 | Terminal | Pass | libghostty-vt |
 
-```rust
-let workspace = Satin::native()
-    .with_tmux()
-    .with_neovim();
-assert!(workspace.is_ready());
+```sh
+satin artifact add --kind markdown --title "Release readiness" \
+  --file release-readiness.md
+satin artifact show "$id"
 ```
 
 ![Current Satin icon](satin-icon.png)
@@ -464,6 +466,148 @@ printf '\nUpdated after the final native smoke passed.\n' >>"$artifact_source"
 "$cli" --socket "$artifact_socket" artifact show --pane "$artifact_pane" "$artifact_id" \
   >/dev/null
 finish_recording "$raw_artifact"
+cleanup_processes
+
+hand_root="$demo_root/hand"
+mkdir -p "$hand_root"
+chmod 700 "$hand_root"
+hand_workspace="$hand_root/workspace"
+mkdir -p "$hand_workspace"
+git -C "$hand_workspace" init -q -b main
+git -C "$hand_workspace" config user.name "Satin Demo"
+git -C "$hand_workspace" config user.email "demo@satin.invalid"
+git -C "$hand_workspace" config commit.gpgsign false
+for subject in "Add the users table" "Count visits per user" "Render the visits chart"; do
+  printf '%s\n' "$subject" >>"$hand_workspace/notes.txt"
+  git -C "$hand_workspace" add notes.txt
+  GIT_AUTHOR_DATE=2026-08-01T10:00:00Z GIT_COMMITTER_DATE=2026-08-01T10:00:00Z \
+    git -C "$hand_workspace" commit -qm "$subject"
+done
+
+cat >"$hand_root/prompt.zsh" <<'ZSH'
+precmd_functions=()
+chpwd_functions=()
+PROMPT=$'  \033[38;2;126;231;214msatin\033[0m \033[2m~/demo\033[0m ❯ '
+RPROMPT=''
+printf '\033[2J\033[H'
+ZSH
+
+# Each agent pane prints its question, then waits for the answer the recipe
+# types after it plays that pane's card.
+cat >"$hand_root/api.zsh" <<'ZSH'
+printf '\033[2J\033[H'
+printf '\033[1;38;2;206;180;255m  agent · api\033[0m\n\n'
+printf '  \033[1;36m●\033[0m  planning the schema change\n\n'
+printf '     users    +1 column\n     visits   +1 index\n\n'
+printf '  \033[1;33m?\033[0m  Apply the migration? (y/n) '
+IFS= read -r _
+printf '\n  \033[1;36m●\033[0m  working…\n'
+IFS= read -r _
+ZSH
+cat >"$hand_root/web.zsh" <<'ZSH'
+printf '\033[2J\033[H'
+printf '\033[1;38;2;206;180;255m  agent · web\033[0m\n\n'
+printf '  \033[1;36m●\033[0m  npm run build\n\n'
+printf '     src/routes/users.ts:42\n'
+printf '     \033[1;31merror\033[0m  visits is possibly undefined\n\n'
+printf '  \033[1;31m×\033[0m  build failed · 1 error '
+IFS= read -r _
+ZSH
+cat >"$hand_root/docs.zsh" <<'ZSH'
+printf '\033[2J\033[H'
+printf '\033[1;38;2;206;180;255m  agent · docs\033[0m\n\n'
+printf '  \033[1;36m●\033[0m  rewriting the setup guide\n\n'
+printf '     README.md   3 hunks\n     guide.md    1 hunk\n\n'
+printf '  \033[1;32m✓\033[0m  done in 41s '
+IFS= read -r _
+ZSH
+cat >"$hand_root/worker.zsh" <<'ZSH'
+printf '\033[2J\033[H'
+printf '\033[1;38;2;206;180;255m  agent · worker\033[0m\n\n'
+printf '  \033[1;36m●\033[0m  checking dependencies\n\n'
+printf '     zod      3.22 → 3.23\n     vitest   1.5  → 1.6\n\n'
+printf '  \033[1;33m?\033[0m  Update both? (y/n) '
+IFS= read -r _
+printf '\n  \033[1;36m●\033[0m  working…\n'
+IFS= read -r _
+ZSH
+
+launch_demo_app "$hand_root" hand YES
+hand_socket="$hand_root/control.sock"
+hand() {
+  "$cli" --socket "$hand_socket" "$@"
+}
+# A pane takes input once its shell has started.
+send_when_ready() {
+  local pane=$1
+  local text=$2
+  for _ in {1..80}; do
+    if hand send --pane "$pane" "$text" >/dev/null 2>&1; then
+      hand key --pane "$pane" Enter >/dev/null
+      return 0
+    fi
+    sleep 0.1
+  done
+  echo "readme-demo pane $pane never accepted input" >&2
+  return 1
+}
+hand_main="$(hand --json list | jq -r '.result.panes[0].id')"
+printf -v hand_intro 'cd %q && source %q' "$hand_workspace" "$hand_root/prompt.zsh"
+send_when_ready "$hand_main" "$hand_intro"
+declare -A hand_pane
+for name in api web docs worker; do
+  hand_pane[$name]="$(hand --json new-tab --cwd "$hand_workspace" --title "$name" \
+    --background | jq -r '.result.pane')"
+done
+for name in api web docs worker; do
+  printf -v agent_start 'source %q' "$hand_root/$name.zsh"
+  send_when_ready "${hand_pane[$name]}" "$agent_start"
+  hand status set --pane "${hand_pane[$name]}" running "Agent working" >/dev/null
+done
+sleep 1.5
+
+answer_card() {
+  local name=$1
+  local summary=$2
+  sleep 0.9
+  hand send --pane "${hand_pane[$name]}" y >/dev/null
+  hand key --pane "${hand_pane[$name]}" Enter >/dev/null
+  hand status set --pane "${hand_pane[$name]}" running "$summary" >/dev/null
+}
+
+hand_window_id="$(tr -d '[:space:]' <"$hand_root/window-id")"
+raw_hand="$demo_root/satin-attention-hand-demo.mov"
+record_window "$hand_window_id" 24 "$raw_hand"
+sleep 0.8
+type_into_pane "$hand_socket" "$hand_main" "git log --graph --oneline --color=always" 0.02
+hand key --pane "$hand_main" Enter >/dev/null
+sleep 0.8
+hand status set --pane "${hand_pane[api]}" waiting "Apply the migration?" >/dev/null
+sleep 2.2
+hand status set --pane "${hand_pane[web]}" failed \
+  "Build failed: visits is possibly undefined" >/dev/null
+sleep 1.8
+hand status set --pane "${hand_pane[worker]}" waiting "Update zod and vitest?" >/dev/null
+sleep 1.6
+hand status set --pane "${hand_pane[docs]}" "done" "Setup guide rewritten" >/dev/null
+sleep 2.6
+# Command-J held: choose the first card, move to the next, then let go.
+: >"$hand_root/ready.result.select"
+sleep 1.6
+: >"$hand_root/ready.result.select"
+sleep 1.3
+: >"$hand_root/ready.result.commit"
+answer_card worker "Updating dependencies"
+sleep 1.3
+: >"$hand_root/ready.result.play"
+answer_card api "Applying the migration"
+sleep 1.3
+: >"$hand_root/ready.result.play"
+sleep 1.4
+hand status set --pane "${hand_pane[web]}" idle "" >/dev/null
+sleep 0.6
+: >"$hand_root/ready.result.play"
+finish_recording "$raw_hand"
 cleanup_processes
 
 render_demo() {
@@ -502,6 +646,7 @@ render_demo() {
 render_demo "$raw_main" satin-demo 12
 render_demo "$raw_work" satin-work-switcher-demo 8
 render_demo "$raw_artifact" satin-artifact-demo 8
+render_demo "$raw_hand" satin-attention-hand-demo 12
 
 chmod 644 \
   "$demo_root/satin-demo.mp4" \
@@ -512,7 +657,10 @@ chmod 644 \
   "$demo_root/satin-work-switcher-demo-poster.png" \
   "$demo_root/satin-artifact-demo.mp4" \
   "$demo_root/satin-artifact-demo.gif" \
-  "$demo_root/satin-artifact-demo-poster.png"
+  "$demo_root/satin-artifact-demo-poster.png" \
+  "$demo_root/satin-attention-hand-demo.mp4" \
+  "$demo_root/satin-attention-hand-demo.gif" \
+  "$demo_root/satin-attention-hand-demo-poster.png"
 mv -f "$demo_root/satin-demo.mp4" assets/satin-demo.mp4
 mv -f "$demo_root/satin-demo.gif" assets/satin-demo.gif
 mv -f "$demo_root/satin-demo-poster.png" assets/satin-demo-poster.png
@@ -523,6 +671,10 @@ mv -f "$demo_root/satin-work-switcher-demo-poster.png" \
 mv -f "$demo_root/satin-artifact-demo.mp4" assets/satin-artifact-demo.mp4
 mv -f "$demo_root/satin-artifact-demo.gif" assets/satin-artifact-demo.gif
 mv -f "$demo_root/satin-artifact-demo-poster.png" assets/satin-artifact-demo-poster.png
+mv -f "$demo_root/satin-attention-hand-demo.mp4" assets/satin-attention-hand-demo.mp4
+mv -f "$demo_root/satin-attention-hand-demo.gif" assets/satin-attention-hand-demo.gif
+mv -f "$demo_root/satin-attention-hand-demo-poster.png" \
+  assets/satin-attention-hand-demo-poster.png
 
 ls -lh \
   assets/satin-demo.mp4 \
@@ -533,4 +685,7 @@ ls -lh \
   assets/satin-work-switcher-demo-poster.png \
   assets/satin-artifact-demo.mp4 \
   assets/satin-artifact-demo.gif \
-  assets/satin-artifact-demo-poster.png
+  assets/satin-artifact-demo-poster.png \
+  assets/satin-attention-hand-demo.mp4 \
+  assets/satin-attention-hand-demo.gif \
+  assets/satin-attention-hand-demo-poster.png

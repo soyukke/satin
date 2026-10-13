@@ -29,6 +29,29 @@ import Foundation
             }
             writeReadmeDemoResult(resultPath, result: "ok readme-demo ready=yes\n")
             waitForReadmeWorkSwitcherTrigger(resultPath, retries: 1_200)
+            pollReadmeHandPlay(resultPath, retries: 2_400)
+        }
+
+        /// Plays the first attention card each time the recipe drops a `.play` file.
+        func pollReadmeHandPlay(_ resultPath: String, retries: Int) {
+            let trigger = "\(resultPath).play"
+            if FileManager.default.fileExists(atPath: trigger) {
+                try? FileManager.default.removeItem(atPath: trigger)
+                jumpToWaitingAgent(nil)
+            }
+            for (suffix, action) in [
+                ("select", { [weak self] in self?.advanceAttentionSelection() }),
+                ("commit", { [weak self] in self?.commitAttentionSelection() }),
+            ] where FileManager.default.fileExists(atPath: "\(resultPath).\(suffix)") {
+                try? FileManager.default.removeItem(atPath: "\(resultPath).\(suffix)")
+                action()
+            }
+            guard retries > 0 else {
+                return
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
+                self?.pollReadmeHandPlay(resultPath, retries: retries - 1)
+            }
         }
 
         func waitForReadmeWorkSwitcherTrigger(_ resultPath: String, retries: Int) {

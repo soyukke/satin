@@ -45,6 +45,41 @@ if [[ ! -x "$binary" || "$source_file" -nt "$binary" ]]; then
   build_recorder
 fi
 
+# macOS grants screen recording to the responsible process and remembers the
+# grant by code signature. A bare, ad-hoc signed tool is charged to the terminal
+# that ran it, and an ad-hoc signed terminal is a new application to macOS after
+# every rebuild. With a signing identity the recorder becomes an application of
+# its own with a stable signature, so one grant lasts and recording also works
+# from a pane inside Satin.
+recorder_app="$build_dir/recorder/Satin Recorder.app"
+signing_identity="${SATIN_RECORDER_SIGNING_IDENTITY:-}"
+
+build_recorder_app() {
+  local executable="$recorder_app/Contents/MacOS/satin-recorder"
+  if [[ -x "$executable" && ! "$binary" -nt "$executable" ]]; then
+    return 0
+  fi
+  mkdir -p "$recorder_app/Contents/MacOS"
+  cp -f "$binary" "$executable"
+  cat >"$recorder_app/Contents/Info.plist" <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleIdentifier</key><string>dev.soyukke.satin.recorder</string>
+  <key>CFBundleName</key><string>Satin Recorder</string>
+  <key>CFBundleExecutable</key><string>satin-recorder</string>
+  <key>CFBundlePackageType</key><string>APPL</string>
+  <key>CFBundleShortVersionString</key><string>1.0</string>
+  <key>CFBundleVersion</key><string>1</string>
+  <key>LSMinimumSystemVersion</key><string>14.0</string>
+  <key>LSUIElement</key><true/>
+</dict>
+</plist>
+PLIST
+  /usr/bin/codesign --force --sign "$signing_identity" "$recorder_app" >/dev/null 2>&1
+}
+
 if [[ "${1:-}" == "--build-only" ]]; then
   exit 0
 fi
@@ -54,13 +89,35 @@ if [[ $# -ne 4 ]]; then
     >&2
   exit 64
 fi
-if [[ -n "${SATIN_SOCKET:-}" ]]; then
-  echo "native window recording must run outside Satin" >&2
-  exit 64
-fi
 if [[ "${SATIN_ALLOW_SCREEN_CAPTURE:-0}" != 1 ]]; then
   echo "native window recording requires SATIN_ALLOW_SCREEN_CAPTURE=1" >&2
   exit 77
+fi
+
+if [[ -n "$signing_identity" ]]; then
+  build_recorder_app
+  output="$4"
+  case "$output" in
+    /*) ;;
+    *) output="$PWD/$output" ;;
+  esac
+  recorder_log="$(mktemp "${TMPDIR:-/tmp}/satin-recorder.XXXXXX")"
+  /usr/bin/open -W -n "$PWD/$recorder_app" --stderr "$recorder_log" \
+    --args "$1" "$2" "$3" "$output" || true
+  if [[ ! -s "$output" ]]; then
+    cat "$recorder_log" >&2
+    rm -f -- "$recorder_log"
+    echo "allow Satin Recorder under Screen & System Audio Recording, then retry" >&2
+    exit 1
+  fi
+  rm -f -- "$recorder_log"
+  exit 0
+fi
+
+if [[ -n "${SATIN_SOCKET:-}" ]]; then
+  echo "native window recording must run outside Satin" >&2
+  echo "or set SATIN_RECORDER_SIGNING_IDENTITY to record as Satin Recorder" >&2
+  exit 64
 fi
 
 exec "$binary" "$@"

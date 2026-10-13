@@ -195,9 +195,9 @@ native-visual-smoke:
         ./scripts/native-nvim-ui-surfaces-smoke; \
     fi
 
-# Record and optimize the three README demos from an isolated Satin Dev window.
+# Record and optimize the four README demos from an isolated Satin Dev window.
 readme-demo:
-    @if [[ -n "${SATIN_SOCKET:-}" ]]; then echo "readme-demo must run from a terminal outside Satin" >&2; exit 64; fi
+    @if [[ -n "${SATIN_SOCKET:-}" && -z "${SATIN_RECORDER_SIGNING_IDENTITY:-}" ]]; then echo "readme-demo must run from a terminal outside Satin, or with SATIN_RECORDER_SIGNING_IDENTITY set" >&2; exit 64; fi
     @if [[ "${SATIN_ALLOW_SCREEN_CAPTURE:-0}" != 1 ]]; then echo "set SATIN_ALLOW_SCREEN_CAPTURE=1 to record the isolated demo window" >&2; exit 64; fi
     @if [[ -z "${IN_NIX_SHELL:-}" ]]; then exec nix develop --command just readme-demo; else ./scripts/readme-demo; fi
 
