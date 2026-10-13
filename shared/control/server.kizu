@@ -1,0 +1,395 @@
+// The control server: clients connect to a Unix socket, send one request
+// line each, and wait for the host's answer. The Rust `ControlServer`.
+//
+// Nothing here runs on its own. A kernel queue holds the listener, every
+// client still sending, and a timer a client; the host waits on the
+// queue's descriptor and calls take_request when it is readable.
+import std::array;
+import std::mem;
+import std::string;
+
+fn max_clients() -> i64 {
+    return 32;
+}
+
+/// How long a client has to send its request, in milliseconds.
+fn request_millis() -> i64 {
+    return 5000;
+}
+
+/// How long a write to a client may take, in milliseconds.
+fn write_millis() -> i64 {
+    return 5000;
+}
+
+enum ClientState {
+    /// Its request line is still arriving.
+    Sending,
+    /// Its request is read and the host has not taken it.
+    Ready,
+    /// The host took its request and owes it an answer.
+    Waiting,
+}
+
+struct Client {
+    descriptor: i32,
+    id: i64,
+    state: ClientState,
+    /// What it sent so far, then its request as the host reads it.
+    buffer: string::String,
+}
+
+fn (self: Client) deinit(allocator: Allocator) -> void {
+    close_descriptor(self.descriptor);
+    self.buffer.deinit(allocator);
+}
+
+pub struct Server {
+    path: string::String,
+    parent_created: bool,
+    listener: i32,
+    queue: i32,
+    clients: array::Array<Client>,
+    next_id: i64,
+}
+
+/// Starts listening at path, an absolute path in a directory of the
+/// caller's own.
+pub fn start_server(allocator: Allocator, path: []u8) -> ControlFailure!Server {
+    let parent_created = try prepare_socket_path(allocator, path);
+    var listener: i32 = -1;
+    // SAFETY: kqueue has no preconditions.
+    let queue = unsafe kqueue();
+    if queue >= 0 {
+        if listen_at(allocator, path) |descriptor| {
+            listener = descriptor;
+        } else |_| {}
+    }
+    var owned = string::new(allocator);
+    var started = listener >= 0;
+    if started {
+        if owned.append_bytes(allocator, path) {} else |_| {
+            started = false;
+        }
+    }
+    if started {
+        started = change_event(queue, cast<i64>(listener), filter_read(), event_add(), 0);
+    }
+    if !started {
+        owned.deinit(allocator);
+        if listener >= 0 {
+            close_descriptor(listener);
+            remove_path(allocator, path, false);
+        }
+        close_descriptor(queue);
+        if parent_created {
+            remove_path(allocator, path[0..parent_length(path)], true);
+        }
+        return ControlError::Unavailable;
+    }
+    return Server {
+        path: move owned,
+        parent_created: parent_created,
+        listener: listener,
+        queue: queue,
+        clients: array::new<Client>(allocator),
+        next_id: 1
+    };
+}
+
+/// Tells every client whose request was read that the host stopped.
+fn (self: &Server) tell_stopped(allocator: Allocator) -> void {
+    var failure = string::new(allocator);
+    defer failure.deinit(allocator);
+    if append_failure(allocator, &var failure, "host_stopped", "control host stopped before responding") {} else |_| {}
+    if failure.append_byte(allocator, 10) {} else |_| {}
+    let line = failure.as_bytes();
+    self.send_to_answerable(line);
+    return;
+}
+
+/// Sends line to every client whose request was read.
+fn (self: &Server) send_to_answerable(line: []u8) -> void {
+    for 0..self.clients.len() |index| {
+        if self.clients.at(index) |client| {
+            if client.state != ClientState::Sending {
+                let _ = send_all(client.descriptor, line);
+            }
+        }
+    }
+    return;
+}
+
+/// Stops listening, tells every client still waiting that the host
+/// stopped, and removes the socket.
+pub fn (self: Server) deinit(allocator: Allocator) -> void {
+    self.tell_stopped(allocator);
+    self.remove_socket(allocator);
+    close_descriptor(self.listener);
+    close_descriptor(self.queue);
+    self.clients.deinit(allocator);
+    self.path.deinit(allocator);
+}
+
+/// Removes the socket when it is still this user's own, and its directory
+/// when start_server made it.
+fn (self: &Server) remove_socket(allocator: Allocator) -> void {
+    let path = self.path.as_bytes();
+    var mode: i64 = 0;
+    var owner: i64 = 0;
+    if path_status(allocator, path, &var mode, &var owner) |found| {
+        if found and is_socket_mode(mode) and owner == effective_user() {
+            remove_path(allocator, path, false);
+        }
+    } else |_| {}
+    if self.parent_created {
+        remove_path(allocator, path[0..parent_length(path)], true);
+    }
+    return;
+}
+
+/// The descriptor that is readable when take_request has work to do.
+pub fn (self: &Server) wakeup_fd() -> i32 {
+    return self.queue;
+}
+
+pub fn (self: &Server) client_count() -> i64 {
+    return self.clients.len();
+}
+
+fn (self: &Server) client_with_descriptor(descriptor: i64) -> i64 {
+    for 0..self.clients.len() |index| {
+        if self.clients.at(index) |client| {
+            if cast<i64>(client.descriptor) == descriptor {
+                return index;
+            }
+        }
+    }
+    return -1;
+}
+
+fn (self: &Server) client_with_id(id: i64) -> i64 {
+    for 0..self.clients.len() |index| {
+        if self.clients.at(index) |client| {
+            if client.id == id {
+                return index;
+            }
+        }
+    }
+    return -1;
+}
+
+/// Closes the client at index and forgets it and its timer.
+fn (self: &var Server) drop_client(allocator: Allocator, index: i64) -> void {
+    if self.clients.remove(index) |client| {
+        let _ = change_event(self.queue, client.id, filter_timer(), event_delete(), 0);
+        client.deinit(allocator);
+    } else |_| {}
+    return;
+}
+
+/// Writes a failure to the client at index and drops it.
+fn (self: &var Server) fail_client(allocator: Allocator, index: i64, code: []u8, message: []u8) -> void {
+    var line = string::new(allocator);
+    defer line.deinit(allocator);
+    if append_failure(allocator, &var line, code, message) {} else |_| {}
+    if line.append_byte(allocator, 10) {} else |_| {}
+    let bytes = line.as_bytes();
+    if self.clients.at(index) |client| {
+        let _ = send_all(client.descriptor, bytes);
+    }
+    self.drop_client(allocator, index);
+    return;
+}
+
+/// Takes the connection waiting at the listener.
+fn (self: &var Server) accept_client(allocator: Allocator) -> mem::Error!void {
+    // SAFETY: the listener is live; the peer's address is not read.
+    let descriptor = unsafe accept(self.listener, null, null);
+    if descriptor < 0 {
+        return;
+    }
+    quiet_pipe(descriptor);
+    set_timeout(descriptor, false, write_millis());
+    if !peer_is_this_user(descriptor) {
+        close_descriptor(descriptor);
+        return;
+    }
+    let id = self.next_id;
+    self.next_id = self.next_id + 1;
+    let client = Client { descriptor: descriptor, id: id, state: ClientState::Sending, buffer: string::new(allocator) };
+    errdefer client.deinit(allocator);
+    try self.clients.append(allocator, move client);
+    let index = self.clients.len() - 1;
+    if index >= max_clients() {
+        self.fail_client(allocator, index, "too_many_clients", "too many control clients");
+        return;
+    }
+    let watched = change_event(self.queue, cast<i64>(descriptor), filter_read(), event_add(), 0) and
+        change_event(self.queue, id, filter_timer(), event_add_once(), request_millis());
+    if !watched {
+        self.drop_client(allocator, index);
+    }
+    return;
+}
+
+/// Reads what the client at index sent. Once its line is whole the client
+/// is Ready, or dropped when the line is no request.
+fn (self: &var Server) read_client(allocator: Allocator, index: i64) -> mem::Error!void {
+    var descriptor: i32 = -1;
+    var id: i64 = 0;
+    var line_end: i64 = -1;
+    var ended = false;
+    if self.clients.at_mut(index) |client| {
+        descriptor = client.descriptor;
+        id = client.id;
+        var reading = client.state == ClientState::Sending;
+        while reading {
+            let count = try receive(allocator, client.descriptor, false, &var client.buffer);
+            if count <= 0 {
+                reading = false;
+                ended = count != -1;
+            }
+            if client.buffer.len() > max_line_bytes() + 1 {
+                reading = false;
+                ended = true;
+            }
+        }
+        let sent = client.buffer.as_bytes();
+        for 0..mem::len(sent) |position| {
+            if line_end < 0 and sent[position] == cast<u8>(10) {
+                line_end = position;
+            }
+        }
+    }
+    if descriptor < 0 {
+        return;
+    }
+    if line_end < 0 {
+        if ended {
+            self.drop_client(allocator, index);
+        }
+        return;
+    }
+    if line_end + 1 > max_line_bytes() {
+        self.drop_client(allocator, index);
+        return;
+    }
+    let _ = change_event(self.queue, cast<i64>(descriptor), filter_read(), event_delete(), 0);
+    var accepted = false;
+    var timeout_millis: i64 = 0;
+    var parsed = string::new(allocator);
+    defer parsed.deinit(allocator);
+    if self.clients.at(index) |client| {
+        let sent = client.buffer.as_bytes();
+        if read_request(allocator, sent[0..line_end], id) |request| {
+            defer request.deinit(allocator);
+            timeout_millis = request.timeout_millis;
+            if parsed.append_string(allocator, &request.json) {
+                accepted = true;
+            } else |_| {}
+        } else |_| {}
+    }
+    if accepted {
+        accepted = false;
+        if self.clients.at_mut(index) |client| {
+            client.buffer.clear();
+            if client.buffer.append_string(allocator, &parsed) {
+                client.state = ClientState::Ready;
+                accepted = true;
+            } else |_| {}
+        }
+    }
+    if !accepted {
+        self.drop_client(allocator, index);
+        return;
+    }
+    if timeout_millis < 0 {
+        let _ = change_event(self.queue, id, filter_timer(), event_delete(), 0);
+    } else {
+        let _ = change_event(self.queue, id, filter_timer(), event_add_once(), timeout_millis);
+    }
+    return;
+}
+
+/// The timer of the client with id ran out: one still sending is dropped,
+/// one waiting for the host is told so.
+fn (self: &var Server) expire_client(allocator: Allocator, id: i64) -> void {
+    let index = self.client_with_id(id);
+    var sending = false;
+    if self.clients.at(index) |client| {
+        sending = client.state == ClientState::Sending;
+    } else {
+        return;
+    }
+    if sending {
+        self.drop_client(allocator, index);
+        return;
+    }
+    self.fail_client(allocator, index, "timeout", "control request timed out");
+    return;
+}
+
+/// Handles what the kernel queue has pending: connections, request bytes,
+/// and timers that ran out.
+fn (self: &var Server) pump(allocator: Allocator) -> mem::Error!void {
+    var event = no_event();
+    var handled = 0;
+    while handled < 256 and next_event(self.queue, &var event) {
+        handled = handled + 1;
+        let ident = cast<i64>(event.ident);
+        if event.filter == filter_timer() {
+            self.expire_client(allocator, ident);
+        } else if ident == cast<i64>(self.listener) {
+            try self.accept_client(allocator);
+        } else {
+            let index = self.client_with_descriptor(ident);
+            if index >= 0 {
+                try self.read_client(allocator, index);
+            }
+        }
+    }
+    return;
+}
+
+/// Appends the oldest request no one took yet to out, as the JSON the host
+/// reads, with the id to answer it by. False when there is none.
+pub fn (self: &var Server) take_request(allocator: Allocator, out: &var string::String) -> mem::Error!bool {
+    try self.pump(allocator);
+    for 0..self.clients.len() |index| {
+        if self.clients.at_mut(index) |client| {
+            if client.state == ClientState::Ready {
+                try out.append_string(allocator, &client.buffer);
+                client.state = ClientState::Waiting;
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+/// Answers the request with id. False when no client waits for it any
+/// more, the response is none the protocol has, or the client is gone.
+pub fn (self: &var Server) respond(allocator: Allocator, id: i64, response: []u8) -> mem::Error!bool {
+    let index = self.client_with_id(id);
+    var descriptor: i32 = -1;
+    if self.clients.at(index) |client| {
+        if client.state == ClientState::Waiting {
+            descriptor = client.descriptor;
+        }
+    }
+    if descriptor < 0 {
+        return false;
+    }
+    var line = string::new(allocator);
+    defer line.deinit(allocator);
+    var ok = false;
+    if read_response(allocator, response, &var line, &var ok) {} else |_| {
+        return false;
+    }
+    try line.append_byte(allocator, 10);
+    let bytes = line.as_bytes();
+    let sent = send_all(descriptor, bytes);
+    self.drop_client(allocator, index);
+    return sent;
+}

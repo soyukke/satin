@@ -1,0 +1,8 @@
+[package]
+name = "satin"
+version = "0.1.0"
+
+# The `satin` command: the control client. It shares ../shared with the
+# app core and takes nothing from ../src, so it links no terminal.
+[modules]
+paths = ["../shared", "src"]

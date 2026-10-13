@@ -3,10 +3,10 @@ name = "satin"
 version = "0.1.0"
 
 [modules]
-paths = ["src"]
+paths = ["src", "shared"]
 
-# libghostty-vt, which `kizu test` links. scripts/link-ghostty points this at
-# the archive the Rust app's cargo build made; the app itself links it through
+# libghostty-vt, which `kizu test` links. scripts/build-ghostty builds
+# it there with zig; the Rust app links its own through
 # cargo.
 [native]
 library_search = ["target/native"]

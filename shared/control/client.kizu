@@ -1,0 +1,69 @@
+// The client's half: send one request line, wait for the answer.
+import std::mem;
+import std::string;
+
+/// Sends request, one JSON object, to the server at path, and appends its
+/// answer to out without the newline. timeout_millis is how long the
+/// answer may take; negative waits for as long as it takes.
+pub fn send_request(
+    allocator: Allocator,
+    path: []u8,
+    request: []u8,
+    timeout_millis: i64,
+    out: &var string::String
+) -> ControlFailure!void {
+    let descriptor = try connect_to(allocator, path);
+    try send_on(allocator, descriptor, request, timeout_millis, out);
+    return;
+}
+
+/// send_request over a connection connect_to made, which this closes.
+pub fn send_on(
+    allocator: Allocator,
+    descriptor: i32,
+    request: []u8,
+    timeout_millis: i64,
+    out: &var string::String
+) -> ControlFailure!void {
+    set_timeout(descriptor, false, write_millis());
+    if !send_all(descriptor, request) or !send_all(descriptor, line_feed()) {
+        close_descriptor(descriptor);
+        return ControlError::Unavailable;
+    }
+    set_timeout(descriptor, true, timeout_millis);
+    var answer = string::new(allocator);
+    defer answer.deinit(allocator);
+    var reading = true;
+    var failed = false;
+    while reading {
+        if receive(allocator, descriptor, true, &var answer) |count| {
+            // With a timeout set, nothing to read yet is the timeout.
+            reading = count > 0 and answer.len() <= max_line_bytes() and !ends_in_line_feed(&answer);
+            failed = count < 0;
+        } else |_| {
+            reading = false;
+            failed = true;
+        }
+    }
+    close_descriptor(descriptor);
+    let bytes = answer.as_bytes();
+    let line = mem::trim_ascii(bytes);
+    if failed or mem::len(line) == 0 or mem::len(bytes) > max_line_bytes() {
+        return ControlError::Unavailable;
+    }
+    try out.append_bytes(allocator, line);
+    return;
+}
+
+fn line_feed() -> []u8 {
+    return
+        \\
+        \\
+    ;
+}
+
+/// Whether the answer so far is a whole line, which is all a server sends.
+fn ends_in_line_feed(answer: &string::String) -> bool {
+    let bytes = answer.as_bytes();
+    return mem::len(bytes) > 0 and bytes[mem::len(bytes) - 1] == cast<u8>(10);
+}
