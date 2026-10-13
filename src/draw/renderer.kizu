@@ -1,0 +1,286 @@
+// One renderer: the panes' state, the display list a pane's frame is built
+// into, and the painter and bitmap it is executed with. What the Rust
+// `NativeSkiaMetalRenderer` did up to the texture, which is the host's.
+import satin::nvim;
+import satin::term;
+import std::array;
+import std::math;
+import std::mem;
+import std::string;
+
+/// The pixels of a bitmap one pane's frame wrote: width x height of them
+/// from (x, y); empty when it wrote none.
+pub struct PixelRegion {
+    pub x: i64,
+    pub y: i64,
+    pub width: i64,
+    pub height: i64,
+}
+
+/// bitmap is what frames are drawn into, one pixel until a frame gives its
+/// size; pixels is where an image's pixels pass from a terminal to the
+/// painter, and no_placements stays empty for a terminal whose images
+/// could not be read.
+pub struct Renderer {
+    frames: Frames,
+    list: DisplayList,
+    painter: Painter,
+    bitmap: Bitmap,
+    pixels: string::String,
+    no_placements: array::Array<term::Placement>,
+    region: PixelRegion,
+}
+
+/// A renderer that has drawn nothing; null without storage.
+pub fn new_renderer(allocator: Allocator) -> ?Renderer {
+    let painter = new_painter(allocator) orelse return null;
+    if new_bitmap(1, 1) |bitmap| {
+        return finished_renderer(allocator, move painter, move bitmap);
+    }
+    painter.deinit(allocator);
+    return null;
+}
+
+fn finished_renderer(allocator: Allocator, painter: Painter, bitmap: Bitmap) -> Renderer {
+    return Renderer {
+        frames: new_frames(allocator),
+        list: new_display_list(allocator),
+        painter: move painter,
+        bitmap: move bitmap,
+        pixels: string::new(allocator),
+        no_placements: array::new<term::Placement>(allocator),
+        region: PixelRegion { x: 0, y: 0, width: 0, height: 0 }
+    };
+}
+
+pub fn (self: Renderer) deinit(allocator: Allocator) -> void {
+    self.frames.deinit(allocator);
+    self.list.deinit(allocator);
+    self.painter.deinit(allocator);
+    self.bitmap.deinit();
+    self.pixels.deinit(allocator);
+    self.no_placements.deinit(allocator);
+}
+
+pub fn (self: &var Renderer) begin_frame() -> void {
+    self.frames.begin_frame();
+}
+
+/// Drops what is kept for the runtime at id: its pane and its images.
+pub fn (self: &var Renderer) forget_runtime(allocator: Allocator, id: usize) -> void {
+    self.frames.forget_runtime(allocator, id);
+    self.painter.forget_images(id);
+}
+
+/// Names the family every pane's text is drawn in; empty for the default.
+pub fn (self: &var Renderer) set_font_family(allocator: Allocator, family: []u8) -> mem::Error!void {
+    if try self.painter.set_font_family(allocator, family) {}
+    return;
+}
+
+/// Names the directory the bundled fonts are looked for in first; see
+/// Painter.set_font_dir.
+pub fn (self: &var Renderer) set_font_dir(allocator: Allocator, dir: []u8) -> mem::Error!void {
+    try self.painter.set_font_dir(allocator, dir);
+    return;
+}
+
+/// Whether the bundled font's file was found.
+pub fn (self: &var Renderer) has_bundled_font(allocator: Allocator) -> mem::Error!bool {
+    return try self.painter.has_bundled_font(allocator);
+}
+
+pub fn (self: &Renderer) next_frame_delay_ms(now_ms: i64) -> ?i64 {
+    return self.frames.next_frame_delay_ms(now_ms);
+}
+
+pub fn (self: &Renderer) needs_animation_frame(now_ms: i64) -> bool {
+    return self.frames.needs_animation_frame(now_ms);
+}
+
+/// How many commands of kind the last frame was drawn from.
+pub fn (self: &Renderer) count_of(kind: CommandKind) -> i64 {
+    return self.list.count_of(kind);
+}
+
+/// The pixels the last frame wrote.
+pub fn (self: &Renderer) drawn_region() -> PixelRegion {
+    return self.region;
+}
+
+/// The bitmap's pixel at (x, y); clear outside it.
+pub fn (self: &Renderer) pixel(x: i64, y: i64) -> Rgba {
+    return self.bitmap.pixel(x, y);
+}
+
+/// The bytes of one row of the bitmap.
+pub fn (self: &Renderer) row_bytes() -> i64 {
+    return self.bitmap.row_bytes();
+}
+
+/// The first byte of the last frame's region: its rows of blue, green, red
+/// and alpha bytes follow row_bytes apart. Null when the region is empty.
+pub fn (self: &Renderer) region_pixels() -> ?ptr<u8> {
+    if self.region.width <= 0 or self.region.height <= 0 {
+        return null;
+    }
+    return self.bitmap.pixels_at(self.region.x, self.region.y);
+}
+
+/// The pixels a pane of geometry writes: the whole target when it clears
+/// it, and else the pixels whose centers are in its content.
+fn written_region(geometry: Geometry, clear: bool) -> PixelRegion {
+    if clear {
+        return PixelRegion { x: 0, y: 0, width: geometry.width, height: geometry.height };
+    }
+    let left = math::clamp<i64>(cast<i64>(math::round<f32>(geometry.origin_x)), 0, geometry.width);
+    let top = math::clamp<i64>(cast<i64>(math::round<f32>(geometry.origin_y)), 0, geometry.height);
+    let right = math::clamp<i64>(
+        cast<i64>(math::round<f32>(geometry.origin_x + geometry.content_width)),
+        left,
+        geometry.width
+    );
+    let bottom = math::clamp<i64>(
+        cast<i64>(math::round<f32>(geometry.origin_y + geometry.content_height)),
+        top,
+        geometry.height
+    );
+    return PixelRegion { x: left, y: top, width: right - left, height: bottom - top };
+}
+
+/// Executes the list into the bitmap and records the region it wrote.
+fn (self: &var Renderer) paint(allocator: Allocator, geometry: Geometry, clear: bool) -> mem::Error!void {
+    try self.painter.execute(allocator, &self.list, &self.bitmap);
+    self.region = written_region(geometry, clear);
+    return;
+}
+
+/// Draws the terminal's pane at now_ms into the bitmap, which becomes the
+/// target's size. id is the runtime's address, clear says the pane is the
+/// first of its frame, and preedit is the text an input method is
+/// composing, empty for none. False when nothing was drawn.
+pub fn (self: &var Renderer) draw_terminal(
+    allocator: Allocator,
+    runtime: &var term::Runtime,
+    id: usize,
+    geometry: Geometry,
+    clear: bool,
+    preedit: []u8,
+    now_ms: i64
+) -> bool {
+    self.region = PixelRegion { x: 0, y: 0, width: 0, height: 0 };
+    if !self.bitmap.resize(geometry.width, geometry.height) {
+        return false;
+    }
+    if self.terminal_frame(allocator, runtime, id, geometry, clear, preedit, now_ms) {
+        return true;
+    } else |_| {}
+    return false;
+}
+
+fn (self: &var Renderer) terminal_frame(
+    allocator: Allocator,
+    runtime: &var term::Runtime,
+    id: usize,
+    geometry: Geometry,
+    clear: bool,
+    preedit: []u8,
+    now_ms: i64
+) -> term::Failure!void {
+    let metrics = try self.painter.metrics(allocator, geometry);
+    try self.frames.render_terminal(allocator, &var self.list, runtime, id, geometry, metrics, clear, preedit, now_ms);
+    try self.load_images(allocator, &runtime.kitty, id);
+    try self.paint(allocator, geometry, clear);
+    return;
+}
+
+/// Gives the painter the pixels of the images the list draws and it does
+/// not hold, and drops the ones of owner the list no longer draws.
+fn (self: &var Renderer) load_images(allocator: Allocator, kitty: &term::KittyImages, owner: usize) -> mem::Error!void {
+    self.painter.retain_images(owner, &self.list);
+    for 0..self.list.images.len() |index| {
+        let image = self.list.images.get(index) orelse continue;
+        if self.painter.has_image(image) {
+            continue;
+        }
+        self.pixels.clear();
+        if try kitty.append_pixels(allocator, image.image_id, &var self.pixels) {
+            let rgba = self.pixels.as_bytes();
+            if try self.painter.put_image(allocator, image, rgba) {}
+        }
+    }
+    return;
+}
+
+/// draw_terminal for an embedded Neovim.
+pub fn (self: &var Renderer) draw_editor(
+    allocator: Allocator,
+    runtime: &var nvim::Runtime,
+    id: usize,
+    geometry: Geometry,
+    clear: bool,
+    preedit: []u8,
+    now_ms: i64
+) -> bool {
+    self.region = PixelRegion { x: 0, y: 0, width: 0, height: 0 };
+    if !self.bitmap.resize(geometry.width, geometry.height) {
+        return false;
+    }
+    if self.editor_frame(allocator, runtime, id, geometry, clear, preedit, now_ms) {
+        return true;
+    } else |_| {}
+    return false;
+}
+
+fn (self: &var Renderer) editor_frame(
+    allocator: Allocator,
+    runtime: &var nvim::Runtime,
+    id: usize,
+    geometry: Geometry,
+    clear: bool,
+    preedit: []u8,
+    now_ms: i64
+) -> mem::Error!void {
+    var has_images = true;
+    if runtime.collect_kitty(allocator) {} else |_| {
+        has_images = false;
+    }
+    let dt = try self.frames.editor_dt(allocator, id, now_ms);
+    let moving = runtime.advance_renderer_animations(dt);
+    let scroll_active = moving or runtime.has_active_renderer_animation();
+    let metrics = try self.painter.metrics(allocator, geometry);
+    if has_images {
+        let placements = runtime.kitty.placements.as_slice();
+        try self.frames.render_editor(
+            allocator,
+            &var self.list,
+            &runtime.editor,
+            placements,
+            scroll_active,
+            id,
+            geometry,
+            metrics,
+            clear,
+            preedit,
+            now_ms
+        );
+    } else {
+        let placements = self.no_placements.as_slice();
+        try self.frames.render_editor(
+            allocator,
+            &var self.list,
+            &runtime.editor,
+            placements,
+            scroll_active,
+            id,
+            geometry,
+            metrics,
+            clear,
+            preedit,
+            now_ms
+        );
+    }
+    try self.load_images(allocator, &runtime.kitty, id);
+    try self.paint(allocator, geometry, clear);
+    return;
+}

@@ -1,0 +1,209 @@
+import satin::term;
+import std::mem;
+import std::testing;
+
+fn bar_cursor(x: i64, blinkwait_ms: u64, blinkon_ms: u64, blinkoff_ms: u64) -> SceneCursor {
+    return SceneCursor {
+        x: x,
+        y: 0,
+        shape: term::CursorShape::Bar,
+        cell_percentage: 25,
+        blinkwait_ms: blinkwait_ms,
+        blinkon_ms: blinkon_ms,
+        blinkoff_ms: blinkoff_ms
+    };
+}
+
+fn block_cursor(x: i64, y: i64) -> SceneCursor {
+    return SceneCursor {
+        x: x,
+        y: y,
+        shape: term::CursorShape::Block,
+        cell_percentage: 100,
+        blinkwait_ms: 0,
+        blinkon_ms: 0,
+        blinkoff_ms: 0
+    };
+}
+
+test "cursor blink waits then toggles off and on" {
+    let cursor = bar_cursor(0, 300, 200, 150);
+    var blink = new_cursor_blink();
+
+    blink.update_at(1000, true, cursor);
+    testing::expect(blink.should_render());
+    testing::expect_equal<i64>(300, blink.next_frame_delay_ms(1000) orelse -1);
+
+    blink.update_at(1300, true, cursor);
+    testing::expect(blink.should_render());
+
+    blink.update_at(1500, true, cursor);
+    testing::expect(!blink.should_render());
+    testing::expect_equal<i64>(150, blink.next_frame_delay_ms(1500) orelse -1);
+
+    blink.update_at(1650, true, cursor);
+    testing::expect(blink.should_render());
+}
+
+test "cursor blink static when on or off duration is zero" {
+    var blink = new_cursor_blink();
+
+    blink.update_at(1000, true, bar_cursor(0, 300, 0, 150));
+
+    testing::expect(blink.should_render());
+    testing::expect_equal<i64>(-1, blink.next_frame_delay_ms(1000) orelse -1);
+}
+
+test "cursor blink resets visible when cursor changes" {
+    let first = bar_cursor(0, 0, 200, 150);
+    var blink = new_cursor_blink();
+    blink.update_at(1000, true, first);
+    blink.update_at(1200, true, first);
+    testing::expect(!blink.should_render());
+
+    blink.update_at(1200, true, bar_cursor(1, 0, 200, 150));
+
+    testing::expect(blink.should_render());
+}
+
+test "a blink that fell behind restarts its phase from now" {
+    let cursor = bar_cursor(0, 0, 200, 150);
+    var blink = new_cursor_blink();
+    blink.update_at(1000, true, cursor);
+
+    blink.update_at(9000, true, cursor);
+    testing::expect(!blink.should_render());
+    testing::expect_equal<i64>(150, blink.next_frame_delay_ms(9000) orelse -1);
+
+    blink.update_at(9000, false, cursor);
+    testing::expect(blink.should_render());
+    testing::expect_equal<i64>(-1, blink.next_frame_delay_ms(9000) orelse -1);
+}
+
+test "cursor uses parent window scroll and stays inside viewport" {
+    let allocator = mem::page_allocator();
+    var scene = new_scene(allocator);
+    defer scene.deinit(allocator);
+    var view = main_view(1, 8, 8);
+    view.scroll_position = lit(-2.0);
+    view.margins = term::Margins { top: 1, bottom: 1, left: 0, right: 0 };
+    try scene.add_window(allocator, view);
+    scene.has_cursor_parent = true;
+    scene.cursor_parent = 1;
+
+    scene.cursor = block_cursor(4, 3);
+    var at = scene.cursor_render_point();
+    testing::expect(at.x == lit(4.0) and at.y == lit(5.0));
+
+    scene.cursor = block_cursor(4, 0);
+    at = scene.cursor_render_point();
+    testing::expect(at.x == lit(4.0) and at.y == lit(0.0));
+
+    scene.cursor = block_cursor(4, 3);
+    if scene.windows.at_mut(0) |window| {
+        window.margins.left = 5;
+    }
+    at = scene.cursor_render_point();
+    testing::expect(at.x == lit(4.0) and at.y == lit(3.0));
+
+    if scene.windows.at_mut(0) |window| {
+        window.margins.left = 0;
+        window.scroll_position = lit(-20.0);
+    }
+    at = scene.cursor_render_point();
+    testing::expect(at.x == lit(4.0) and at.y == lit(6.0));
+
+    // A cursor whose window is not shown stays where it is.
+    if scene.windows.at_mut(0) |window| {
+        window.hidden = true;
+    }
+    at = scene.cursor_render_point();
+    testing::expect(at.y == lit(3.0));
+}
+
+test "vertical cursor move deforms neovide corners instead of drawing a trail" {
+    let allocator = mem::page_allocator();
+    let geometry = inset_geometry();
+    var scene = new_scene(allocator);
+    defer scene.deinit(allocator);
+    try scene.add_window(allocator, main_view(1, 8, 8));
+    scene.has_cursor_parent = true;
+    scene.cursor_parent = 1;
+    scene.has_cursor = true;
+    scene.cursor = block_cursor(4, 2);
+    var animation = new_cursor_animation();
+    animation.update(&scene, geometry, lit(0.0));
+    testing::expect(!animation.needs_animation_frame());
+    testing::expect(animation.corner_pixel(0).x == lit(50.0) and animation.corner_pixel(0).y == lit(60.0));
+    testing::expect(animation.corner_pixel(2).x == lit(60.0) and animation.corner_pixel(2).y == lit(80.0));
+
+    scene.cursor = block_cursor(4, 3);
+    animation.update(&scene, geometry, lit(1.0) / lit(60.0));
+
+    let target_top = geometry.origin_y + lit(3.0) * geometry.cell_height;
+    let target_bottom = target_top + geometry.cell_height;
+    testing::expect(animation.corners[0].current.y < target_top);
+    testing::expect(animation.corners[1].current.y < target_top);
+    testing::expect(animation.corners[2].current.y == target_bottom);
+    testing::expect(animation.corners[3].current.y == target_bottom);
+    testing::expect(animation.needs_animation_frame());
+
+    for 0..60 |_| {
+        animation.update(&scene, geometry, lit(1.0) / lit(60.0));
+    }
+    testing::expect(!animation.needs_animation_frame());
+    testing::expect(animation.corners[0].current.y == target_top);
+    testing::expect(animation.corners[1].current.y == target_top);
+}
+
+test "a short move along the row settles in the short time" {
+    let allocator = mem::page_allocator();
+    let geometry = inset_geometry();
+    var scene = new_scene(allocator);
+    defer scene.deinit(allocator);
+    scene.has_cursor = true;
+    scene.cursor = block_cursor(1, 1);
+    var animation = new_cursor_animation();
+    animation.update(&scene, geometry, lit(0.0));
+
+    scene.cursor = block_cursor(2, 1);
+    animation.update(&scene, geometry, lit(0.01));
+    testing::expect(animation.needs_animation_frame());
+    testing::expect(animation.corners[0].length == cursor_short_animation_seconds());
+    // A step as long as the short animation ends it.
+    animation.update(&scene, geometry, lit(0.04));
+    testing::expect(!animation.needs_animation_frame());
+    testing::expect(animation.corner_pixel(0).x == lit(30.0));
+
+    // Without a cursor the corners are forgotten, and the next one snaps.
+    scene.has_cursor = false;
+    animation.update(&scene, geometry, lit(0.01));
+    testing::expect(!animation.is_placed());
+    scene.has_cursor = true;
+    scene.cursor = block_cursor(7, 7);
+    animation.update(&scene, geometry, lit(0.01));
+    testing::expect(!animation.needs_animation_frame());
+    testing::expect(animation.corner_pixel(0).x == lit(80.0) and animation.corner_pixel(0).y == lit(160.0));
+}
+
+test "a bar and an underline keep a part of the cell" {
+    let allocator = mem::page_allocator();
+    let geometry = inset_geometry();
+    var scene = new_scene(allocator);
+    defer scene.deinit(allocator);
+    scene.has_cursor = true;
+    scene.cursor = bar_cursor(0, 0, 0, 0);
+    var animation = new_cursor_animation();
+    animation.update(&scene, geometry, lit(0.0));
+    // A quarter of a 10 pixel cell, rounded to whole pixels.
+    testing::expect(animation.corner_pixel(0).x == lit(10.0) and animation.corner_pixel(1).x == lit(13.0));
+    testing::expect(animation.corner_pixel(0).y == lit(20.0) and animation.corner_pixel(3).y == lit(40.0));
+
+    scene.cursor.shape = term::CursorShape::Underline;
+    animation.update(&scene, geometry, lit(0.0));
+    for 0..10 |_| {
+        animation.update(&scene, geometry, lit(1.0));
+    }
+    testing::expect(animation.corner_pixel(0).x == lit(10.0) and animation.corner_pixel(1).x == lit(20.0));
+    testing::expect(animation.corner_pixel(0).y == lit(35.0) and animation.corner_pixel(3).y == lit(40.0));
+}

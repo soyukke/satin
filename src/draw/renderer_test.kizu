@@ -1,0 +1,163 @@
+import satin::term;
+import std::mem;
+import std::process;
+import std::testing;
+
+/// A one-pixel opaque red PNG, base64 as the Kitty protocol carries it.
+fn red_pixel() -> []u8 {
+    return "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==";
+}
+
+fn is_color(pixel: Rgba, color: term::Color) -> bool {
+    return same_rgba(pixel, opaque(color));
+}
+
+test "a terminal's pane is drawn into a bitmap of the target's size" {
+    let allocator = mem::page_allocator();
+    var runtime = try small_terminal(allocator);
+    defer runtime.deinit(allocator);
+    try feed_marked(allocator, &var runtime, "^[48;2;200;0;0mM^[0m$M");
+    var renderer = new_renderer(allocator) orelse return;
+    defer renderer.deinit(allocator);
+    renderer.begin_frame();
+    let geometry = pane_geometry(160, 160, 10.0, 20.0);
+    testing::expect(renderer.draw_terminal(allocator, &var runtime, 7, geometry, true, "", 0));
+
+    let region = renderer.drawn_region();
+    testing::expect(region.x == 0 and region.y == 0 and region.width == 160 and region.height == 160);
+    testing::expect_equal<i64>(640, renderer.row_bytes());
+    let background = runtime.frame.background;
+    testing::expect(is_color(renderer.pixel(155, 155), background));
+    testing::expect(is_color(renderer.pixel(0, 0), rgb(200, 0, 0)));
+    testing::expect(is_color(renderer.pixel(9, 19), rgb(200, 0, 0)));
+    testing::expect(is_color(renderer.pixel(10, 19), background));
+    // The letters: pixels that are neither the cell's color nor the pane's.
+    var first = 0;
+    var second = 0;
+    for 0..20 |y| {
+        for 0..10 |x| {
+            if !is_color(renderer.pixel(x, y), rgb(200, 0, 0)) {
+                first = first + 1;
+            }
+            if !is_color(renderer.pixel(x, y + 20), background) {
+                second = second + 1;
+            }
+        }
+    }
+    testing::expect(first > 15 and second > 15);
+    // The cursor's block after the second letter, in its color at 199 of 255.
+    let cursor = renderer.pixel(15, 30);
+    let expected = mixed(runtime.frame.cursor_color.r, background.r, 199);
+    testing::expect(cast<i64>(cursor.r) >= cast<i64>(expected) - 1 and cast<i64>(cursor.r) <= cast<i64>(expected) + 1);
+    testing::expect(is_color(renderer.pixel(25, 30), background));
+    testing::expect(!renderer.needs_animation_frame(0));
+    testing::expect_equal<i64>(1, renderer.count_of(CommandKind::Quad));
+
+    // A target of another size is a new bitmap.
+    let wider = pane_geometry(200, 80, 10.0, 20.0);
+    testing::expect(renderer.draw_terminal(allocator, &var runtime, 7, wider, true, "", 16));
+    testing::expect_equal<i64>(800, renderer.row_bytes());
+    testing::expect(is_color(renderer.pixel(199, 79), background));
+    // And a target with no pixels draws nothing.
+    testing::expect(!renderer.draw_terminal(allocator, &var runtime, 7, pane_geometry(0, 80, 10.0, 20.0), true, "", 32));
+    testing::expect_equal<i64>(0, renderer.drawn_region().width);
+}
+
+test "a pane that does not clear writes only its content" {
+    let allocator = mem::page_allocator();
+    var left = try small_terminal(allocator);
+    defer left.deinit(allocator);
+    var right = try small_terminal(allocator);
+    defer right.deinit(allocator);
+    try feed_marked(allocator, &var right, "^[48;2;0;0;200mxxxxxxxxxxxxxxxx");
+    var renderer = new_renderer(allocator) orelse return;
+    defer renderer.deinit(allocator);
+    renderer.begin_frame();
+    var geometry = pane_geometry(160, 160, 10.0, 20.0);
+    testing::expect(renderer.draw_terminal(allocator, &var left, 1, geometry, true, "", 0));
+    geometry.origin_x = lit(80.75);
+    geometry.origin_y = lit(20.0);
+    geometry.content_width = lit(40.0);
+    geometry.content_height = lit(40.0);
+    testing::expect(renderer.draw_terminal(allocator, &var right, 2, geometry, false, "", 0));
+
+    let region = renderer.drawn_region();
+    testing::expect(region.x == 81 and region.y == 20 and region.width == 40 and region.height == 40);
+    // The blue row is cut to the pane's content: the pixels whose centers
+    // are from 80.75 up to 120.75.
+    let background = left.frame.background;
+    testing::expect(is_color(renderer.pixel(80, 25), background));
+    testing::expect(is_color(renderer.pixel(81, 25), rgb(0, 0, 200)));
+    testing::expect(is_color(renderer.pixel(120, 39), rgb(0, 0, 200)));
+    testing::expect(is_color(renderer.pixel(121, 25), background));
+    testing::expect(is_color(renderer.pixel(100, 15), background));
+    // Both panes were drawn in this frame, and neither moves.
+    testing::expect(!renderer.needs_animation_frame(0));
+    renderer.forget_runtime(allocator, 1);
+    renderer.forget_runtime(allocator, 2);
+}
+
+test "a terminal's image is drawn over its cell and forgotten with it" {
+    let allocator = mem::page_allocator();
+    var runtime = try small_terminal(allocator);
+    defer runtime.deinit(allocator);
+    try feed_marked(allocator, &var runtime, "^[2;3H^_Ga=T,f=100,t=d,i=81,c=2,r=1,z=0,q=2;");
+    try feed_marked(allocator, &var runtime, red_pixel());
+    try feed_marked(allocator, &var runtime, "^\\");
+    var renderer = new_renderer(allocator) orelse return;
+    defer renderer.deinit(allocator);
+    renderer.begin_frame();
+    let geometry = pane_geometry(160, 160, 10.0, 20.0);
+    testing::expect(renderer.draw_terminal(allocator, &var runtime, 7, geometry, true, "", 0));
+
+    testing::expect_equal<i64>(1, renderer.count_of(CommandKind::Image));
+    testing::expect_equal<i64>(1, renderer.painter.image_count());
+    // Two cells from column 2 of row 1.
+    testing::expect(is_color(renderer.pixel(21, 21), rgb(255, 0, 0)));
+    testing::expect(is_color(renderer.pixel(39, 39), rgb(255, 0, 0)));
+    testing::expect(is_color(renderer.pixel(19, 30), runtime.frame.background));
+    testing::expect(is_color(renderer.pixel(30, 41), runtime.frame.background));
+    // A frame later the pixels are still the painter's own.
+    renderer.begin_frame();
+    testing::expect(renderer.draw_terminal(allocator, &var runtime, 7, geometry, true, "", 16));
+    testing::expect_equal<i64>(1, renderer.painter.image_count());
+    renderer.forget_runtime(allocator, 7);
+    testing::expect_equal<i64>(0, renderer.painter.image_count());
+}
+
+test "a terminal of 200 x 60 cells is drawn into 3000 x 1800 pixels" {
+    let allocator = mem::page_allocator();
+    var runtime = try term::external_runtime(
+        allocator,
+        term::GridSize { rows: 60, cols: 200, pixel_width: 3000, pixel_height: 1800 }
+    );
+    defer runtime.deinit(allocator);
+    for 0..60 |row| {
+        if row > 0 {
+            try feed_marked(allocator, &var runtime, "$");
+        }
+        if row % 2 == 0 {
+            try feed_marked(allocator, &var runtime, "^[38;2;120;200;160m");
+        } else {
+            try feed_marked(allocator, &var runtime, "^[0m");
+        }
+        for 0..5 |_| {
+            try feed_marked(allocator, &var runtime, "let value = compute(index, &var state); ");
+        }
+    }
+    var renderer = new_renderer(allocator) orelse return;
+    defer renderer.deinit(allocator);
+    let geometry = pane_geometry(3000, 1800, 15.0, 30.0);
+    renderer.begin_frame();
+    testing::expect(renderer.draw_terminal(allocator, &var runtime, 7, geometry, true, "", 0));
+    let frames = 20;
+    let started = process::monotonic_millis();
+    for 0..frames |frame| {
+        renderer.begin_frame();
+        testing::expect(renderer.draw_terminal(allocator, &var runtime, 7, geometry, true, "", 16 * frame));
+    }
+    // Hundredths of a millisecond a frame: reading the terminal, building
+    // the list and drawing it.
+    print((process::monotonic_millis() - started) * 100 / frames);
+    testing::expect(renderer.count_of(CommandKind::Text) >= 60);
+}

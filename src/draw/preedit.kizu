@@ -1,0 +1,265 @@
+// The text an input method is composing, laid out as one line of cells at
+// the cursor. The Rust `PreeditLineCache` and `preedit_line`, with compact
+// tables in place of the `unicode-segmentation` and `unicode-width` crates.
+import satin::term;
+import std::array;
+import std::mem;
+import std::string;
+
+fn in_span(scalar: i64, first: i64, last: i64) -> bool {
+    return scalar >= first and scalar <= last;
+}
+
+/// Reads the scalar that starts at index into scalar and returns its length
+/// in bytes. A byte that starts no sequence reads as U+FFFD, one byte long.
+fn read_scalar(bytes: []u8, index: i64, scalar: &var i64) -> i64 {
+    let lead = cast<i64>(bytes[index]);
+    var length: i64 = 1;
+    var value = lead;
+    if lead >= 240 and lead < 248 {
+        length = 4;
+        value = lead & 7;
+    } else if lead >= 224 {
+        length = 3;
+        value = lead & 15;
+    } else if lead >= 192 {
+        length = 2;
+        value = lead & 31;
+    } else if lead >= 128 {
+        scalar = 65533;
+        return 1;
+    }
+    if index + length > mem::len(bytes) {
+        scalar = 65533;
+        return 1;
+    }
+    for 1..length |offset| {
+        let next = cast<i64>(bytes[index + offset]);
+        if next < 128 or next >= 192 {
+            scalar = 65533;
+            return 1;
+        }
+        value = value << 6 | next & 63;
+    }
+    scalar = value;
+    return length;
+}
+
+/// Combining marks, joiners and variation selectors: the scalars drawn in
+/// the cell of the one before them.
+fn joins_previous(scalar: i64) -> bool {
+    if scalar < 768 {
+        return false;
+    }
+    return in_span(scalar, 768, 879) or in_span(scalar, 1155, 1161) or in_span(scalar, 1425, 1479) or
+        in_span(scalar, 1552, 1562) or
+        in_span(scalar, 1611, 1631) or
+        in_span(scalar, 2362, 2391) or
+        scalar == 3633 or
+        in_span(scalar, 3636, 3642) or
+        in_span(scalar, 3655, 3662) or
+        in_span(scalar, 4448, 4607) or
+        in_span(scalar, 6832, 6911) or
+        in_span(scalar, 7616, 7679) or
+        in_span(scalar, 8203, 8207) or
+        in_span(scalar, 8400, 8447) or
+        in_span(scalar, 12330, 12335) or
+        in_span(scalar, 12441, 12442) or
+        in_span(scalar, 65024, 65039) or
+        in_span(scalar, 65056, 65071) or
+        in_span(scalar, 127995, 127999) or
+        in_span(scalar, 917760, 917999);
+}
+
+/// East Asian Wide and Fullwidth scalars, and the emoji that present as
+/// emoji: the ones a terminal gives two cells.
+fn is_wide_scalar(scalar: i64) -> bool {
+    if scalar < 4352 {
+        return false;
+    }
+    return in_span(scalar, 4352, 4447) or in_span(scalar, 11904, 12350) or in_span(scalar, 12353, 13311) or
+        in_span(scalar, 13312, 19903) or
+        in_span(scalar, 19968, 42191) or
+        in_span(scalar, 43360, 43388) or
+        in_span(scalar, 44032, 55203) or
+        in_span(scalar, 63744, 64255) or
+        in_span(scalar, 65072, 65103) or
+        in_span(scalar, 65281, 65376) or
+        in_span(scalar, 65504, 65510) or
+        in_span(scalar, 127744, 128591) or
+        in_span(scalar, 128640, 128767) or
+        in_span(scalar, 129280, 129791) or
+        in_span(scalar, 131072, 262141);
+}
+
+/// Where the cluster that starts at index of text ends: after its first
+/// scalar, the scalars that join it, and whatever a zero width joiner ties
+/// on. cells is how many cells it takes, one at least.
+fn cluster_end(text: []u8, index: i64, cells: &var i64) -> i64 {
+    var scalar: i64 = 0;
+    var end = index + read_scalar(text, index, &var scalar);
+    cells = 1;
+    if is_wide_scalar(scalar) {
+        cells = 2;
+    }
+    while end < mem::len(text) {
+        let length = read_scalar(text, end, &var scalar);
+        if !joins_previous(scalar) {
+            break;
+        }
+        end = end + length;
+        if scalar == 65039 {
+            // An emoji presentation selector widens what it follows.
+            cells = 2;
+        }
+        if scalar == 8205 and end < mem::len(text) {
+            end = end + read_scalar(text, end, &var scalar);
+        }
+    }
+    return end;
+}
+
+/// One line of cells, as a retained line has them: a cell's text is
+/// text_len bytes of text at text_start, and runs are its backgrounds.
+pub struct PreeditLine {
+    pub cells: array::Array<term::Cell>,
+    pub text: string::String,
+    pub runs: array::Array<term::BackgroundRun>,
+}
+
+fn new_preedit_line(allocator: Allocator) -> PreeditLine {
+    return PreeditLine {
+        cells: array::new<term::Cell>(allocator),
+        text: string::new(allocator),
+        runs: array::new<term::BackgroundRun>(allocator)
+    };
+}
+
+fn (self: PreeditLine) deinit(allocator: Allocator) -> void {
+    self.cells.deinit(allocator);
+    self.text.deinit(allocator);
+    self.runs.deinit(allocator);
+}
+
+/// Appends a cell of bytes in foreground on background, underlined in
+/// foreground.
+fn (self: &var PreeditLine) append_cell(
+    allocator: Allocator,
+    bytes: []u8,
+    foreground: term::Color,
+    background: term::Color
+) -> mem::Error!void {
+    var style = plain_style();
+    style.underline = term::Underline::Single;
+    style.has_underline_color = true;
+    style.underline_color = foreground;
+    let start = self.text.len();
+    try self.text.append_bytes(allocator, bytes);
+    try self.cells.append(
+        allocator,
+        term::Cell {
+        text_start: start,
+        text_len: mem::len(bytes),
+        fg: foreground,
+        has_bg: true,
+        bg: background,
+        blend: 0,
+        style: style
+    }
+    );
+    return;
+}
+
+/// Makes the line text's clusters, each in its first cell with a space in
+/// its second when it is wide, up to the last that fits in max_columns.
+fn (self: &var PreeditLine) fill(
+    allocator: Allocator,
+    text: []u8,
+    foreground: term::Color,
+    background: term::Color,
+    max_columns: i64
+) -> mem::Error!void {
+    self.cells.clear(allocator);
+    self.text.clear();
+    self.runs.clear(allocator);
+    var index: i64 = 0;
+    while index < mem::len(text) {
+        var cells: i64 = 1;
+        let end = cluster_end(text, index, &var cells);
+        if self.cells.len() + cells > max_columns {
+            break;
+        }
+        try self.append_cell(allocator, text[index..end], foreground, background);
+        for 1..cells |_| {
+            try self.append_cell(allocator, " ", foreground, background);
+        }
+        index = end;
+    }
+    if self.cells.len() > 0 {
+        try self.runs.append(
+            allocator,
+            term::BackgroundRun { start_col: 0, end_col: self.cells.len(), background: background, blend: 0 }
+        );
+    }
+    return;
+}
+
+/// The composed text's line, kept until the text, its colors or the room
+/// for it change. generation counts the times it was laid out.
+pub struct PreeditCache {
+    source: string::String,
+    has_colors: bool,
+    foreground: term::Color,
+    background: term::Color,
+    max_columns: i64,
+    pub line: PreeditLine,
+    pub generation: i64,
+}
+
+pub fn new_preedit_cache(allocator: Allocator) -> PreeditCache {
+    return PreeditCache {
+        source: string::new(allocator),
+        has_colors: false,
+        foreground: term::Color { r: 0, g: 0, b: 0 },
+        background: term::Color { r: 0, g: 0, b: 0 },
+        max_columns: 0,
+        line: new_preedit_line(allocator),
+        generation: 0
+    };
+}
+
+pub fn (self: PreeditCache) deinit(allocator: Allocator) -> void {
+    self.source.deinit(allocator);
+    self.line.deinit(allocator);
+}
+
+/// Brings line up to text; false, with line left alone, for no text.
+pub fn (self: &var PreeditCache) prepare(
+    allocator: Allocator,
+    text: []u8,
+    foreground: term::Color,
+    background: term::Color,
+    max_columns: i64
+) -> mem::Error!bool {
+    if mem::len(text) == 0 {
+        return false;
+    }
+    var changed = !self.has_colors or !term::same_color(self.foreground, foreground) or
+        !term::same_color(self.background, background) or
+        self.max_columns != max_columns;
+    if !changed {
+        let held = self.source.as_bytes();
+        changed = !mem::equal_bytes(held, text);
+    }
+    if changed {
+        self.source.clear();
+        try self.source.append_bytes(allocator, text);
+        self.has_colors = true;
+        self.foreground = foreground;
+        self.background = background;
+        self.max_columns = max_columns;
+        try self.line.fill(allocator, text, foreground, background, max_columns);
+        self.generation = self.generation + 1;
+    }
+    return true;
+}

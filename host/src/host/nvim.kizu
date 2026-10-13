@@ -1,0 +1,292 @@
+// The C boundary the Swift host calls for an embedded Neovim:
+// `satin_nvim_*`, the same functions and the same values the Rust library
+// exported.
+import satin::nvim;
+import satin::term;
+import std::mem;
+import std::string;
+
+fn started(size: term::GridSize, launch: &nvim::Launch) -> ?ptr<nvim::Runtime> {
+    if nvim::spawn_runtime(mem::page_allocator(), size, launch) |runtime| {
+        // SAFETY: malloc returns storage for one Runtime or null.
+        let storage = unsafe malloc(mem::size_of<nvim::Runtime>());
+        if storage |slot| {
+            // SAFETY: slot is fresh storage for one Runtime.
+            let handle = unsafe cast<ptr<nvim::Runtime>>(slot);
+            // SAFETY: handle is fresh storage for one Runtime; the runtime now lives there.
+            unsafe ptr_write(handle, move runtime);
+            return handle;
+        }
+        runtime.deinit(mem::page_allocator());
+    } else |_| {}
+    return null;
+}
+
+export "c" fn satin_nvim_create(rows: u16, cols: u16, pixel_width: u16, pixel_height: u16) -> ?ptr<nvim::Runtime> {
+    let allocator = mem::page_allocator();
+    let launch = nvim::new_launch(allocator);
+    defer launch.deinit(allocator);
+    return started(grid_size(rows, cols, pixel_width, pixel_height), &launch);
+}
+
+export "c" fn satin_nvim_create_in_cwd(
+    rows: u16,
+    cols: u16,
+    pixel_width: u16,
+    pixel_height: u16,
+    cwd: ?ptr<const u8>
+) -> ?ptr<nvim::Runtime> {
+    let allocator = mem::page_allocator();
+    var launch = nvim::new_launch(allocator);
+    defer launch.deinit(allocator);
+    if cwd |text| {
+        // SAFETY: the host passes a NUL-terminated string that outlives the call.
+        let length = unsafe c_length(text);
+        // SAFETY: text holds length readable bytes.
+        let path = unsafe view_from_ptr(text, length);
+        if is_utf8(path) {
+            if launch.cwd.append_bytes(allocator, path) {
+                launch.has_cwd = true;
+            } else |_| {
+                return null;
+            }
+        }
+    }
+    return started(grid_size(rows, cols, pixel_width, pixel_height), &launch);
+}
+
+export "c" fn satin_nvim_create_with_config(
+    rows: u16,
+    cols: u16,
+    pixel_width: u16,
+    pixel_height: u16,
+    configuration: ?ptr<const u8>
+) -> ?ptr<nvim::Runtime> {
+    let text = configuration orelse return null;
+    let allocator = mem::page_allocator();
+    // SAFETY: the host passes a NUL-terminated string that outlives the call.
+    let length = unsafe c_length(text);
+    // SAFETY: text holds length readable bytes.
+    let document = unsafe view_from_ptr(text, length);
+    if nvim::launch_from_json(allocator, document) |launch| {
+        defer launch.deinit(allocator);
+        return started(grid_size(rows, cols, pixel_width, pixel_height), &launch);
+    } else |_| {}
+    return null;
+}
+
+export "c" fn satin_nvim_destroy(handle: ?ptr<nvim::Runtime>) -> void {
+    let live = handle orelse return;
+    // SAFETY: live came from a create and is destroyed once.
+    let runtime = unsafe ptr_read(live);
+    runtime.deinit(mem::page_allocator());
+    // SAFETY: live is malloc storage nothing reads after this.
+    unsafe free(cast<ptr<u8>>(live));
+    return;
+}
+
+export "c" fn satin_nvim_resize(
+    handle: ?ptr<nvim::Runtime>,
+    rows: u16,
+    cols: u16,
+    pixel_width: u16,
+    pixel_height: u16
+) -> u8 {
+    let live = handle orelse return 0;
+    // SAFETY: the host holds live from a create and calls from one thread.
+    let runtime = unsafe &var live.*;
+    if runtime.resize(mem::page_allocator(), grid_size(rows, cols, pixel_width, pixel_height)) {
+        return 1;
+    } else |_| {}
+    return 0;
+}
+
+export "c" fn satin_nvim_input(handle: ?ptr<nvim::Runtime>, bytes: ?ptr<const u8>, length: usize) -> u8 {
+    let live = handle orelse return 0;
+    let data = bytes orelse return 0;
+    // SAFETY: the host passes length readable bytes at data.
+    let view = unsafe view_from_ptr(data, cast<i64>(length));
+    // SAFETY: the host holds live from a create and calls from one thread.
+    let runtime = unsafe &var live.*;
+    if runtime.input_bytes(mem::page_allocator(), view) {
+        return 1;
+    } else |_| {}
+    return 0;
+}
+
+/// A mouse event over a grid cell: 2 when it only moved the message
+/// selection, 1 when Neovim was told, 0 when neither happened.
+export "c" fn satin_nvim_mouse(
+    handle: ?ptr<nvim::Runtime>,
+    button: ?ptr<const u8>,
+    action: ?ptr<const u8>,
+    modifier: ?ptr<const u8>,
+    grid: i64,
+    row: i64,
+    col: i64
+) -> u8 {
+    let live = handle orelse return 0;
+    let button_text = button orelse return 0;
+    let action_text = action orelse return 0;
+    let modifier_text = modifier orelse return 0;
+    // SAFETY: the host passes NUL-terminated strings that outlive the call.
+    let button_length = unsafe c_length(button_text);
+    // SAFETY: as above.
+    let action_length = unsafe c_length(action_text);
+    // SAFETY: as above.
+    let modifier_length = unsafe c_length(modifier_text);
+    // SAFETY: each string holds its length in readable bytes.
+    let button_view = unsafe view_from_ptr(button_text, button_length);
+    // SAFETY: as above.
+    let action_view = unsafe view_from_ptr(action_text, action_length);
+    // SAFETY: as above.
+    let modifier_view = unsafe view_from_ptr(modifier_text, modifier_length);
+    if !is_utf8(button_view) or !is_utf8(action_view) or !is_utf8(modifier_view) {
+        return 0;
+    }
+    // SAFETY: the host holds live from a create and calls from one thread.
+    let runtime = unsafe &var live.*;
+    if runtime.mouse_input(mem::page_allocator(), button_view, action_view, modifier_view, grid, row, col) |selecting| {
+        if selecting {
+            return 2;
+        }
+        return 1;
+    } else |_| {}
+    return 0;
+}
+
+export "c" fn satin_nvim_take_message_selection_text(handle: ?ptr<nvim::Runtime>) -> ?ptr<u8> {
+    let live = handle orelse return null;
+    let allocator = mem::page_allocator();
+    // SAFETY: the host holds live from a create and calls from one thread.
+    let runtime = unsafe &var live.*;
+    var text = string::new(allocator);
+    defer text.deinit(allocator);
+    if runtime.take_message_selection_text(allocator, &var text) |taken| {
+        if taken {
+            return owned_out(&text);
+        }
+    } else |_| {}
+    return null;
+}
+
+export "c" fn satin_nvim_command(handle: ?ptr<nvim::Runtime>, command: ?ptr<const u8>) -> u8 {
+    let live = handle orelse return 0;
+    let text = command orelse return 0;
+    // SAFETY: the host passes a NUL-terminated string that outlives the call.
+    let length = unsafe c_length(text);
+    // SAFETY: text holds length readable bytes.
+    let line = unsafe view_from_ptr(text, length);
+    if !is_utf8(line) {
+        return 0;
+    }
+    // SAFETY: the host holds live from a create and calls from one thread.
+    let runtime = unsafe &var live.*;
+    if runtime.command(mem::page_allocator(), line) {
+        return 1;
+    } else |_| {}
+    return 0;
+}
+
+export "c" fn satin_nvim_cwd(handle: ?ptr<nvim::Runtime>) -> ?ptr<u8> {
+    let live = handle orelse return null;
+    let allocator = mem::page_allocator();
+    // SAFETY: the host holds live from a create and calls from one thread.
+    let runtime = unsafe &live.*;
+    var directory = string::new(allocator);
+    defer directory.deinit(allocator);
+    if runtime.working_directory(allocator, &var directory) |known| {
+        if known {
+            return owned_out(&directory);
+        }
+    } else |_| {}
+    return null;
+}
+
+export "c" fn satin_nvim_take_cwd_update(handle: ?ptr<nvim::Runtime>) -> ?ptr<u8> {
+    let live = handle orelse return null;
+    let allocator = mem::page_allocator();
+    // SAFETY: the host holds live from a create and calls from one thread.
+    let runtime = unsafe &var live.*;
+    var directory = string::new(allocator);
+    defer directory.deinit(allocator);
+    if runtime.take_working_directory_update(allocator, &var directory) |changed| {
+        if changed {
+            return owned_out(&directory);
+        }
+    } else |_| {}
+    return null;
+}
+
+export "c" fn satin_nvim_drain(handle: ?ptr<nvim::Runtime>) -> u8 {
+    let live = handle orelse return 0;
+    // SAFETY: the host holds live from a create and calls from one thread.
+    let runtime = unsafe &var live.*;
+    if runtime.drain(mem::page_allocator()) |changed| {
+        return flag(changed);
+    } else |_| {}
+    return 0;
+}
+
+/// Whether Neovim has exited; a null handle reads as exited.
+export "c" fn satin_nvim_exited(handle: ?ptr<nvim::Runtime>) -> u8 {
+    let live = handle orelse return 1;
+    // SAFETY: the host holds live from a create and calls from one thread.
+    let runtime = unsafe &var live.*;
+    return flag(runtime.is_exited());
+}
+
+/// Neovim's exit code; the least i32 while it runs.
+export "c" fn satin_nvim_exit_code(handle: ?ptr<nvim::Runtime>) -> i32 {
+    let live = handle orelse return -2147483648;
+    // SAFETY: the host holds live from a create and calls from one thread.
+    let runtime = unsafe &var live.*;
+    let code = runtime.exit_code();
+    if code < 0 {
+        return -2147483648;
+    }
+    return cast<i32>(code);
+}
+
+export "c" fn satin_nvim_wakeup_fd(handle: ?ptr<nvim::Runtime>) -> i32 {
+    let live = handle orelse return -1;
+    // SAFETY: the host holds live from a create and calls from one thread.
+    let runtime = unsafe &live.*;
+    return runtime.wakeup_fd();
+}
+
+export "c" fn satin_nvim_kitty_placement_count(handle: ?ptr<nvim::Runtime>) -> usize {
+    let live = handle orelse return 0;
+    // SAFETY: the host holds live from a create and calls from one thread.
+    let runtime = unsafe &var live.*;
+    if runtime.collect_kitty(mem::page_allocator()) {
+        return cast<usize>(runtime.kitty.placements.len());
+    } else |_| {}
+    return 0;
+}
+
+export "c" fn satin_nvim_renderer_model_json(handle: ?ptr<nvim::Runtime>) -> ?ptr<u8> {
+    let live = handle orelse return null;
+    let allocator = mem::page_allocator();
+    // SAFETY: the host holds live from a create and calls from one thread.
+    let runtime = unsafe &var live.*;
+    var document = string::new(allocator);
+    defer document.deinit(allocator);
+    if nvim::append_renderer_model_json(allocator, &var runtime.editor, &var document) {
+        return owned_out(&document);
+    } else |_| {}
+    return null;
+}
+
+export "c" fn satin_nvim_ui_state_json(handle: ?ptr<nvim::Runtime>) -> ?ptr<u8> {
+    let live = handle orelse return null;
+    let allocator = mem::page_allocator();
+    // SAFETY: the host holds live from a create and calls from one thread.
+    let runtime = unsafe &var live.*;
+    var document = string::new(allocator);
+    defer document.deinit(allocator);
+    if nvim::append_ui_state_json(allocator, &var runtime.editor, &var document) {
+        return owned_out(&document);
+    } else |_| {}
+    return null;
+}

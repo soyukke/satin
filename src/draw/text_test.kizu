@@ -1,0 +1,340 @@
+import satin::term;
+import std::array;
+import std::mem;
+import std::testing;
+
+fn red() -> term::Color {
+    return rgb(255, 0, 0);
+}
+
+fn blue() -> term::Color {
+    return rgb(0, 0, 255);
+}
+
+fn bold_style() -> term::CellStyle {
+    var style = plain_style();
+    style.bold = true;
+    return style;
+}
+
+/// A spot for the first width cells of the pane's first row.
+fn first_row(width: i64) -> LineSpot {
+    return LineSpot { row: lit(0.0), left: 0, width: width, y_offset: lit(0.0) };
+}
+
+test "text runs split on empty cells and color changes" {
+    let allocator = mem::page_allocator();
+    var list = new_display_list(allocator);
+    defer list.deinit(allocator);
+    var cells = array::new<term::Cell>(allocator);
+    defer cells.deinit(allocator);
+    try cells.append(allocator, styled_cell(0, 1, red(), plain_style()));
+    try cells.append(allocator, styled_cell(1, 1, red(), plain_style()));
+    try cells.append(allocator, styled_cell(2, 0, red(), plain_style()));
+    try cells.append(allocator, styled_cell(2, 1, red(), plain_style()));
+    try cells.append(allocator, styled_cell(3, 1, blue(), plain_style()));
+    let layout = test_layout(pane_geometry(80, 16, 8.0, 16.0));
+    let view = cells.as_slice();
+    try draw_line_runs(allocator, &var list, view, "abcd", first_row(5), &layout);
+
+    let runs = list.runs.as_slice();
+    testing::expect_equal<i64>(3, mem::count<TextRun>(runs));
+    testing::expect(runs[0].x == lit(0.0));
+    testing::expect_equal<i64>(2, runs[0].count);
+    testing::expect_equal<i64>(2, runs[0].cells);
+    testing::expect(cluster_is(&list, runs[0].first, "a"));
+    testing::expect(cluster_is(&list, runs[0].first + 1, "b"));
+    testing::expect(runs[1].x == lit(24.0));
+    testing::expect_equal<i64>(1, runs[1].count);
+    testing::expect(cluster_is(&list, runs[1].first, "c"));
+    testing::expect(runs[2].x == lit(32.0));
+    testing::expect(same_rgba(run_color(&list, 2), opaque(blue())));
+    testing::expect(same_rgba(run_color(&list, 0), opaque(red())));
+    testing::expect_equal<i64>(3, list.count_of(CommandKind::Text));
+}
+
+test "text runs split on style changes" {
+    let allocator = mem::page_allocator();
+    var list = new_display_list(allocator);
+    defer list.deinit(allocator);
+    var cells = array::new<term::Cell>(allocator);
+    defer cells.deinit(allocator);
+    try cells.append(allocator, styled_cell(0, 1, red(), plain_style()));
+    try cells.append(allocator, styled_cell(1, 1, red(), bold_style()));
+    let layout = test_layout(pane_geometry(80, 16, 8.0, 16.0));
+    let view = cells.as_slice();
+    try draw_line_runs(allocator, &var list, view, "ab", first_row(2), &layout);
+
+    let runs = list.runs.as_slice();
+    testing::expect_equal<i64>(2, mem::count<TextRun>(runs));
+    testing::expect(!runs[0].bold and !runs[0].italic);
+    testing::expect(runs[1].bold and !runs[1].italic);
+}
+
+test "a run's key is its texts and its weight, not its color or its place" {
+    let allocator = mem::page_allocator();
+    var list = new_display_list(allocator);
+    defer list.deinit(allocator);
+    var cells = array::new<term::Cell>(allocator);
+    defer cells.deinit(allocator);
+    try cells.append(allocator, styled_cell(0, 1, red(), plain_style()));
+    try cells.append(allocator, styled_cell(1, 1, red(), plain_style()));
+    try cells.append(allocator, styled_cell(0, 1, blue(), plain_style()));
+    try cells.append(allocator, styled_cell(1, 1, blue(), plain_style()));
+    try cells.append(allocator, styled_cell(0, 1, blue(), bold_style()));
+    try cells.append(allocator, styled_cell(1, 1, blue(), bold_style()));
+    try cells.append(allocator, styled_cell(0, 2, red(), plain_style()));
+    let layout = test_layout(pane_geometry(80, 16, 8.0, 16.0));
+    let view = cells.as_slice();
+    try draw_line_runs(allocator, &var list, view, "ab", first_row(7), &layout);
+
+    let runs = list.runs.as_slice();
+    testing::expect_equal<i64>(4, mem::count<TextRun>(runs));
+    testing::expect(runs[0].key == runs[1].key);
+    testing::expect(runs[1].key != runs[2].key);
+    // One cell of "ab" is not the cells "a" and "b".
+    testing::expect(runs[3].key != runs[0].key);
+}
+
+test "a line is cut to the cells its window shows" {
+    let allocator = mem::page_allocator();
+    var list = new_display_list(allocator);
+    defer list.deinit(allocator);
+    var cells = array::new<term::Cell>(allocator);
+    defer cells.deinit(allocator);
+    for 0..4 |index| {
+        try cells.append(allocator, styled_cell(index, 1, red(), plain_style()));
+    }
+    let layout = test_layout(inset_geometry());
+    let view = cells.as_slice();
+    let spot = LineSpot { row: lit(2.0), left: 3, width: 2, y_offset: lit(-7.0) };
+    try draw_line_runs(allocator, &var list, view, "abcd", spot, &layout);
+
+    let runs = list.runs.as_slice();
+    testing::expect_equal<i64>(1, mem::count<TextRun>(runs));
+    testing::expect_equal<i64>(2, runs[0].count);
+    testing::expect(runs[0].x == lit(40.0));
+    testing::expect(runs[0].advance == lit(10.0));
+    // Row 2 of 20 pixel rows under an origin of 20, the baseline 0.78 of
+    // the 16.4 pixel font down, slid 7 pixels up.
+    testing::expect(runs[0].baseline == lit(66.0));
+}
+
+test "blinking text is left out of the half second it is off" {
+    let allocator = mem::page_allocator();
+    var list = new_display_list(allocator);
+    defer list.deinit(allocator);
+    var cells = array::new<term::Cell>(allocator);
+    defer cells.deinit(allocator);
+    var style = plain_style();
+    style.blink = true;
+    style.underline = term::Underline::Single;
+    try cells.append(allocator, styled_cell(0, 1, red(), style));
+    try cells.append(allocator, styled_cell(1, 1, red(), plain_style()));
+    let geometry = pane_geometry(80, 16, 8.0, 16.0);
+    let view = cells.as_slice();
+    let on = new_layout(geometry, fallback_metrics(geometry), 1499);
+    try draw_line_runs(allocator, &var list, view, "ab", first_row(2), &on);
+    testing::expect_equal<i64>(2, list.count_of(CommandKind::Text));
+    testing::expect_equal<i64>(1, list.count_of(CommandKind::FillRect));
+
+    list.reset(allocator);
+    let off = new_layout(geometry, fallback_metrics(geometry), 1500);
+    try draw_line_runs(allocator, &var list, view, "ab", first_row(2), &off);
+    testing::expect_equal<i64>(1, list.count_of(CommandKind::Text));
+    testing::expect_equal<i64>(0, list.count_of(CommandKind::FillRect));
+    testing::expect(cluster_is(&list, 0, "b"));
+}
+
+test "native shapes cover the Claude logo's characters" {
+    testing::expect(is_block_element("▐"));
+    testing::expect(is_block_element("▛"));
+    testing::expect(is_block_element("█"));
+    testing::expect(is_block_element("▜"));
+    testing::expect(is_block_element("▌"));
+    testing::expect(is_block_element("▝"));
+    testing::expect(is_block_element("▘"));
+    testing::expect(!is_block_element("▒"));
+    testing::expect(!is_block_element("a"));
+}
+
+test "text with more than one character stays on the shaping path" {
+    testing::expect(!is_block_element("█a"));
+}
+
+test "adjacent full blocks fill the cell run without seams" {
+    let allocator = mem::page_allocator();
+    var list = new_display_list(allocator);
+    defer list.deinit(allocator);
+    var cells = array::new<term::Cell>(allocator);
+    defer cells.deinit(allocator);
+    let foreground = rgb(222, 128, 128);
+    for 0..8 |_| {
+        try cells.append(allocator, styled_cell(0, 3, foreground, plain_style()));
+    }
+    let geometry = pane_geometry(160, 48, 18.544922, 35.33203);
+    let layout = test_layout(geometry);
+    let view = cells.as_slice();
+    try draw_line_blocks(allocator, &var list, view, "█", first_row(8), &layout);
+    try draw_line_runs(allocator, &var list, view, "█", first_row(8), &layout);
+
+    testing::expect_equal<i64>(0, list.count_of(CommandKind::Text));
+    let commands = list.commands.as_slice();
+    testing::expect_equal<i64>(8, mem::count<Command>(commands));
+    testing::expect(commands[0].rect.x == lit(0.0));
+    for 1..8 |index| {
+        let before = commands[index - 1].rect;
+        testing::expect(before.x + before.width == commands[index].rect.x);
+    }
+    // 8 cells of 18.544922 pixels end at 148.36, which is pixel 148.
+    testing::expect(commands[7].rect.x + commands[7].rect.width == lit(148.0));
+    for 0..148 |x| {
+        testing::expect(same_rgba(painted_at(&list, x, 18), opaque(foreground)));
+    }
+    testing::expect(!same_rgba(painted_at(&list, 148, 18), opaque(foreground)));
+}
+
+test "a quadrant block fills the quarters of its cell" {
+    let allocator = mem::page_allocator();
+    var list = new_display_list(allocator);
+    defer list.deinit(allocator);
+    var cells = array::new<term::Cell>(allocator);
+    defer cells.deinit(allocator);
+    try cells.append(allocator, styled_cell(0, 3, red(), plain_style()));
+    let layout = test_layout(pane_geometry(16, 16, 8.0, 16.0));
+    let view = cells.as_slice();
+    try draw_line_blocks(allocator, &var list, view, "▚", first_row(1), &layout);
+
+    testing::expect_equal<i64>(2, list.count_of(CommandKind::FillRect));
+    testing::expect(same_rgba(painted_at(&list, 1, 1), opaque(red())));
+    testing::expect(painted_at(&list, 5, 1).a == 0);
+    testing::expect(painted_at(&list, 1, 9).a == 0);
+    testing::expect(same_rgba(painted_at(&list, 5, 9), opaque(red())));
+}
+
+test "decorations are strokes at fixed heights of the row" {
+    let allocator = mem::page_allocator();
+    var list = new_display_list(allocator);
+    defer list.deinit(allocator);
+    let layout = test_layout(pane_geometry(100, 100, 10.0, 100.0));
+    var style = plain_style();
+    style.underline = term::Underline::Single;
+    style.has_underline_color = true;
+    style.underline_color = blue();
+    style.strikethrough = true;
+    style.overline = true;
+    try draw_decorations(allocator, &var list, 1, 3, style, red(), first_row(10), &layout);
+
+    let commands = list.commands.as_slice();
+    testing::expect_equal<i64>(3, mem::count<Command>(commands));
+    testing::expect(commands[0].rect.x == lit(10.0) and commands[0].rect.width == lit(20.0));
+    testing::expect(commands[0].rect.y == lit(86.0) and commands[0].rect.height == lit(1.0));
+    testing::expect(same_rgba(commands[0].color, opaque(blue())));
+    testing::expect(commands[1].rect.y == lit(54.0));
+    testing::expect(same_rgba(commands[1].color, opaque(red())));
+    testing::expect(commands[2].rect.y == lit(12.0));
+}
+
+test "an underline's kind picks its strokes" {
+    let allocator = mem::page_allocator();
+    var list = new_display_list(allocator);
+    defer list.deinit(allocator);
+    let layout = test_layout(pane_geometry(100, 100, 9.0, 100.0));
+    var style = plain_style();
+    style.underline = term::Underline::Double;
+    try draw_decorations(allocator, &var list, 0, 2, style, red(), first_row(10), &layout);
+    testing::expect_equal<i64>(2, list.count_of(CommandKind::FillRect));
+    if list.commands.get(0) |first| {
+        testing::expect(first.rect.y == lit(84.0));
+    }
+    if list.commands.get(1) |second| {
+        testing::expect(second.rect.y == lit(87.0));
+    }
+
+    // 18 pixels of curls three pixels long, each from the line to a peak.
+    list.reset(allocator);
+    style.underline = term::Underline::Curly;
+    try draw_decorations(allocator, &var list, 0, 2, style, red(), first_row(10), &layout);
+    // A curl is a hairline: a pixel a column, in the row the line crosses
+    // the column's center in. Up from 86 to 84.5 that is two pixels of row
+    // 85 and one of row 84, and down to 87.5 two of row 86 and one of 87.
+    testing::expect_equal<i64>(0, list.count_of(CommandKind::Polyline));
+    testing::expect_equal<i64>(12, list.count_of(CommandKind::FillRect));
+    let curls = list.commands.as_slice();
+    testing::expect(curls[0].rect.x == lit(0.0) and curls[0].rect.y == lit(85.0) and curls[0].rect.width == lit(2.0));
+    testing::expect(curls[1].rect.x == lit(2.0) and curls[1].rect.y == lit(84.0) and curls[1].rect.width == lit(1.0));
+    testing::expect(curls[2].rect.x == lit(3.0) and curls[2].rect.y == lit(86.0) and curls[2].rect.width == lit(2.0));
+    testing::expect(curls[3].rect.x == lit(5.0) and curls[3].rect.y == lit(87.0) and curls[3].rect.width == lit(1.0));
+    testing::expect(curls[3].rect.height == lit(1.0));
+
+    // Dashes of four pixels every seven: at 0, 7 and 14.
+    list.reset(allocator);
+    style.underline = term::Underline::Dashed;
+    try draw_decorations(allocator, &var list, 0, 2, style, red(), first_row(10), &layout);
+    testing::expect_equal<i64>(3, list.count_of(CommandKind::FillRect));
+
+    // Dots every three pixels, both ends included: the pixels whose
+    // centers are within 0.8 of the dot's, which around a pixel corner are
+    // the four that meet there, two a row.
+    list.reset(allocator);
+    style.underline = term::Underline::Dotted;
+    try draw_decorations(allocator, &var list, 0, 2, style, red(), first_row(10), &layout);
+    testing::expect_equal<i64>(14, list.count_of(CommandKind::FillRect));
+    let dots = list.commands.as_slice();
+    testing::expect(dots[2].rect.x == lit(2.0) and dots[2].rect.y == lit(85.0) and dots[2].rect.width == lit(2.0));
+    testing::expect(dots[3].rect.x == lit(2.0) and dots[3].rect.y == lit(86.0) and dots[3].rect.height == lit(1.0));
+    // Off the corner a dot is the one pixel its center is in and the
+    // neighbors close enough.
+    list.reset(allocator);
+    try fill_dot(allocator, &var list, lit(10.5), lit(20.5), lit(0.8), opaque(red()));
+    testing::expect_equal<i64>(1, list.count_of(CommandKind::FillRect));
+    if list.commands.get(0) |dot| {
+        testing::expect(dot.rect.x == lit(10.0) and dot.rect.y == lit(20.0) and dot.rect.width == lit(1.0));
+    }
+}
+
+test "a hairline has one pixel a column or a row, and none when it is too short" {
+    let allocator = mem::page_allocator();
+    var list = new_display_list(allocator);
+    defer list.deinit(allocator);
+    // Level, at any height of the row: the pixels from 2 up to 7 of row 5.
+    try stroke_hairline(allocator, &var list, Point { x: lit(1.6), y: lit(5.9) }, Point { x: lit(7.4), y: lit(5.9) }, opaque(red()));
+    testing::expect_equal<i64>(1, list.count_of(CommandKind::FillRect));
+    if list.commands.get(0) |level| {
+        testing::expect(level.rect.x == lit(2.0) and level.rect.y == lit(5.0) and level.rect.width == lit(5.0));
+    }
+    // Steeper than it is wide, and drawn from its lower end: rows 2 and 3.
+    list.reset(allocator);
+    try stroke_hairline(allocator, &var list, Point { x: lit(1.0), y: lit(4.0) }, Point { x: lit(0.0), y: lit(2.0) }, opaque(red()));
+    testing::expect_equal<i64>(2, list.count_of(CommandKind::FillRect));
+    if list.commands.get(0) |top| {
+        testing::expect(top.rect.x == lit(0.0) and top.rect.y == lit(2.0) and top.rect.width == lit(1.0));
+    }
+    if list.commands.get(1) |under| {
+        testing::expect(under.rect.x == lit(0.0) and under.rect.y == lit(3.0));
+    }
+    // Both ends round to one pixel: nothing.
+    list.reset(allocator);
+    try stroke_hairline(allocator, &var list, Point { x: lit(3.6), y: lit(1.0) }, Point { x: lit(4.4), y: lit(1.2) }, opaque(red()));
+    testing::expect_equal<i64>(0, list.count_of(CommandKind::FillRect));
+}
+
+test "a background run is cut to the window and lets its blend show through" {
+    let allocator = mem::page_allocator();
+    var list = new_display_list(allocator);
+    defer list.deinit(allocator);
+    var runs = array::new<term::BackgroundRun>(allocator);
+    defer runs.deinit(allocator);
+    try runs.append(allocator, term::BackgroundRun { start_col: 1, end_col: 9, background: red(), blend: 40 });
+    try runs.append(allocator, term::BackgroundRun { start_col: 9, end_col: 12, background: blue(), blend: 0 });
+    let layout = test_layout(inset_geometry());
+    let view = runs.as_slice();
+    let spot = LineSpot { row: lit(1.0), left: 2, width: 4, y_offset: lit(0.0) };
+    try draw_line_backgrounds(allocator, &var list, view, spot, &layout);
+
+    let commands = list.commands.as_slice();
+    testing::expect_equal<i64>(1, mem::count<Command>(commands));
+    testing::expect(commands[0].rect.x == lit(40.0) and commands[0].rect.y == lit(40.0));
+    testing::expect(commands[0].rect.width == lit(30.0) and commands[0].rect.height == lit(20.0));
+    testing::expect_equal<i64>(153, cast<i64>(commands[0].color.a));
+}

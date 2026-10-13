@@ -1,0 +1,143 @@
+// Where a pane is on the target and how big its cells are, what the font
+// measures, and the colors and pixel sums the rest of the renderer shares.
+import satin::term;
+import std::math;
+
+fn lit(value: f64) -> f32 {
+    return cast<f32>(value);
+}
+
+fn span(count: i64) -> f32 {
+    return cast<f32>(count);
+}
+
+/// The font's size for a cell of this height, as the Rust renderer sized it.
+pub fn font_size_ratio() -> f32 {
+    return lit(0.82);
+}
+
+fn cursor_body_alpha() -> u8 {
+    return 199;
+}
+
+fn message_selection_alpha() -> u8 {
+    return 89;
+}
+
+/// One pane of a frame: the target is width x height pixels, the pane's
+/// cells start at the origin and are drawn inside content_width x
+/// content_height pixels from there, and a cell is cell_width x cell_height.
+pub struct Geometry {
+    pub width: i64,
+    pub height: i64,
+    pub origin_x: f32,
+    pub origin_y: f32,
+    pub content_width: f32,
+    pub content_height: f32,
+    pub cell_width: f32,
+    pub cell_height: f32,
+}
+
+/// What the backend's font measures at the size it draws, in pixels:
+/// cell_width is the advance of a letter and cell_height the line's height;
+/// the underline is underline_position under the baseline and
+/// underline_thickness thick.
+pub struct FontMetrics {
+    pub cell_width: f32,
+    pub cell_height: f32,
+    pub ascent: f32,
+    pub descent: f32,
+    pub leading: f32,
+    pub underline_position: f32,
+    pub underline_thickness: f32,
+}
+
+/// The size of the font that fills a cell cell_height high.
+pub fn font_size(cell_height: f32) -> f32 {
+    return math::max<f32>(cell_height * font_size_ratio(), lit(1.0));
+}
+
+/// The metrics to draw with when no font gave its own.
+pub fn fallback_metrics(geometry: Geometry) -> FontMetrics {
+    let size = font_size(geometry.cell_height);
+    return FontMetrics {
+        cell_width: geometry.cell_width,
+        cell_height: geometry.cell_height,
+        ascent: size * lit(0.78),
+        descent: size * lit(0.22),
+        leading: lit(0.0),
+        underline_position: size * lit(0.1),
+        underline_thickness: lit(1.0)
+    };
+}
+
+/// How far under a row's top its baseline is.
+pub fn baseline_offset(metrics: FontMetrics) -> f32 {
+    return metrics.ascent + metrics.leading / lit(2.0);
+}
+
+/// Whether blinking text shows at now_ms: half of every second.
+pub fn blink_text_visible(now_ms: i64) -> bool {
+    return now_ms % 1000 < 500;
+}
+
+/// What every line of one frame is laid out with: the pane, the baseline
+/// under a row's top, how thick a decoration's stroke is, and whether
+/// blinking text shows. The stroke is one device pixel at every size: the
+/// Rust renderer drew decorations as Skia hairlines and never read the
+/// font's underline thickness.
+pub struct Layout {
+    pub geometry: Geometry,
+    pub baseline: f32,
+    pub stroke: f32,
+    pub blink_visible: bool,
+}
+
+pub fn new_layout(geometry: Geometry, metrics: FontMetrics, now_ms: i64) -> Layout {
+    return Layout {
+        geometry: geometry,
+        baseline: baseline_offset(metrics),
+        stroke: lit(1.0),
+        blink_visible: blink_text_visible(now_ms)
+    };
+}
+
+/// The left edge of screen column col.
+fn (self: &Layout) column_x(col: i64) -> f32 {
+    return self.geometry.origin_x + span(col) * self.geometry.cell_width;
+}
+
+/// The top edge of screen row row, which a cursor may put between rows.
+fn (self: &Layout) row_y(row: f32) -> f32 {
+    return self.geometry.origin_y + row * self.geometry.cell_height;
+}
+
+/// The pixels the pane's cells are drawn inside.
+pub fn content_rect(geometry: Geometry) -> Rect {
+    return Rect {
+        x: geometry.origin_x,
+        y: geometry.origin_y,
+        width: geometry.content_width,
+        height: geometry.content_height
+    };
+}
+
+pub fn opaque(color: term::Color) -> Rgba {
+    return Rgba { r: color.r, g: color.g, b: color.b, a: 255 };
+}
+
+pub fn with_alpha(color: term::Color, alpha: u8) -> Rgba {
+    return Rgba { r: color.r, g: color.g, b: color.b, a: alpha };
+}
+
+/// color as a background that lets blend percent of what is under it show.
+pub fn blended(color: term::Color, blend: u8) -> Rgba {
+    let kept = 100 - math::min<i64>(cast<i64>(blend), 100);
+    return Rgba { r: color.r, g: color.g, b: color.b, a: cast<u8>(255 * kept / 100) };
+}
+
+/// How many pixels a window's scrolling rows are slid by at scroll_position
+/// rows, a whole number of device pixels as Neovide rounds it.
+pub fn scroll_offset_pixels(scroll_position: f32, cell_height: f32) -> f32 {
+    return math::round<f32>((math::floor<f32>(scroll_position) - scroll_position) * cell_height);
+}

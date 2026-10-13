@@ -1,0 +1,318 @@
+import satin::nvim;
+import satin::term;
+import std::array;
+import std::mem;
+import std::string;
+import std::testing;
+
+/// Feeds text to a terminal without a child, `^` read as ESC and `$` as
+/// CR LF.
+fn feed_marked(allocator: Allocator, runtime: &var term::Runtime, text: []u8) -> !void {
+    var input = string::new(allocator);
+    defer input.deinit(allocator);
+    for 0..mem::len(text) |index| {
+        if text[index] == cast<u8>(94) {
+            try input.append_byte(allocator, 27);
+        } else if text[index] == cast<u8>(36) {
+            try input.append_byte(allocator, 13);
+            try input.append_byte(allocator, 10);
+        } else {
+            try input.append_byte(allocator, text[index]);
+        }
+    }
+    let bytes = input.as_bytes();
+    try runtime.feed_tmux_projection(allocator, bytes);
+    return;
+}
+
+/// The texts of the list's clusters, one after the other.
+fn list_spells(list: &DisplayList, needle: []u8) -> bool {
+    let text = list.text.as_bytes();
+    return term::find_bytes(text, needle, 0) >= 0;
+}
+
+fn small_terminal(allocator: Allocator) -> term::RuntimeFailure!term::Runtime {
+    return try term::external_runtime(
+        allocator,
+        term::GridSize { rows: 8, cols: 16, pixel_width: 160, pixel_height: 160 }
+    );
+}
+
+/// render_editor of an editor whose terminal holds no image, as the first
+/// pane of a frame at time zero.
+fn draw_editor_without_images(
+    allocator: Allocator,
+    frames: &var Frames,
+    list: &var DisplayList,
+    editor: &nvim::Editor,
+    geometry: Geometry
+) -> mem::Error!void {
+    var none = array::new<term::Placement>(allocator);
+    defer none.deinit(allocator);
+    let placements = none.as_slice();
+    try frames.render_editor(
+        allocator,
+        list,
+        editor,
+        placements,
+        false,
+        9,
+        geometry,
+        fallback_metrics(geometry),
+        true,
+        "",
+        0
+    );
+    return;
+}
+
+test "a terminal's frame is its background, its text and its cursor" {
+    let allocator = mem::page_allocator();
+    var runtime = try small_terminal(allocator);
+    defer runtime.deinit(allocator);
+    try feed_marked(allocator, &var runtime, "hello$^[1mbold");
+    var frames = new_frames(allocator);
+    defer frames.deinit(allocator);
+    var list = new_display_list(allocator);
+    defer list.deinit(allocator);
+    let geometry = pane_geometry(160, 160, 10.0, 20.0);
+    frames.begin_frame();
+    try frames.render_terminal(allocator, &var list, &var runtime, 7, geometry, fallback_metrics(geometry), true, "", 100);
+
+    testing::expect_equal<i64>(1, frames.pane_count());
+    let last = list.commands.len() - 1;
+    testing::expect(command_at(&list, 0).kind == CommandKind::Clear);
+    testing::expect(same_rgba(command_at(&list, 0).color, opaque(runtime.frame.background)));
+    testing::expect(command_at(&list, 1).kind == CommandKind::PushClip);
+    testing::expect(command_at(&list, 1).rect.width == lit(160.0) and command_at(&list, 1).rect.height == lit(160.0));
+    testing::expect(command_at(&list, last).kind == CommandKind::PopClip);
+    testing::expect(list_spells(&list, "hello"));
+    let bold = run_starting(&list, "b");
+    testing::expect(bold >= 0);
+    if list.runs.get(bold) |run| {
+        testing::expect(run.bold and run.x == lit(0.0) and run.count == 4);
+    }
+    // The block cursor after "bold", in the cursor's color at 199 of 255.
+    testing::expect_equal<i64>(1, list.count_of(CommandKind::Quad));
+    testing::expect_equal<i64>(4, list.points.len());
+    let first = list.points.get(0) orelse return;
+    let third = list.points.get(2) orelse return;
+    testing::expect(first.x == lit(40.0) and first.y == lit(20.0));
+    testing::expect(third.x == lit(50.0) and third.y == lit(40.0));
+    // The cursor is the last thing drawn before the clip ends.
+    testing::expect(command_at(&list, last - 1).kind == CommandKind::Quad);
+    testing::expect(same_rgba(command_at(&list, last - 1).color, with_alpha(runtime.frame.cursor_color, 199)));
+    // Nothing moves and nothing blinks: no frame is asked for.
+    testing::expect(!frames.needs_animation_frame(100));
+}
+
+test "a pane that is not its frame's first does not clear the target" {
+    let allocator = mem::page_allocator();
+    var runtime = try small_terminal(allocator);
+    defer runtime.deinit(allocator);
+    var frames = new_frames(allocator);
+    defer frames.deinit(allocator);
+    var list = new_display_list(allocator);
+    defer list.deinit(allocator);
+    let geometry = inset_geometry();
+    frames.begin_frame();
+    try frames.render_terminal(allocator, &var list, &var runtime, 7, geometry, fallback_metrics(geometry), false, "", 100);
+    testing::expect_equal<i64>(0, list.count_of(CommandKind::Clear));
+    let clip = clip_rect(&list, 1);
+    testing::expect(clip.x == lit(10.0) and clip.y == lit(20.0));
+    testing::expect(clip.width == lit(780.0) and clip.height == lit(560.0));
+}
+
+test "terminal vt scroll schedules its own animation frames" {
+    let allocator = mem::page_allocator();
+    var runtime = try small_terminal(allocator);
+    defer runtime.deinit(allocator);
+    try feed_marked(allocator, &var runtime, "^[?1049h");
+    var frames = new_frames(allocator);
+    defer frames.deinit(allocator);
+    var list = new_display_list(allocator);
+    defer list.deinit(allocator);
+    let geometry = pane_geometry(160, 160, 10.0, 20.0);
+    frames.begin_frame();
+    try frames.render_terminal(allocator, &var list, &var runtime, 7, geometry, fallback_metrics(geometry), true, "", 0);
+    testing::expect(!frames.needs_animation_frame(0));
+
+    try feed_marked(allocator, &var runtime, "^[1;7r^[H^[M^[r");
+    frames.begin_frame();
+    try frames.render_terminal(allocator, &var list, &var runtime, 7, geometry, fallback_metrics(geometry), true, "", 0);
+
+    testing::expect(runtime.model.scroll_position() == lit(-1.0));
+    testing::expect_equal<i64>(0, frames.next_frame_delay_ms(0) orelse -1);
+    // The rows inside the region are clipped to it while they slide.
+    testing::expect_equal<i64>(2, list.count_of(CommandKind::PushClip));
+
+    // Frames a sixtieth of a second apart bring the scroll to rest.
+    var now: i64 = 0;
+    for 0..120 |_| {
+        now = now + 16;
+        frames.begin_frame();
+        try frames.render_terminal(allocator, &var list, &var runtime, 7, geometry, fallback_metrics(geometry), true, "", now);
+    }
+    testing::expect(runtime.model.scroll_position() == lit(0.0));
+    testing::expect(!frames.needs_animation_frame(now));
+}
+
+test "hidden runtime animation does not keep the visible frame loop alive" {
+    let allocator = mem::page_allocator();
+    var frames = new_frames(allocator);
+    defer frames.deinit(allocator);
+    try frames.ensure_pane(allocator, 1);
+    try frames.ensure_pane(allocator, 2);
+    frames.frame_id = 42;
+    if frames.panes.at_mut(1) |hidden| {
+        hidden.scroll_active = true;
+        hidden.last_render_frame = 41;
+    }
+    if frames.panes.at_mut(2) |visible| {
+        visible.last_render_frame = 42;
+    }
+
+    testing::expect_equal<i64>(-1, frames.next_frame_delay_ms(0) orelse -1);
+    testing::expect(!frames.needs_animation_frame(0));
+
+    if frames.panes.at_mut(2) |visible| {
+        visible.scroll_active = true;
+    }
+    testing::expect_equal<i64>(0, frames.next_frame_delay_ms(0) orelse -1);
+    testing::expect(frames.needs_animation_frame(0));
+}
+
+test "a pane asks for its next frame when its cursor or its text next blinks" {
+    let allocator = mem::page_allocator();
+    var frames = new_frames(allocator);
+    defer frames.deinit(allocator);
+    try frames.ensure_pane(allocator, 1);
+    frames.begin_frame();
+    if frames.panes.at_mut(1) |pane| {
+        pane.last_render_frame = 1;
+        pane.text_blink = true;
+    }
+    testing::expect_equal<i64>(500, frames.next_frame_delay_ms(0) orelse -1);
+    if frames.panes.at_mut(1) |pane| {
+        pane.blink.update_at(1000, true, bar_cursor(0, 300, 200, 150));
+    }
+    testing::expect_equal<i64>(200, frames.next_frame_delay_ms(1100) orelse -1);
+    if frames.panes.at_mut(1) |pane| {
+        pane.text_blink = false;
+        pane.blink.update_at(1000, true, bar_cursor(0, 900, 200, 150));
+    }
+    testing::expect_equal<i64>(800, frames.next_frame_delay_ms(1100) orelse -1);
+
+    frames.forget_runtime(allocator, 1);
+    testing::expect_equal<i64>(0, frames.pane_count());
+    testing::expect(!frames.needs_animation_frame(1100));
+    frames.forget_runtime(allocator, 1);
+}
+
+test "a frame's step is the time since the pane's last, a thirtieth of a second at most" {
+    let allocator = mem::page_allocator();
+    var pane = new_pane_state(allocator);
+    defer pane.deinit(allocator);
+    testing::expect(pane.animation_dt(5000) == lit(0.0));
+    testing::expect(pane.animation_dt(5016) == lit(0.016));
+    testing::expect(pane.animation_dt(9000) == max_animation_dt());
+    testing::expect(pane.animation_dt(8000) == lit(0.0));
+}
+
+test "a cursor that moved is drawn between its cells until it arrives" {
+    let allocator = mem::page_allocator();
+    var runtime = try small_terminal(allocator);
+    defer runtime.deinit(allocator);
+    var frames = new_frames(allocator);
+    defer frames.deinit(allocator);
+    var list = new_display_list(allocator);
+    defer list.deinit(allocator);
+    let geometry = pane_geometry(160, 160, 10.0, 20.0);
+    frames.begin_frame();
+    try frames.render_terminal(allocator, &var list, &var runtime, 7, geometry, fallback_metrics(geometry), true, "", 0);
+    try feed_marked(allocator, &var runtime, "^[5;9H");
+    frames.begin_frame();
+    try frames.render_terminal(allocator, &var list, &var runtime, 7, geometry, fallback_metrics(geometry), true, "", 16);
+
+    testing::expect_equal<i64>(0, frames.next_frame_delay_ms(16) orelse -1);
+    if list.points.get(0) |corner| {
+        // The trailing corner has left the first cell and not reached (80, 80).
+        testing::expect(corner.x > lit(0.0) and corner.x < lit(80.0));
+        testing::expect(corner.y > lit(0.0) and corner.y < lit(80.0));
+    }
+    var now: i64 = 16;
+    for 0..30 |_| {
+        now = now + 16;
+        frames.begin_frame();
+        try frames.render_terminal(allocator, &var list, &var runtime, 7, geometry, fallback_metrics(geometry), true, "", now);
+    }
+    testing::expect(!frames.needs_animation_frame(now));
+    if list.points.get(0) |corner| {
+        testing::expect(corner.x == lit(80.0) and corner.y == lit(80.0));
+    }
+}
+
+test "composed text is drawn at a terminal's cursor" {
+    let allocator = mem::page_allocator();
+    var runtime = try small_terminal(allocator);
+    defer runtime.deinit(allocator);
+    try feed_marked(allocator, &var runtime, "ab");
+    var frames = new_frames(allocator);
+    defer frames.deinit(allocator);
+    var list = new_display_list(allocator);
+    defer list.deinit(allocator);
+    let geometry = pane_geometry(160, 160, 10.0, 20.0);
+    frames.begin_frame();
+    try frames.render_terminal(allocator, &var list, &var runtime, 7, geometry, fallback_metrics(geometry), true, "日本", 0);
+
+    let composed = run_starting(&list, "日");
+    testing::expect(composed >= 0);
+    if list.runs.get(composed) |run| {
+        testing::expect(run.x == lit(20.0) and run.cells == 4);
+    }
+    testing::expect(same_rgba(run_color(&list, composed), opaque(runtime.frame.background)));
+    testing::expect(same_rgba(painted_at(&list, 25, 5), opaque(runtime.frame.cursor_color)));
+}
+
+test "an editor's frame draws its grid's lines" {
+    let allocator = mem::page_allocator();
+    var editor = try nvim::new_editor(allocator, 6, 2);
+    defer editor.deinit(allocator);
+    // grid_line [1, 1, 2, [["x", 0, 3]]] as MessagePack.
+    var packed = string::new(allocator);
+    defer packed.deinit(allocator);
+    try nvim::append_array(allocator, &var packed, 4);
+    try nvim::append_int(allocator, &var packed, 1);
+    try nvim::append_int(allocator, &var packed, 1);
+    try nvim::append_int(allocator, &var packed, 2);
+    try nvim::append_array(allocator, &var packed, 1);
+    try nvim::append_array(allocator, &var packed, 3);
+    try nvim::append_str(allocator, &var packed, "x");
+    try nvim::append_int(allocator, &var packed, 0);
+    try nvim::append_int(allocator, &var packed, 3);
+    let bytes = packed.as_bytes();
+    var used: i64 = 0;
+    let args = try nvim::decode(allocator, bytes, &var used);
+    defer args.deinit(allocator);
+    testing::expect(try editor.handle_event(allocator, "grid_line", &args));
+    try editor.flush_renderer(allocator);
+
+    var frames = new_frames(allocator);
+    defer frames.deinit(allocator);
+    var list = new_display_list(allocator);
+    defer list.deinit(allocator);
+    let geometry = pane_geometry(60, 40, 10.0, 20.0);
+    frames.begin_frame();
+    try draw_editor_without_images(allocator, &var frames, &var list, &editor, geometry);
+
+    testing::expect(command_at(&list, 0).kind == CommandKind::Clear);
+    testing::expect(same_rgba(command_at(&list, 0).color, opaque(editor.background())));
+    // The row is one run: its blanks are cells of the same color.
+    testing::expect(list_spells(&list, "  xxx "));
+    let drawn = list.runs.get(list.runs.len() - 1) orelse return;
+    testing::expect(drawn.x == lit(0.0) and drawn.count == 6 and drawn.cells == 6);
+    testing::expect(cluster_is(&list, drawn.first + 2, "x"));
+    testing::expect(drawn.baseline > lit(20.0) and drawn.baseline < lit(40.0));
+    testing::expect_equal<i64>(0, list.count_of(CommandKind::Quad));
+    testing::expect(!frames.needs_animation_frame(0));
+}

@@ -1,0 +1,81 @@
+// The C boundary the Swift host calls for the control socket:
+// `satin_control_*`, the same functions and the same values the Rust
+// library exported. The host waits on `satin_control_wakeup_fd` and takes
+// requests while it reads as ready.
+import satin::control;
+import std::mem;
+import std::string;
+
+export "c" fn satin_control_create(path: ?ptr<const u8>) -> ?ptr<control::Server> {
+    let text = path orelse return null;
+    let allocator = mem::page_allocator();
+    // SAFETY: the host passes a NUL-terminated string that outlives the call.
+    let length = unsafe c_length(text);
+    // SAFETY: text holds length readable bytes.
+    let socket_path = unsafe view_from_ptr(text, length);
+    if !is_utf8(socket_path) {
+        return null;
+    }
+    if control::start_server(allocator, socket_path) |server| {
+        // SAFETY: malloc returns storage for one Server or null.
+        let storage = unsafe malloc(mem::size_of<control::Server>());
+        if storage |slot| {
+            // SAFETY: slot is fresh storage for one Server.
+            let handle = unsafe cast<ptr<control::Server>>(slot);
+            // SAFETY: handle is fresh storage for one Server; the server now lives there.
+            unsafe ptr_write(handle, move server);
+            return handle;
+        }
+        server.deinit(allocator);
+    } else |_| {}
+    return null;
+}
+
+export "c" fn satin_control_destroy(handle: ?ptr<control::Server>) -> void {
+    let live = handle orelse return;
+    // SAFETY: live came from satin_control_create and is destroyed once.
+    let server = unsafe ptr_read(live);
+    server.deinit(mem::page_allocator());
+    // SAFETY: live is malloc storage nothing reads after this.
+    unsafe free(cast<ptr<u8>>(live));
+    return;
+}
+
+export "c" fn satin_control_wakeup_fd(handle: ?ptr<control::Server>) -> i32 {
+    let live = handle orelse return -1;
+    // SAFETY: the host holds live from satin_control_create and calls from one thread.
+    let server = unsafe &live.*;
+    return server.wakeup_fd();
+}
+
+/// The oldest request no one took yet, with the id to answer it by; null
+/// when there is none.
+export "c" fn satin_control_take_request_json(handle: ?ptr<control::Server>) -> ?ptr<u8> {
+    let live = handle orelse return null;
+    let allocator = mem::page_allocator();
+    // SAFETY: the host holds live from satin_control_create and calls from one thread.
+    let server = unsafe &var live.*;
+    var request = string::new(allocator);
+    defer request.deinit(allocator);
+    if server.take_request(allocator, &var request) |taken| {
+        if taken {
+            return owned_out(&request);
+        }
+    } else |_| {}
+    return null;
+}
+
+export "c" fn satin_control_respond(handle: ?ptr<control::Server>, id: u64, response: ?ptr<const u8>) -> u8 {
+    let live = handle orelse return 0;
+    let text = response orelse return 0;
+    // SAFETY: the host passes a NUL-terminated string that outlives the call.
+    let length = unsafe c_length(text);
+    // SAFETY: text holds length readable bytes.
+    let answer = unsafe view_from_ptr(text, length);
+    // SAFETY: the host holds live from satin_control_create and calls from one thread.
+    let server = unsafe &var live.*;
+    if server.respond(mem::page_allocator(), cast<i64>(id), answer) |sent| {
+        return flag(sent);
+    } else |_| {}
+    return 0;
+}

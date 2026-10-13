@@ -1,0 +1,882 @@
+// The C boundary the Swift host calls for a terminal: `satin_runtime_*`,
+// the same functions and the same values the Rust library exported.
+//
+// A runtime lives in malloc storage the host holds as an opaque pointer,
+// and the host calls from one thread.
+import satin::term;
+import satin::tmux;
+import std::mem;
+import std::string;
+
+fn grid_size(rows: u16, cols: u16, pixel_width: u16, pixel_height: u16) -> term::GridSize {
+    return term::GridSize { rows: rows, cols: cols, pixel_width: pixel_width, pixel_height: pixel_height };
+}
+
+/// Moves a runtime into malloc storage; null, with the runtime ended, when
+/// there is none.
+fn boxed(runtime: term::Runtime) -> ?ptr<term::Runtime> {
+    // SAFETY: malloc returns storage for one Runtime or null.
+    let storage = unsafe malloc(mem::size_of<term::Runtime>());
+    if storage |slot| {
+        // SAFETY: slot is fresh storage for one Runtime.
+        let handle = unsafe cast<ptr<term::Runtime>>(slot);
+        // SAFETY: handle is fresh storage for one Runtime; the runtime now lives there.
+        unsafe ptr_write(handle, move runtime);
+        return handle;
+    }
+    runtime.deinit(mem::page_allocator());
+    return null;
+}
+
+fn spawned(size: term::GridSize, config: &term::SpawnConfig) -> ?ptr<term::Runtime> {
+    if term::spawn_runtime(mem::page_allocator(), size, config) |runtime| {
+        return boxed(move runtime);
+    } else |_| {}
+    return null;
+}
+
+export "c" fn satin_runtime_create(rows: u16, cols: u16, pixel_width: u16, pixel_height: u16) -> ?ptr<term::Runtime> {
+    let allocator = mem::page_allocator();
+    let config = term::new_spawn_config(allocator);
+    defer config.deinit(allocator);
+    return spawned(grid_size(rows, cols, pixel_width, pixel_height), &config);
+}
+
+export "c" fn satin_runtime_create_in_cwd(
+    rows: u16,
+    cols: u16,
+    pixel_width: u16,
+    pixel_height: u16,
+    cwd: ?ptr<const u8>
+) -> ?ptr<term::Runtime> {
+    let allocator = mem::page_allocator();
+    var config = term::new_spawn_config(allocator);
+    defer config.deinit(allocator);
+    if cwd |text| {
+        // SAFETY: the host passes a NUL-terminated string that outlives the call.
+        let length = unsafe c_length(text);
+        // SAFETY: text holds length readable bytes.
+        let path = unsafe view_from_ptr(text, length);
+        if is_utf8(path) {
+            if config.cwd.append_bytes(allocator, path) {
+                config.has_cwd = true;
+            } else |_| {
+                return null;
+            }
+        }
+    }
+    return spawned(grid_size(rows, cols, pixel_width, pixel_height), &config);
+}
+
+export "c" fn satin_runtime_create_config(
+    rows: u16,
+    cols: u16,
+    pixel_width: u16,
+    pixel_height: u16,
+    config: ?ptr<const u8>
+) -> ?ptr<term::Runtime> {
+    let text = config orelse return null;
+    let allocator = mem::page_allocator();
+    // SAFETY: the host passes a NUL-terminated string that outlives the call.
+    let length = unsafe c_length(text);
+    // SAFETY: text holds length readable bytes.
+    let document = unsafe view_from_ptr(text, length);
+    if term::spawn_config_from_json(allocator, document) |read| {
+        defer read.deinit(allocator);
+        return spawned(grid_size(rows, cols, pixel_width, pixel_height), &read);
+    } else |_| {}
+    return null;
+}
+
+export "c" fn satin_runtime_create_external(
+    rows: u16,
+    cols: u16,
+    pixel_width: u16,
+    pixel_height: u16
+) -> ?ptr<term::Runtime> {
+    let size = grid_size(rows, cols, pixel_width, pixel_height);
+    if term::external_runtime(mem::page_allocator(), size) |runtime| {
+        return boxed(move runtime);
+    } else |_| {}
+    return null;
+}
+
+export "c" fn satin_runtime_destroy(handle: ?ptr<term::Runtime>) -> void {
+    let live = handle orelse return;
+    // SAFETY: live came from a create and is destroyed once.
+    let runtime = unsafe ptr_read(live);
+    runtime.deinit(mem::page_allocator());
+    // SAFETY: live is malloc storage nothing reads after this.
+    unsafe free(cast<ptr<u8>>(live));
+    return;
+}
+
+export "c" fn satin_runtime_resize(
+    handle: ?ptr<term::Runtime>,
+    rows: u16,
+    cols: u16,
+    pixel_width: u16,
+    pixel_height: u16
+) -> u8 {
+    let live = handle orelse return 0;
+    // SAFETY: the host holds live from a create and calls from one thread.
+    let runtime = unsafe &var live.*;
+    if runtime.resize(mem::page_allocator(), grid_size(rows, cols, pixel_width, pixel_height)) {
+        return 1;
+    } else |_| {}
+    return 0;
+}
+
+export "c" fn satin_runtime_write(handle: ?ptr<term::Runtime>, bytes: ?ptr<const u8>, length: usize) -> u8 {
+    let live = handle orelse return 0;
+    let data = bytes orelse return 0;
+    // SAFETY: the host passes length readable bytes at data.
+    let view = unsafe view_from_ptr(data, cast<i64>(length));
+    // SAFETY: the host holds live from a create and calls from one thread.
+    let runtime = unsafe &var live.*;
+    if runtime.write_all(view) {
+        return 1;
+    } else |_| {}
+    return 0;
+}
+
+export "c" fn satin_runtime_interactive_shell_owns_foreground(handle: ?ptr<term::Runtime>) -> u8 {
+    let live = handle orelse return 0;
+    // SAFETY: the host holds live from a create and calls from one thread.
+    let runtime = unsafe &live.*;
+    return flag(runtime.interactive_shell_owns_foreground());
+}
+
+/// Encodes the key the host reports for shown's terminal and sends it: to
+/// shown's own child, or with a gateway through tmux to the pane shown
+/// shows. The key's text is read when it is given and UTF-8.
+///
+/// Each pointer must hold its length in readable bytes, and the handles
+/// must be live and distinct.
+unsafe fn send_key(
+    gateway: ?ptr<term::Runtime>,
+    shown: ptr<term::Runtime>,
+    pane_id: u32,
+    key_code: u16,
+    modifiers: u32,
+    text: ?ptr<const u8>,
+    text_len: usize,
+    unshifted: ptr<const u8>,
+    unshifted_len: usize,
+    repeat: u8,
+    released: u8
+) -> u8 {
+    // SAFETY: the caller passes unshifted_len readable bytes at unshifted.
+    let plain = unsafe view_from_ptr(unshifted, cast<i64>(unshifted_len));
+    if !is_utf8(plain) {
+        return 0;
+    }
+    var text_start = unshifted;
+    var text_length: i64 = 0;
+    if text |given| {
+        text_start = given;
+        text_length = cast<i64>(text_len);
+    }
+    // SAFETY: the caller passes text_len readable bytes at text; without text the view is empty.
+    let typed = unsafe view_from_ptr(text_start, text_length);
+    var has_text = false;
+    if text |_| {
+        has_text = is_utf8(typed);
+    }
+    let allocator = mem::page_allocator();
+    // SAFETY: the caller passes a live handle the host calls from one thread.
+    let runtime = unsafe &var shown.*;
+    if gateway |sender| {
+        var encoded = string::new(allocator);
+        defer encoded.deinit(allocator);
+        var wrote = false;
+        if runtime.encode_key_of(allocator, cast<i64>(key_code), modifiers, has_text, typed, plain, repeat != 0, released != 0, &var encoded) |any| {
+            wrote = any;
+        } else |_| {}
+        if !wrote {
+            return 0;
+        }
+        return send_to_pane(sender, shown, pane_id, &encoded, true);
+    }
+    if runtime.write_key_of(allocator, cast<i64>(key_code), modifiers, has_text, typed, plain, repeat != 0, released != 0) |sent| {
+        return flag(sent);
+    } else |_| {}
+    return 0;
+}
+
+export "c" fn satin_runtime_key(
+    handle: ?ptr<term::Runtime>,
+    key_code: u16,
+    modifiers: u32,
+    text: ?ptr<const u8>,
+    text_len: usize,
+    unshifted: ?ptr<const u8>,
+    unshifted_len: usize,
+    repeat: u8,
+    released: u8
+) -> u8 {
+    let live = handle orelse return 0;
+    let plain = unshifted orelse return 0;
+    // SAFETY: the host passes each length in readable bytes and a handle from a create.
+    return unsafe send_key(null, live, 0, key_code, modifiers, text, text_len, plain, unshifted_len, repeat, released);
+}
+
+export "c" fn satin_runtime_text(handle: ?ptr<term::Runtime>, bytes: ?ptr<const u8>, length: usize) -> u8 {
+    let live = handle orelse return 0;
+    let data = bytes orelse return 0;
+    // SAFETY: the host passes length readable bytes at data.
+    let text = unsafe view_from_ptr(data, cast<i64>(length));
+    if !is_utf8(text) {
+        return 0;
+    }
+    // SAFETY: the host holds live from a create and calls from one thread.
+    let runtime = unsafe &var live.*;
+    if runtime.write_text(text) {
+        return 1;
+    } else |_| {}
+    return 0;
+}
+
+export "c" fn satin_runtime_paste(handle: ?ptr<term::Runtime>, bytes: ?ptr<const u8>, length: usize) -> u8 {
+    let live = handle orelse return 0;
+    let data = bytes orelse return 0;
+    // SAFETY: the host passes length readable bytes at data.
+    let text = unsafe view_from_ptr(data, cast<i64>(length));
+    if !is_utf8(text) {
+        return 0;
+    }
+    // SAFETY: the host holds live from a create and calls from one thread.
+    let runtime = unsafe &var live.*;
+    if runtime.write_paste(mem::page_allocator(), text) {
+        return 1;
+    } else |_| {}
+    return 0;
+}
+
+/// Reads the host's mouse event into out; false for an action or a button
+/// it has no number for. button -1 is no button.
+fn mouse_input(
+    action: u32,
+    button: i32,
+    modifiers: u32,
+    x: f32,
+    y: f32,
+    cell_width: u32,
+    cell_height: u32,
+    out: &var term::MouseInput
+) -> bool {
+    if action == 0 {
+        out.action = term::MouseAction::Press;
+    } else if action == 1 {
+        out.action = term::MouseAction::Release;
+    } else if action == 2 {
+        out.action = term::MouseAction::Motion;
+    } else {
+        return false;
+    }
+    if button < -1 or button > 10 {
+        return false;
+    }
+    out.has_button = button >= 0;
+    // libghostty numbers the buttons from one.
+    out.button = button + 1;
+    out.modifiers = modifiers;
+    out.x = x;
+    out.y = y;
+    out.cell_width = cell_width;
+    out.cell_height = cell_height;
+    return true;
+}
+
+fn no_mouse_input() -> term::MouseInput {
+    return term::MouseInput {
+        action: term::MouseAction::Motion,
+        has_button: false,
+        button: 0,
+        modifiers: 0,
+        x: cast<f32>(0.0),
+        y: cast<f32>(0.0),
+        cell_width: 1,
+        cell_height: 1
+    };
+}
+
+export "c" fn satin_runtime_mouse(
+    handle: ?ptr<term::Runtime>,
+    action: u32,
+    button: i32,
+    modifiers: u32,
+    x: f32,
+    y: f32,
+    cell_width: u32,
+    cell_height: u32
+) -> u8 {
+    let live = handle orelse return 0;
+    var input = no_mouse_input();
+    if !mouse_input(action, button, modifiers, x, y, cell_width, cell_height, &var input) {
+        return 0;
+    }
+    // SAFETY: the host holds live from a create and calls from one thread.
+    let runtime = unsafe &var live.*;
+    if runtime.write_mouse(mem::page_allocator(), input) |sent| {
+        return flag(sent);
+    } else |_| {}
+    return 0;
+}
+
+export "c" fn satin_runtime_mouse_tracking(handle: ?ptr<term::Runtime>) -> u8 {
+    let live = handle orelse return 0;
+    // SAFETY: the host holds live from a create and calls from one thread.
+    let runtime = unsafe &live.*;
+    return flag(runtime.is_mouse_tracking());
+}
+
+export "c" fn satin_runtime_focus(handle: ?ptr<term::Runtime>, focused: u8) -> u8 {
+    let live = handle orelse return 0;
+    // SAFETY: the host holds live from a create and calls from one thread.
+    let runtime = unsafe &var live.*;
+    if runtime.write_focus(mem::page_allocator(), focused != 0) |sent| {
+        return flag(sent);
+    } else |_| {}
+    return 0;
+}
+
+/// A selection event: 0 press, 1 drag, 2 release, 3 autoscroll tick, 4
+/// cancel. An autoscroll returns the rows the viewport moved; the others 1
+/// when they were applied and 0 when not.
+export "c" fn satin_runtime_selection_event(
+    handle: ?ptr<term::Runtime>,
+    action: u32,
+    row: u32,
+    col: u16,
+    x: f32,
+    y: f32,
+    cell_width: u32,
+    cell_height: u32,
+    rectangular: u8
+) -> isize {
+    let live = handle orelse return 0;
+    // SAFETY: the host holds live from a create and calls from one thread.
+    let runtime = unsafe &var live.*;
+    let input = term::SelectionInput {
+        row: cast<i64>(row),
+        col: cast<i64>(col),
+        x: x,
+        y: y,
+        cell_width: cell_width,
+        cell_height: cell_height
+    };
+    if action == 0 {
+        if runtime.selection_press(input) {
+            return 1;
+        } else |_| {}
+    } else if action == 1 {
+        if runtime.selection_drag(input, rectangular != 0) {
+            return 1;
+        } else |_| {}
+    } else if action == 2 {
+        if runtime.selection_release(true, input.row, input.col) {
+            return 1;
+        } else |_| {}
+    } else if action == 3 {
+        if runtime.selection_autoscroll(input, rectangular != 0) |moved| {
+            return cast<isize>(moved);
+        } else |_| {}
+    } else if action == 4 {
+        runtime.cancel_selection();
+        return 1;
+    }
+    return 0;
+}
+
+export "c" fn satin_runtime_select_all(handle: ?ptr<term::Runtime>) -> u8 {
+    let live = handle orelse return 0;
+    // SAFETY: the host holds live from a create and calls from one thread.
+    let runtime = unsafe &live.*;
+    if runtime.select_all() {
+        return 1;
+    } else |_| {}
+    return 0;
+}
+
+export "c" fn satin_runtime_clear_selection(handle: ?ptr<term::Runtime>) -> u8 {
+    let live = handle orelse return 0;
+    // SAFETY: the host holds live from a create and calls from one thread.
+    let runtime = unsafe &live.*;
+    if runtime.clear_selection() {
+        return 1;
+    } else |_| {}
+    return 0;
+}
+
+export "c" fn satin_runtime_selected_text(handle: ?ptr<term::Runtime>) -> ?ptr<u8> {
+    let live = handle orelse return null;
+    let allocator = mem::page_allocator();
+    // SAFETY: the host holds live from a create and calls from one thread.
+    let runtime = unsafe &var live.*;
+    var text = string::new(allocator);
+    defer text.deinit(allocator);
+    if runtime.selected_text(allocator, &var text) |selected| {
+        if selected {
+            return owned_out(&text);
+        }
+    } else |_| {}
+    return null;
+}
+
+export "c" fn satin_runtime_hyperlink(handle: ?ptr<term::Runtime>, row: u32, col: u16) -> ?ptr<u8> {
+    let live = handle orelse return null;
+    let allocator = mem::page_allocator();
+    // SAFETY: the host holds live from a create and calls from one thread.
+    let runtime = unsafe &var live.*;
+    var link = string::new(allocator);
+    defer link.deinit(allocator);
+    if runtime.hyperlink_at(allocator, cast<i64>(row), cast<i64>(col), &var link) |found| {
+        if found {
+            return owned_out(&link);
+        }
+    } else |_| {}
+    return null;
+}
+
+export "c" fn satin_runtime_title(handle: ?ptr<term::Runtime>) -> ?ptr<u8> {
+    let live = handle orelse return null;
+    let allocator = mem::page_allocator();
+    // SAFETY: the host holds live from a create and calls from one thread.
+    let runtime = unsafe &live.*;
+    var title = string::new(allocator);
+    defer title.deinit(allocator);
+    if runtime.title(allocator, &var title) |found| {
+        if found and title.len() > 0 {
+            return owned_out(&title);
+        }
+    } else |_| {}
+    return null;
+}
+
+export "c" fn satin_runtime_take_bell_count(handle: ?ptr<term::Runtime>) -> u64 {
+    let live = handle orelse return 0;
+    // SAFETY: the host holds live from a create and calls from one thread.
+    let runtime = unsafe &live.*;
+    return runtime.take_bell_count();
+}
+
+export "c" fn satin_runtime_set_option_as_alt(handle: ?ptr<term::Runtime>, enabled: u8) -> u8 {
+    let live = handle orelse return 0;
+    // SAFETY: the host holds live from a create and calls from one thread.
+    let runtime = unsafe &var live.*;
+    runtime.set_option_as_alt(enabled != 0);
+    return 1;
+}
+
+export "c" fn satin_runtime_find(handle: ?ptr<term::Runtime>, query: ?ptr<const u8>, backwards: u8) -> u8 {
+    let live = handle orelse return 0;
+    let text = query orelse return 0;
+    // SAFETY: the host passes a NUL-terminated string that outlives the call.
+    let length = unsafe c_length(text);
+    // SAFETY: text holds length readable bytes.
+    let wanted = unsafe view_from_ptr(text, length);
+    if !is_utf8(wanted) {
+        return 0;
+    }
+    // SAFETY: the host holds live from a create and calls from one thread.
+    let runtime = unsafe &var live.*;
+    if runtime.find(mem::page_allocator(), wanted, backwards != 0) |found| {
+        return flag(found);
+    } else |_| {}
+    return 0;
+}
+
+export "c" fn satin_runtime_drain(handle: ?ptr<term::Runtime>) -> u8 {
+    let live = handle orelse return 0;
+    // SAFETY: the host holds live from a create and calls from one thread.
+    let runtime = unsafe &var live.*;
+    if runtime.drain(mem::page_allocator()) |changed| {
+        return flag(changed);
+    } else |_| {}
+    return 0;
+}
+
+export "c" fn satin_runtime_take_tmux_event_json(handle: ?ptr<term::Runtime>) -> ?ptr<u8> {
+    let live = handle orelse return null;
+    let allocator = mem::page_allocator();
+    // SAFETY: the host holds live from a create and calls from one thread.
+    let runtime = unsafe &var live.*;
+    var event = string::new(allocator);
+    defer event.deinit(allocator);
+    if runtime.take_tmux_event(allocator, &var event) |taken| {
+        if taken {
+            return owned_out(&event);
+        }
+    } else |_| {}
+    return null;
+}
+
+export "c" fn satin_runtime_tmux_command(handle: ?ptr<term::Runtime>, command: ?ptr<const u8>) -> u8 {
+    let live = handle orelse return 0;
+    let text = command orelse return 0;
+    // SAFETY: the host passes a NUL-terminated string that outlives the call.
+    let length = unsafe c_length(text);
+    // SAFETY: text holds length readable bytes.
+    let line = unsafe view_from_ptr(text, length);
+    if !is_utf8(line) {
+        return 0;
+    }
+    // SAFETY: the host holds live from a create and calls from one thread.
+    let runtime = unsafe &var live.*;
+    if runtime.tmux_command(mem::page_allocator(), line) |sent| {
+        return flag(sent);
+    } else |_| {}
+    return 0;
+}
+
+export "c" fn satin_runtime_tmux_feed_pane(pane: ?ptr<term::Runtime>, bytes: ?ptr<const u8>, length: usize) -> u8 {
+    let live = pane orelse return 0;
+    let data = bytes orelse return 0;
+    // SAFETY: the host passes length readable bytes at data.
+    let view = unsafe view_from_ptr(data, cast<i64>(length));
+    // SAFETY: the host holds live from a create and calls from one thread.
+    let runtime = unsafe &var live.*;
+    if runtime.feed_tmux_projection(mem::page_allocator(), view) {
+        return 1;
+    } else |_| {}
+    return 0;
+}
+
+export "c" fn satin_runtime_tmux_record_scroll_metadata(
+    pane: ?ptr<term::Runtime>,
+    rows: isize,
+    region_top: u16,
+    region_bottom: u16,
+    region_left: u16,
+    region_right: u16
+) -> u8 {
+    let live = pane orelse return 0;
+    // SAFETY: the host holds live from a create and calls from one thread.
+    let runtime = unsafe &var live.*;
+    let region = tmux::Region {
+        top: cast<i64>(region_top),
+        bottom: cast<i64>(region_bottom),
+        left: cast<i64>(region_left),
+        right: cast<i64>(region_right)
+    };
+    let has_region = region_top != 0 or region_bottom != 0;
+    if runtime.record_tmux_scroll(cast<i64>(rows), has_region, region) {
+        return 1;
+    } else |_| {}
+    return 0;
+}
+
+export "c" fn satin_runtime_tmux_prepare_hydration(pane: ?ptr<term::Runtime>) -> u8 {
+    let live = pane orelse return 0;
+    // SAFETY: the host holds live from a create and calls from one thread.
+    let runtime = unsafe &var live.*;
+    if runtime.prepare_tmux_hydration() {
+        return 1;
+    } else |_| {}
+    return 0;
+}
+
+/// 0 unavailable, 1 waiting, 2 ready.
+export "c" fn satin_runtime_tmux_shell_prompt_state(pane: ?ptr<term::Runtime>) -> u8 {
+    let live = pane orelse return 0;
+    // SAFETY: the host holds live from a create and calls from one thread.
+    let runtime = unsafe &live.*;
+    if runtime.tmux_shell_prompt_state() |state| {
+        if state == term::ShellPromptState::Waiting {
+            return 1;
+        }
+        if state == term::ShellPromptState::Ready {
+            return 2;
+        }
+    } else |_| {}
+    return 0;
+}
+
+export "c" fn satin_runtime_tmux_semantic_prompt_seen(pane: ?ptr<term::Runtime>) -> u8 {
+    let live = pane orelse return 0;
+    // SAFETY: the host holds live from a create and calls from one thread.
+    let runtime = unsafe &live.*;
+    return flag(runtime.tmux_semantic_prompt_seen());
+}
+
+export "c" fn satin_runtime_tmux_prompt_generation(pane: ?ptr<term::Runtime>) -> u64 {
+    let live = pane orelse return 0;
+    // SAFETY: the host holds live from a create and calls from one thread.
+    let runtime = unsafe &live.*;
+    return runtime.tmux_prompt_generation();
+}
+
+export "c" fn satin_runtime_tmux_reset_prompt_tracking(pane: ?ptr<term::Runtime>) -> u8 {
+    let live = pane orelse return 0;
+    // SAFETY: the host holds live from a create and calls from one thread.
+    let runtime = unsafe &var live.*;
+    runtime.reset_tmux_prompt_tracking();
+    return 1;
+}
+
+fn same_runtime(first: ptr<term::Runtime>, second: ptr<term::Runtime>) -> bool {
+    // SAFETY: reading a handle's address touches nothing it points at.
+    let first_address = unsafe int_from_ptr<usize>(first);
+    // SAFETY: as above.
+    let second_address = unsafe int_from_ptr<usize>(second);
+    return first_address == second_address;
+}
+
+/// Types what the pane's terminal encoded into the tmux pane it shows,
+/// through the gateway terminal that runs tmux.
+fn send_to_pane(
+    gateway: ptr<term::Runtime>,
+    pane: ptr<term::Runtime>,
+    pane_id: u32,
+    bytes: &string::String,
+    finish: bool
+) -> u8 {
+    let encoded = bytes.as_bytes();
+    // SAFETY: the host holds gateway from a create, apart from pane, and calls from one thread.
+    let sender = unsafe &var gateway.*;
+    var sent = false;
+    if sender.tmux_send_bytes(mem::page_allocator(), cast<i64>(pane_id), encoded) |accepted| {
+        sent = accepted;
+    } else |_| {}
+    if sent and finish {
+        // SAFETY: the host holds pane from a create, apart from gateway.
+        let shown = unsafe &var pane.*;
+        shown.finish_external_input();
+    }
+    return flag(sent);
+}
+
+export "c" fn satin_runtime_tmux_key(
+    gateway: ?ptr<term::Runtime>,
+    pane: ?ptr<term::Runtime>,
+    pane_id: u32,
+    key_code: u16,
+    modifiers: u32,
+    text: ?ptr<const u8>,
+    text_len: usize,
+    unshifted: ?ptr<const u8>,
+    unshifted_len: usize,
+    repeat: u8,
+    released: u8
+) -> u8 {
+    let sender = gateway orelse return 0;
+    let shown = pane orelse return 0;
+    let plain = unshifted orelse return 0;
+    if same_runtime(sender, shown) {
+        return 0;
+    }
+    // SAFETY: the host passes each length in readable bytes and distinct handles from creates.
+    return unsafe send_key(
+        sender,
+        shown,
+        pane_id,
+        key_code,
+        modifiers,
+        text,
+        text_len,
+        plain,
+        unshifted_len,
+        repeat,
+        released
+    );
+}
+
+export "c" fn satin_runtime_tmux_write(
+    gateway: ?ptr<term::Runtime>,
+    pane: ?ptr<term::Runtime>,
+    pane_id: u32,
+    bytes: ?ptr<const u8>,
+    length: usize
+) -> u8 {
+    let sender = gateway orelse return 0;
+    let shown = pane orelse return 0;
+    let data = bytes orelse return 0;
+    if same_runtime(sender, shown) {
+        return 0;
+    }
+    let allocator = mem::page_allocator();
+    // SAFETY: the host passes length readable bytes at data.
+    let view = unsafe view_from_ptr(data, cast<i64>(length));
+    var copy = string::new(allocator);
+    defer copy.deinit(allocator);
+    if copy.append_bytes(allocator, view) {} else |_| {
+        return 0;
+    }
+    return send_to_pane(sender, shown, pane_id, &copy, true);
+}
+
+export "c" fn satin_runtime_tmux_paste(
+    gateway: ?ptr<term::Runtime>,
+    pane: ?ptr<term::Runtime>,
+    pane_id: u32,
+    bytes: ?ptr<const u8>,
+    length: usize
+) -> u8 {
+    let sender = gateway orelse return 0;
+    let shown = pane orelse return 0;
+    let data = bytes orelse return 0;
+    if same_runtime(sender, shown) {
+        return 0;
+    }
+    // SAFETY: the host passes length readable bytes at data.
+    let text = unsafe view_from_ptr(data, cast<i64>(length));
+    if !is_utf8(text) {
+        return 0;
+    }
+    var sent = false;
+    // SAFETY: the host holds sender from a create, apart from shown, and calls from one thread.
+    let runtime = unsafe &var sender.*;
+    if runtime.tmux_paste(mem::page_allocator(), cast<i64>(pane_id), text) |accepted| {
+        sent = accepted;
+    } else |_| {}
+    if sent {
+        // SAFETY: the host holds shown from a create, apart from sender.
+        let runtime = unsafe &var shown.*;
+        runtime.finish_external_input();
+    }
+    return flag(sent);
+}
+
+export "c" fn satin_runtime_tmux_mouse(
+    gateway: ?ptr<term::Runtime>,
+    pane: ?ptr<term::Runtime>,
+    pane_id: u32,
+    action: u32,
+    button: i32,
+    modifiers: u32,
+    x: f32,
+    y: f32,
+    cell_width: u32,
+    cell_height: u32
+) -> u8 {
+    let sender = gateway orelse return 0;
+    let shown = pane orelse return 0;
+    if same_runtime(sender, shown) {
+        return 0;
+    }
+    var input = no_mouse_input();
+    if !mouse_input(action, button, modifiers, x, y, cell_width, cell_height, &var input) {
+        return 0;
+    }
+    let allocator = mem::page_allocator();
+    var encoded = string::new(allocator);
+    defer encoded.deinit(allocator);
+    var wrote = false;
+    // SAFETY: the host holds shown from a create and calls from one thread.
+    let runtime = unsafe &var shown.*;
+    if runtime.encode_mouse(allocator, input, &var encoded) |any| {
+        wrote = any;
+    } else |_| {}
+    if !wrote {
+        return 0;
+    }
+    return send_to_pane(sender, shown, pane_id, &encoded, false);
+}
+
+export "c" fn satin_runtime_tmux_focus(
+    gateway: ?ptr<term::Runtime>,
+    pane: ?ptr<term::Runtime>,
+    pane_id: u32,
+    focused: u8
+) -> u8 {
+    let sender = gateway orelse return 0;
+    let shown = pane orelse return 0;
+    if same_runtime(sender, shown) {
+        return 0;
+    }
+    let allocator = mem::page_allocator();
+    var encoded = string::new(allocator);
+    defer encoded.deinit(allocator);
+    var wrote = false;
+    // SAFETY: the host holds shown from a create and calls from one thread.
+    let runtime = unsafe &shown.*;
+    if runtime.encode_focus(allocator, focused != 0, &var encoded) |any| {
+        wrote = any;
+    } else |_| {}
+    if !wrote {
+        return 0;
+    }
+    return send_to_pane(sender, shown, pane_id, &encoded, false);
+}
+
+/// Whether the child has exited; a null handle reads as exited.
+export "c" fn satin_runtime_exited(handle: ?ptr<term::Runtime>) -> u8 {
+    let live = handle orelse return 1;
+    // SAFETY: the host holds live from a create and calls from one thread.
+    let runtime = unsafe &var live.*;
+    return flag(runtime.is_exited());
+}
+
+export "c" fn satin_runtime_wakeup_fd(handle: ?ptr<term::Runtime>) -> i32 {
+    let live = handle orelse return -1;
+    // SAFETY: the host holds live from a create and calls from one thread.
+    let runtime = unsafe &live.*;
+    return runtime.wakeup_fd();
+}
+
+export "c" fn satin_runtime_scroll(handle: ?ptr<term::Runtime>, requested_rows: isize) -> isize {
+    let live = handle orelse return 0;
+    // SAFETY: the host holds live from a create and calls from one thread.
+    let runtime = unsafe &var live.*;
+    return cast<isize>(runtime.scroll_delta(cast<i64>(requested_rows)));
+}
+
+export "c" fn satin_runtime_renderer_scroll_position(handle: ?ptr<term::Runtime>) -> f32 {
+    let live = handle orelse return cast<f32>(0.0);
+    // SAFETY: the host holds live from a create and calls from one thread.
+    let runtime = unsafe &live.*;
+    return runtime.model.scroll_position();
+}
+
+/// The cursor as x in the low 16 bits and y in the next 16; all ones when
+/// it cannot be read.
+export "c" fn satin_runtime_cursor_position(handle: ?ptr<term::Runtime>) -> u32 {
+    let live = handle orelse return 4294967295;
+    // SAFETY: the host holds live from a create and calls from one thread.
+    let runtime = unsafe &live.*;
+    var x: i64 = 0;
+    var y: i64 = 0;
+    if runtime.cursor_position(&var x, &var y) {
+        return cast<u32>(x + y * 65536);
+    } else |_| {}
+    return 4294967295;
+}
+
+export "c" fn satin_runtime_cwd(handle: ?ptr<term::Runtime>) -> ?ptr<u8> {
+    let live = handle orelse return null;
+    let allocator = mem::page_allocator();
+    // SAFETY: the host holds live from a create and calls from one thread.
+    let runtime = unsafe &live.*;
+    var directory = string::new(allocator);
+    defer directory.deinit(allocator);
+    if runtime.working_directory(allocator, &var directory) |known| {
+        if known {
+            return owned_out(&directory);
+        }
+    } else |_| {}
+    return null;
+}
+
+export "c" fn satin_runtime_screen_text(handle: ?ptr<term::Runtime>) -> ?ptr<u8> {
+    let live = handle orelse return null;
+    let allocator = mem::page_allocator();
+    // SAFETY: the host holds live from a create and calls from one thread.
+    let runtime = unsafe &var live.*;
+    var text = string::new(allocator);
+    defer text.deinit(allocator);
+    if runtime.screen_text(allocator, &var text) {
+        return owned_out(&text);
+    } else |_| {}
+    return null;
+}
+
+export "c" fn satin_runtime_kitty_placement_count(handle: ?ptr<term::Runtime>) -> usize {
+    let live = handle orelse return 0;
+    // SAFETY: the host holds live from a create and calls from one thread.
+    let runtime = unsafe &var live.*;
+    if runtime.collect_kitty(mem::page_allocator()) {
+        return cast<usize>(runtime.kitty.placements.len());
+    } else |_| {}
+    return 0;
+}

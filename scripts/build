@@ -1,0 +1,28 @@
+#!/bin/sh
+# Builds everything the app needs from this repository, with no Rust:
+#
+#   target/native/libghostty-vt.a   the terminal library (scripts/build-ghostty)
+#   target/host/satin.o             the app core, one object the Swift host links
+#   target/bin/satin                the control command
+#   target/bin/satin-nvim           the nvim launcher
+#   target/app/fonts                the bundled fonts, beside the app's executable
+#
+#   KIZU=path/to/kizu scripts/build
+set -eu
+root="$(cd "$(dirname "$0")/.." && pwd)"
+kizu="${KIZU:-kizu}"
+cd "$root"
+
+[ -e target/native/libghostty-vt.a ] || scripts/build-ghostty
+scripts/embed-text assets/SKILL.md cli/src/cli/skill_text.kizu skill_text
+scripts/embed-text assets/satin_tui_image_bridge.lua nvim/src/launcher/bridge_text.kizu bridge_text
+scripts/embed-text assets/satin_image_bridge.lua src/nvim/image_bridge_text.kizu image_bridge_text
+scripts/embed-text assets/satin_cwd_bridge.lua src/nvim/cwd_bridge_text.kizu cwd_bridge_text
+
+mkdir -p target/host target/bin target/app
+# The renderer loads the bundled fonts at run time from `fonts` beside the
+# executable, or from `../Resources/fonts` in an app bundle.
+ln -sfn "$root/assets/fonts" target/app/fonts
+(cd host && "$kizu" build --target native --emit obj --opt -o "$root/target/host/satin.o" .)
+(cd cli && "$kizu" build --target native --opt -o "$root/target/bin/satin" .)
+(cd nvim && "$kizu" build --target native --opt -o "$root/target/bin/satin-nvim" .)

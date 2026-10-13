@@ -1,0 +1,242 @@
+import satin::draw;
+import satin::term;
+import std::mem;
+import std::string;
+import std::testing;
+
+/// Feeds text to a pane, `^` read as ESC and `$` as CR LF.
+fn feed_escaped(pane: ?ptr<term::Runtime>, text: []u8) -> mem::Error!u8 {
+    let allocator = mem::page_allocator();
+    var input = string::new(allocator);
+    defer input.deinit(allocator);
+    for 0..mem::len(text) |index| {
+        if text[index] == cast<u8>(94) {
+            try input.append_byte(allocator, 27);
+        } else if text[index] == cast<u8>(36) {
+            try input.append_byte(allocator, 13);
+            try input.append_byte(allocator, 10);
+        } else {
+            try input.append_byte(allocator, text[index]);
+        }
+    }
+    let bytes = input.as_bytes();
+    return feed_pane(pane, bytes);
+}
+
+/// A renderer for a device and a queue that are only addresses: it never
+/// sends either a message.
+fn test_renderer() -> ?ptr<draw::Renderer> {
+    // SAFETY: malloc returns one byte of storage or null; it is only an address here.
+    let stand_in = unsafe malloc(1);
+    let renderer = satin_skia_metal_create(stand_in, stand_in);
+    if stand_in |storage| {
+        // SAFETY: storage came from malloc and nothing reads it after this.
+        unsafe free(storage);
+    }
+    return renderer;
+}
+
+fn is_live_renderer(handle: ?ptr<draw::Renderer>) -> bool {
+    if handle |_live| {
+        return true;
+    }
+    return false;
+}
+
+fn is_rgb(pixel: draw::Rgba, r: i64, g: i64, b: i64) -> bool {
+    return cast<i64>(pixel.r) == r and cast<i64>(pixel.g) == g and cast<i64>(pixel.b) == b and cast<i64>(pixel.a) == 255;
+}
+
+/// Draws pane as the only pane of an 80 x 80 target of 10 x 20 pixel
+/// cells, with no texture to copy it into.
+fn render_pane(renderer: ?ptr<draw::Renderer>, pane: ?ptr<term::Runtime>, preedit: ?ptr<const u8>) -> u8 {
+    return satin_skia_metal_render_terminal(
+        renderer,
+        pane,
+        null,
+        80,
+        80,
+        cast<f32>(0.0),
+        cast<f32>(0.0),
+        cast<f32>(80.0),
+        cast<f32>(80.0),
+        cast<f32>(10.0),
+        cast<f32>(20.0),
+        1,
+        preedit
+    );
+}
+
+/// How many pixels of the cell at (col, row) are not r, g, b.
+fn inked(renderer: ?ptr<draw::Renderer>, col: i64, row: i64, r: i64, g: i64, b: i64) -> i64 {
+    var count = 0;
+    for 0..20 |y| {
+        for 0..10 |x| {
+            if !is_rgb(rendered_pixel(renderer, col * 10 + x, row * 20 + y), r, g, b) {
+                count = count + 1;
+            }
+        }
+    }
+    return count;
+}
+
+test "the renderer boundary refuses null handles" {
+    let largest = cast<u64>(9223372036854775807) * 2 + 1;
+    testing::expect(!is_live_renderer(satin_skia_metal_create(null, null)));
+    testing::expect(satin_skia_metal_begin_frame(null) == 0);
+    testing::expect(satin_skia_metal_needs_animation_frame(null) == 0);
+    testing::expect(satin_skia_metal_next_frame_delay_ms(null) == largest);
+    testing::expect(satin_skia_metal_set_font_family(null, c"Menlo") == 0);
+    testing::expect(render_pane(null, null, null) == 0);
+    satin_skia_metal_forget_runtime(null, null);
+    satin_skia_metal_destroy(null);
+
+    let renderer = test_renderer();
+    testing::expect(is_live_renderer(renderer));
+    testing::expect(render_pane(renderer, null, null) == 0);
+    testing::expect(
+        satin_skia_metal_render_nvim(
+            renderer,
+            null,
+            null,
+            80,
+            80,
+            cast<f32>(0.0),
+            cast<f32>(0.0),
+            cast<f32>(80.0),
+            cast<f32>(80.0),
+            cast<f32>(10.0),
+            cast<f32>(20.0),
+            1,
+            null
+        ) == 0
+    );
+    // Nothing was drawn: the bitmap is still its first clear pixel.
+    testing::expect(cast<i64>(rendered_pixel(renderer, 0, 0).a) == 0);
+    satin_skia_metal_destroy(renderer);
+}
+
+test "a terminal is drawn through the boundary without a texture" {
+    let renderer = test_renderer();
+    let pane = satin_runtime_create_external(4, 8, 80, 80);
+    testing::expect(try feed_escaped(pane, "^[48;2;200;0;0mM^[0m$ M") == 1);
+    testing::expect(satin_skia_metal_begin_frame(renderer) == 1);
+    // No texture took the frame, so the answer is zero; the bitmap has it.
+    testing::expect(render_pane(renderer, pane, null) == 0);
+
+    testing::expect(is_rgb(rendered_pixel(renderer, 0, 0), 200, 0, 0));
+    testing::expect(is_rgb(rendered_pixel(renderer, 9, 19), 200, 0, 0));
+    let background = rendered_pixel(renderer, 79, 79);
+    testing::expect(cast<i64>(background.a) == 255);
+    let r = cast<i64>(background.r);
+    let g = cast<i64>(background.g);
+    let b = cast<i64>(background.b);
+    testing::expect(is_rgb(rendered_pixel(renderer, 10, 0), r, g, b));
+    // The letter on red, the same letter a row down and a cell right, the
+    // cursor's block after it, and nothing in the cell after that.
+    testing::expect(inked(renderer, 0, 0, 200, 0, 0) > 15);
+    testing::expect(inked(renderer, 1, 1, r, g, b) > 15);
+    testing::expect_equal<i64>(0, inked(renderer, 0, 1, r, g, b));
+    testing::expect_equal<i64>(200, inked(renderer, 2, 1, r, g, b));
+    testing::expect_equal<i64>(0, inked(renderer, 3, 1, r, g, b));
+    // The frame is at rest: nothing asks for another.
+    testing::expect(satin_skia_metal_needs_animation_frame(renderer) == 0);
+    testing::expect(satin_skia_metal_next_frame_delay_ms(renderer) == cast<u64>(9223372036854775807) * 2 + 1);
+
+    // Composed text is drawn from the cursor on, over two cells a character.
+    testing::expect(satin_skia_metal_begin_frame(renderer) == 1);
+    testing::expect(render_pane(renderer, pane, c"日本") == 0);
+    // Its cells are the cursor's color but for an underline, and strokes,
+    // of the background's.
+    testing::expect_equal<i64>(190, inked(renderer, 3, 1, r, g, b));
+    testing::expect_equal<i64>(190, inked(renderer, 5, 1, r, g, b));
+    testing::expect(inked(renderer, 2, 1, r, g, b) > 100 and inked(renderer, 2, 1, r, g, b) < 190);
+    testing::expect_equal<i64>(0, inked(renderer, 6, 1, r, g, b));
+
+    // Another family draws the letter with other pixels.
+    let before = inked(renderer, 0, 0, 200, 0, 0);
+    testing::expect(satin_skia_metal_set_font_family(renderer, c"Courier New") == 1);
+    testing::expect(render_pane(renderer, pane, null) == 0);
+    testing::expect(inked(renderer, 0, 0, 200, 0, 0) > 15);
+    testing::expect(inked(renderer, 0, 0, 200, 0, 0) != before);
+    testing::expect(satin_skia_metal_set_font_family(renderer, null) == 1);
+    testing::expect(render_pane(renderer, pane, null) == 0);
+    testing::expect_equal<i64>(before, inked(renderer, 0, 0, 200, 0, 0));
+
+    if pane |live| {
+        // SAFETY: only the pane's address is read.
+        satin_skia_metal_forget_runtime(renderer, unsafe cast<ptr<const u8>>(live));
+    }
+    satin_skia_metal_destroy(renderer);
+    satin_runtime_destroy(pane);
+}
+
+/// Whether the cells at (first_col, first_row) and (second_col,
+/// second_row) hold the same pixels.
+fn same_cells(renderer: ?ptr<draw::Renderer>, first_col: i64, first_row: i64, second_col: i64, second_row: i64) -> bool {
+    for 0..20 |y| {
+        for 0..10 |x| {
+            let first = rendered_pixel(renderer, first_col * 10 + x, first_row * 20 + y);
+            let second = rendered_pixel(renderer, second_col * 10 + x, second_row * 20 + y);
+            if first.r != second.r or first.g != second.g or first.b != second.b {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+test "the bundled font draws a terminal's ligatures and powerline glyphs through the boundary" {
+    let renderer = test_renderer();
+    if !use_font_dir(renderer, "assets/fonts") and !use_font_dir(renderer, "../assets/fonts") {
+        print("skipped: assets/fonts/FiraCodeNerdFont-Regular.ttf was not found from the working directory");
+        satin_skia_metal_destroy(renderer);
+        return;
+    }
+    let pane = satin_runtime_create_external(4, 8, 80, 80);
+    // An arrow, the same two characters a cell apart, and a powerline
+    // arrow after a letter.
+    testing::expect(try feed_escaped(pane, "->   ->$- >  M>$M") == 1);
+    testing::expect(satin_skia_metal_begin_frame(renderer) == 1);
+    testing::expect(render_pane(renderer, pane, null) == 0);
+    let background = rendered_pixel(renderer, 79, 79);
+    let r = cast<i64>(background.r);
+    let g = cast<i64>(background.g);
+    let b = cast<i64>(background.b);
+
+    // The ligature's head is not the lone sign's, and its shaft starts in
+    // the hyphen's cell.
+    testing::expect(inked(renderer, 1, 0, r, g, b) > 10 and inked(renderer, 2, 1, r, g, b) > 10);
+    testing::expect(!same_cells(renderer, 1, 0, 2, 1));
+    testing::expect(!same_cells(renderer, 1, 0, 6, 1));
+    testing::expect(same_cells(renderer, 5, 1, 0, 2));
+    // The same run is the same pixels wherever it is on the row.
+    testing::expect(same_cells(renderer, 0, 0, 5, 0) and same_cells(renderer, 1, 0, 6, 0));
+    // The powerline arrow is solid from its cell's left edge.
+    testing::expect(inked(renderer, 1, 2, r, g, b) > 60);
+    testing::expect(!is_rgb(rendered_pixel(renderer, 10, 50), r, g, b));
+
+    satin_skia_metal_destroy(renderer);
+    satin_runtime_destroy(pane);
+}
+
+test "a scroll the terminal asked for keeps the frame loop running until it settles" {
+    let renderer = test_renderer();
+    let pane = satin_runtime_create_external(4, 8, 80, 80);
+    testing::expect(try feed_escaped(pane, "^[?1049hone$two$three") == 1);
+    testing::expect(satin_skia_metal_begin_frame(renderer) == 1);
+    testing::expect(render_pane(renderer, pane, null) == 0);
+    testing::expect(satin_skia_metal_needs_animation_frame(renderer) == 0);
+
+    testing::expect(try feed_escaped(pane, "^[1;3r^[H^[M^[r") == 1);
+    testing::expect(satin_skia_metal_begin_frame(renderer) == 1);
+    testing::expect(render_pane(renderer, pane, null) == 0);
+    testing::expect(satin_skia_metal_needs_animation_frame(renderer) == 1);
+    testing::expect(satin_skia_metal_next_frame_delay_ms(renderer) == 0);
+    // A frame that does not draw the pane does not wait on it.
+    testing::expect(satin_skia_metal_begin_frame(renderer) == 1);
+    testing::expect(satin_skia_metal_needs_animation_frame(renderer) == 0);
+
+    satin_skia_metal_destroy(renderer);
+    satin_runtime_destroy(pane);
+}

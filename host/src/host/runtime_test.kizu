@@ -1,0 +1,108 @@
+import satin::term;
+import std::mem;
+import std::string;
+import std::testing;
+
+extern "c" fn usleep(microseconds: u32) -> i32
+
+/// Whether the string an export returned holds needle; frees the string.
+fn returned_has(text: ?ptr<u8>, needle: []u8) -> bool {
+    let live = text orelse return false;
+    // SAFETY: a readable string is read as one.
+    let start = unsafe cast<ptr<const u8>>(live);
+    // SAFETY: start is a NUL-terminated string an export returned.
+    let length = unsafe c_length(start);
+    // SAFETY: start holds length readable bytes.
+    let bytes = unsafe view_from_ptr(start, length);
+    let found = term::find_bytes(bytes, needle, 0) >= 0;
+    satin_string_free(text);
+    return found;
+}
+
+fn feed_pane(pane: ?ptr<term::Runtime>, text: []u8) -> u8 {
+    return satin_runtime_tmux_feed_pane(pane, ptr_of(text), cast<usize>(mem::len(text)));
+}
+
+/// satin_runtime_create_config of a document, which a C string literal
+/// cannot hold for its quotes.
+fn configured(document: []u8) -> mem::Error!?ptr<term::Runtime> {
+    let allocator = mem::page_allocator();
+    var text = try string::from_bytes(allocator, document);
+    defer text.deinit(allocator);
+    try text.append_byte(allocator, 0);
+    let bytes = text.as_bytes();
+    return satin_runtime_create_config(24, 80, 800, 480, ptr_of(bytes));
+}
+
+fn is_live(handle: ?ptr<term::Runtime>) -> bool {
+    if handle |_live| {
+        return true;
+    }
+    return false;
+}
+
+test "a fed terminal answers through the boundary" {
+    let pane = satin_runtime_create_external(24, 80, 800, 480);
+    testing::expect(is_live(pane));
+    testing::expect(satin_runtime_wakeup_fd(pane) == -1);
+    testing::expect(satin_runtime_exited(pane) == 0);
+    testing::expect(satin_runtime_tmux_shell_prompt_state(pane) == 1);
+    testing::expect(feed_pane(pane, "hello") == 1);
+    testing::expect(satin_runtime_tmux_shell_prompt_state(pane) == 2);
+    testing::expect(satin_runtime_cursor_position(pane) == 5);
+    testing::expect(returned_has(satin_runtime_screen_text(pane), "hello"));
+    testing::expect(satin_runtime_select_all(pane) == 1);
+    testing::expect(returned_has(satin_runtime_selected_text(pane), "hello"));
+    testing::expect(satin_runtime_clear_selection(pane) == 1);
+    testing::expect(satin_runtime_find(pane, c"ell", 0) == 1);
+    testing::expect(returned_has(satin_runtime_selected_text(pane), "ell"));
+    testing::expect(satin_runtime_find(pane, c"absent", 0) == 0);
+    testing::expect(satin_runtime_write(pane, ptr_of("x"), 1) == 0);
+    testing::expect(satin_runtime_resize(pane, 10, 40, 400, 200) == 1);
+    testing::expect(satin_runtime_scroll(pane, -3) == 0);
+    testing::expect(satin_runtime_kitty_placement_count(pane) == 0);
+    testing::expect(satin_runtime_tmux_record_scroll_metadata(pane, 1, 1, 5, 0, 0) == 1);
+    testing::expect(satin_runtime_tmux_record_scroll_metadata(pane, 1, 5, 1, 0, 0) == 0);
+    testing::expect(satin_runtime_selection_event(pane, 0, 0, 1, cast<f32>(15.0), cast<f32>(5.0), 10, 20, 0) == 1);
+    testing::expect(satin_runtime_selection_event(pane, 9, 0, 1, cast<f32>(15.0), cast<f32>(5.0), 10, 20, 0) == 0);
+    satin_runtime_destroy(pane);
+}
+
+test "the boundary refuses null handles" {
+    testing::expect(satin_runtime_drain(null) == 0);
+    testing::expect(satin_runtime_exited(null) == 1);
+    testing::expect(satin_runtime_wakeup_fd(null) == -1);
+    testing::expect(satin_runtime_cursor_position(null) == 4294967295);
+    testing::expect(!returned_has(satin_runtime_title(null), ""));
+    satin_runtime_destroy(null);
+}
+
+test "a configured child runs, is typed at, and exits" {
+    let runtime = try configured(
+        \\{"cwd":"/tmp","direct_startup":true,"startup_command":["/bin/sh","-c","read -r line; echo got-$line"]}
+    );
+    testing::expect(is_live(runtime));
+    testing::expect(satin_runtime_wakeup_fd(runtime) >= 0);
+    testing::expect(returned_has(satin_runtime_cwd(runtime), "/tmp"));
+    testing::expect(satin_runtime_text(runtime, ptr_of("abc"), 3) == 1);
+    // 36 is the Return key.
+    testing::expect(satin_runtime_key(runtime, 36, 0, null, 0, ptr_of(""), 0, 0, 0) == 1);
+    var exited = false;
+    for 0..300 |_attempt| {
+        if !exited {
+            let _ = satin_runtime_drain(runtime);
+            exited = satin_runtime_exited(runtime) != 0;
+            // SAFETY: sleeping takes no memory of ours.
+            let _ = unsafe usleep(10000);
+        }
+    }
+    let _ = satin_runtime_drain(runtime);
+    testing::expect(exited);
+    testing::expect(returned_has(satin_runtime_screen_text(runtime), "got-abc"));
+    satin_runtime_destroy(runtime);
+}
+
+test "a malformed configuration makes no runtime" {
+    testing::expect(!is_live(satin_runtime_create_config(24, 80, 800, 480, c"nope")));
+    testing::expect(!is_live(satin_runtime_create_config(24, 80, 800, 480, null)));
+}

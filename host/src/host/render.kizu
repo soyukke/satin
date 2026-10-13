@@ -1,0 +1,325 @@
+// The C boundary the Swift host calls to draw a frame: `satin_skia_metal_*`,
+// the names and the values the Rust library exported. Nothing behind them
+// is Skia any more: a pane is drawn into the renderer's own bitmap by
+// CoreGraphics, and the pixels it wrote are copied into the texture.
+//
+// A renderer lives in malloc storage the host holds as an opaque pointer,
+// and the host calls from one thread.
+import satin::draw;
+import satin::nvim;
+import satin::term;
+import std::mem;
+import std::process;
+
+/// Metal's `MTLRegion`: an origin and a size, in pixels.
+extern "c" struct MTLRegion {
+    x: usize,
+    y: usize,
+    z: usize,
+    width: usize,
+    height: usize,
+    depth: usize,
+}
+
+@link_library("objc")
+extern "c" fn sel_registerName(name: ptr<const u8>) -> ptr<u8>
+// `objc_msgSend` has the C signature of the message it sends. This is
+// `-[MTLTexture replaceRegion:mipmapLevel:withBytes:bytesPerRow:]`, the one
+// message sent here.
+@link_library("objc")
+extern "c" fn objc_msgSend(
+    texture: ptr<u8>,
+    selector: ptr<u8>,
+    region: MTLRegion,
+    level: usize,
+    bytes: ptr<const u8>,
+    row_bytes: usize
+) -> void
+/// What `satin_skia_metal_next_frame_delay_ms` returns when no frame is
+/// needed: the largest u64.
+fn no_frame_delay() -> u64 {
+    return cast<u64>(9223372036854775807) * 2 + 1;
+}
+
+fn pane_geometry(
+    width: i32,
+    height: i32,
+    origin_x: f32,
+    origin_y: f32,
+    content_width: f32,
+    content_height: f32,
+    cell_width: f32,
+    cell_height: f32
+) -> draw::Geometry {
+    return draw::Geometry {
+        width: cast<i64>(width),
+        height: cast<i64>(height),
+        origin_x: origin_x,
+        origin_y: origin_y,
+        content_width: content_width,
+        content_height: content_height,
+        cell_width: cell_width,
+        cell_height: cell_height
+    };
+}
+
+/// Copies the pixels the renderer's last frame wrote into the texture,
+/// which must be a BGRA texture of the frame's size the host may write to.
+///
+/// texture must be a live `id<MTLTexture>`.
+unsafe fn upload(renderer: &draw::Renderer, texture: ptr<u8>) -> void {
+    let pixels = renderer.region_pixels() orelse return;
+    let region = renderer.drawn_region();
+    // SAFETY: the name is a NUL-terminated selector.
+    let selector = unsafe sel_registerName(c"replaceRegion:mipmapLevel:withBytes:bytesPerRow:");
+    let target = MTLRegion {
+        x: cast<usize>(region.x),
+        y: cast<usize>(region.y),
+        z: 0,
+        width: cast<usize>(region.width),
+        height: cast<usize>(region.height),
+        depth: 1
+    };
+    // SAFETY: the caller passes a live texture that answers the message; pixels are the region's rows, a bitmap row apart.
+    unsafe objc_msgSend(texture, selector, target, 0, cast<ptr<const u8>>(pixels), cast<usize>(renderer.row_bytes()));
+    return;
+}
+
+/// A renderer for the host's Metal device and command queue, neither of
+/// which it uses: it draws on the CPU. Null without both, as the Rust
+/// renderer answered, or without storage.
+export "c" fn satin_skia_metal_create(device: ?ptr<u8>, command_queue: ?ptr<u8>) -> ?ptr<draw::Renderer> {
+    if device |_device| {} else {
+        return null;
+    }
+    if command_queue |_queue| {} else {
+        return null;
+    }
+    let allocator = mem::page_allocator();
+    let renderer = draw::new_renderer(allocator) orelse return null;
+    // SAFETY: malloc returns storage for one Renderer or null.
+    let storage = unsafe malloc(mem::size_of<draw::Renderer>());
+    if storage |slot| {
+        // SAFETY: slot is fresh storage for one Renderer.
+        let handle = unsafe cast<ptr<draw::Renderer>>(slot);
+        // SAFETY: handle is fresh storage for one Renderer; the renderer now lives there.
+        unsafe ptr_write(handle, move renderer);
+        return handle;
+    }
+    renderer.deinit(allocator);
+    return null;
+}
+
+export "c" fn satin_skia_metal_destroy(handle: ?ptr<draw::Renderer>) -> void {
+    let live = handle orelse return;
+    // SAFETY: live came from satin_skia_metal_create and is destroyed once.
+    let renderer = unsafe ptr_read(live);
+    renderer.deinit(mem::page_allocator());
+    // SAFETY: live is malloc storage nothing reads after this.
+    unsafe free(cast<ptr<u8>>(live));
+    return;
+}
+
+export "c" fn satin_skia_metal_begin_frame(handle: ?ptr<draw::Renderer>) -> u8 {
+    let live = handle orelse return 0;
+    // SAFETY: the host holds live from a create and calls from one thread.
+    let renderer = unsafe &var live.*;
+    renderer.begin_frame();
+    return 1;
+}
+
+/// Draws an embedded Neovim's pane and copies it into texture. Zero when
+/// nothing reached a texture: a null one is drawn for, and not written.
+export "c" fn satin_skia_metal_render_nvim(
+    handle: ?ptr<draw::Renderer>,
+    editor: ?ptr<nvim::Runtime>,
+    texture: ?ptr<u8>,
+    width: i32,
+    height: i32,
+    origin_x: f32,
+    origin_y: f32,
+    content_width: f32,
+    content_height: f32,
+    cell_width: f32,
+    cell_height: f32,
+    clear: u8,
+    preedit: ?ptr<const u8>
+) -> u8 {
+    let live = handle orelse return 0;
+    let pane = editor orelse return 0;
+    let allocator = mem::page_allocator();
+    let geometry = pane_geometry(
+        width,
+        height,
+        origin_x,
+        origin_y,
+        content_width,
+        content_height,
+        cell_width,
+        cell_height
+    );
+    // SAFETY: the host holds live from a create and calls from one thread.
+    let renderer = unsafe &var live.*;
+    // SAFETY: the host holds pane from a create and calls from one thread.
+    let runtime = unsafe &var pane.*;
+    // SAFETY: reading a pointer's address touches nothing it points at.
+    let id = unsafe int_from_ptr<usize>(pane);
+    let now = process::monotonic_millis();
+    var drawn = false;
+    if preedit |text| {
+        // SAFETY: the host passes a NUL-terminated string that outlives the call.
+        let length = unsafe c_length(text);
+        // SAFETY: text holds length readable bytes.
+        let composed = unsafe view_from_ptr(text, length);
+        if is_utf8(composed) {
+            drawn = renderer.draw_editor(allocator, runtime, id, geometry, clear != 0, composed, now);
+        } else {
+            drawn = renderer.draw_editor(allocator, runtime, id, geometry, clear != 0, "", now);
+        }
+    } else {
+        drawn = renderer.draw_editor(allocator, runtime, id, geometry, clear != 0, "", now);
+    }
+    if !drawn {
+        return 0;
+    }
+    let target = texture orelse return 0;
+    // SAFETY: the host passes the frame's drawable texture, live for the call.
+    unsafe upload(renderer, target);
+    return 1;
+}
+
+/// satin_skia_metal_render_nvim for a terminal.
+export "c" fn satin_skia_metal_render_terminal(
+    handle: ?ptr<draw::Renderer>,
+    terminal: ?ptr<term::Runtime>,
+    texture: ?ptr<u8>,
+    width: i32,
+    height: i32,
+    origin_x: f32,
+    origin_y: f32,
+    content_width: f32,
+    content_height: f32,
+    cell_width: f32,
+    cell_height: f32,
+    clear: u8,
+    preedit: ?ptr<const u8>
+) -> u8 {
+    let live = handle orelse return 0;
+    let pane = terminal orelse return 0;
+    let allocator = mem::page_allocator();
+    let geometry = pane_geometry(
+        width,
+        height,
+        origin_x,
+        origin_y,
+        content_width,
+        content_height,
+        cell_width,
+        cell_height
+    );
+    // SAFETY: the host holds live from a create and calls from one thread.
+    let renderer = unsafe &var live.*;
+    // SAFETY: the host holds pane from a create and calls from one thread.
+    let runtime = unsafe &var pane.*;
+    // SAFETY: reading a pointer's address touches nothing it points at.
+    let id = unsafe int_from_ptr<usize>(pane);
+    let now = process::monotonic_millis();
+    var drawn = false;
+    if preedit |text| {
+        // SAFETY: the host passes a NUL-terminated string that outlives the call.
+        let length = unsafe c_length(text);
+        // SAFETY: text holds length readable bytes.
+        let composed = unsafe view_from_ptr(text, length);
+        if is_utf8(composed) {
+            drawn = renderer.draw_terminal(allocator, runtime, id, geometry, clear != 0, composed, now);
+        } else {
+            drawn = renderer.draw_terminal(allocator, runtime, id, geometry, clear != 0, "", now);
+        }
+    } else {
+        drawn = renderer.draw_terminal(allocator, runtime, id, geometry, clear != 0, "", now);
+    }
+    if !drawn {
+        return 0;
+    }
+    let target = texture orelse return 0;
+    // SAFETY: the host passes the frame's drawable texture, live for the call.
+    unsafe upload(renderer, target);
+    return 1;
+}
+
+export "c" fn satin_skia_metal_needs_animation_frame(handle: ?ptr<draw::Renderer>) -> u8 {
+    let live = handle orelse return 0;
+    // SAFETY: the host holds live from a create and calls from one thread.
+    let renderer = unsafe &var live.*;
+    return flag(renderer.needs_animation_frame(process::monotonic_millis()));
+}
+
+/// Drops what the renderer keeps for a runtime the host is about to destroy.
+export "c" fn satin_skia_metal_forget_runtime(handle: ?ptr<draw::Renderer>, runtime: ?ptr<const u8>) -> void {
+    let live = handle orelse return;
+    let pane = runtime orelse return;
+    // SAFETY: the host holds live from a create and calls from one thread.
+    let renderer = unsafe &var live.*;
+    // SAFETY: reading a pointer's address touches nothing it points at.
+    renderer.forget_runtime(mem::page_allocator(), unsafe int_from_ptr<usize>(pane));
+    return;
+}
+
+/// Names the font family of every pane's text; null, or a name that is not
+/// UTF-8, is the default one.
+export "c" fn satin_skia_metal_set_font_family(handle: ?ptr<draw::Renderer>, family: ?ptr<const u8>) -> u8 {
+    let live = handle orelse return 0;
+    let allocator = mem::page_allocator();
+    // SAFETY: the host holds live from a create and calls from one thread.
+    let renderer = unsafe &var live.*;
+    if family |text| {
+        // SAFETY: the host passes a NUL-terminated string that outlives the call.
+        let length = unsafe c_length(text);
+        // SAFETY: text holds length readable bytes.
+        let name = unsafe view_from_ptr(text, length);
+        if is_utf8(name) {
+            if renderer.set_font_family(allocator, name) {} else |_| {}
+            return 1;
+        }
+    }
+    if renderer.set_font_family(allocator, "") {} else |_| {}
+    return 1;
+}
+
+/// The milliseconds until the panes drawn in this frame need the next one;
+/// the largest u64 when they need none.
+export "c" fn satin_skia_metal_next_frame_delay_ms(handle: ?ptr<draw::Renderer>) -> u64 {
+    let live = handle orelse return no_frame_delay();
+    // SAFETY: the host holds live from a create and calls from one thread.
+    let renderer = unsafe &var live.*;
+    if renderer.next_frame_delay_ms(process::monotonic_millis()) |delay| {
+        return cast<u64>(delay);
+    }
+    return no_frame_delay();
+}
+
+/// The pixel at (x, y) of the bitmap a renderer draws into, for a test to
+/// read what a frame drew without a texture.
+fn rendered_pixel(handle: ?ptr<draw::Renderer>, x: i64, y: i64) -> draw::Rgba {
+    let live = handle orelse return draw::Rgba { r: 0, g: 0, b: 0, a: 0 };
+    // SAFETY: the test holds live from a create.
+    let renderer = unsafe &var live.*;
+    return renderer.pixel(x, y);
+}
+
+/// Points a renderer at the directory the bundled fonts are in, for a test
+/// to draw with them wherever its executable is. Whether the font's file
+/// is there.
+fn use_font_dir(handle: ?ptr<draw::Renderer>, dir: []u8) -> bool {
+    let live = handle orelse return false;
+    let allocator = mem::page_allocator();
+    // SAFETY: the test holds live from a create.
+    let renderer = unsafe &var live.*;
+    if renderer.set_font_dir(allocator, dir) {} else |_| {
+        return false;
+    }
+    if renderer.has_bundled_font(allocator) |found| {
+        return found;
+    } else |_| {}
+    return false;
+}

@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+# Builds the macOS app's executable from the Swift host and this
+# repository's object, with no Rust: the Swift sources are compiled as they
+# are and linked against target/host/satin.o and libghostty-vt.
+#
+#   KIZU=path/to/kizu SATIN_APP_REPO=path/to/app/repo scripts/build-app
+#
+# SATIN_APP_REPO is the checkout that holds spikes/macos-shell and
+# scripts/native-swift-sources. The result is target/app/SatinApplication.
+set -euo pipefail
+root="$(cd "$(dirname "$0")/.." && pwd)"
+app_repo="${SATIN_APP_REPO:?set SATIN_APP_REPO to the app checkout}"
+minimum_macos="14.0"
+
+"$root/scripts/build"
+
+cd "$app_repo"
+# shellcheck source=/dev/null
+source scripts/native-swift-sources
+sdk="$(env -u SDKROOT -u DEVELOPER_DIR /usr/bin/xcrun --sdk macosx --show-sdk-path)"
+sdk_major="$(env -u SDKROOT -u DEVELOPER_DIR /usr/bin/xcrun --sdk macosx --show-sdk-version)"
+sdk_major="${sdk_major%%.*}"
+flags=(-D SATIN_SMOKE_SCENARIOS)
+if [[ "$sdk_major" =~ ^[0-9]+$ ]] && ((sdk_major >= 26)); then
+  flags+=(-D SATIN_HAS_LIQUID_GLASS_SDK)
+fi
+mkdir -p "$root/target/app"
+env -u SDKROOT -u DEVELOPER_DIR \
+  /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc \
+  -O \
+  -parse-as-library \
+  -whole-module-optimization \
+  -warnings-as-errors \
+  -sdk "$sdk" \
+  -target "arm64-apple-macos$minimum_macos" \
+  "${flags[@]}" \
+  "${native_swift_sources[@]}" \
+  "${native_smoke_swift_sources[@]}" \
+  "$root/target/host/satin.o" \
+  "$root/target/native/libghostty-vt.a" \
+  -framework AppKit \
+  -framework CryptoKit \
+  -framework MetalKit \
+  -framework Metal \
+  -framework QuartzCore \
+  -framework CoreText \
+  -framework CoreGraphics \
+  -framework CoreFoundation \
+  -lobjc \
+  -o "$root/target/app/SatinApplication"
+echo "$root/target/app/SatinApplication"
