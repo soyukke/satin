@@ -8,6 +8,7 @@ final class NativeAttentionHandView: NSView {
     static let stripHeight: CGFloat = 34
     static let reach: CGFloat = 268
     private static let hoverGrace: TimeInterval = 0.35
+    private static let peekLift: CGFloat = 84
     private static let dealtRaise: TimeInterval = 2.2
     private static let playedRaise: TimeInterval = 1.2
     private static let allClearDuration: TimeInterval = 1.6
@@ -39,6 +40,9 @@ final class NativeAttentionHandView: NSView {
     private var hand = NativeAttentionHand.empty
     private var run = NativeHandRun()
     private var raised = false
+    /// Raised all the way into a fan, as a deal, a play and ⌘J do. The
+    /// pointer only lifts the cards where they stand, so they stay under it.
+    private var fanned = false
     private var hovering = false
     private var lowerWorkItem: DispatchWorkItem?
     private var allClearUntil: Date?
@@ -147,6 +151,7 @@ final class NativeAttentionHandView: NSView {
         lowerWorkItem?.cancel()
         lowerWorkItem = nil
         raised = true
+        fanned = true
         if selectedPaneId == paneId {
             place(animated: true)
         } else {
@@ -160,6 +165,7 @@ final class NativeAttentionHandView: NSView {
         }
         selectionOpen = false
         raised = hovering
+        fanned = false
         setSelected(nil)
         place(animated: true)
     }
@@ -212,8 +218,10 @@ final class NativeAttentionHandView: NSView {
             NativeHandEffects.flash(stripView.layer, color: .systemGreen)
         }
         if !dealt.isEmpty {
+            fanned = true
             raise(for: Self.dealtRaise)
         } else if playedPaneId != nil {
+            fanned = true
             raise(for: Self.playedRaise)
         }
         place(animated: true)
@@ -308,10 +316,11 @@ final class NativeAttentionHandView: NSView {
     }
 
     func setRaised(_ raised: Bool, animated: Bool) {
-        guard raised != self.raised else {
+        guard raised != self.raised || raised != fanned else {
             return
         }
         self.raised = raised
+        fanned = raised
         place(animated: animated)
     }
 
@@ -360,6 +369,10 @@ final class NativeAttentionHandView: NSView {
             self.lowerWorkItem = nil
             if !self.hovering, !self.selectionOpen {
                 self.setRaised(false, animated: true)
+            } else if !self.selectionOpen, self.fanned {
+                // The pointer is still on the hand: settle to its height.
+                self.fanned = false
+                self.place(animated: true)
             }
         }
         lowerWorkItem = lower
@@ -372,7 +385,11 @@ final class NativeAttentionHandView: NSView {
         }
         self.hovering = hovering
         if hovering {
-            setRaised(true, animated: true)
+            if !raised {
+                raised = true
+                fanned = false
+                place(animated: true)
+            }
         } else if lowerWorkItem == nil, !selectionOpen {
             // The fan closes toward the middle as it rises, so the pointer
             // gets a moment to follow the card it was under.
@@ -400,8 +417,9 @@ final class NativeAttentionHandView: NSView {
         let size = NativeHandCardView.size
         let count = CGFloat(slots.count)
         let room = slots.count > 1 ? max(36, (bounds.width - size.width - 48) / (count - 1)) : 0
-        // In the strip the cards stand side by side; raised, they close into a fan.
-        let step = raised ? min(size.width * 0.62, room) : min(size.width + 8, room)
+        // In the strip the cards stand side by side; fanned, they close into a fan.
+        let fan = raised && fanned
+        let step = fan ? min(size.width * 0.62, room) : min(size.width + 8, room)
         let chosenIndex =
             raised ? slots.firstIndex { $0.cardView.card.paneId == selectedPaneId } : nil
         let moves = slots.enumerated().map {
@@ -411,18 +429,24 @@ final class NativeAttentionHandView: NSView {
             let chosen = index == chosenIndex
             // The neighbors of a chosen card draw aside to show all of it.
             let aside: CGFloat =
-                chosenIndex.map { index < $0 ? -34 : (index > $0 ? 34 : 0) } ?? 0
+                fan ? chosenIndex.map { index < $0 ? -34 : (index > $0 ? 34 : 0) } ?? 0 : 0
             let lift: CGFloat = chosen ? 46 : (first && chosenIndex == nil ? 12 : 0)
-            let origin = NSPoint(
-                x: bounds.midX + offset * step + aside - size.width / 2,
-                y: raised
-                    ? 20 - offset * offset * 7 + lift
-                    : Self.stripHeight - 4 - size.height + (first ? 3 : 0)
-            )
+            let stripY = Self.stripHeight - 4 - size.height + (first ? 3 : 0)
+            let y: CGFloat
+            if fan {
+                y = 20 - offset * offset * 7 + lift
+            } else if raised {
+                // Under the pointer the cards rise where they stand, far
+                // enough to read and press, and the one it is on a little more.
+                y = stripY + Self.peekLift + (chosen ? 14 : 0)
+            } else {
+                y = stripY
+            }
+            let origin = NSPoint(x: bounds.midX + offset * step + aside - size.width / 2, y: y)
             slot.cardView.isChosen = chosen
             slot.layer?.zPosition = chosen ? 50 : 0
             slot.restOrigin = origin
-            slot.restRotation = raised && !chosen ? -offset * 7 : 0
+            slot.restRotation = fan && !chosen ? -offset * 7 : 0
             return (slot, origin, slot.restRotation)
         }
         updateTethers()
