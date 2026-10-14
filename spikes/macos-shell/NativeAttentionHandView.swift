@@ -9,6 +9,8 @@ final class NativeAttentionHandView: NSView {
     static let reach: CGFloat = 268
     private static let hoverGrace: TimeInterval = 0.35
     private static let peekLift: CGFloat = 84
+    /// How far the chosen card rises past the others, in the fan at most.
+    private static let chosenLift: CGFloat = 46
     private static let dealtRaise: TimeInterval = 2.2
     private static let playedRaise: TimeInterval = 1.2
     private static let allClearDuration: TimeInterval = 1.6
@@ -406,11 +408,25 @@ final class NativeAttentionHandView: NSView {
     }
 
     private func slot(at point: NSPoint) -> NativeHandSlotView? {
-        // The chosen card stands clear of the fan; otherwise the card on top wins.
-        if let chosen = slots.first(where: { $0.cardView.isChosen }), chosen.frame.contains(point) {
-            return chosen
+        // The chosen card stands clear of the fan; otherwise the card on top
+        // wins. The chosen card also keeps the place it rose from, or the
+        // pointer that chose it near its foot would drop it, choose it again
+        // when it settled, and so on.
+        if let chosen = slots.first(where: { $0.cardView.isChosen }) {
+            let risen = chosen.frame
+            let kept = NSRect(
+                x: risen.minX, y: risen.minY - Self.chosenLift,
+                width: risen.width, height: risen.height + Self.chosenLift)
+            if kept.contains(point) {
+                return chosen
+            }
         }
         return slots.last { $0.frame.contains(point) }
+    }
+
+    /// The pane of the card the pointer at point would be on.
+    func cardPaneId(at point: NSPoint) -> Int? {
+        slot(at: point)?.cardView.card.paneId
     }
 
     private func place(animated: Bool) {
@@ -430,7 +446,7 @@ final class NativeAttentionHandView: NSView {
             // The neighbors of a chosen card draw aside to show all of it.
             let aside: CGFloat =
                 fan ? chosenIndex.map { index < $0 ? -34 : (index > $0 ? 34 : 0) } ?? 0 : 0
-            let lift: CGFloat = chosen ? 46 : (first && chosenIndex == nil ? 12 : 0)
+            let lift: CGFloat = chosen ? Self.chosenLift : (first && chosenIndex == nil ? 12 : 0)
             let stripY = Self.stripHeight - 4 - size.height + (first ? 3 : 0)
             let y: CGFloat
             if fan {
@@ -658,6 +674,16 @@ func runNativeAttentionHandViewSelfTests() -> Bool {
     else {
         return false
     }
+    // The chosen card keeps the place it rose from under the pointer.
+    view.openSelection(paneId: 21)
+    let chosen = slots().first { $0.cardView.card.paneId == 21 }
+    guard let risen = chosen?.frame,
+        view.cardPaneId(at: NSPoint(x: risen.midX, y: risen.minY + 4)) == 21,
+        view.cardPaneId(at: NSPoint(x: risen.midX, y: risen.minY - 30)) == 21
+    else {
+        return false
+    }
+    view.closeSelection()
     #if SATIN_SMOKE_SCENARIOS
         if let path = ProcessInfo.processInfo.environment["SATIN_HAND_SNAPSHOT"] {
             view.setRaised(true, animated: false)

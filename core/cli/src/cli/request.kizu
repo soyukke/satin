@@ -3,6 +3,7 @@
 import std::io;
 import std::json;
 import std::mem;
+import std::process;
 import std::string;
 
 /// Starts a request object for command.
@@ -86,6 +87,44 @@ fn key_request(cli: &var Cli, allocator: Allocator, encoder: &var json::Encoder)
     try begin_request(encoder, "key");
     try encoder.write_i64_field("pane", pane);
     try encoder.write_bytes_field("key", bytes);
+    return;
+}
+
+/// The pane number of TMUX_PANE, `%` and its digits; -1 without one.
+fn tmux_pane_number() -> i64 {
+    let value = process::env("TMUX_PANE") orelse return -1;
+    if mem::len(value) < 2 or value[0] != cast<u8>(37) {
+        return -1;
+    }
+    return parse_index(value[1..mem::len(value)]);
+}
+
+/// The socket of the tmux server a command runs in: what TMUX holds up to
+/// its first comma. Empty outside tmux.
+fn tmux_socket() -> []u8 {
+    let value = process::env("TMUX") orelse return "";
+    for 0..mem::len(value) |index| {
+        if value[index] == cast<u8>(44) {
+            return value[0..index];
+        }
+    }
+    return value;
+}
+
+/// Names the tmux pane a status comes from, when the command runs in tmux
+/// and no --pane named its pane: SATIN_PANE_ID is then the pane tmux was
+/// started from, and the host finds the pane it shows for the tmux one.
+fn write_tmux_origin(encoder: &var json::Encoder, explicit: bool) -> mem::Error!void {
+    if explicit {
+        return;
+    }
+    let number = tmux_pane_number();
+    let socket = tmux_socket();
+    if number < 0 or mem::len(socket) == 0 {
+        return;
+    }
+    try encoder.write_i64_field("tmux_pane", number);
+    try encoder.write_bytes_field("tmux_socket", socket);
     return;
 }
 
@@ -193,6 +232,7 @@ fn status_request(cli: &var Cli, allocator: Allocator, encoder: &var json::Encod
         return CliError::Failed;
     }
     cli.shift(allocator);
+    let explicit = cli.index_of("--pane") >= 0;
     let pane = try cli.pane(allocator);
     if kind == 1 {
         try status_set_request(cli, allocator, encoder, pane);
@@ -207,6 +247,9 @@ fn status_request(cli: &var Cli, allocator: Allocator, encoder: &var json::Encod
     } else {
         cli.say(allocator, "status session-start requires codex or claude", "", "");
         return CliError::Failed;
+    }
+    if kind != 2 {
+        try write_tmux_origin(encoder, explicit);
     }
     return;
 }
