@@ -49,6 +49,12 @@ test "fields a client leaves out read as their defaults" {
     , -1,
         \\{"version":1,"command":"status-set","pane":1,"status":"s","summary":"t","agent_session_start":true}
     , 30000));
+    // A status from inside tmux names its tmux pane and server.
+    testing::expect(reads_as(
+        \\{"version":1,"command":"status-set","pane":1,"status":"s","summary":"t","tmux_pane":3,"tmux_socket":"/tmp/t.sock"}
+    , -1,
+        \\{"version":1,"command":"status-set","pane":1,"status":"s","summary":"t","tmux_pane":3,"tmux_socket":"/tmp/t.sock"}
+    , 30000));
 }
 
 test "the host reads a request with its id, and how long it may take" {

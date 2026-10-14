@@ -216,7 +216,7 @@ extension TerminalShellViewController {
         reply: @escaping NativeControlReply
     ) {
         let allowed = ["idle", "running", "waiting", "done", "failed", "blocked"]
-        guard let paneId = request.pane,
+        guard let paneId = projectedTmuxPane(for: request) ?? request.pane,
             controlPaneExists(paneId),
             let status = request.status?.lowercased(),
             allowed.contains(status)
@@ -233,6 +233,21 @@ extension TerminalShellViewController {
             summary: request.summary ?? ""
         )
         reply(.success(value.json))
+    }
+
+    /// The pane this window shows for the tmux pane a request came from, when
+    /// it shows that tmux server's session. A command in tmux inherits the
+    /// pane tmux was started from, which is not the one it runs in.
+    func projectedTmuxPane(for request: NativeControlRequest) -> Int? {
+        guard let tmuxPane = request.tmux_pane, tmuxPane >= 0,
+            let socket = request.tmux_socket, !socket.isEmpty,
+            let session = tmuxSession,
+            nativeSameFile(session.socketPath, socket),
+            let paneId = session.nativePaneIds[UInt32(tmuxPane)]
+        else {
+            return nil
+        }
+        return paneId
     }
 
     func handleControlStatusWait(
@@ -851,4 +866,12 @@ extension TerminalShellViewController {
         return key.count == 1 ? Data(key.utf8) : nil
     }
 
+}
+
+/// Whether two paths name the same file, /tmp and /private/tmp alike.
+func nativeSameFile(_ first: String, _ second: String) -> Bool {
+    let resolved = { (path: String) in
+        URL(fileURLWithPath: path).resolvingSymlinksInPath().standardizedFileURL.path
+    }
+    return first == second || resolved(first) == resolved(second)
 }

@@ -38,6 +38,9 @@ pub error ProtocolFailure = ProtocolError or json::DecodeError;
 /// null; a Flag left out is false.
 enum Kind {
     Index,
+    /// An index or a text that may be absent, which leaves it out.
+    OptionalIndex,
+    OmittedText,
     Text,
     OptionalText,
     Flag,
@@ -105,7 +108,7 @@ fn write_field(
                     try encoder.write_null_field(name);
                     return;
                 }
-                if kind == Kind::OptionalFlag {
+                if kind == Kind::OptionalFlag or kind == Kind::OptionalIndex or kind == Kind::OmittedText {
                     return;
                 }
                 return ProtocolError::Invalid;
@@ -118,7 +121,7 @@ fn write_field(
                 return;
             },
             I64(number) => {
-                if kind != Kind::Index or number < 0 {
+                if (kind != Kind::Index and kind != Kind::OptionalIndex) or number < 0 {
                     return ProtocolError::Invalid;
                 }
                 try encoder.write_i64_field(name, number);
@@ -130,7 +133,7 @@ fn write_field(
                     if !mem::equal_bytes(bytes, "vertical") and !mem::equal_bytes(bytes, "horizontal") {
                         return ProtocolError::Invalid;
                     }
-                } else if kind != Kind::Text and kind != Kind::OptionalText {
+                } else if kind != Kind::Text and kind != Kind::OptionalText and kind != Kind::OmittedText {
                     return ProtocolError::Invalid;
                 }
                 try encoder.write_bytes_field(name, bytes);
@@ -161,7 +164,7 @@ fn write_field(
         try encoder.write_bool_field(name, false);
         return;
     }
-    if kind == Kind::OptionalFlag {
+    if kind == Kind::OptionalFlag or kind == Kind::OptionalIndex or kind == Kind::OmittedText {
         return;
     }
     return ProtocolError::Invalid;
@@ -196,6 +199,9 @@ fn write_command_fields(
         try write_field(encoder, entries, "status", Kind::Text);
         try write_field(encoder, entries, "summary", Kind::Text);
         try write_field(encoder, entries, "agent_session_start", Kind::OptionalFlag);
+        // The tmux pane a status comes from, which the host shows as a pane.
+        try write_field(encoder, entries, "tmux_pane", Kind::OptionalIndex);
+        try write_field(encoder, entries, "tmux_socket", Kind::OmittedText);
         return;
     }
     if mem::equal_bytes(command, "status-wait") {
