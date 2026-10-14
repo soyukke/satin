@@ -240,6 +240,19 @@ test "rows a full-screen program draws again further up scroll" {
     testing::expect(model.window.margins.bottom == 2);
 }
 
+test "the rows between a still head and foot scroll together" {
+    let allocator = mem::page_allocator();
+    var model = try new_render_model(allocator, 16, 12);
+    defer model.deinit(allocator);
+    // The line being written changes as it moves, and a spinner changes
+    // without moving: both are inside what scrolls.
+    try show(allocator, &var model, "#title/one/two/three/four/five/six/half/working 1s/> /#status/#mode");
+    try show(allocator, &var model, "#title/three/four/five/six/half done/seven/eig/working 2s/> /#status/#mode");
+    testing::expect(position_is(&model, -2.0));
+    testing::expect(model.window.margins.top == 1);
+    testing::expect(model.window.margins.bottom == 3);
+}
+
 test "rows that change without moving do not scroll" {
     let allocator = mem::page_allocator();
     var model = try new_render_model(allocator, 16, 8);

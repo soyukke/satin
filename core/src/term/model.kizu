@@ -296,23 +296,31 @@ fn (self: &RenderModel) redrawn_scroll(frame: &Frame, out: &var tmux::ScrollUpda
     if best.shown < 4 {
         return false;
     }
+    // The rows that moved are where the scroll was seen; the region it
+    // moved is everything between the rows that stayed where they were at
+    // the head and the foot, such as a title and an input line. Rows that
+    // changed inside it, the one being written for one, move with it.
+    var head: i64 = 0;
+    while head < rows and before[head] == next[head] {
+        head = head + 1;
+    }
+    var foot: i64 = 0;
+    while foot < rows - head and before[rows - 1 - foot] == next[rows - 1 - foot] {
+        foot = foot + 1;
+    }
+    var top = best.start;
+    var bottom = best.start + best.length + best_distance;
+    if !best_up {
+        top = best.start - best_distance;
+        bottom = best.start + best.length;
+    }
+    top = math::min<i64>(top, head);
+    bottom = math::max<i64>(bottom, rows - foot);
     out.has_region = true;
-    if best_up {
-        out.rows = best_distance;
-        out.region = tmux::Region {
-            top: best.start + 1,
-            bottom: best.start + best.length + best_distance,
-            left: 0,
-            right: 0
-        };
-    } else {
+    out.region = tmux::Region { top: top + 1, bottom: bottom, left: 0, right: 0 };
+    out.rows = best_distance;
+    if !best_up {
         out.rows = 0 - best_distance;
-        out.region = tmux::Region {
-            top: best.start - best_distance + 1,
-            bottom: best.start + best.length,
-            left: 0,
-            right: 0
-        };
     }
     return true;
 }
