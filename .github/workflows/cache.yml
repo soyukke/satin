@@ -1,0 +1,45 @@
+name: Build caches
+
+# The terminal library takes about a minute and a half to build with zig and
+# changes only with its build script or the toolchain. It is built here, on
+# main, and the pull request gate restores it. A pull request cannot write a
+# cache that main or another pull request reads.
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - core/scripts/build-ghostty
+      - flake.lock
+      - flake.nix
+      - .github/workflows/cache.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cache-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  terminal-library:
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Install Nix
+        uses: DeterminateSystems/determinate-nix-action@021c8a1bd3570eb21f5c20a054812b0c4d9ca614 # v3
+
+      - name: Build the terminal library
+        run: nix develop .#ci-native --command core/scripts/build-ghostty
+
+      - name: Save the terminal library
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: core/target/native/libghostty-vt.a
+          key: ghostty-vt-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('core/scripts/build-ghostty', 'flake.lock') }}

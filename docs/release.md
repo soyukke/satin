@@ -22,6 +22,15 @@ runs Gatekeeper assessment, and only then writes the archive and manifest.
 
 ## Publish a release
 
+The shortest path is one pull request and one command. Put the new version in
+the pull request that carries the change: `VERSION` and the five places that
+repeat it (`core/nvim/src/launcher/launcher.kizu`,
+`core/cli/src/cli/command.kizu`, `core/src/term/spawn.kizu`,
+`core/scripts/test-nvim-launcher` and `core/scripts/test-cli`). Then run
+`just release-merge <pull-request-number>`. It waits for the required checks,
+merges, tags `main` with the version it now holds, and waits for the release.
+It makes no tag unless `main` holds a version that no tag has.
+
 The release workflow requires a tag that exactly matches the `VERSION` file,
 for example `vX.Y.Z`, and points at the current `main` commit. Pull
 request CI owns the full source and packaged-app verification gates. A strictly
