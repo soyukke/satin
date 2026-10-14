@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Merges a pull request that carries its own version and releases it: waits
-# for the required checks, merges, tags main with the version it now holds
+# for its checks and the branch policy, merges, tags main with the version it now holds
 # and waits for the release. The tag is made only once main holds a version
 # no tag has, so a merge that did not happen cannot be tagged.
 #
@@ -30,16 +30,18 @@ if [[ -n "$(git ls-remote --tags origin "refs/tags/v$version")" ]]; then
   exit 1
 fi
 
-echo "release-merge: waiting for the required checks of #$pr (v$version)"
+echo "release-merge: waiting for the checks of #$pr (v$version)"
 while true; do
   status=0
-  output="$(gh pr checks "$pr" --required 2>&1)" || status=$?
-  if ((status == 0)); then
+  output="$(gh pr checks "$pr" 2>&1)" || status=$?
+  # A required check that depends on another is not reported until that one
+  # ends, so passing checks are not enough: the branch policy must agree.
+  if ((status == 0)) &&
+    [[ "$(gh pr view "$pr" --json mergeStateStatus --jq .mergeStateStatus)" == CLEAN ]]; then
     break
   fi
   # 8 is pending; checks that have not been reported yet are an error.
-  if ((status != 8)) && [[ "$output" != *"no required checks reported"* &&
-    "$output" != *"no checks reported"* ]]; then
+  if ((status != 0 && status != 8)) && [[ "$output" != *"no checks reported"* ]]; then
     printf '%s\n' "$output" >&2
     exit 1
   fi
@@ -53,13 +55,14 @@ if [[ "$merged" != "$version" ]]; then
   echo "release-merge: main holds VERSION $merged, not $version; not tagging" >&2
   exit 1
 fi
-git tag "v$version" origin/main
+tagged="$(git rev-parse origin/main)"
+git tag "v$version" "$tagged"
 git push --quiet origin "refs/tags/v$version"
 
 echo "release-merge: waiting for the release of v$version"
 run=""
 for _ in {1..30}; do
-  run="$(gh run list --workflow release.yml --branch "v$version" --limit 1 \
+  run="$(gh run list --workflow release.yml --commit "$tagged" --limit 1 \
     --json databaseId --jq '.[0].databaseId // empty')"
   [[ -n "$run" ]] && break
   sleep 4

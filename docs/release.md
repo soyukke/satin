@@ -27,7 +27,7 @@ the pull request that carries the change: `VERSION` and the five places that
 repeat it (`core/nvim/src/launcher/launcher.kizu`,
 `core/cli/src/cli/command.kizu`, `core/src/term/spawn.kizu`,
 `core/scripts/test-nvim-launcher` and `core/scripts/test-cli`). Then run
-`just release-merge <pull-request-number>`. It waits for the required checks,
+`just release-merge <pull-request-number>`. It waits for the checks and the branch policy,
 merges, tags `main` with the version it now holds, and waits for the release.
 It makes no tag unless `main` holds a version that no tag has.
 
