@@ -224,6 +224,33 @@ test "the rows a program keeps at the foot stay still while output scrolls" {
     testing::expect(model.window.margins.bottom == 0);
 }
 
+test "rows a full-screen program draws again further up scroll" {
+    let allocator = mem::page_allocator();
+    var model = try new_render_model(allocator, 16, 10);
+    defer model.deinit(allocator);
+    try show(allocator, &var model, "#title/one/two/three/four/five/six/seven/> /#status");
+    try show(allocator, &var model, "#title/three/four/five/six/seven/eight/nine/> /#status");
+    testing::expect(position_is(&model, -2.0));
+    testing::expect(model.window.margins.top == 1);
+    testing::expect(model.window.margins.bottom == 2);
+    // Drawn again further down, they scroll the other way.
+    try show(allocator, &var model, "#title/two/three/four/five/six/seven/eight/> /#status");
+    testing::expect(position_is(&model, 1.0));
+    testing::expect(model.window.margins.top == 1);
+    testing::expect(model.window.margins.bottom == 2);
+}
+
+test "rows that change without moving do not scroll" {
+    let allocator = mem::page_allocator();
+    var model = try new_render_model(allocator, 16, 8);
+    defer model.deinit(allocator);
+    try show(allocator, &var model, "same/same/same/same/same/same/> /#status");
+    try show(allocator, &var model, "same/same/same/same/same/same/> a/#status");
+    testing::expect(position_is(&model, 0.0));
+    try show(allocator, &var model, "one/two/three/four/five/six/> a/#status");
+    testing::expect(position_is(&model, 0.0));
+}
+
 test "primary output does not build an animation backlog" {
     let allocator = mem::page_allocator();
     var model = try new_render_model(allocator, 16, 4);

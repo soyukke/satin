@@ -65,26 +65,83 @@ pub struct RenderModel {
     last_alternate: bool,
     /// What each row of the last frame showed, as row_mark has it.
     last_rows: array::Array<u64>,
+    /// The same of the frame being drawn.
+    next_rows: array::Array<u64>,
 }
 
-/// A number for what a row of frame shows: the FNV-1a hash of its text.
-fn row_mark(frame: &Frame, row: i64) -> u64 {
+/// The mark of a row that shows nothing.
+fn blank_mark() -> u64 {
     // 14695981039346656037, which is past what a literal holds.
-    var mark = cast<u64>(1469598103934665603) * 10 + 7;
+    return cast<u64>(1469598103934665603) * 10 + 7;
+}
+
+/// A number for what a row of frame shows: the FNV-1a hash of its cells
+/// that are no blank, each with its column. A cell a program wrote a space
+/// in and one it never wrote in show the same and count the same.
+fn row_mark(frame: &Frame, row: i64) -> u64 {
+    var mark = blank_mark();
     let start = frame.row_start(row);
     let end = frame.row_end(row);
-    if end <= start {
-        return mark;
-    }
     let cells = frame.cells.as_slice();
-    let first = cells[start];
-    let last = cells[end - 1];
     let bytes = frame.text.as_bytes();
-    let text = bytes[first.text_start..last.text_start + last.text_len];
-    for 0..mem::len(text) |index| {
-        mark = (mark ^ cast<u64>(text[index])) * 1099511628211;
+    for start..end |index| {
+        let cell = cells[index];
+        if cell.text_len == 0 {
+            continue;
+        }
+        let text = bytes[cell.text_start..cell.text_start + cell.text_len];
+        if cell.text_len == 1 and cast<i64>(text[0]) == 32 {
+            continue;
+        }
+        mark = (mark ^ cast<u64>(index - start)) * 1099511628211;
+        for 0..mem::len(text) |at| {
+            mark = (mark ^ cast<u64>(text[at])) * 1099511628211;
+        }
     }
     return mark;
+}
+
+/// The longest run of rows that show in next what before showed distance
+/// rows further down, when up is set, or further up: where it starts in
+/// next and how long it is. A run counts by its rows that show something.
+struct MovedRows {
+    start: i64,
+    length: i64,
+    shown: i64,
+}
+
+fn moved_rows(before: []u64, next: []u64, distance: i64, up: bool) -> MovedRows {
+    let rows = mem::count<u64>(next);
+    var best = MovedRows { start: 0, length: 0, shown: 0 };
+    var run = MovedRows { start: 0, length: 0, shown: 0 };
+    var still = true;
+    for 0..rows |row| {
+        var from = row - distance;
+        if up {
+            from = row + distance;
+        }
+        var same = false;
+        if from >= 0 and from < rows {
+            same = next[row] == before[from];
+        }
+        if !same {
+            run = MovedRows { start: row + 1, length: 0, shown: 0 };
+            still = true;
+            continue;
+        }
+        run.length = run.length + 1;
+        if next[row] != blank_mark() {
+            run.shown = run.shown + 1;
+        }
+        if next[row] != before[row] {
+            still = false;
+        }
+        // Rows that also show what they showed did not move.
+        if !still and run.shown > best.shown {
+            best = run;
+        }
+    }
+    return best;
 }
 
 pub fn new_render_model(allocator: Allocator, cols: i64, rows: i64) -> mem::Error!RenderModel {
@@ -97,12 +154,14 @@ pub fn new_render_model(allocator: Allocator, cols: i64, rows: i64) -> mem::Erro
         last_scrollbar: Scrollbar { top: 0, visible: 0, total: 0 },
         has_last_screen: false,
         last_alternate: false,
-        last_rows: array::new<u64>(allocator)
+        last_rows: array::new<u64>(allocator),
+        next_rows: array::new<u64>(allocator)
     };
 }
 
 pub fn (self: RenderModel) deinit(allocator: Allocator) -> void {
     self.last_rows.deinit(allocator);
+    self.next_rows.deinit(allocator);
     self.window.deinit(allocator);
 }
 
@@ -143,7 +202,20 @@ pub fn (self: &var RenderModel) update(allocator: Allocator, frame: &Frame) -> m
     for 0..frame.row_count() |row| {
         width = math::max<i64>(width, frame.row_end(row) - frame.row_start(row));
     }
+    self.next_rows.clear(allocator);
+    for 0..frame.row_count() |row| {
+        try self.next_rows.append(allocator, row_mark(frame, row));
+    }
     let inferred = self.inferred_output_scroll(frame);
+    if inferred == 0 and self.pending.rows == 0 {
+        // A full-screen program scrolls by drawing its rows again further
+        // up or down, and says nothing of it.
+        var redrawn = no_scroll();
+        if self.redrawn_scroll(frame, &var redrawn) {
+            self.window.reset_scroll_animation();
+            self.record_scroll_update(redrawn);
+        }
+    }
     if inferred != 0 {
         // Primary-screen shell output can arrive faster than the spring can
         // settle (holding Return is the common case). Keep the newest
@@ -156,7 +228,7 @@ pub fn (self: &var RenderModel) update(allocator: Allocator, frame: &Frame) -> m
         // A program that keeps its input and status lines at the foot of
         // the screen draws them again after its output scrolled. They show
         // what they showed, so they stay still and the rows above scroll.
-        let pinned = self.unchanged_foot(frame);
+        let pinned = self.unchanged_foot();
         if pinned > 0 {
             update.has_region = true;
             update.region = tmux::Region { top: 1, bottom: height - pinned, left: 0, right: 0 };
@@ -183,26 +255,80 @@ pub fn (self: &var RenderModel) update(allocator: Allocator, frame: &Frame) -> m
     self.has_last_screen = true;
     self.last_alternate = frame.alternate;
     self.last_rows.clear(allocator);
-    for 0..frame.row_count() |row| {
-        try self.last_rows.append(allocator, row_mark(frame, row));
+    let marks = self.next_rows.as_slice();
+    for 0..mem::count<u64>(marks) |row| {
+        try self.last_rows.append(allocator, marks[row]);
     }
     return;
 }
 
-/// How many rows at the foot of frame show what the last frame showed in
-/// them; zero when the frames differ in height or every row is the same.
-fn (self: &RenderModel) unchanged_foot(frame: &Frame) -> i64 {
-    let rows = frame.row_count();
-    if rows != self.last_rows.len() {
+/// The scroll an alternate-screen frame shows by its rows alone: the same
+/// rows as the last frame's, a few rows up or down. out is the region they
+/// moved in and how far, so that the rows that leave it are the ones that
+/// were there. False when no four rows that show something moved together.
+fn (self: &RenderModel) redrawn_scroll(frame: &Frame, out: &var tmux::ScrollUpdate) -> bool {
+    if !frame.alternate or !self.has_last_screen or !self.last_alternate {
+        return false;
+    }
+    let before = self.last_rows.as_slice();
+    let next = self.next_rows.as_slice();
+    let rows = mem::count<u64>(next);
+    if rows != mem::count<u64>(before) or rows < 6 {
+        return false;
+    }
+    var best = MovedRows { start: 0, length: 0, shown: 0 };
+    var best_distance: i64 = 0;
+    var best_up = true;
+    for 1..rows - 3 |distance| {
+        let up = moved_rows(before, next, distance, true);
+        if up.shown > best.shown {
+            best = up;
+            best_distance = distance;
+            best_up = true;
+        }
+        let down = moved_rows(before, next, distance, false);
+        if down.shown > best.shown {
+            best = down;
+            best_distance = distance;
+            best_up = false;
+        }
+    }
+    if best.shown < 4 {
+        return false;
+    }
+    out.has_region = true;
+    if best_up {
+        out.rows = best_distance;
+        out.region = tmux::Region {
+            top: best.start + 1,
+            bottom: best.start + best.length + best_distance,
+            left: 0,
+            right: 0
+        };
+    } else {
+        out.rows = 0 - best_distance;
+        out.region = tmux::Region {
+            top: best.start - best_distance + 1,
+            bottom: best.start + best.length,
+            left: 0,
+            right: 0
+        };
+    }
+    return true;
+}
+
+/// How many rows at the foot of the frame being drawn show what the last
+/// frame showed in them; zero when the frames differ in height or every
+/// row is the same.
+fn (self: &RenderModel) unchanged_foot() -> i64 {
+    let before = self.last_rows.as_slice();
+    let next = self.next_rows.as_slice();
+    let rows = mem::count<u64>(next);
+    if rows != mem::count<u64>(before) {
         return 0;
     }
     var count: i64 = 0;
-    while count < rows {
-        let row = rows - 1 - count;
-        let before = self.last_rows.get(row) orelse return 0;
-        if before != row_mark(frame, row) {
-            break;
-        }
+    while count < rows and before[rows - 1 - count] == next[rows - 1 - count] {
         count = count + 1;
     }
     if count >= rows {

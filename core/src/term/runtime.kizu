@@ -63,6 +63,16 @@ pub struct Runtime {
     incoming: string::String,
     passthrough: string::String,
     outgoing: string::String,
+    /// Whether update_model drew a frame, and how many times in a row it
+    /// kept that frame because the program was still writing the next.
+    has_model_frame: bool,
+    held_frames: i64,
+}
+
+/// How many times in a row a frame is kept for a program that says it is
+/// still writing: one that never says it is done is drawn all the same.
+fn max_held_frames() -> i64 {
+    return 20;
 }
 
 /// Resizes terminal to size, with the pixels of one cell.
@@ -135,7 +145,9 @@ fn new_runtime(
         exited: false,
         incoming: string::new(allocator),
         passthrough: string::new(allocator),
-        outgoing: string::new(allocator)
+        outgoing: string::new(allocator),
+        has_model_frame: false,
+        held_frames: 0
     };
 }
 
@@ -680,8 +692,17 @@ pub fn (self: &var Runtime) screen_text(allocator: Allocator, out: &var string::
 
 /// Reads the viewport into frame and draws it into model.
 pub fn (self: &var Runtime) update_model(allocator: Allocator) -> Failure!void {
+    // A screen half written is not drawn: the last whole one stays.
+    // SAFETY: the screen's terminal is live.
+    if self.has_model_frame and self.held_frames < max_held_frames() and
+        unsafe self.encoder.synchronized(self.screen.handle()) {
+        self.held_frames = self.held_frames + 1;
+        return;
+    }
+    self.held_frames = 0;
     try self.collect_frame(allocator);
     try self.model.update(allocator, &self.frame);
+    self.has_model_frame = true;
     return;
 }
 
