@@ -35,6 +35,12 @@ final class NativePaneStatusStore {
 
     @discardableResult
     func update(paneId: Int, status: String, summary: String) -> NativePaneControlStatus {
+        // An agent reports that it works at every tool it uses.
+        if status == "running", let current = statuses[paneId], current.status == status,
+            current.summary == summary
+        {
+            return current
+        }
         let value = NativePaneControlStatus(
             status: status,
             summary: summary,
