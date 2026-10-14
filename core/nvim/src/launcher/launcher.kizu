@@ -22,7 +22,7 @@ extern "c" fn execv(path: ptr<const u8>, arguments: ptr<u8>) -> i32
 extern "c" fn stat(path: ptr<const u8>, out: ptr<u8>) -> i32
 extern "c" fn _NSGetEnviron() -> ptr<usize>
 fn version() -> []u8 {
-    return "0.4.4";
+    return "0.4.5";
 }
 
 fn report(first: []u8, second: []u8) -> void {
