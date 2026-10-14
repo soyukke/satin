@@ -53,6 +53,7 @@ extension TerminalShellViewController {
     }
 
     func paneStatusDidChange(paneId: Int, status: NativePaneControlStatus?) {
+        announceStatus(paneId: paneId, status: status?.status)
         if let status {
             workAttentionStore.observe(
                 paneId: paneId,
@@ -66,6 +67,20 @@ extension TerminalShellViewController {
             syncTabStatusBadges(snapshot)
         }
         refreshWorkSwitcherPresentation()
+    }
+
+    /// Chimes and pulses the backdrop as an agent moves to a status that
+    /// wants you.
+    private func announceStatus(paneId: Int, status: String?) {
+        let previous = announcedStatuses[paneId]
+        announcedStatuses[paneId] = status
+        guard let status, status != previous else {
+            return
+        }
+        chillSound.chime(for: status)
+        if let tint = NativeChillSound.tint(for: status) {
+            metalView.pulseBackdrop(tint)
+        }
     }
 
     func syncTabStatusBadges(_ snapshot: TerminalCoreSnapshot) {

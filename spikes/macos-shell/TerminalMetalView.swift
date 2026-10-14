@@ -379,6 +379,19 @@ final class TerminalMetalView: MTKView, CAMetalDisplayLinkDelegate, MTKViewDeleg
         requestFrame()
     }
 
+    /// Floods the backdrop with a color for a moment, as an event lands.
+    func pulseBackdrop(_ tint: NSColor) {
+        guard gpuRenderer?.backdrop != nil,
+            let rgb = tint.usingColorSpace(.sRGB)
+        else {
+            return
+        }
+        gpuRenderer?.backdrop?.tint = SIMD4(
+            Float(rgb.redComponent), Float(rgb.greenComponent), Float(rgb.blueComponent), 1)
+        gpuRenderer?.backdrop?.pulse = 1
+        requestFrame()
+    }
+
     var isBackdropEnabled: Bool {
         gpuRenderer?.backdrop != nil
     }
@@ -418,7 +431,9 @@ final class TerminalMetalView: MTKView, CAMetalDisplayLinkDelegate, MTKViewDeleg
         }
         let now = CACurrentMediaTime()
         if let last = backdropLastTick {
-            gpu.backdropTime += Float(min(0.1, now - last)) * backdrop.speed
+            let elapsed = Float(min(0.1, now - last))
+            gpu.backdropTime += elapsed * backdrop.speed * (1 + 3 * backdrop.pulse)
+            gpu.backdrop?.pulse = max(0, backdrop.pulse - elapsed / 1.6)
         }
         backdropLastTick = now
         requestFrame()

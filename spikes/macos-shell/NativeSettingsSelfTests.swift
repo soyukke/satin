@@ -38,6 +38,8 @@ extension NativeSettingsStore {
             initial.notifications,
             !initial.attentionHand,
             !initial.animatedBackdrop,
+            !initial.ambientSound,
+            !initial.agentChimes,
             initial.sessionRestore,
             initial.confirmBeforeQuit,
             initial.automaticUpdateChecks,
