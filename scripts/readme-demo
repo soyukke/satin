@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Run inside tmux, the tmux command and the application would reach the
+# server of that session.
+unset TMUX TMUX_PANE
+
 if [[ -n "${SATIN_SOCKET:-}" && -z "${SATIN_RECORDER_SIGNING_IDENTITY:-}" ]]; then
   echo "readme-demo must run from a terminal outside Satin," >&2
   echo "or with SATIN_RECORDER_SIGNING_IDENTITY set" >&2
