@@ -72,6 +72,7 @@ struct SatinApplication {
                 ("agent activity", runNativeAgentActivitySelfTests),
                 ("work switcher", runNativeWorkSwitcherSelfTests),
                 ("hand effects", runNativeHandEffectsSelfTests),
+                ("gpu renderer", runNativeGpuRendererSelfTests),
                 ("attention hand", runNativeAttentionHandSelfTests),
                 ("attention hand view", runNativeAttentionHandViewSelfTests),
             ]

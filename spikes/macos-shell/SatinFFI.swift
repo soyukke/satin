@@ -531,3 +531,15 @@ func satinSkiaMetalSetFontFamily(
 
 @_silgen_name("satin_skia_metal_next_frame_delay_ms")
 func satinSkiaMetalNextFrameDelayMs(_ renderer: UnsafeMutableRawPointer?) -> UInt64
+
+@_silgen_name("satin_skia_metal_set_gpu")
+func satinSkiaMetalSetGpu(_ renderer: UnsafeMutableRawPointer?, _ enabled: UInt8)
+
+@_silgen_name("satin_skia_metal_gpu_frame")
+func satinSkiaMetalGpuFrame(
+    _ renderer: UnsafeMutableRawPointer?,
+    _ out: UnsafeMutableRawPointer?
+) -> UInt8
+
+@_silgen_name("satin_skia_metal_gpu_took_atlas")
+func satinSkiaMetalGpuTookAtlas(_ renderer: UnsafeMutableRawPointer?)

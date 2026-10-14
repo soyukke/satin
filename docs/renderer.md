@@ -27,6 +27,17 @@ boundary (`core/host`) copies the pixels each pane wrote into the drawable's
 exports keep the `satin_skia_metal_*` names the Swift host already links; Skia
 is not used.
 
+By default the list is drawn on the GPU instead. The GPU backend
+(`core/src/draw/gpu.kizu`) turns it into triangles: rectangles of one color,
+glyphs from an atlas that CoreGraphics rasterizes each glyph into once, at one
+of four positions a pixel, and images over their own textures, each run of
+triangles inside its clip. `NativeGpuRenderer.swift` uploads the atlas's
+changed part and draws the triangles with Metal into the drawable. The CPU
+backend stays as the fallback: set `SATIN_GPU_RENDERER=0`, or run
+`defaults write dev.soyukke.satin gpuRenderer -bool false`. The GPU path
+differs from the CPU one in that a glyph's y is rounded to a whole pixel, a
+quad command is not antialiased, and a glyph is blended as coverage.
+
 Measured at 200x60 cells on a 3000x1800 target, a frame costs about 1.8 ms
 with a warm shaped-run cache and about 10 ms when every run is new text.
 
