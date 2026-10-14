@@ -29,6 +29,12 @@ fn claude_status(event: []u8, background_work: bool) -> i64 {
     if mem::equal_bytes(event, "UserPromptSubmit") {
         return 2;
     }
+    // A tool is used while Claude Code works, whoever started the turn: a
+    // finished background task resumes it with no prompt, and an approved
+    // tool goes on with no event of its own.
+    if mem::equal_bytes(event, "PreToolUse") or mem::equal_bytes(event, "PostToolUse") {
+        return 2;
+    }
     if mem::equal_bytes(event, "PermissionRequest") {
         return 3;
     }
@@ -37,8 +43,8 @@ fn claude_status(event: []u8, background_work: bool) -> i64 {
     }
     if mem::equal_bytes(event, "Stop") {
         // The turn is over even when background tasks or crons remain
-        // listed: finished subagents stay in `background_tasks`, and no
-        // later hook clears a `running` status set here.
+        // listed: finished subagents stay in `background_tasks`. A tool
+        // used after it, by a subagent or a resumed turn, is working again.
         if background_work {
             return 6;
         }

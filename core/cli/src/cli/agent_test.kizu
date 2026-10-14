@@ -19,6 +19,12 @@ test "a Claude Code turn maps to pane statuses without its prompt" {
         \\{"hook_event_name":"PermissionRequest"}
     , "waiting", "Claude Code needs approval"));
     testing::expect(summary_is(
+        \\{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"private"}}
+    , "running", "Claude Code working"));
+    testing::expect(summary_is(
+        \\{"hook_event_name":"PostToolUse","tool_name":"Bash"}
+    , "running", "Claude Code working"));
+    testing::expect(summary_is(
         \\{"hook_event_name":"Stop","background_tasks":[],"session_crons":[]}
     , "done", "Claude Code finished"));
     testing::expect(summary_is(
