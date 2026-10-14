@@ -16,6 +16,7 @@ enum NativePreferenceKey {
     static let sessionState = "sessionState"
     static let defaultTheme = "defaultTheme"
     static let attentionHand = "attentionHand"
+    static let animatedBackdrop = "animatedBackdrop"
     static let shellPath = "shellPath"
     static let tmuxExecutablePath = "tmuxExecutablePath"
     static let startupDirectory = "startupDirectory"
@@ -55,6 +56,7 @@ struct NativeSettings: Equatable {
     var confirmBeforeQuit: Bool
     var defaultTheme: String
     var attentionHand: Bool
+    var animatedBackdrop: Bool
     var shellPath: String
     var tmuxExecutablePath: String
     var startupDirectory: String
@@ -122,6 +124,8 @@ final class NativeSettingsStore {
                 defaults.string(forKey: NativePreferenceKey.defaultTheme) ?? nativeThemeNames[0]
             ),
             attentionHand: preferredBool(NativePreferenceKey.attentionHand, defaultValue: false),
+            animatedBackdrop: preferredBool(
+                NativePreferenceKey.animatedBackdrop, defaultValue: false),
             shellPath: validShellPath(
                 defaults.string(forKey: NativePreferenceKey.shellPath) ?? ""
             ),
@@ -158,6 +162,7 @@ final class NativeSettingsStore {
         defaults.set(settings.confirmBeforeQuit, forKey: NativePreferenceKey.confirmBeforeQuit)
         defaults.set(validTheme(settings.defaultTheme), forKey: NativePreferenceKey.defaultTheme)
         defaults.set(settings.attentionHand, forKey: NativePreferenceKey.attentionHand)
+        defaults.set(settings.animatedBackdrop, forKey: NativePreferenceKey.animatedBackdrop)
         defaults.set(validShellPath(settings.shellPath), forKey: NativePreferenceKey.shellPath)
         defaults.set(
             validTmuxExecutablePath(settings.tmuxExecutablePath),
@@ -198,6 +203,7 @@ final class NativeSettingsStore {
             NativePreferenceKey.confirmBeforeQuit,
             NativePreferenceKey.defaultTheme,
             NativePreferenceKey.attentionHand,
+            NativePreferenceKey.animatedBackdrop,
             NativePreferenceKey.shellPath,
             NativePreferenceKey.tmuxExecutablePath,
             NativePreferenceKey.startupDirectory,
@@ -348,6 +354,7 @@ final class NativeSettingsWindowController: NSWindowController, NSTextFieldDeleg
     private var optionAsAltButton: NSButton?
     private var notificationButton: NSButton?
     private var attentionHandButton: NSButton?
+    private var animatedBackdropButton: NSButton?
     private var sessionRestoreButton: NSButton?
     private var confirmBeforeQuitButton: NSButton?
     private var shellField: NSTextField?
@@ -413,6 +420,7 @@ final class NativeSettingsWindowController: NSWindowController, NSTextFieldDeleg
         settings.optionAsAlt = optionAsAltButton?.state == .on
         settings.notifications = notificationButton?.state == .on
         settings.attentionHand = attentionHandButton?.state == .on
+        settings.animatedBackdrop = animatedBackdropButton?.state == .on
         settings.sessionRestore = sessionRestoreButton?.state == .on
         settings.confirmBeforeQuit = confirmBeforeQuitButton?.state == .on
         settings.automaticUpdateChecks = automaticUpdatesButton?.state == .on
@@ -631,6 +639,9 @@ final class NativeSettingsWindowController: NSWindowController, NSTextFieldDeleg
         let attentionHand = checkbox(
             "Deal agents that need you as cards", action: #selector(booleanChanged(_:)))
         attentionHandButton = attentionHand
+        let backdrop = checkbox(
+            "Swirl paint under the panes (experimental)", action: #selector(booleanChanged(_:)))
+        animatedBackdropButton = backdrop
         return formView(
             title: "Appearance",
             description:
@@ -640,6 +651,7 @@ final class NativeSettingsWindowController: NSWindowController, NSTextFieldDeleg
                 ("Font size", sizeRow),
                 ("Theme", themes),
                 ("Attention hand", attentionHand),
+                ("Backdrop", backdrop),
             ]
         )
     }
@@ -845,6 +857,7 @@ final class NativeSettingsWindowController: NSWindowController, NSTextFieldDeleg
         optionAsAltButton?.state = settings.optionAsAlt ? .on : .off
         notificationButton?.state = settings.notifications ? .on : .off
         attentionHandButton?.state = settings.attentionHand ? .on : .off
+        animatedBackdropButton?.state = settings.animatedBackdrop ? .on : .off
         sessionRestoreButton?.state = settings.sessionRestore ? .on : .off
         confirmBeforeQuitButton?.state = settings.confirmBeforeQuit ? .on : .off
         fontPopup?.selectItem(

@@ -60,6 +60,16 @@ pub fn vertex_image() -> u32 {
     return 3;
 }
 
+/// A fill of the scene's own background, which the host may let a backdrop
+/// show through.
+pub fn vertex_backdrop_veil() -> u32 {
+    return 4;
+}
+
+fn same_color(first: Rgba, second: Rgba) -> bool {
+    return first.r == second.r and first.g == second.g and first.b == second.b and first.a == second.a;
+}
+
 /// One corner of a triangle: its place in pixels, y down, where it reads its
 /// texture, from 0 to 1, its color, straight RGBA, and how it is colored.
 pub struct GpuVertex {
@@ -478,16 +488,21 @@ pub fn (self: &var Painter) encode(allocator: Allocator, list: &DisplayList, fra
     let runs = list.runs.as_slice();
     let images = list.images.as_slice();
     let pushed = frame.clips.len();
+    let has_background = list.background.a != 0;
     try frame.start_draw(allocator, 0, 0);
     for 0..mem::count<Command>(commands) |index| {
         let command = commands[index];
         let color = packed(command.color);
+        var fill_mode = vertex_solid();
+        if has_background and same_color(command.color, list.background) {
+            fill_mode = vertex_backdrop_veil();
+        }
         if command.kind == CommandKind::FillRect {
             let rect = snapped(command.rect);
-            try frame.rect(allocator, rect.x, rect.y, rect.x + rect.width, rect.y + rect.height, lit(0.0), lit(0.0), lit(0.0), lit(0.0), color, vertex_solid());
+            try frame.rect(allocator, rect.x, rect.y, rect.x + rect.width, rect.y + rect.height, lit(0.0), lit(0.0), lit(0.0), lit(0.0), color, fill_mode);
         } else if command.kind == CommandKind::Clear {
             let whole = Rect { x: lit(0.0), y: lit(0.0), width: span(frame.width), height: span(frame.height) };
-            try frame.rect(allocator, whole.x, whole.y, whole.width, whole.height, lit(0.0), lit(0.0), lit(0.0), lit(0.0), color, vertex_solid());
+            try frame.rect(allocator, whole.x, whole.y, whole.width, whole.height, lit(0.0), lit(0.0), lit(0.0), lit(0.0), color, fill_mode);
         } else if command.kind == CommandKind::Text {
             try self.encode_run(allocator, list, runs[command.first], color, frame);
         } else if command.kind == CommandKind::PushClip {

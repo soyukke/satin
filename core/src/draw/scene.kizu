@@ -316,6 +316,7 @@ pub fn begin_scene(
     layout: &Layout,
     clear: bool
 ) -> mem::Error!void {
+    list.background = opaque(scene.background);
     if clear {
         try list.clear_target(allocator, opaque(scene.background));
     }
