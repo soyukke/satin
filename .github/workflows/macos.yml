@@ -73,6 +73,13 @@ jobs:
       - name: Install Nix
         uses: DeterminateSystems/determinate-nix-action@021c8a1bd3570eb21f5c20a054812b0c4d9ca614 # v3
 
+      # Saved on main by the "Build caches" workflow; built here on a miss.
+      - name: Restore the terminal library
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: core/target/native/libghostty-vt.a
+          key: ghostty-vt-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('core/scripts/build-ghostty', 'flake.lock') }}
+
       - name: Verify the core
         run: nix develop .#ci-native --command just ci-core
 
