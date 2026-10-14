@@ -139,6 +139,11 @@ fn mode_bracketed_paste() -> u16 {
     return 2004;
 }
 
+/// The DEC private mode a program sets while it writes one screen.
+fn mode_synchronized_output() -> u16 {
+    return 2026;
+}
+
 fn terminal_data_mouse_tracking() -> i32 {
     return 11;
 }
@@ -405,6 +410,15 @@ unsafe fn mode_is_set(terminal: ptr<u8>, slot: ptr<u8>, mode: u16) -> bool {
     // SAFETY: the caller passes a live terminal and a Slot, which holds a bool.
     let result = unsafe ghostty_terminal_mode_get(terminal, mode, slot);
     return result == success() and slot_bool(slot);
+}
+
+/// Whether the program is in the middle of writing one screen, which it
+/// says with synchronized output.
+///
+/// terminal must be a live libghostty terminal.
+pub unsafe fn(self: &InputEncoder) synchronized(terminal: ptr<u8>) -> bool {
+    // SAFETY: the caller passes a live terminal; the slot is a Slot.
+    return unsafe mode_is_set(terminal, self.handles.slot, mode_synchronized_output());
 }
 
 /// Appends what the key event is on the PTY to out. False when the key has
