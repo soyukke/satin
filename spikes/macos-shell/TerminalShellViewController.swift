@@ -412,6 +412,8 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
     var artifactsPopover: NSPopover?
     var artifactsPopoverPaneId: Int?
     let paneStatuses = NativePaneStatusStore()
+    let chillSound = NativeChillSound()
+    var announcedStatuses: [Int: String] = [:]
     let workAttentionStore = NativeWorkAttentionStore()
     var workSwitcherPopover: NSPopover?
     var workSwitcherController: NativeWorkSwitcherViewController?
@@ -625,6 +627,8 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
         ])
         setAttentionHandVisible(settings.attentionHand)
         metalView.setBackdropEnabled(settings.animatedBackdrop)
+        chillSound.ambient = settings.ambientSound
+        chillSound.chimes = settings.agentChimes
     }
 
     override func viewDidLayout() {
@@ -743,6 +747,8 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
         if previous.animatedBackdrop != settings.animatedBackdrop {
             metalView.setBackdropEnabled(settings.animatedBackdrop)
         }
+        chillSound.ambient = settings.ambientSound
+        chillSound.chimes = settings.agentChimes
         if previous.attentionHand != settings.attentionHand {
             setAttentionHandVisible(settings.attentionHand)
         }

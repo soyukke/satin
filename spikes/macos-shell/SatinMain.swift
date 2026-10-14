@@ -73,6 +73,7 @@ struct SatinApplication {
                 ("work switcher", runNativeWorkSwitcherSelfTests),
                 ("hand effects", runNativeHandEffectsSelfTests),
                 ("gpu renderer", runNativeGpuRendererSelfTests),
+                ("chill sound", nativeChillSoundSelfTestPassed),
                 ("attention hand", runNativeAttentionHandSelfTests),
                 ("attention hand view", runNativeAttentionHandViewSelfTests),
             ]

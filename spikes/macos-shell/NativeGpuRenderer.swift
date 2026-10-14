@@ -102,11 +102,12 @@ final class NativeGpuRenderer {
             float swirl;
             float pixel;
             float vivid;
-            float pad0;
+            float pulse;
             float pad1;
             float4 first;
             float4 second;
             float4 third;
+            float4 tint;
         };
 
         struct BackdropVaryings {
@@ -131,7 +132,8 @@ final class NativeGpuRenderer {
             cell.y = u.size.y - cell.y;
             float2 uv = (cell - 0.5 * u.size) / length(u.size);
             float r = length(uv);
-            float a = atan2(uv.y, uv.x) + 0.25 * u.time * u.swirl - u.swirl * 4.0 * r * (1.0 - r);
+            float a = atan2(uv.y, uv.x) + 0.25 * u.time * u.swirl
+                - (u.swirl + 1.5 * u.pulse) * 4.0 * r * (1.0 - r);
             uv = float2(cos(a), sin(a)) * r * 26.0;
             float2 w = float2(uv.x + uv.y);
             for (int i = 0; i < 5; i++) {
@@ -146,6 +148,8 @@ final class NativeGpuRenderer {
             float p3 = 1.0 - min(1.0, p1 + p2);
             float3 color = u.first.rgb * p1 + u.second.rgb * p2 + u.third.rgb * p3;
             color = mix(u.third.rgb, color, clamp(u.vivid, 0.0, 1.5) / 1.5 + 0.2);
+            // A pulse floods the paint with the tint of what just happened.
+            color = mix(color, u.tint.rgb * (0.55 + 0.6 * p1), 0.6 * u.pulse);
             return float4(color, 1.0);
         }
         """
@@ -164,6 +168,9 @@ final class NativeGpuRenderer {
             SIMD4(0.122, 0.541, 0.541, 1),
             SIMD4(0.071, 0.051, 0.110, 1),
         ]
+        /// How strongly an event's tint shows, from 1 when it lands to 0.
+        var pulse: Float = 0
+        var tint = SIMD4<Float>(0, 0, 0, 1)
     }
 
     private struct BackdropUniforms {
@@ -172,11 +179,12 @@ final class NativeGpuRenderer {
         var swirl: Float
         var pixel: Float
         var vivid: Float
-        var pad0: Float = 0
+        var pulse: Float
         var pad1: Float = 0
         var first: SIMD4<Float>
         var second: SIMD4<Float>
         var third: SIMD4<Float>
+        var tint: SIMD4<Float>
     }
 
     private let device: MTLDevice
@@ -269,7 +277,8 @@ final class NativeGpuRenderer {
             if let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: pass) {
                 drawBackdrop(backdrop, encoder: encoder, target: texture)
                 encoder.endEncoding()
-                veil = backdrop.veil
+                // A pulse also thins the panes' background so it shows.
+                veil = backdrop.veil * (1 - 0.3 * backdrop.pulse)
             }
         }
         let pass = MTLRenderPassDescriptor()
@@ -356,9 +365,11 @@ final class NativeGpuRenderer {
             swirl: backdrop.swirl,
             pixel: backdrop.pixel,
             vivid: backdrop.vivid,
+            pulse: backdrop.pulse,
             first: backdrop.colors[0],
             second: backdrop.colors[1],
-            third: backdrop.colors[2])
+            third: backdrop.colors[2],
+            tint: backdrop.tint)
         encoder.setRenderPipelineState(backdropPipeline)
         encoder.setFragmentBytes(
             &uniforms, length: MemoryLayout<BackdropUniforms>.stride, index: 0)

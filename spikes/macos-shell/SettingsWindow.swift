@@ -17,6 +17,8 @@ enum NativePreferenceKey {
     static let defaultTheme = "defaultTheme"
     static let attentionHand = "attentionHand"
     static let animatedBackdrop = "animatedBackdrop"
+    static let ambientSound = "ambientSound"
+    static let agentChimes = "agentChimes"
     static let shellPath = "shellPath"
     static let tmuxExecutablePath = "tmuxExecutablePath"
     static let startupDirectory = "startupDirectory"
@@ -57,6 +59,8 @@ struct NativeSettings: Equatable {
     var defaultTheme: String
     var attentionHand: Bool
     var animatedBackdrop: Bool
+    var ambientSound: Bool
+    var agentChimes: Bool
     var shellPath: String
     var tmuxExecutablePath: String
     var startupDirectory: String
@@ -126,6 +130,8 @@ final class NativeSettingsStore {
             attentionHand: preferredBool(NativePreferenceKey.attentionHand, defaultValue: false),
             animatedBackdrop: preferredBool(
                 NativePreferenceKey.animatedBackdrop, defaultValue: false),
+            ambientSound: preferredBool(NativePreferenceKey.ambientSound, defaultValue: false),
+            agentChimes: preferredBool(NativePreferenceKey.agentChimes, defaultValue: false),
             shellPath: validShellPath(
                 defaults.string(forKey: NativePreferenceKey.shellPath) ?? ""
             ),
@@ -163,6 +169,8 @@ final class NativeSettingsStore {
         defaults.set(validTheme(settings.defaultTheme), forKey: NativePreferenceKey.defaultTheme)
         defaults.set(settings.attentionHand, forKey: NativePreferenceKey.attentionHand)
         defaults.set(settings.animatedBackdrop, forKey: NativePreferenceKey.animatedBackdrop)
+        defaults.set(settings.ambientSound, forKey: NativePreferenceKey.ambientSound)
+        defaults.set(settings.agentChimes, forKey: NativePreferenceKey.agentChimes)
         defaults.set(validShellPath(settings.shellPath), forKey: NativePreferenceKey.shellPath)
         defaults.set(
             validTmuxExecutablePath(settings.tmuxExecutablePath),
@@ -204,6 +212,8 @@ final class NativeSettingsStore {
             NativePreferenceKey.defaultTheme,
             NativePreferenceKey.attentionHand,
             NativePreferenceKey.animatedBackdrop,
+            NativePreferenceKey.ambientSound,
+            NativePreferenceKey.agentChimes,
             NativePreferenceKey.shellPath,
             NativePreferenceKey.tmuxExecutablePath,
             NativePreferenceKey.startupDirectory,
@@ -355,6 +365,8 @@ final class NativeSettingsWindowController: NSWindowController, NSTextFieldDeleg
     private var notificationButton: NSButton?
     private var attentionHandButton: NSButton?
     private var animatedBackdropButton: NSButton?
+    private var ambientSoundButton: NSButton?
+    private var agentChimesButton: NSButton?
     private var sessionRestoreButton: NSButton?
     private var confirmBeforeQuitButton: NSButton?
     private var shellField: NSTextField?
@@ -421,6 +433,8 @@ final class NativeSettingsWindowController: NSWindowController, NSTextFieldDeleg
         settings.notifications = notificationButton?.state == .on
         settings.attentionHand = attentionHandButton?.state == .on
         settings.animatedBackdrop = animatedBackdropButton?.state == .on
+        settings.ambientSound = ambientSoundButton?.state == .on
+        settings.agentChimes = agentChimesButton?.state == .on
         settings.sessionRestore = sessionRestoreButton?.state == .on
         settings.confirmBeforeQuit = confirmBeforeQuitButton?.state == .on
         settings.automaticUpdateChecks = automaticUpdatesButton?.state == .on
@@ -642,6 +656,12 @@ final class NativeSettingsWindowController: NSWindowController, NSTextFieldDeleg
         let backdrop = checkbox(
             "Swirl paint under the panes (experimental)", action: #selector(booleanChanged(_:)))
         animatedBackdropButton = backdrop
+        let ambient = checkbox(
+            "Play soft pads while you work (experimental)", action: #selector(booleanChanged(_:)))
+        ambientSoundButton = ambient
+        let chimes = checkbox(
+            "Chime when an agent waits, fails or finishes", action: #selector(booleanChanged(_:)))
+        agentChimesButton = chimes
         return formView(
             title: "Appearance",
             description:
@@ -652,6 +672,8 @@ final class NativeSettingsWindowController: NSWindowController, NSTextFieldDeleg
                 ("Theme", themes),
                 ("Attention hand", attentionHand),
                 ("Backdrop", backdrop),
+                ("Ambient sound", ambient),
+                ("Agent chimes", chimes),
             ]
         )
     }
@@ -858,6 +880,8 @@ final class NativeSettingsWindowController: NSWindowController, NSTextFieldDeleg
         notificationButton?.state = settings.notifications ? .on : .off
         attentionHandButton?.state = settings.attentionHand ? .on : .off
         animatedBackdropButton?.state = settings.animatedBackdrop ? .on : .off
+        ambientSoundButton?.state = settings.ambientSound ? .on : .off
+        agentChimesButton?.state = settings.agentChimes ? .on : .off
         sessionRestoreButton?.state = settings.sessionRestore ? .on : .off
         confirmBeforeQuitButton?.state = settings.confirmBeforeQuit ? .on : .off
         fontPopup?.selectItem(
