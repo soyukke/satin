@@ -586,6 +586,8 @@ struct CachedPicture {
     width: u32,
     height: u32,
     image: usize,
+    /// Tells this picture from another made at the same address.
+    serial: u64,
 }
 
 /// The buffers glyphs go to CoreText in.
@@ -672,6 +674,11 @@ pub struct Painter {
     scratch: Scratch,
     run_count: i64,
     run_font: i64,
+    /// Counts the times the fonts were let go: a font's place in fonts names
+    /// another font after it.
+    font_epoch: u64,
+    /// The serial the next picture gets.
+    next_serial: u64,
 }
 
 /// A painter that draws with the bundled font; null without storage.
@@ -707,7 +714,9 @@ pub fn new_painter(allocator: Allocator) -> ?Painter {
         pictures: array::new<CachedPicture>(allocator),
         scratch: move scratch,
         run_count: 0,
-        run_font: -1
+        run_font: -1,
+        font_epoch: 0,
+        next_serial: 1
     };
 }
 
@@ -775,6 +784,7 @@ fn (self: &var Painter) forget_fonts(allocator: Allocator) -> void {
     self.fonts.clear(allocator);
     self.tried = 0;
     self.forget_glyphs(allocator);
+    self.font_epoch = self.font_epoch + 1;
     return;
 }
 
@@ -1904,8 +1914,10 @@ pub fn (self: &var Painter) put_image(allocator: Allocator, image: ImageDraw, rg
         image_number: image.image_number,
         width: image.width,
         height: image.height,
-        image: address
+        image: address,
+        serial: self.next_serial
     };
+    self.next_serial = self.next_serial + 1;
     let index = self.picture_index(image.owner, image.image_id);
     if self.pictures.get(index) |old| {
         release_address(old.image);

@@ -29,19 +29,27 @@ pub struct Renderer {
     pixels: string::String,
     no_placements: array::Array<term::Placement>,
     region: PixelRegion,
+    /// With gpu_enabled, a frame's panes are encoded into gpu rather than
+    /// executed into the bitmap; gpu_started says the frame has begun.
+    gpu: GpuFrame,
+    gpu_enabled: bool,
+    gpu_started: bool,
 }
 
 /// A renderer that has drawn nothing; null without storage.
 pub fn new_renderer(allocator: Allocator) -> ?Renderer {
     let painter = new_painter(allocator) orelse return null;
     if new_bitmap(1, 1) |bitmap| {
-        return finished_renderer(allocator, move painter, move bitmap);
+        if new_gpu_frame(allocator) |gpu| {
+            return finished_renderer(allocator, move painter, move bitmap, move gpu);
+        }
+        bitmap.deinit();
     }
     painter.deinit(allocator);
     return null;
 }
 
-fn finished_renderer(allocator: Allocator, painter: Painter, bitmap: Bitmap) -> Renderer {
+fn finished_renderer(allocator: Allocator, painter: Painter, bitmap: Bitmap, gpu: GpuFrame) -> Renderer {
     return Renderer {
         frames: new_frames(allocator),
         list: new_display_list(allocator),
@@ -49,7 +57,10 @@ fn finished_renderer(allocator: Allocator, painter: Painter, bitmap: Bitmap) -> 
         bitmap: move bitmap,
         pixels: string::new(allocator),
         no_placements: array::new<term::Placement>(allocator),
-        region: PixelRegion { x: 0, y: 0, width: 0, height: 0 }
+        region: PixelRegion { x: 0, y: 0, width: 0, height: 0 },
+        gpu: move gpu,
+        gpu_enabled: false,
+        gpu_started: false
     };
 }
 
@@ -60,10 +71,93 @@ pub fn (self: Renderer) deinit(allocator: Allocator) -> void {
     self.bitmap.deinit();
     self.pixels.deinit(allocator);
     self.no_placements.deinit(allocator);
+    self.gpu.deinit(allocator);
 }
 
 pub fn (self: &var Renderer) begin_frame() -> void {
     self.frames.begin_frame();
+    self.gpu_started = false;
+}
+
+/// Encodes frames for the GPU from the next one on, or executes them into
+/// the bitmap again.
+pub fn (self: &var Renderer) set_gpu(enabled: bool) -> void {
+    self.gpu_enabled = enabled;
+}
+
+pub fn (self: &Renderer) gpu_enabled() -> bool {
+    return self.gpu_enabled;
+}
+
+/// Forgets the part of the atlas the host read.
+pub fn (self: &var Renderer) took_gpu_atlas() -> void {
+    self.gpu.took_atlas();
+}
+
+/// Ends the frame encoded for the GPU and writes what the host draws it
+/// from to target, as satin_skia_metal_gpu_frame describes. False when no
+/// frame was encoded since begin_frame.
+///
+/// target must hold room for twelve i64.
+pub unsafe fn(self: &var Renderer) write_gpu_frame(target: ptr<u8>) -> bool {
+    if !self.gpu_enabled or !self.gpu_started {
+        return false;
+    }
+    self.gpu.finish();
+    let frame = &self.gpu;
+    var vertices: usize = 0;
+    if frame.vertices.len() > 0 {
+        let bytes = frame.vertices.as_slice();
+        // SAFETY: reading a pointer's address touches nothing it points at.
+        vertices = unsafe int_from_ptr<usize>(ptr_of(bytes));
+    }
+    var draws: usize = 0;
+    if frame.draws.len() > 0 {
+        let bytes = frame.draws.as_slice();
+        // SAFETY: as above.
+        draws = unsafe int_from_ptr<usize>(ptr_of(bytes));
+    }
+    var atlas: usize = 0;
+    if frame.atlas_pixels() |pixels| {
+        // SAFETY: as above.
+        atlas = unsafe int_from_ptr<usize>(pixels);
+    }
+    var overflowed: i64 = 0;
+    if frame.overflowed {
+        overflowed = 1;
+    }
+    // SAFETY: the caller passes room for twelve i64.
+    unsafe put_field(target, 0, cast<i64>(vertices));
+    // SAFETY: as above.
+    unsafe put_field(target, 1, frame.vertices.len());
+    // SAFETY: as above.
+    unsafe put_field(target, 2, cast<i64>(draws));
+    // SAFETY: as above.
+    unsafe put_field(target, 3, frame.draws.len());
+    // SAFETY: as above.
+    unsafe put_field(target, 4, cast<i64>(atlas));
+    // SAFETY: as above.
+    unsafe put_field(target, 5, atlas_side());
+    // SAFETY: as above.
+    unsafe put_field(target, 6, frame.dirty_left);
+    // SAFETY: as above.
+    unsafe put_field(target, 7, frame.dirty_top);
+    // SAFETY: as above.
+    unsafe put_field(target, 8, frame.dirty_right - frame.dirty_left);
+    // SAFETY: as above.
+    unsafe put_field(target, 9, frame.dirty_bottom - frame.dirty_top);
+    // SAFETY: as above.
+    unsafe put_field(target, 10, cast<i64>(frame.generation));
+    // SAFETY: as above.
+    unsafe put_field(target, 11, overflowed);
+    return true;
+}
+
+/// Writes value as the index-th i64 of target, which holds room for it.
+unsafe fn put_field(target: ptr<u8>, index: i64, value: i64) -> void {
+    // SAFETY: the caller passes room for index + 1 i64.
+    unsafe ptr_write(cast<ptr<i64>>(ptr_offset(target, index * 8)), value);
+    return;
 }
 
 /// Drops what is kept for the runtime at id: its pane and its images.
@@ -150,6 +244,16 @@ fn written_region(geometry: Geometry, clear: bool) -> PixelRegion {
 
 /// Executes the list into the bitmap and records the region it wrote.
 fn (self: &var Renderer) paint(allocator: Allocator, geometry: Geometry, clear: bool) -> mem::Error!void {
+    if self.gpu_enabled {
+        if !self.gpu_started {
+            self.gpu.begin(allocator, geometry.width, geometry.height);
+            self.gpu_started = true;
+        }
+        try self.painter.encode(allocator, &self.list, &var self.gpu);
+        // Nothing is written to the bitmap for the host to copy.
+        self.region = PixelRegion { x: 0, y: 0, width: 0, height: 0 };
+        return;
+    }
     try self.painter.execute(allocator, &self.list, &self.bitmap);
     self.region = written_region(geometry, clear);
     return;

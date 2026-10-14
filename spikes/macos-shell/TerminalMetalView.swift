@@ -82,6 +82,9 @@ final class TerminalMetalView: MTKView, CAMetalDisplayLinkDelegate, MTKViewDeleg
     private var skiaRenderer: UnsafeMutableRawPointer?
     private var skiaFrameCount = 0
     private var frameBuffer: NativeFrameBuffer?
+    /// Draws frames on the GPU when set; frames are drawn on the CPU and
+    /// copied otherwise.
+    private var gpuRenderer: NativeGpuRenderer?
     private var nextFrameWorkItem: DispatchWorkItem?
     private var frameDisplayLink: CAMetalDisplayLink?
     private var displayRefreshInterval: CFTimeInterval?
@@ -119,6 +122,12 @@ final class TerminalMetalView: MTKView, CAMetalDisplayLinkDelegate, MTKViewDeleg
         colorPixelFormat = .bgra8Unorm
         // The frame buffer is blitted into the drawable.
         framebufferOnly = false
+        if Self.drawsOnGpu(),
+            let gpu = NativeGpuRenderer(device: device, pixelFormat: colorPixelFormat)
+        {
+            gpuRenderer = gpu
+            satinSkiaMetalSetGpu(skiaRenderer, 1)
+        }
         clearColor = MTLClearColor(red: 0.078, green: 0.086, blue: 0.102, alpha: 1.0)
         delegate = self
         if usesSmokeFrameFallback {
@@ -138,6 +147,15 @@ final class TerminalMetalView: MTKView, CAMetalDisplayLinkDelegate, MTKViewDeleg
         displayLink.isPaused = true
         displayLink.add(to: .main, forMode: .common)
         frameDisplayLink = displayLink
+    }
+
+    /// Whether frames are drawn on the GPU: yes unless SATIN_GPU_RENDERER is
+    /// 0 or the gpuRenderer default is false.
+    static func drawsOnGpu() -> Bool {
+        if let value = ProcessInfo.processInfo.environment["SATIN_GPU_RENDERER"] {
+            return value != "0"
+        }
+        return UserDefaults.standard.object(forKey: "gpuRenderer") as? Bool ?? true
     }
 
     static func isAvailable() -> Bool {
@@ -262,7 +280,19 @@ final class TerminalMetalView: MTKView, CAMetalDisplayLinkDelegate, MTKViewDeleg
         }
 
         _ = satinSkiaMetalBeginFrame(skiaRenderer)
-        if let frame = frameBuffer(matching: drawable.texture),
+        var gpuOverflowed = false
+        if let gpu = gpuRenderer,
+            let frame = frameBuffer(matching: drawable.texture),
+            renderProvider?(frame, skiaRenderer) == true,
+            let encoded = NativeGpuRenderer.frame(from: skiaRenderer),
+            gpu.encode(
+                encoded, renderer: skiaRenderer, into: commandBuffer,
+                target: drawable.texture, clearColor: clearColor)
+        {
+            skiaFrameCount += 1
+            gpuOverflowed = encoded.overflowed
+        } else if gpuRenderer == nil,
+            let frame = frameBuffer(matching: drawable.texture),
             renderProvider?(frame, skiaRenderer) == true,
             let blit = commandBuffer.makeBlitCommandEncoder()
         {
@@ -303,6 +333,10 @@ final class TerminalMetalView: MTKView, CAMetalDisplayLinkDelegate, MTKViewDeleg
             rendererFinishedAt: rendererFinishedAt,
             committedAt: submissionFinishedAt
         )
+        if gpuOverflowed {
+            // The atlas was emptied while the frame was encoded: draw it again.
+            requestFrame()
+        }
     }
 
     func requestFrame() {

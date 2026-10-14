@@ -1,0 +1,128 @@
+import std::mem;
+import std::testing;
+
+test "a vertex and a draw are laid out as the host reads them" {
+    testing::expect_equal<i64>(24, cast<i64>(mem::size_of<GpuVertex>()));
+    testing::expect_equal<i64>(64, cast<i64>(mem::size_of<GpuDraw>()));
+}
+
+/// A painter at the size of a 12 x 24 cell, and a frame of width x height.
+fn gpu_list(allocator: Allocator, list: &var DisplayList, text: []u8) -> mem::Error!void {
+    try list.clear_target(allocator, Rgba { r: 1, g: 2, b: 3, a: 255 });
+    try list.fill_rect(allocator, Rect { x: lit(2.4), y: lit(3.6), width: lit(10.0), height: lit(5.0) }, Rgba { r: 255, g: 0, b: 0, a: 255 });
+    let first = list.clusters.len();
+    for 0..mem::len(text) |index| {
+        try list.add_cluster(allocator, text[index..index + 1], index);
+    }
+    try list.text_run(
+        allocator,
+        TextRun {
+        first: first,
+        count: mem::len(text),
+        x: lit(0.0),
+        baseline: lit(20.0),
+        advance: lit(12.0),
+        cells: mem::len(text),
+        gap: false,
+        bold: false,
+        italic: false,
+        key: 7
+    },
+        Rgba { r: 255, g: 255, b: 255, a: 255 }
+    );
+    return;
+}
+
+test "a list becomes quads, and its glyphs go into the atlas once" {
+    let allocator = mem::page_allocator();
+    var painter = new_painter(allocator) orelse return;
+    defer painter.deinit(allocator);
+    var frame = new_gpu_frame(allocator) orelse return;
+    defer frame.deinit(allocator);
+    var list = new_display_list(allocator);
+    defer list.deinit(allocator);
+    let geometry = Geometry {
+        width: 100,
+        height: 40,
+        origin_x: lit(0.0),
+        origin_y: lit(0.0),
+        content_width: lit(100.0),
+        content_height: lit(40.0),
+        cell_width: lit(12.0),
+        cell_height: lit(24.0)
+    };
+    if painter.metrics(allocator, geometry) |_metrics| {} else |_| {
+        return;
+    }
+    try gpu_list(allocator, &var list, "aba ");
+    frame.begin(allocator, 100, 40);
+    try painter.encode(allocator, &list, &var frame);
+    frame.finish();
+
+    // The clear, the rectangle, and three glyphs: a space draws nothing.
+    testing::expect_equal<i64>(6 * 5, frame.vertices.len());
+    testing::expect_equal<i64>(1, frame.draws.len());
+    let draw = frame.draws.get(0) orelse return;
+    testing::expect_equal<i64>(0, draw.first);
+    testing::expect_equal<i64>(30, draw.count);
+    testing::expect_equal<i64>(100, draw.clip_width);
+    // The rectangle's edges are the pixels whose centers it holds.
+    let corner = frame.vertices.get(6) orelse return;
+    testing::expect(corner.x == lit(2.0) and corner.y == lit(4.0));
+    let glyph = frame.vertices.get(12) orelse return;
+    testing::expect_equal<u32>(vertex_mask(), glyph.mode);
+    // Two a's at the same quarter of a pixel share their place in the atlas.
+    let first_a = frame.vertices.get(12) orelse return;
+    let second_a = frame.vertices.get(24) orelse return;
+    testing::expect(first_a.u == second_a.u and first_a.v == second_a.v);
+    testing::expect_equal<i64>(2, frame.glyphs.len());
+    testing::expect(frame.dirty_right > frame.dirty_left);
+
+    // The atlas holds the glyphs' coverage, white on clear.
+    var lit_pixels: i64 = 0;
+    let pixels = frame.atlas_pixels() orelse return;
+    // SAFETY: the atlas is atlas_side() pixels a side; its first rows hold the glyphs.
+    let bytes = unsafe view_from_ptr(pixels, atlas_side() * 40 * 4);
+    for 0..atlas_side() * 40 |index| {
+        if cast<i64>(bytes[index * 4 + 3]) > 0 {
+            lit_pixels = lit_pixels + 1;
+        }
+    }
+    testing::expect(lit_pixels > 20);
+
+    // The next frame finds the glyphs where they were.
+    frame.took_atlas();
+    frame.begin(allocator, 100, 40);
+    try painter.encode(allocator, &list, &var frame);
+    frame.finish();
+    testing::expect_equal<i64>(30, frame.vertices.len());
+    testing::expect(frame.dirty_right == frame.dirty_left);
+}
+
+test "a clip starts a draw that holds what is drawn inside it" {
+    let allocator = mem::page_allocator();
+    var painter = new_painter(allocator) orelse return;
+    defer painter.deinit(allocator);
+    var frame = new_gpu_frame(allocator) orelse return;
+    defer frame.deinit(allocator);
+    var list = new_display_list(allocator);
+    defer list.deinit(allocator);
+    let red = Rgba { r: 255, g: 0, b: 0, a: 255 };
+    try list.fill_rect(allocator, Rect { x: lit(0.0), y: lit(0.0), width: lit(4.0), height: lit(4.0) }, red);
+    try list.push_clip(allocator, Rect { x: lit(10.0), y: lit(5.0), width: lit(20.0), height: lit(10.0) });
+    try list.fill_rect(allocator, Rect { x: lit(0.0), y: lit(0.0), width: lit(50.0), height: lit(50.0) }, red);
+    try list.pop_clip(allocator);
+    try list.fill_rect(allocator, Rect { x: lit(0.0), y: lit(0.0), width: lit(4.0), height: lit(4.0) }, red);
+    frame.begin(allocator, 100, 40);
+    try painter.encode(allocator, &list, &var frame);
+    frame.finish();
+    testing::expect_equal<i64>(3, frame.draws.len());
+    let inside = frame.draws.get(1) orelse return;
+    testing::expect_equal<i64>(10, inside.clip_x);
+    testing::expect_equal<i64>(5, inside.clip_y);
+    testing::expect_equal<i64>(20, inside.clip_width);
+    testing::expect_equal<i64>(10, inside.clip_height);
+    testing::expect_equal<i64>(6, inside.count);
+    let after = frame.draws.get(2) orelse return;
+    testing::expect_equal<i64>(100, after.clip_width);
+}

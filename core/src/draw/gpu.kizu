@@ -1,0 +1,643 @@
+// The GPU backend: turns a display list into triangles the host draws with
+// Metal, in place of executing it into a bitmap on the CPU.
+//
+// Text is shaped as the CPU backend shapes it. Each glyph is rasterized by
+// CoreGraphics once, white on clear, into an atlas the host keeps as a
+// texture, at one of four positions a pixel, and drawn from there as a quad.
+// Rectangles are quads of a single color, a polyline is a quad a segment, a
+// quad is two triangles and an image is a quad over its own texture.
+//
+// What is not as the CPU backend draws it:
+// - A glyph's y is rounded to a whole pixel, and its x to a quarter.
+// - A quad command is not antialiased.
+// - A glyph's pixels are blended over what is under them as coverage, where
+//   CoreGraphics blends as it rasterizes; the two differ by a step at most.
+import std::array;
+import std::map;
+import std::math;
+import std::mem;
+
+@link_framework("CoreText")
+extern "c" fn CTFontGetBoundingRectsForGlyphs(
+    font: ptr<u8>,
+    orientation: u32,
+    glyphs: ptr<u8>,
+    rects: ptr<u8>,
+    count: i64
+) -> void
+
+@link_framework("CoreText")
+extern "c" fn CTFontGetSymbolicTraits(font: ptr<u8>) -> u32
+
+@link_framework("CoreGraphics")
+extern "c" fn CGContextClearRect(context: ptr<u8>, rect: CGRect) -> void
+
+/// kCTFontColorGlyphsTrait: the font draws its glyphs in their own colors.
+fn color_glyphs_trait() -> u32 {
+    return 8192;
+}
+
+/// The atlas is this many pixels a side.
+pub fn atlas_side() -> i64 {
+    return 2048;
+}
+
+/// How a vertex is colored: by its color alone, by its color through the
+/// coverage of a glyph in the atlas, by a glyph's own colors, or by an image.
+pub fn vertex_solid() -> u32 {
+    return 0;
+}
+
+pub fn vertex_mask() -> u32 {
+    return 1;
+}
+
+pub fn vertex_color_glyph() -> u32 {
+    return 2;
+}
+
+pub fn vertex_image() -> u32 {
+    return 3;
+}
+
+/// One corner of a triangle: its place in pixels, y down, where it reads its
+/// texture, from 0 to 1, its color, straight RGBA, and how it is colored.
+pub struct GpuVertex {
+    pub x: f32,
+    pub y: f32,
+    pub u: f32,
+    pub v: f32,
+    pub color: u32,
+    pub mode: u32,
+}
+
+/// count vertices from first, drawn inside the scissor rectangle with the
+/// atlas, or with the image picture when it is not zero. serial tells one
+/// image the painter held from another that came to live at its address.
+pub struct GpuDraw {
+    pub first: i64,
+    pub count: i64,
+    pub clip_x: i64,
+    pub clip_y: i64,
+    pub clip_width: i64,
+    pub clip_height: i64,
+    pub picture: usize,
+    pub serial: u64,
+}
+
+/// Where a glyph is in the atlas, and where its top left is from its pen
+/// position, in whole pixels. An empty glyph has no width.
+struct AtlasGlyph {
+    x: i64,
+    y: i64,
+    width: i64,
+    height: i64,
+    left: i64,
+    top: i64,
+    color: bool,
+}
+
+/// The triangles of a frame, the draws they make, and the atlas.
+///
+/// The atlas fills shelf after shelf from the top; a glyph that finds no room
+/// empties it, and a frame that drew from it draws again. dirty is the part
+/// the host has not read since it last took the atlas, and generation counts
+/// the times it was emptied.
+pub struct GpuFrame {
+    pub vertices: array::Array<GpuVertex>,
+    pub draws: array::Array<GpuDraw>,
+    atlas: Bitmap,
+    has_atlas: bool,
+    glyphs: map::Map<u64, AtlasGlyph>,
+    shelf_x: i64,
+    shelf_y: i64,
+    shelf_height: i64,
+    pub dirty_left: i64,
+    pub dirty_top: i64,
+    pub dirty_right: i64,
+    pub dirty_bottom: i64,
+    pub generation: u64,
+    font_epoch: u64,
+    clips: array::Array<Rect>,
+    width: i64,
+    height: i64,
+    pub overflowed: bool,
+}
+
+/// A frame with nothing in it; null without storage. The atlas takes its
+/// size with the first glyph.
+pub fn new_gpu_frame(allocator: Allocator) -> ?GpuFrame {
+    let atlas = new_bitmap(1, 1) orelse return null;
+    return GpuFrame {
+        vertices: array::new<GpuVertex>(allocator),
+        draws: array::new<GpuDraw>(allocator),
+        atlas: move atlas,
+        has_atlas: false,
+        glyphs: map::new<u64, AtlasGlyph>(allocator),
+        shelf_x: 0,
+        shelf_y: 0,
+        shelf_height: 0,
+        dirty_left: 0,
+        dirty_top: 0,
+        dirty_right: 0,
+        dirty_bottom: 0,
+        generation: 0,
+        font_epoch: 0,
+        clips: array::new<Rect>(allocator),
+        width: 0,
+        height: 0,
+        overflowed: false
+    };
+}
+
+pub fn (self: GpuFrame) deinit(allocator: Allocator) -> void {
+    self.vertices.deinit(allocator);
+    self.draws.deinit(allocator);
+    self.atlas.deinit();
+    self.glyphs.deinit(allocator);
+    self.clips.deinit(allocator);
+}
+
+/// Starts a frame of width x height pixels with nothing in it.
+pub fn (self: &var GpuFrame) begin(allocator: Allocator, width: i64, height: i64) -> void {
+    self.vertices.clear(allocator);
+    self.draws.clear(allocator);
+    self.clips.clear(allocator);
+    self.width = width;
+    self.height = height;
+    self.overflowed = false;
+}
+
+/// The atlas's first pixel: rows of blue, green, red and alpha bytes, premultiplied,
+/// atlas_side() * 4 bytes apart. Null before the first glyph.
+pub fn (self: &GpuFrame) atlas_pixels() -> ?ptr<u8> {
+    if !self.has_atlas {
+        return null;
+    }
+    return self.atlas.pixels_at(0, 0);
+}
+
+/// Forgets what the host has read of the atlas.
+pub fn (self: &var GpuFrame) took_atlas() -> void {
+    self.dirty_left = 0;
+    self.dirty_top = 0;
+    self.dirty_right = 0;
+    self.dirty_bottom = 0;
+}
+
+fn (self: &var GpuFrame) mark_dirty(x: i64, y: i64, width: i64, height: i64) -> void {
+    if self.dirty_right <= self.dirty_left or self.dirty_bottom <= self.dirty_top {
+        self.dirty_left = x;
+        self.dirty_top = y;
+        self.dirty_right = x + width;
+        self.dirty_bottom = y + height;
+        return;
+    }
+    self.dirty_left = math::min<i64>(self.dirty_left, x);
+    self.dirty_top = math::min<i64>(self.dirty_top, y);
+    self.dirty_right = math::max<i64>(self.dirty_right, x + width);
+    self.dirty_bottom = math::max<i64>(self.dirty_bottom, y + height);
+}
+
+/// Empties the atlas: every glyph is rasterized again when it is next drawn.
+fn (self: &var GpuFrame) empty_atlas(allocator: Allocator) -> void {
+    while self.glyphs.len() > 0 {
+        let key = self.glyphs.key_at(self.glyphs.len() - 1) orelse break;
+        if self.glyphs.remove(allocator, key) |_| {}
+    }
+    if self.has_atlas {
+        let whole = Rect { x: lit(0.0), y: lit(0.0), width: span(atlas_side()), height: span(atlas_side()) };
+        // SAFETY: the atlas context is live.
+        unsafe CGContextClearRect(self.atlas.context, cg_rect(whole));
+    }
+    self.shelf_x = 0;
+    self.shelf_y = 0;
+    self.shelf_height = 0;
+    self.generation = self.generation + 1;
+    self.mark_dirty(0, 0, atlas_side(), atlas_side());
+}
+
+/// A place for a width x height glyph, a pixel apart from its neighbors;
+/// false when the atlas is full.
+fn (self: &var GpuFrame) place(width: i64, height: i64, x: &var i64, y: &var i64) -> bool {
+    let side = atlas_side();
+    if width + 1 > side or height + 1 > side {
+        return false;
+    }
+    if self.shelf_x + width + 1 > side {
+        self.shelf_y = self.shelf_y + self.shelf_height;
+        self.shelf_x = 0;
+        self.shelf_height = 0;
+    }
+    if self.shelf_y + height + 1 > side {
+        return false;
+    }
+    x = self.shelf_x;
+    y = self.shelf_y;
+    self.shelf_x = self.shelf_x + width + 1;
+    self.shelf_height = math::max<i64>(self.shelf_height, height + 1);
+    return true;
+}
+
+/// The key of a glyph of the font at slot drawn at phase quarters of a pixel.
+fn glyph_key(slot: i64, glyph: u16, phase: i64) -> u64 {
+    return (cast<u64>(slot) * 65536 + cast<u64>(glyph)) * 4 + cast<u64>(phase);
+}
+
+/// Packs a straight color into the RGBA bytes of a u32, red first in memory.
+fn packed(color: Rgba) -> u32 {
+    return cast<u32>(color.r) | (cast<u32>(color.g) << 8) | (cast<u32>(color.b) << 16) | (cast<u32>(color.a) << 24);
+}
+
+/// Adds the triangles of the quad with corners a, b, c and d, in order
+/// round it, each with its texture place.
+fn (self: &var GpuFrame) quad(
+    allocator: Allocator,
+    a: GpuVertex,
+    b: GpuVertex,
+    c: GpuVertex,
+    d: GpuVertex
+) -> mem::Error!void {
+    try self.vertices.append(allocator, a);
+    try self.vertices.append(allocator, b);
+    try self.vertices.append(allocator, c);
+    try self.vertices.append(allocator, a);
+    try self.vertices.append(allocator, c);
+    try self.vertices.append(allocator, d);
+    return;
+}
+
+fn corner(x: f32, y: f32, u: f32, v: f32, color: u32, mode: u32) -> GpuVertex {
+    return GpuVertex { x: x, y: y, u: u, v: v, color: color, mode: mode };
+}
+
+/// Adds a rectangle from (left, top) to (right, bottom) whose texture is the
+/// part from (u0, v0) to (u1, v1).
+fn (self: &var GpuFrame) rect(
+    allocator: Allocator,
+    left: f32,
+    top: f32,
+    right: f32,
+    bottom: f32,
+    u0: f32,
+    v0: f32,
+    u1: f32,
+    v1: f32,
+    color: u32,
+    mode: u32
+) -> mem::Error!void {
+    try self.quad(
+        allocator,
+        corner(left, top, u0, v0, color, mode),
+        corner(right, top, u1, v0, color, mode),
+        corner(right, bottom, u1, v1, color, mode),
+        corner(left, bottom, u0, v1, color, mode)
+    );
+    return;
+}
+
+/// The clip the frame draws in now: the target, or the last clip pushed.
+fn (self: &GpuFrame) clip() -> Rect {
+    let count = self.clips.len();
+    if self.clips.get(count - 1) |last| {
+        return last;
+    }
+    return Rect { x: lit(0.0), y: lit(0.0), width: span(self.width), height: span(self.height) };
+}
+
+/// Ends the draw in progress, when it holds a vertex, and starts one with
+/// the clip in force and picture.
+fn (self: &var GpuFrame) start_draw(allocator: Allocator, picture: usize, serial: u64) -> mem::Error!void {
+    let first = self.vertices.len();
+    let count = self.draws.len();
+    var empty = false;
+    if self.draws.at_mut(count - 1) |last| {
+        last.count = first - last.first;
+        empty = last.count == 0;
+    }
+    if empty {
+        if self.draws.pop() |_| {}
+    }
+    let clip = self.clip();
+    let left = cast<i64>(math::round<f32>(clip.x));
+    let top = cast<i64>(math::round<f32>(clip.y));
+    let right = cast<i64>(math::round<f32>(clip.x + clip.width));
+    let bottom = cast<i64>(math::round<f32>(clip.y + clip.height));
+    try self.draws.append(
+        allocator,
+        GpuDraw {
+        first: first,
+        count: 0,
+        clip_x: math::max<i64>(left, 0),
+        clip_y: math::max<i64>(top, 0),
+        clip_width: math::max<i64>(math::min<i64>(right, self.width) - math::max<i64>(left, 0), 0),
+        clip_height: math::max<i64>(math::min<i64>(bottom, self.height) - math::max<i64>(top, 0), 0),
+        picture: picture,
+        serial: serial
+    }
+    );
+    return;
+}
+
+/// Ends the frame's last draw, dropping it when it holds nothing.
+pub fn (self: &var GpuFrame) finish() -> void {
+    let count = self.draws.len();
+    let first = self.vertices.len();
+    var empty = false;
+    if self.draws.at_mut(count - 1) |last| {
+        last.count = first - last.first;
+        empty = last.count == 0;
+    }
+    if empty {
+        if self.draws.pop() |_| {}
+    }
+}
+
+/// Whether the draw in progress draws with the atlas.
+fn (self: &GpuFrame) drawing_atlas() -> bool {
+    let count = self.draws.len();
+    if self.draws.get(count - 1) |last| {
+        return last.picture == 0;
+    }
+    return false;
+}
+
+fn intersect(a: Rect, b: Rect) -> Rect {
+    let left = math::max<f32>(a.x, b.x);
+    let top = math::max<f32>(a.y, b.y);
+    let right = math::max<f32>(math::min<f32>(a.x + a.width, b.x + b.width), left);
+    let bottom = math::max<f32>(math::min<f32>(a.y + a.height, b.y + b.height), top);
+    return Rect { x: left, y: top, width: right - left, height: bottom - top };
+}
+
+/// The rectangle of rect's pixels, as the CPU backend fills it.
+fn snapped(rect: Rect) -> Rect {
+    let left = math::round<f32>(rect.x);
+    let top = math::round<f32>(rect.y);
+    let right = math::round<f32>(rect.x + rect.width);
+    let bottom = math::round<f32>(rect.y + rect.height);
+    return Rect { x: left, y: top, width: right - left, height: bottom - top };
+}
+
+/// The glyph of the font at slot drawn at phase quarters of a pixel past a
+/// whole one, rasterized into the atlas when it is not there. Null when the
+/// atlas has no storage.
+fn (self: &var GpuFrame) atlas_glyph(
+    allocator: Allocator,
+    painter: &Painter,
+    slot: i64,
+    glyph: u16,
+    phase: i64
+) -> mem::Error!?AtlasGlyph {
+    let key = glyph_key(slot, glyph, phase);
+    if self.glyphs.get(key) |found| {
+        return found;
+    }
+    if !self.has_atlas {
+        if !self.atlas.resize(atlas_side(), atlas_side()) {
+            return null;
+        }
+        self.has_atlas = true;
+        self.mark_dirty(0, 0, atlas_side(), atlas_side());
+    }
+    let font = painter.font(slot) orelse return null;
+    // SAFETY: glyphs holds room for one glyph.
+    unsafe ptr_write(cast<ptr<u16>>(painter.scratch.glyphs), glyph);
+    // The glyph's box, four f64, goes where the batch's points are kept.
+    let rects = painter.scratch.run_positions;
+    // SAFETY: font is live; glyphs holds one glyph and rects room for one rectangle.
+    unsafe CTFontGetBoundingRectsForGlyphs(font, 0, painter.scratch.glyphs, rects, 1);
+    // SAFETY: rects holds the rectangle written above.
+    let box_x = unsafe ptr_read(cast<ptr<f64>>(rects));
+    // SAFETY: as above.
+    let box_y = unsafe ptr_read(cast<ptr<f64>>(ptr_offset(rects, 8)));
+    // SAFETY: as above.
+    let box_width = unsafe ptr_read(cast<ptr<f64>>(ptr_offset(rects, 16)));
+    // SAFETY: as above.
+    let box_height = unsafe ptr_read(cast<ptr<f64>>(ptr_offset(rects, 24)));
+    let offset = cast<f64>(phase) / 4.0;
+    // y counts up from the baseline here, as the font's units do.
+    let left = cast<i64>(math::floor<f64>(box_x + offset)) - 1;
+    let right = cast<i64>(math::ceil<f64>(box_x + box_width + offset)) + 1;
+    let bottom = cast<i64>(math::floor<f64>(box_y)) - 1;
+    let top = cast<i64>(math::ceil<f64>(box_y + box_height)) + 1;
+    // SAFETY: font is live.
+    let color = unsafe CTFontGetSymbolicTraits(font) & color_glyphs_trait() != 0;
+    var entry = AtlasGlyph { x: 0, y: 0, width: 0, height: 0, left: left, top: top, color: color };
+    if box_width <= 0.0 or box_height <= 0.0 {
+        try self.glyphs.insert(allocator, key, entry);
+        return entry;
+    }
+    let width = right - left;
+    let height = top - bottom;
+    var x: i64 = 0;
+    var y: i64 = 0;
+    if !self.place(width, height, &var x, &var y) {
+        self.empty_atlas(allocator);
+        // The frame drew from what was emptied: it is drawn again.
+        self.overflowed = true;
+        if !self.place(width, height, &var x, &var y) {
+            return null;
+        }
+    }
+    entry.x = x;
+    entry.y = y;
+    entry.width = width;
+    entry.height = height;
+    let context = self.atlas.context;
+    set_antialias(context, true);
+    // White, which a mask glyph's coverage scales to its color.
+    // SAFETY: context is live.
+    unsafe CGContextSetRGBFillColor(context, 1.0, 1.0, 1.0, 1.0);
+    // SAFETY: context is live; the transform is passed by value.
+    unsafe CGContextSetTextMatrix(context, CGAffineTransform { a: 1.0, b: 0.0, c: 0.0, d: -1.0, tx: 0.0, ty: 0.0 });
+    // The pen goes where the glyph's box lands at (x, y), with the baseline
+    // top pixels below it; CoreText reads y negated, as in draw_run.
+    let pen_x = cast<f64>(x - left) + offset;
+    let pen_y = 0.0 - cast<f64>(y + top);
+    // SAFETY: positions holds room for one point of two f64.
+    unsafe ptr_write(cast<ptr<f64>>(painter.scratch.run_positions), pen_x);
+    // SAFETY: as above, the point's second f64.
+    unsafe ptr_write(cast<ptr<f64>>(ptr_offset(painter.scratch.run_positions, 8)), pen_y);
+    // SAFETY: run_glyphs holds room for one glyph.
+    unsafe ptr_write(cast<ptr<u16>>(painter.scratch.run_glyphs), glyph);
+    // SAFETY: font and context are live; the buffers hold one glyph and one point.
+    unsafe CTFontDrawGlyphs(font, painter.scratch.run_glyphs, painter.scratch.run_positions, 1, context);
+    self.mark_dirty(x, y, width, height);
+    try self.glyphs.insert(allocator, key, entry);
+    return entry;
+}
+
+/// Adds the triangles of list to frame, over what it holds.
+pub fn (self: &var Painter) encode(allocator: Allocator, list: &DisplayList, frame: &var GpuFrame) -> mem::Error!void {
+    if frame.font_epoch != self.font_epoch {
+        frame.empty_atlas(allocator);
+        frame.font_epoch = self.font_epoch;
+    }
+    let commands = list.commands.as_slice();
+    let runs = list.runs.as_slice();
+    let images = list.images.as_slice();
+    let pushed = frame.clips.len();
+    try frame.start_draw(allocator, 0, 0);
+    for 0..mem::count<Command>(commands) |index| {
+        let command = commands[index];
+        let color = packed(command.color);
+        if command.kind == CommandKind::FillRect {
+            let rect = snapped(command.rect);
+            try frame.rect(allocator, rect.x, rect.y, rect.x + rect.width, rect.y + rect.height, lit(0.0), lit(0.0), lit(0.0), lit(0.0), color, vertex_solid());
+        } else if command.kind == CommandKind::Clear {
+            let whole = Rect { x: lit(0.0), y: lit(0.0), width: span(frame.width), height: span(frame.height) };
+            try frame.rect(allocator, whole.x, whole.y, whole.width, whole.height, lit(0.0), lit(0.0), lit(0.0), lit(0.0), color, vertex_solid());
+        } else if command.kind == CommandKind::Text {
+            try self.encode_run(allocator, list, runs[command.first], color, frame);
+        } else if command.kind == CommandKind::PushClip {
+            let inner = intersect(frame.clip(), snapped(command.rect));
+            try frame.clips.append(allocator, inner);
+            try frame.start_draw(allocator, 0, 0);
+        } else if command.kind == CommandKind::PopClip {
+            if frame.clips.len() > pushed {
+                if frame.clips.pop() |_| {}
+                try frame.start_draw(allocator, 0, 0);
+            }
+        } else if command.kind == CommandKind::Polyline {
+            try encode_polyline(allocator, list, command, color, frame);
+        } else if command.kind == CommandKind::Quad {
+            let points = list.points.as_slice();
+            if command.count == 4 {
+                let a = points[command.first];
+                let b = points[command.first + 1];
+                let c = points[command.first + 2];
+                let d = points[command.first + 3];
+                try frame.quad(
+                    allocator,
+                    corner(a.x, a.y, lit(0.0), lit(0.0), color, vertex_solid()),
+                    corner(b.x, b.y, lit(0.0), lit(0.0), color, vertex_solid()),
+                    corner(c.x, c.y, lit(0.0), lit(0.0), color, vertex_solid()),
+                    corner(d.x, d.y, lit(0.0), lit(0.0), color, vertex_solid())
+                );
+            }
+        } else if command.kind == CommandKind::Image {
+            try self.encode_image(allocator, images[command.first], command.rect, frame);
+        }
+    }
+    // A list that pushed more clips than it popped leaves none behind.
+    while frame.clips.len() > pushed {
+        if frame.clips.pop() |_| {}
+    }
+    try frame.start_draw(allocator, 0, 0);
+    return;
+}
+
+fn encode_polyline(allocator: Allocator, list: &DisplayList, command: Command, color: u32, frame: &var GpuFrame) -> mem::Error!void {
+    let points = list.points.as_slice();
+    let half = command.width / lit(2.0);
+    for command.first..command.first + command.count - 1 |index| {
+        let a = points[index];
+        let b = points[index + 1];
+        let dx = b.x - a.x;
+        let dy = b.y - a.y;
+        let length = math::sqrt<f32>(dx * dx + dy * dy);
+        if length <= lit(0.0) {
+            continue;
+        }
+        // Each segment is as long as it is and half its width to each side.
+        let nx = (lit(0.0) - dy) / length * half;
+        let ny = dx / length * half;
+        try frame.quad(
+            allocator,
+            corner(a.x + nx, a.y + ny, lit(0.0), lit(0.0), color, vertex_solid()),
+            corner(b.x + nx, b.y + ny, lit(0.0), lit(0.0), color, vertex_solid()),
+            corner(b.x - nx, b.y - ny, lit(0.0), lit(0.0), color, vertex_solid()),
+            corner(a.x - nx, a.y - ny, lit(0.0), lit(0.0), color, vertex_solid())
+        );
+    }
+    return;
+}
+
+/// Adds the glyphs of a text run as quads from the atlas.
+fn (self: &var Painter) encode_run(
+    allocator: Allocator,
+    list: &DisplayList,
+    run: TextRun,
+    color: u32,
+    frame: &var GpuFrame
+) -> mem::Error!void {
+    if self.shaped.len() > max_cached_glyphs() or self.runs.len() > max_cached_runs() {
+        self.forget_glyphs(allocator);
+    }
+    var style: i64 = 0;
+    if run.bold {
+        style = 1;
+    }
+    if run.italic {
+        style = style + 2;
+    }
+    let hit = try self.run_hit(allocator, list, run, style);
+    if !frame.drawing_atlas() {
+        try frame.start_draw(allocator, 0, 0);
+    }
+    let clusters = list.clusters.as_slice();
+    let side = span(atlas_side());
+    for hit.first..hit.first + hit.count |at| {
+        let shaped = self.shaped.get(at) orelse continue;
+        let x = cast<f64>(run.x + span(clusters[run.first + shaped.at].cell) * run.advance) +
+            self.wide_shift(clusters, run, hit, at, shaped) + cast<f64>(shaped.dx);
+        let y = cast<f64>(run.baseline) + cast<f64>(shaped.dy);
+        let quarters = cast<i64>(math::floor<f64>(x * 4.0 + 0.5));
+        let whole = math::floor<f64>(cast<f64>(quarters) / 4.0);
+        let phase = quarters - cast<i64>(whole) * 4;
+        let found = try frame.atlas_glyph(allocator, self, shaped.font, shaped.glyph, phase) orelse continue;
+        if found.width <= 0 {
+            continue;
+        }
+        let left = cast<f32>(whole) + span(found.left);
+        let top = cast<f32>(math::round<f64>(y)) - span(found.top);
+        var mode = vertex_mask();
+        if found.color {
+            mode = vertex_color_glyph();
+        }
+        try frame.rect(
+            allocator,
+            left,
+            top,
+            left + span(found.width),
+            top + span(found.height),
+            span(found.x) / side,
+            span(found.y) / side,
+            span(found.x + found.width) / side,
+            span(found.y + found.height) / side,
+            color,
+            mode
+        );
+    }
+    return;
+}
+
+/// Adds an image's quad, drawn from the picture the painter holds for it.
+fn (self: &Painter) encode_image(allocator: Allocator, image: ImageDraw, destination: Rect, frame: &var GpuFrame) -> mem::Error!void {
+    if !self.has_image(image) {
+        return;
+    }
+    let held = self.pictures.get(self.picture_index(image.owner, image.image_id)) orelse return;
+    if held.width == 0 or held.height == 0 {
+        return;
+    }
+    try frame.start_draw(allocator, held.image, held.serial);
+    let width = cast<f32>(held.width);
+    let height = cast<f32>(held.height);
+    try frame.rect(
+        allocator,
+        destination.x,
+        destination.y,
+        destination.x + destination.width,
+        destination.y + destination.height,
+        image.source.x / width,
+        image.source.y / height,
+        (image.source.x + image.source.width) / width,
+        (image.source.y + image.source.height) / height,
+        packed(Rgba { r: 255, g: 255, b: 255, a: 255 }),
+        vertex_image()
+    );
+    try frame.start_draw(allocator, 0, 0);
+    return;
+}

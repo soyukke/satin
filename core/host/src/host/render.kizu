@@ -323,3 +323,40 @@ fn use_font_dir(handle: ?ptr<draw::Renderer>, dir: []u8) -> bool {
     } else |_| {}
     return false;
 }
+
+/// Draws the frames from the next one on with the GPU, or with the CPU.
+export "c" fn satin_skia_metal_set_gpu(handle: ?ptr<draw::Renderer>, enabled: u8) -> void {
+    let live = handle orelse return;
+    // SAFETY: the host holds live from a create and calls from one thread.
+    let renderer = unsafe &var live.*;
+    renderer.set_gpu(enabled != 0);
+    return;
+}
+
+/// Ends the frame encoded for the GPU and writes twelve i64 to out: the
+/// address and count of its vertices (24 bytes each: x, y, u, v as f32, then
+/// a straight RGBA color and a mode as u32), the address and count of its
+/// draws (64 bytes each: first, count, clip x, y, width and height as i64,
+/// then a picture's address and serial), the address of the atlas's pixels
+/// and its side, the part of the atlas the host has not read (x, y, width,
+/// height), the atlas's generation, and 1 when the frame drew from an atlas
+/// that was emptied while it was encoded. 0 when no frame was encoded.
+///
+/// out must hold room for twelve i64.
+export "c" fn satin_skia_metal_gpu_frame(handle: ?ptr<draw::Renderer>, out: ?ptr<u8>) -> u8 {
+    let live = handle orelse return 0;
+    let target = out orelse return 0;
+    // SAFETY: the host holds live from a create and calls from one thread.
+    let renderer = unsafe &var live.*;
+    // SAFETY: the host passes room for twelve i64.
+    return flag(unsafe renderer.write_gpu_frame(target));
+}
+
+/// Tells the renderer the host has read the atlas's changed part.
+export "c" fn satin_skia_metal_gpu_took_atlas(handle: ?ptr<draw::Renderer>) -> void {
+    let live = handle orelse return;
+    // SAFETY: the host holds live from a create and calls from one thread.
+    let renderer = unsafe &var live.*;
+    renderer.took_gpu_atlas();
+    return;
+}

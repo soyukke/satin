@@ -44,6 +44,7 @@ native_swift_sources=(
   spikes/macos-shell/NativeTabStatusBadge.swift
   spikes/macos-shell/TabControls.swift
   spikes/macos-shell/TerminalMetalView.swift
+  spikes/macos-shell/NativeGpuRenderer.swift
   spikes/macos-shell/TerminalShellArtifacts.swift
   spikes/macos-shell/TerminalShellCommands.swift
   spikes/macos-shell/TerminalShellControl.swift
