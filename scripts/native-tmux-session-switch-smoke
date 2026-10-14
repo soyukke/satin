@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Run inside tmux, the tmux command and the application would reach the
+# server of that session whatever TMUX_TMPDIR says, and the cleanup below
+# would end it.
+unset TMUX TMUX_PANE
+
 app="${SATIN_NATIVE_EXECUTABLE:-spikes/macos-shell/.build/SatinApplication}"
 result_file="spikes/macos-shell/.build/native-tmux-session-switch.result"
 socket_name="satin-session-switch-smoke-$$"
