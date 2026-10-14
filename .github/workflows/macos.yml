@@ -59,7 +59,9 @@ jobs:
       - name: Verify formatting and repository policy
         run: nix develop .#ci-static --command just ci-static
 
-  production:
+  # The core and the application build each other's sources on their own,
+  # so they run side by side.
+  core:
     needs: scope
     if: needs.scope.outputs.full == 'true'
     runs-on: macos-15
@@ -83,6 +85,27 @@ jobs:
       - name: Verify the core
         run: nix develop .#ci-native --command just ci-core
 
+  production:
+    needs: scope
+    if: needs.scope.outputs.full == 'true'
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Install Nix
+        uses: DeterminateSystems/determinate-nix-action@021c8a1bd3570eb21f5c20a054812b0c4d9ca614 # v3
+
+      # Saved on main by the "Build caches" workflow; built here on a miss.
+      - name: Restore the terminal library
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: core/target/native/libghostty-vt.a
+          key: ghostty-vt-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('core/scripts/build-ghostty', 'flake.lock') }}
+
       - name: Build native artifacts once
         run: nix develop .#ci-native --command just native-ci-build
 
@@ -100,6 +123,7 @@ jobs:
     needs:
       - scope
       - static
+      - core
       - production
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -109,12 +133,15 @@ jobs:
           FULL: ${{ needs.scope.outputs.full }}
           SCOPE_RESULT: ${{ needs.scope.result }}
           STATIC_RESULT: ${{ needs.static.result }}
+          CORE_RESULT: ${{ needs.core.result }}
           PRODUCTION_RESULT: ${{ needs.production.result }}
         run: |
           test "$SCOPE_RESULT" = success
           test "$STATIC_RESULT" = success
           if [[ "$FULL" == true ]]; then
+            test "$CORE_RESULT" = success
             test "$PRODUCTION_RESULT" = success
           else
+            test "$CORE_RESULT" = skipped
             test "$PRODUCTION_RESULT" = skipped
           fi
