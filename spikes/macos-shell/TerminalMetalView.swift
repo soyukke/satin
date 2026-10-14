@@ -85,6 +85,9 @@ final class TerminalMetalView: MTKView, CAMetalDisplayLinkDelegate, MTKViewDeleg
     /// Draws frames on the GPU when set; frames are drawn on the CPU and
     /// copied otherwise.
     private var gpuRenderer: NativeGpuRenderer?
+    /// Asks for frames while the animated backdrop moves.
+    private var backdropTimer: Timer?
+    private var backdropLastTick: CFTimeInterval?
     private var nextFrameWorkItem: DispatchWorkItem?
     private var frameDisplayLink: CAMetalDisplayLink?
     private var displayRefreshInterval: CFTimeInterval?
@@ -189,7 +192,26 @@ final class TerminalMetalView: MTKView, CAMetalDisplayLinkDelegate, MTKViewDeleg
             return
         }
         configureDisplayRefreshRate(window)
+        observeBackdropConditions(window)
         requestFrame()
+    }
+
+    private func observeBackdropConditions(_ window: NSWindow) {
+        let center = NotificationCenter.default
+        let selector = #selector(backdropConditionsChanged(_:))
+        for name in [
+            NSWindow.didChangeOcclusionStateNotification,
+            NSWindow.didChangeBackingPropertiesNotification,
+        ] {
+            center.removeObserver(self, name: name, object: nil)
+            center.addObserver(self, selector: selector, name: name, object: window)
+        }
+        let workspace = NSWorkspace.shared.notificationCenter
+        let reduce = NSWorkspace.accessibilityDisplayOptionsDidChangeNotification
+        workspace.removeObserver(self, name: reduce, object: nil)
+        workspace.addObserver(self, selector: selector, name: reduce, object: nil)
+        updateBackdropPixel()
+        updateBackdropTimer()
     }
 
     override func viewDidChangeBackingProperties() {
@@ -337,6 +359,74 @@ final class TerminalMetalView: MTKView, CAMetalDisplayLinkDelegate, MTKViewDeleg
             // The atlas was emptied while the frame was encoded: draw it again.
             requestFrame()
         }
+    }
+
+    /// Draws the experimental animated backdrop under the panes, or stops.
+    /// It needs the GPU renderer; it holds still when motion is reduced.
+    func setBackdropEnabled(_ enabled: Bool) {
+        guard let gpu = gpuRenderer else {
+            return
+        }
+        if enabled {
+            if gpu.backdrop == nil {
+                gpu.backdrop = NativeGpuRenderer.Backdrop()
+            }
+        } else {
+            gpu.backdrop = nil
+        }
+        updateBackdropPixel()
+        updateBackdropTimer()
+        requestFrame()
+    }
+
+    var isBackdropEnabled: Bool {
+        gpuRenderer?.backdrop != nil
+    }
+
+    private func updateBackdropPixel() {
+        let scale = Float(window?.backingScaleFactor ?? 2)
+        gpuRenderer?.backdrop?.pixel = 4 * scale
+    }
+
+    /// Runs the backdrop's clock at 30 frames a second while the window can
+    /// be seen.
+    private func updateBackdropTimer() {
+        let moving =
+            gpuRenderer?.backdrop != nil
+            && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+            && window?.isVisible == true
+            && window?.occlusionState.contains(.visible) == true
+        guard moving != (backdropTimer != nil) else {
+            return
+        }
+        backdropTimer?.invalidate()
+        backdropTimer = nil
+        backdropLastTick = nil
+        guard moving else {
+            return
+        }
+        let timer = Timer(timeInterval: 1.0 / 30.0, repeats: true) { [weak self] _ in
+            self?.advanceBackdrop()
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        backdropTimer = timer
+    }
+
+    private func advanceBackdrop() {
+        guard let gpu = gpuRenderer, let backdrop = gpu.backdrop else {
+            return
+        }
+        let now = CACurrentMediaTime()
+        if let last = backdropLastTick {
+            gpu.backdropTime += Float(min(0.1, now - last)) * backdrop.speed
+        }
+        backdropLastTick = now
+        requestFrame()
+    }
+
+    @objc private func backdropConditionsChanged(_ notification: Notification) {
+        updateBackdropPixel()
+        updateBackdropTimer()
     }
 
     func requestFrame() {

@@ -126,3 +126,27 @@ test "a clip starts a draw that holds what is drawn inside it" {
     let after = frame.draws.get(2) orelse return;
     testing::expect_equal<i64>(100, after.clip_width);
 }
+
+test "fills of the scene's background are marked for a backdrop" {
+    let allocator = mem::page_allocator();
+    var painter = new_painter(allocator) orelse return;
+    defer painter.deinit(allocator);
+    var frame = new_gpu_frame(allocator) orelse return;
+    defer frame.deinit(allocator);
+    var list = new_display_list(allocator);
+    defer list.deinit(allocator);
+    let background = Rgba { r: 20, g: 22, b: 26, a: 255 };
+    list.background = background;
+    try list.clear_target(allocator, background);
+    try list.fill_rect(allocator, Rect { x: lit(0.0), y: lit(0.0), width: lit(4.0), height: lit(4.0) }, Rgba { r: 255, g: 0, b: 0, a: 255 });
+    try list.fill_rect(allocator, Rect { x: lit(0.0), y: lit(0.0), width: lit(4.0), height: lit(4.0) }, background);
+    frame.begin(allocator, 100, 40);
+    try painter.encode(allocator, &list, &var frame);
+    frame.finish();
+    let clear = frame.vertices.get(0) orelse return;
+    let red = frame.vertices.get(6) orelse return;
+    let plain = frame.vertices.get(12) orelse return;
+    testing::expect_equal<u32>(vertex_backdrop_veil(), clear.mode);
+    testing::expect_equal<u32>(vertex_solid(), red.mode);
+    testing::expect_equal<u32>(vertex_backdrop_veil(), plain.mode);
+}

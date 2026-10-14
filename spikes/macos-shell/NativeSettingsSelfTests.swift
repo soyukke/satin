@@ -37,6 +37,7 @@ extension NativeSettingsStore {
         guard initial.optionAsAlt,
             initial.notifications,
             !initial.attentionHand,
+            !initial.animatedBackdrop,
             initial.sessionRestore,
             initial.confirmBeforeQuit,
             initial.automaticUpdateChecks,

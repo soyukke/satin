@@ -624,6 +624,7 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
             terminalTextView.bottomAnchor.constraint(equalTo: metalView.bottomAnchor),
         ])
         setAttentionHandVisible(settings.attentionHand)
+        metalView.setBackdropEnabled(settings.animatedBackdrop)
     }
 
     override func viewDidLayout() {
@@ -738,6 +739,9 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
             )
             metalView.setFontFamily(settings.fontFamily)
             resizeTerminalPanesToGrid()
+        }
+        if previous.animatedBackdrop != settings.animatedBackdrop {
+            metalView.setBackdropEnabled(settings.animatedBackdrop)
         }
         if previous.attentionHand != settings.attentionHand {
             setAttentionHandVisible(settings.attentionHand)
