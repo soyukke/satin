@@ -2,6 +2,7 @@
 // lines, scrolled by what the output and the user scrolled. The Rust
 // `TerminalRendererModel`.
 import satin::tmux;
+import std::array;
 import std::math;
 import std::mem;
 
@@ -62,6 +63,28 @@ pub struct RenderModel {
     last_scrollbar: Scrollbar,
     has_last_screen: bool,
     last_alternate: bool,
+    /// What each row of the last frame showed, as row_mark has it.
+    last_rows: array::Array<u64>,
+}
+
+/// A number for what a row of frame shows: the FNV-1a hash of its text.
+fn row_mark(frame: &Frame, row: i64) -> u64 {
+    // 14695981039346656037, which is past what a literal holds.
+    var mark = cast<u64>(1469598103934665603) * 10 + 7;
+    let start = frame.row_start(row);
+    let end = frame.row_end(row);
+    if end <= start {
+        return mark;
+    }
+    let cells = frame.cells.as_slice();
+    let first = cells[start];
+    let last = cells[end - 1];
+    let bytes = frame.text.as_bytes();
+    let text = bytes[first.text_start..last.text_start + last.text_len];
+    for 0..mem::len(text) |index| {
+        mark = (mark ^ cast<u64>(text[index])) * 1099511628211;
+    }
+    return mark;
 }
 
 pub fn new_render_model(allocator: Allocator, cols: i64, rows: i64) -> mem::Error!RenderModel {
@@ -73,11 +96,13 @@ pub fn new_render_model(allocator: Allocator, cols: i64, rows: i64) -> mem::Erro
         has_last_scrollbar: false,
         last_scrollbar: Scrollbar { top: 0, visible: 0, total: 0 },
         has_last_screen: false,
-        last_alternate: false
+        last_alternate: false,
+        last_rows: array::new<u64>(allocator)
     };
 }
 
 pub fn (self: RenderModel) deinit(allocator: Allocator) -> void {
+    self.last_rows.deinit(allocator);
     self.window.deinit(allocator);
 }
 
@@ -126,7 +151,17 @@ pub fn (self: &var RenderModel) update(allocator: Allocator, frame: &Frame) -> m
         // the PTY's current screen.
         self.window.reset_scroll_animation();
         self.pending = no_scroll();
-        self.record_scroll_delta(inferred);
+        var update = no_scroll();
+        update.rows = inferred;
+        // A program that keeps its input and status lines at the foot of
+        // the screen draws them again after its output scrolled. They show
+        // what they showed, so they stay still and the rows above scroll.
+        let pinned = self.unchanged_foot(frame);
+        if pinned > 0 {
+            update.has_region = true;
+            update.region = tmux::Region { top: 1, bottom: height - pinned, left: 0, right: 0 };
+        }
+        self.record_scroll_update(update);
     }
     try self.resize_window(allocator, width, height);
     if !self.has_last_screen or self.last_alternate != frame.alternate {
@@ -147,7 +182,33 @@ pub fn (self: &var RenderModel) update(allocator: Allocator, frame: &Frame) -> m
     self.last_scrollbar = frame.scrollbar;
     self.has_last_screen = true;
     self.last_alternate = frame.alternate;
+    self.last_rows.clear(allocator);
+    for 0..frame.row_count() |row| {
+        try self.last_rows.append(allocator, row_mark(frame, row));
+    }
     return;
+}
+
+/// How many rows at the foot of frame show what the last frame showed in
+/// them; zero when the frames differ in height or every row is the same.
+fn (self: &RenderModel) unchanged_foot(frame: &Frame) -> i64 {
+    let rows = frame.row_count();
+    if rows != self.last_rows.len() {
+        return 0;
+    }
+    var count: i64 = 0;
+    while count < rows {
+        let row = rows - 1 - count;
+        let before = self.last_rows.get(row) orelse return 0;
+        if before != row_mark(frame, row) {
+            break;
+        }
+        count = count + 1;
+    }
+    if count >= rows {
+        return 0;
+    }
+    return count;
 }
 
 pub fn (self: &var RenderModel) advance_animations(dt: f32) -> bool {

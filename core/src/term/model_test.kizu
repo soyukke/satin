@@ -208,6 +208,22 @@ test "scrollback growth animates only the newest row" {
     testing::expect(position_is(&model, -1.0));
 }
 
+test "the rows a program keeps at the foot stay still while output scrolls" {
+    let allocator = mem::page_allocator();
+    var model = try new_render_model(allocator, 16, 6);
+    defer model.deinit(allocator);
+    try show_primary(allocator, &var model, "one/two/working 1s/----/> /status", 0, 6);
+    try show_primary(allocator, &var model, "two/three/working 2s/----/> /status", 1, 7);
+    testing::expect(position_is(&model, -1.0));
+    testing::expect(model.window.margins.top == 0);
+    testing::expect(model.window.margins.bottom == 3);
+    testing::expect(line_is(&model, 5, "status"));
+    // Nothing is kept still once the foot changes with the output.
+    try show_primary(allocator, &var model, "three/four/five/six/seven/prompt>", 4, 10);
+    testing::expect(position_is(&model, -1.0));
+    testing::expect(model.window.margins.bottom == 0);
+}
+
 test "primary output does not build an animation backlog" {
     let allocator = mem::page_allocator();
     var model = try new_render_model(allocator, 16, 4);
