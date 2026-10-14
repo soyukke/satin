@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# A tmux command that names no socket reaches the server of the session it is
+# run in, or the user's default one. A smoke that did so ended every session
+# of the person who ran it. Every tmux command in the repository's scripts
+# and smoke scenarios must name its socket with -S or -L, and a script that
+# ends a server must not inherit a session.
+
+subcommands='kill-server|kill-session|kill-window|kill-pane|new-session|new-window|attach|attach-session|detach-client|send-keys|display-message|has-session|capture-pane|split-window|select-pane|select-window|resize-pane|resize-window|set|set-option|set-window-option|source-file|list-sessions|list-clients|list-windows|list-panes|rename-session|rename-window|switch-client|start-server|-CC|-C'
+
+failures=0
+while IFS= read -r file; do
+  [[ "$file" == scripts/tmux-isolation-lint ]] && continue
+  if matches="$(grep -nE "(^|[^A-Za-z0-9_./-])tmux[[:space:]]+($subcommands)([[:space:]]|\"|'|\$|\)|;)" "$file")"; then
+    printf '%s: tmux command without -S or -L:\n%s\n' "$file" "$matches" >&2
+    failures=1
+  fi
+  if grep -q 'kill-server' "$file" && [[ "$file" != *.swift ]] &&
+    ! grep -q '^unset TMUX TMUX_PANE$' "$file"; then
+    printf '%s: ends a tmux server without "unset TMUX TMUX_PANE"\n' "$file" >&2
+    failures=1
+  fi
+done < <(git ls-files -- scripts core/scripts 'spikes/macos-shell/*.swift' justfile)
+
+if [[ "$failures" != 0 ]]; then
+  exit 1
+fi
+echo "tmux isolation lint passed"
