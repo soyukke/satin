@@ -1,5 +1,6 @@
-// The `satin artifact` commands: they keep the artifact store beside the
-// control socket themselves, and ask the app only to show an artifact.
+// The `satin page` commands (`satin artifact` is their older alias): they
+// keep the page store beside the control socket themselves, and ask the app
+// only to show a page.
 import satin::artifact;
 import std::array;
 import std::fmt;
@@ -11,15 +12,15 @@ pub error ArtifactCommandFailure = CliError or artifact::ArtifactError or mem::E
 
 fn artifact_usage() -> []u8 {
     return
-        \\usage: satin artifact policy
-        \\       satin artifact policy set [--max-columns N] [--max-rows N]
-        \\                                 [--language TAG]
-        \\                                 [--overflow compact|defer|reject]
-        \\       satin artifact add [--id ID] --kind KIND --title TITLE --file PATH
-        \\                          [--language TAG] [--pane ID] [--tab ID]
-        \\       satin artifact list [ID] [--limit N]
-        \\       satin artifact show [--pane ID] ID [--background]
-        \\       satin artifact view ID [--no-wait]
+        \\usage: satin page policy
+        \\       satin page policy set [--max-columns N] [--max-rows N]
+        \\                             [--language TAG]
+        \\                             [--overflow compact|defer|reject]
+        \\       satin page add [--id ID] --kind KIND --title TITLE --file PATH
+        \\                      [--language TAG] [--pane ID] [--tab ID]
+        \\       satin page list [ID] [--limit N]
+        \\       satin page show [--pane ID] ID [--background]
+        \\       satin page view ID [--no-wait]
         \\
         \\kinds: text, markdown, table, tree, timeline, diff, image
     ;
@@ -226,7 +227,7 @@ fn require_value(
     out: &var string::String
 ) -> CliFailure!void {
     if !try cli.extract_value(allocator, flag, out) {
-        cli.say(allocator, "artifact add requires ", flag, usage);
+        cli.say(allocator, "page add requires ", flag, usage);
         return CliError::Failed;
     }
     return;
@@ -245,7 +246,7 @@ fn artifact_add(cli: &var Cli, allocator: Allocator, socket: []u8) -> ArtifactCo
     if artifact::parse_kind(kind_word) |parsed| {
         request.kind = parsed;
     } else {
-        cli.say(allocator, "unsupported artifact kind ", "", "");
+        cli.say(allocator, "unsupported page kind ", "", "");
         if fmt::append_bytes_literal(allocator, &var cli.message, kind_word) {} else |_| {}
         return CliError::Failed;
     }
@@ -254,7 +255,7 @@ fn artifact_add(cli: &var Cli, allocator: Allocator, socket: []u8) -> ArtifactCo
     let source = request.source.as_bytes();
     let absolute = mem::starts_with(source, "/");
     if !absolute {
-        cli.say(allocator, "artifact source path must be absolute", "", "");
+        cli.say(allocator, "page source path must be absolute", "", "");
         return CliError::Failed;
     }
     request.has_language = try cli.extract_value(allocator, "--language", &var request.language);
@@ -375,7 +376,7 @@ fn artifact_list(cli: &var Cli, allocator: Allocator, socket: []u8) -> ArtifactC
         return CliError::Failed;
     }
     if cli.args.len() > 1 {
-        cli.say(allocator, "artifact list accepts at most one artifact ID", "", "");
+        cli.say(allocator, "page list accepts at most one page ID", "", "");
         return CliError::Failed;
     }
     let artifacts = try artifact::list_artifacts(allocator, &var cli.message, socket, -1);
@@ -386,7 +387,7 @@ fn artifact_list(cli: &var Cli, allocator: Allocator, socket: []u8) -> ArtifactC
         let id_bytes = id.as_bytes();
         let position = position_of(&artifacts, id_bytes);
         if position < 0 {
-            cli.say(allocator, "artifact ", id_bytes, " does not exist");
+            cli.say(allocator, "page ", id_bytes, " does not exist");
             return CliError::Failed;
         }
         if artifacts.at(position) |item| {
@@ -425,7 +426,7 @@ fn artifact_list(cli: &var Cli, allocator: Allocator, socket: []u8) -> ArtifactC
     }
     try encoder.end_array();
     if text.len() == 0 {
-        try text.append_bytes(allocator, "No artifacts.");
+        try text.append_bytes(allocator, "No pages.");
         try text.append_byte(allocator, 10);
     }
     let text_bytes = text.as_bytes();
@@ -447,11 +448,11 @@ fn artifact_show(cli: &var Cli, allocator: Allocator, socket: []u8) -> ArtifactC
     let vertical = cli.remove_flag(allocator, "--vertical");
     let horizontal = cli.remove_flag(allocator, "--horizontal");
     if vertical and horizontal {
-        cli.say(allocator, "artifact show accepts at most one of --vertical or --horizontal", "", "");
+        cli.say(allocator, "page show accepts at most one of --vertical or --horizontal", "", "");
         return CliError::Failed;
     }
     if cli.args.len() != 1 {
-        cli.say(allocator, "artifact show requires one artifact ID", "", "");
+        cli.say(allocator, "page show requires one page ID", "", "");
         return CliError::Failed;
     }
     var selector = string::new(allocator);
@@ -488,7 +489,7 @@ fn artifact_show(cli: &var Cli, allocator: Allocator, socket: []u8) -> ArtifactC
 fn artifact_view(cli: &var Cli, allocator: Allocator, socket: []u8) -> ArtifactCommandFailure!void {
     let no_wait = cli.remove_flag(allocator, "--no-wait");
     if cli.args.len() != 1 {
-        cli.say(allocator, "artifact view requires one artifact ID", "", "");
+        cli.say(allocator, "page view requires one page ID", "", "");
         return CliError::Failed;
     }
     var selector = string::new(allocator);
@@ -524,7 +525,7 @@ fn run_artifact(cli: &var Cli, allocator: Allocator, socket: []u8) -> ArtifactCo
     if mem::equal_bytes(word, "view") {
         return artifact_view(cli, allocator, socket);
     }
-    cli.say(allocator, "unknown artifact command ", "", "");
+    cli.say(allocator, "unknown page command ", "", "");
     if fmt::append_bytes_literal(allocator, &var cli.message, word) {} else |_| {}
     if cli.message.append_bytes(allocator, blank_line()) {} else |_| {}
     if cli.message.append_bytes(allocator, artifact_usage()) {} else |_| {}

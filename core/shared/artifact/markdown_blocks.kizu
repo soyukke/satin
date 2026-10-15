@@ -298,10 +298,6 @@ fn (self: &MarkdownBuilder) inline_style(inline_code: bool) -> SpanStyle {
     style.italic = self.emphasis > 0;
     style.underline = self.link > 0;
     style.strikethrough = self.strikethrough > 0;
-    if inline_code {
-        style.has_background = true;
-        style.background = RgbColor { red: 38, green: 48, blue: 61 };
-    }
     return style;
 }
 

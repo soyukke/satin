@@ -369,6 +369,7 @@ extension TerminalShellViewController {
             paneStore.runtimes[nativePaneId] = runtime
             paneStore.modes[nativePaneId] = .terminal
             runtime.setOptionAsAlt(optionAsAltEnabled)
+            runtime.setThemeColors(paneThemeColors)
             runtime.setCurrentCommand(pane.current_command)
             if let metadata = session.bufferedScrollMetadata.removeValue(forKey: pane.pane_id) {
                 for update in metadata {
@@ -601,6 +602,7 @@ extension TerminalShellViewController {
                 paneStore.runtimes[paneId] = pane
                 pane.resize(grid: paneGridSize(paneId))
                 pane.setOptionAsAlt(optionAsAltEnabled)
+                pane.setThemeColors(paneThemeColors)
                 _ = pane.drain()
                 updateTerminalMetadata(pane, paneId: paneId)
                 installPaneWakeup(paneId: paneId, pane: pane)
@@ -627,6 +629,7 @@ extension TerminalShellViewController {
         }
         paneStore.runtimes[paneId] = pane
         pane.setOptionAsAlt(optionAsAltEnabled)
+        pane.setThemeColors(paneThemeColors)
         installPaneWakeup(paneId: paneId, pane: pane)
         paneStore.modes[paneId] = .terminal
         paneStore.scrollRemainders[paneId] = 0

@@ -249,8 +249,15 @@ image_source="$PWD/assets/app-icon.png"
 image_registration="$($cli --socket "$socket" --json artifact add \
   --kind image --title "Satin image preview" --language en-US --file "$image_source")"
 image_id="$(jq -r '.result.id' <<<"$image_registration")"
-image_show="$($cli --socket "$socket" --json artifact show \
+image_inbox="$($cli --socket "$socket" --json page show \
   "$image_id" --pane "$rich_source_pane" --background)"
+if ! jq -e '.result.inbox == true and .result.pane == null' <<<"$image_inbox" >/dev/null; then
+  printf '%s\n' "$image_inbox" >&2
+  echo "page smoke failed: a background page did not wait in the inbox" >&2
+  exit 1
+fi
+image_show="$($cli --socket "$socket" --json page show \
+  "$image_id" --pane "$rich_source_pane")"
 image_pane="$(jq -r '.result.pane' <<<"$image_show")"
 
 for _ in {1..100}; do

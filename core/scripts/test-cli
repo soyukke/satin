@@ -106,15 +106,17 @@ out="$(env -u SATIN_PANE_ID -u NVTERM_PANE_ID "$satin" --socket "$socket" read-s
 check "a pane is required" "satin: pass --pane or set SATIN_PANE_ID" "$out"
 out="$("$satin" --socket "$work/absent.sock" list 2>&1 || true)"
 check "a missing socket is reported" "satin: connect $work/absent.sock" "$out"
-check "--version" "satin 0.4.10" "$("$satin" --version)"
+check "--version" "satin 0.4.11" "$("$satin" --version)"
 check "skill starts with its metadata" "---" "$("$satin" skill | head -1)"
 check "help prints the usage" "usage: satin --version" "$("$satin" --help | head -1)"
+check "help lists the page commands" "  page list [ID] [--limit N]" "$("$satin" --help | grep 'page list')"
+check "help does not name the older artifact alias" "0" "$("$satin" --help | grep -c artifact || true)"
 
-# The artifact commands keep their store beside the socket themselves;
-# only `artifact show` asks the app for anything.
+# The page commands keep their store beside the socket themselves;
+# only `page show` asks the app for anything.
 printf 'first line\nsecond line\n' > "$work/note.txt"
-out="$(env -u LC_ALL -u LC_MESSAGES LANG=ja_JP.UTF-8 "$satin" --socket "$socket" artifact policy)"
-check "artifact policy prints the default policy" '{
+out="$(env -u LC_ALL -u LC_MESSAGES LANG=ja_JP.UTF-8 "$satin" --socket "$socket" page policy)"
+check "page policy prints the default policy" '{
   "policy": {
     "language": "auto",
     "max_columns": 80,
@@ -123,46 +125,50 @@ check "artifact policy prints the default policy" '{
   },
   "resolvedLanguage": "ja-JP"
 }' "$out"
-"$satin" --socket "$socket" artifact policy set --max-columns 60 --max-rows 12 --language en-US --overflow reject > /dev/null
-check "artifact policy set saves the policy" '{
+"$satin" --socket "$socket" page policy set --max-columns 60 --max-rows 12 --language en-US --overflow reject > /dev/null
+check "page policy set saves the policy" '{
   "max_columns": 60,
   "max_rows": 12,
   "language": "en-US",
   "overflow": "reject"
 }' "$(cat "$work/artifacts/.policy.json")"
-out="$("$satin" --socket "$socket" artifact policy set --max-columns 10 2>&1 || true)"
-check "artifact policy refuses bounds it cannot keep" "satin: max columns must be between 40 and 240" "$out"
-"$satin" --socket "$socket" artifact policy set --overflow compact > /dev/null
-out="$("$satin" --socket "$socket" --json artifact add --kind text --title 'Release notes' --file "$work/note.txt" --pane 4 --tab 2)"
+out="$("$satin" --socket "$socket" page policy set --max-columns 10 2>&1 || true)"
+check "page policy refuses bounds it cannot keep" "satin: max columns must be between 40 and 240" "$out"
+"$satin" --socket "$socket" page policy set --overflow compact > /dev/null
+out="$("$satin" --socket "$socket" --json page add --kind text --title 'Release notes' --file "$work/note.txt" --pane 4 --tab 2)"
 id="$(printf '%s\n' "$out" | sed -n 's/^    "id": "\(.*\)",$/\1/p')"
-check "artifact add answers the first version" '    "language": "en-US",
+check "page add answers the first version" '    "language": "en-US",
     "owner_pane": 4,
     "owner_tab": 2,
     "version": 1' "$(printf '%s\n' "$out" | grep -e '"language"' -e '"owner_' -e '"version"')"
-check "artifact add keeps the document" '# Release notes
+check "page add keeps the document" '# Release notes
 
 first line
 second line' "$(cat "$work/artifacts/release-notes--$id/current.md")"
-out="$("$satin" --socket "$socket" artifact add --id "$id" --kind text --title 'Release notes' --file "$work/note.txt" | grep '"version"')"
-check "artifact add stores an unchanged source once" '  "version": 1' "$out"
+out="$("$satin" --socket "$socket" page add --id "$id" --kind text --title 'Release notes' --file "$work/note.txt" | grep '"version"')"
+check "page add stores an unchanged source once" '  "version": 1' "$out"
+out="$("$satin" --socket "$socket" page list | cut -f 1,2,3,5,6)"
+check "page list" "$id	v1	text	Release notes	first line · second line" "$out"
+out="$("$satin" --socket "$socket" page list "$id" | cut -f 1,3)"
+check "page list ID lists the versions" "v1	23 bytes" "$out"
 out="$("$satin" --socket "$socket" artifact list | cut -f 1,2,3,5,6)"
-check "artifact list" "$id	v1	text	Release notes	first line · second line" "$out"
-out="$("$satin" --socket "$socket" artifact list "$id" | cut -f 1,3)"
-check "artifact list ID lists the versions" "v1	23 bytes" "$out"
-out="$(env -u COLUMNS -u LINES "$satin" --socket "$socket" artifact view "$id" --no-wait | sed -n 1p | tr -d '\033\r' | sed 's/ *\[0m$//')"
-check "artifact view --no-wait draws the title" "[1;38;2;244;247;252mRelease notes" "$out"
-out="$(env -u COLUMNS -u LINES "$satin" --socket "$socket" artifact view "$id" --no-wait | wc -l | tr -d ' ')"
-check "artifact view --no-wait draws the policy's rows" "11" "$out"
+check "artifact is an alias of page" "$id	v1	text	Release notes	first line · second line" "$out"
+out="$("$satin" --socket "$socket" page 2>&1 | head -1 || true)"
+check "page alone prints its usage" "satin: usage: satin page policy" "$out"
+out="$(env -u COLUMNS -u LINES "$satin" --socket "$socket" page view "$id" --no-wait | sed -n 1p | tr -d '\033\r' | sed 's/ *\[0m$//')"
+check "page view --no-wait draws the title" "[1;39mRelease notes" "$out"
+out="$(env -u COLUMNS -u LINES "$satin" --socket "$socket" page view "$id" --no-wait | wc -l | tr -d ' ')"
+check "page view --no-wait draws the policy's rows" "11" "$out"
 answer '{"ok":true,"result":"shown"}'
-out="$("$satin" --socket "$socket" artifact show --pane 3 "$id@1" --background)"
-check "artifact show prints the app's answer" "shown" "$out"
-check "artifact show request" "{\"version\":1,\"command\":\"artifact-show\",\"pane\":3,\"artifact\":\"$id@1\",\"axis\":\"vertical\",\"background\":true}" "$(request)"
-out="$("$satin" --socket "$socket" artifact show --pane 3 a0 2>&1 || true)"
-check "artifact show refuses an artifact that is not stored" "satin: artifact a0 does not exist" "$out"
-out="$("$satin" --socket "$socket" artifact add --kind video 2>&1 || true)"
-check "artifact add refuses a kind it does not know" 'satin: unsupported artifact kind "video"' "$out"
+out="$("$satin" --socket "$socket" page show --pane 3 "$id@1" --background)"
+check "page show prints the app's answer" "shown" "$out"
+check "page show request" "{\"version\":1,\"command\":\"artifact-show\",\"pane\":3,\"artifact\":\"$id@1\",\"axis\":\"vertical\",\"background\":true}" "$(request)"
+out="$("$satin" --socket "$socket" page show --pane 3 a0 2>&1 || true)"
+check "page show refuses a page that is not stored" "satin: page a0 does not exist" "$out"
+out="$("$satin" --socket "$socket" page add --kind video 2>&1 || true)"
+check "page add refuses a kind it does not know" 'satin: unsupported page kind "video"' "$out"
 
-# A Markdown artifact is drawn block by block: `plain` is the body of the
+# A Markdown page is drawn block by block: `plain` is the body of the
 # screen without its escapes and the spaces that fill each row.
 cat > "$work/report.md" <<'MD'
 # Report
@@ -182,26 +188,26 @@ Status **first**, run `cargo test`.
 echo done
 ```
 MD
-"$satin" --socket "$socket" artifact policy set --max-columns 80 --max-rows 32 > /dev/null
-out="$("$satin" --socket "$socket" --json artifact add --kind markdown --title 'Report' --file "$work/report.md")"
+"$satin" --socket "$socket" page policy set --max-columns 80 --max-rows 32 > /dev/null
+out="$("$satin" --socket "$socket" --json page add --kind markdown --title 'Report' --file "$work/report.md")"
 id="$(printf '%s\n' "$out" | sed -n 's/^    "id": "\(.*\)",$/\1/p')"
-view="$(env -u COLUMNS -u LINES "$satin" --socket "$socket" artifact view "$id" --no-wait)"
+view="$(env -u COLUMNS -u LINES "$satin" --socket "$socket" page view "$id" --no-wait)"
 plain="$(printf '%s\n' "$view" | sed -e "s/$(printf '\033')\[[0-9;]*m//g" -e 's/ *\r$//' | sed -n '4,22p')"
-check "artifact view draws a Markdown heading and inline styles" '▌ Findings
+check "page view draws a Markdown heading and inline styles" '▌ Findings
 
 Status first, run cargo test.' "$(printf '%s\n' "$plain" | sed -n '1,3p')"
-check "artifact view draws a Markdown list" '• one
+check "page view draws a Markdown list" '• one
 
   1. nested' "$(printf '%s\n' "$plain" | sed -n '5,7p')"
-check "artifact view draws a Markdown table" '┌───────────────────────────────────────┬──────────────────────────────────────┐
+check "page view draws a Markdown table" '┌───────────────────────────────────────┬──────────────────────────────────────┐
 │Check                                  │Result                                │
 ├───────────────────────────────────────┼──────────────────────────────────────┤
 │tests                                  │pass                                  │
 └───────────────────────────────────────┴──────────────────────────────────────┘' "$(printf '%s\n' "$plain" | sed -n '9,13p')"
-check "artifact view draws a Markdown code fence" '┌─ sh
+check "page view draws a Markdown code fence" '┌─ sh
 │ echo done
 └─' "$(printf '%s\n' "$plain" | sed -n '15,17p')"
-check "artifact view styles Markdown spans" "1" "$(printf '%s\n' "$view" | grep -c '\[1mfirst.*\[48;2;38;48;61mcargo test')"
+check "page view styles Markdown spans" "1" "$(printf '%s\n' "$view" | grep -c '\[1mfirst.*\[36mcargo test')"
 
 if [ "$failures" -ne 0 ]; then
     echo "$failures failed"

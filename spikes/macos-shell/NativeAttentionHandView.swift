@@ -1,11 +1,15 @@
 import AppKit
 import QuartzCore
 
-/// The hand of attention cards along the window's lower edge. The strip is
-/// always there, so a card coming or going never resizes a terminal; the cards
-/// show their heads in it and rise over the panes when dealt or pointed at.
+/// The hand of attention cards, held in a fan at the window's lower edge over
+/// the panes. It takes no room of its own, so a card coming or going never
+/// resizes a terminal; the cards show their name, screen and state, and rise
+/// when dealt or pointed at.
 final class NativeAttentionHandView: NSView {
-    static let stripHeight: CGFloat = 34
+    /// The room the hand keeps below the panes: none, the cards lie over them.
+    static let stripHeight: CGFloat = 0
+    /// How much of a card at rest shows above the window's edge.
+    private static let restShowing: CGFloat = 104
     static let reach: CGFloat = 268
     private static let hoverGrace: TimeInterval = 0.35
     private static let peekLift: CGFloat = 84
@@ -23,8 +27,6 @@ final class NativeAttentionHandView: NSView {
     var previewText: ((Int) -> String?)?
     var onSelectionChange: ((NativeHandCard?) -> Void)?
 
-    private let stripView = NSVisualEffectView(frame: .zero)
-    private let separator = NSView(frame: .zero)
     private let handLabel = NSTextField(labelWithString: "")
     private let statsLabel = NSTextField(labelWithString: "")
     /// Holds the cards, so a card in flight can lie over all of them.
@@ -51,6 +53,17 @@ final class NativeAttentionHandView: NSView {
     private var refreshTimer: Timer?
     private var hoverArea: NSTrackingArea?
     private weak var foiledCard: NativeHandCardView?
+    /// Lowered out of sight while a page or the binder is open.
+    private var sunk = false
+    /// The room at the right the unread pages' fan takes; the hand centers
+    /// itself in what is left.
+    var rightReserve: CGFloat = 0 {
+        didSet {
+            if rightReserve != oldValue {
+                place(animated: true)
+            }
+        }
+    }
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -83,7 +96,7 @@ final class NativeAttentionHandView: NSView {
 
     /// Only the strip and the cards take the pointer; the panes keep the rest.
     override func hitTest(_ point: NSPoint) -> NSView? {
-        guard !isHidden else {
+        guard !isHidden, !sunk else {
             return nil
         }
         let local = superview.map { convert(point, from: $0) } ?? point
@@ -217,7 +230,6 @@ final class NativeAttentionHandView: NSView {
         }
         if playedPaneId != nil, hadCards, slots.isEmpty {
             allClearUntil = Date().addingTimeInterval(Self.allClearDuration)
-            NativeHandEffects.flash(stripView.layer, color: .systemGreen)
         }
         if !dealt.isEmpty {
             fanned = true
@@ -315,6 +327,22 @@ final class NativeAttentionHandView: NSView {
                 )
             }
         )
+    }
+
+    /// Puts the strip and the cards in the current mode's look.
+    func applyLook() {
+        for slot in slots {
+            slot.applyLook()
+        }
+        needsLayout = true
+    }
+
+    func setSunk(_ sunk: Bool) {
+        guard sunk != self.sunk else {
+            return
+        }
+        self.sunk = sunk
+        place(animated: true)
     }
 
     func setRaised(_ raised: Bool, animated: Bool) {
@@ -432,10 +460,13 @@ final class NativeAttentionHandView: NSView {
     private func place(animated: Bool) {
         let size = NativeHandCardView.size
         let count = CGFloat(slots.count)
-        let room = slots.count > 1 ? max(36, (bounds.width - size.width - 48) / (count - 1)) : 0
-        // In the strip the cards stand side by side; fanned, they close into a fan.
+        let width = max(size.width + 48, bounds.width - rightReserve)
+        let room = slots.count > 1 ? max(36, (width - size.width - 48) / (count - 1)) : 0
+        // The cards are always held in a fan. At rest it sinks below the
+        // window's edge with each card's head showing; under the pointer it
+        // rises far enough to read; dealt, played or ⌘J, it stands up whole.
         let fan = raised && fanned
-        let step = fan ? min(size.width * 0.62, room) : min(size.width + 8, room)
+        let step = min(size.width * 0.62, room)
         let chosenIndex =
             raised ? slots.firstIndex { $0.cardView.card.paneId == selectedPaneId } : nil
         let moves = slots.enumerated().map {
@@ -444,25 +475,26 @@ final class NativeAttentionHandView: NSView {
             let first = index == 0
             let chosen = index == chosenIndex
             // The neighbors of a chosen card draw aside to show all of it.
-            let aside: CGFloat =
-                fan ? chosenIndex.map { index < $0 ? -34 : (index > $0 ? 34 : 0) } ?? 0 : 0
+            let aside: CGFloat = chosenIndex.map { index < $0 ? -34 : (index > $0 ? 34 : 0) } ?? 0
             let lift: CGFloat = chosen ? Self.chosenLift : (first && chosenIndex == nil ? 12 : 0)
-            let stripY = Self.stripHeight - 4 - size.height + (first ? 3 : 0)
-            let y: CGFloat
+            let restY = Self.restShowing - size.height - offset * offset * 5 + (first ? 6 : 0)
+            var y: CGFloat
             if fan {
                 y = 20 - offset * offset * 7 + lift
             } else if raised {
-                // Under the pointer the cards rise where they stand, far
-                // enough to read and press, and the one it is on a little more.
-                y = stripY + Self.peekLift + (chosen ? 14 : 0)
+                y = restY + Self.peekLift + (chosen ? 30 : 0)
             } else {
-                y = stripY
+                y = restY
             }
-            let origin = NSPoint(x: bounds.midX + offset * step + aside - size.width / 2, y: y)
+            if sunk {
+                y = -size.height - 40
+            }
+            let origin = NSPoint(
+                x: bounds.minX + width / 2 + offset * step + aside - size.width / 2, y: y)
             slot.cardView.isChosen = chosen
             slot.layer?.zPosition = chosen ? 50 : 0
             slot.restOrigin = origin
-            slot.restRotation = fan && !chosen ? -offset * 7 : 0
+            slot.restRotation = chosen ? 0 : -offset * (fan ? 7 : 5)
             return (slot, origin, slot.restRotation)
         }
         updateTethers()
@@ -490,7 +522,7 @@ final class NativeAttentionHandView: NSView {
         let size = NativeHandCardView.size
         for slot in slots {
             let card = slot.cardView.card
-            guard raised, slot.alphaValue > 0, let x = tabMidX?(card.tabId) else {
+            guard raised, !sunk, slot.alphaValue > 0, let x = tabMidX?(card.tabId) else {
                 continue
             }
             live.insert(card.paneId)
@@ -569,18 +601,13 @@ final class NativeAttentionHandView: NSView {
     }
 
     private func configure() {
-        stripView.translatesAutoresizingMaskIntoConstraints = false
-        stripView.material = .sidebar
-        stripView.blendingMode = .withinWindow
-        stripView.state = .followsWindowActiveState
-        stripView.wantsLayer = true
-        separator.translatesAutoresizingMaskIntoConstraints = false
-        separator.wantsLayer = true
-        separator.layer?.backgroundColor = NSColor.separatorColor.cgColor
+        // The counts are kept for VoiceOver; on screen the fan says it all,
+        // and a line of text would lie over the panes' last row.
         for label in [handLabel, statsLabel] {
             label.translatesAutoresizingMaskIntoConstraints = false
             label.font = .monospacedDigitSystemFont(ofSize: 10, weight: .semibold)
             label.textColor = .secondaryLabelColor
+            label.isHidden = true
         }
         setAccessibilityElement(true)
         setAccessibilityRole(.group)
@@ -591,8 +618,6 @@ final class NativeAttentionHandView: NSView {
             host.wantsLayer = true
         }
         previewView.isHidden = true
-        addSubview(stripView)
-        addSubview(separator)
         addSubview(handLabel)
         addSubview(statsLabel)
         addSubview(tetherHost)
@@ -600,18 +625,10 @@ final class NativeAttentionHandView: NSView {
         addSubview(effectsHost)
         addSubview(previewView)
         NSLayoutConstraint.activate([
-            stripView.leadingAnchor.constraint(equalTo: leadingAnchor),
-            stripView.trailingAnchor.constraint(equalTo: trailingAnchor),
-            stripView.bottomAnchor.constraint(equalTo: bottomAnchor),
-            stripView.heightAnchor.constraint(equalToConstant: Self.stripHeight),
-            separator.leadingAnchor.constraint(equalTo: leadingAnchor),
-            separator.trailingAnchor.constraint(equalTo: trailingAnchor),
-            separator.bottomAnchor.constraint(equalTo: stripView.topAnchor),
-            separator.heightAnchor.constraint(equalToConstant: 1),
             handLabel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12),
-            handLabel.centerYAnchor.constraint(equalTo: stripView.centerYAnchor),
+            handLabel.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -10),
             statsLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12),
-            statsLabel.centerYAnchor.constraint(equalTo: stripView.centerYAnchor),
+            statsLabel.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -10),
         ])
         refreshLabels(now: Date())
     }
@@ -669,7 +686,9 @@ func runNativeAttentionHandViewSelfTests() -> Bool {
         labels() == ["HAND 3  +2  ·  RUNNING 1", "⌘J plays the first card"],
         slots()[0].cardView.accessibilityPerformPress(),
         selected?.paneId == 11,
-        view.hitTest(NSPoint(x: 450, y: 10)) === view,
+        // Only the cards take the pointer: the middle one, not the panes beside it.
+        view.hitTest(NSPoint(x: 450, y: 40)) === view,
+        view.hitTest(NSPoint(x: 40, y: 10)) == nil,
         view.hitTest(NSPoint(x: 450, y: NativeAttentionHandView.reach - 2)) == nil
     else {
         return false

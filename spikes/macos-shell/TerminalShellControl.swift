@@ -436,6 +436,13 @@ extension TerminalShellViewController {
             )
             return
         }
+        // In the background a page waits in the binder's inbox, unless the
+        // reader is already open: then it shows the new page in place.
+        if request.background == true, paneStore.runtimes[nativeArtifactSidebarPaneId] == nil {
+            pageInbox.reload()
+            reply(.success(["artifact": artifact, "tab": tab.id, "pane": NSNull(), "inbox": true]))
+            return
+        }
         guard
             let reused = showArtifactSidebar(
                 artifact: artifact,
@@ -443,7 +450,7 @@ extension TerminalShellViewController {
                 focus: request.background != true
             )
         else {
-            reply(controlFailure("runtime_error", "The artifact sidebar could not be opened."))
+            reply(controlFailure("runtime_error", "The page reader could not be opened."))
             return
         }
         let result: [String: Any] = [

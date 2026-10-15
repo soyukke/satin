@@ -9,9 +9,10 @@ final class NativeTabFuseView: NSView {
         let rect: NSRect
         let color: NSColor
         let steady: Bool
+        let paper: Bool
     }
 
-    /// The rectangle of a tab in this view's coordinates.
+    /// The rectangle of a tab in the tab strip's coordinates.
     var segmentRect: ((Int) -> NSRect?)?
 
     private var colors = [Int: NSColor]()
@@ -33,6 +34,16 @@ final class NativeTabFuseView: NSView {
         nil
     }
 
+    /// The tab strip's tabs have a top and a foot; the fuse follows them.
+    override var isFlipped: Bool {
+        superview?.isFlipped ?? false
+    }
+
+    /// Redraws the fuses in the current mode's tab shape.
+    func refreshLook() {
+        rebuild()
+    }
+
     override func layout() {
         super.layout()
         rebuild()
@@ -48,15 +59,26 @@ final class NativeTabFuseView: NSView {
         rebuild()
     }
 
+    /// A tab's rectangle in this view. The tab strip lays this view out a
+    /// little inside its own bounds, so the tab's rectangle is converted.
+    private func tabRect(_ segment: Int) -> NSRect? {
+        guard let rect = segmentRect?(segment) else {
+            return nil
+        }
+        return superview.map { convert(rect, from: $0) } ?? rect
+    }
+
     private func rebuild() {
         var wanted = [Int: Fuse]()
         for (segment, color) in colors {
-            if let rect = segmentRect?(segment) {
-                wanted[segment] = Fuse(rect: rect, color: color, steady: false)
+            if let rect = tabRect(segment) {
+                wanted[segment] = Fuse(
+                    rect: rect, color: color, steady: false, paper: NativePageStyle.paper)
             }
         }
-        if let target, let rect = segmentRect?(target.segment) {
-            wanted[target.segment] = Fuse(rect: rect, color: target.color, steady: true)
+        if let target, let rect = tabRect(target.segment) {
+            wanted[target.segment] = Fuse(
+                rect: rect, color: target.color, steady: true, paper: NativePageStyle.paper)
         }
         guard wanted != shown else {
             return
@@ -74,9 +96,21 @@ final class NativeTabFuseView: NSView {
     }
 
     private func makeLayer(_ fuse: Fuse) -> CALayer {
-        let rect = fuse.rect.insetBy(dx: 3, dy: 2.5)
-        let path = CGPath(roundedRect: rect, cornerWidth: 6, cornerHeight: 6, transform: nil)
-        let perimeter = 2 * (rect.width + rect.height)
+        // The fuse runs along the tab's own edge: the terminal look's square
+        // frame, or paper's folder tab with its foot closed.
+        let path: CGPath
+        let perimeter: CGFloat
+        if fuse.paper {
+            let rect = NativePaperTab.rect(fuse.rect, flipped: isFlipped)
+            let outline = NativePaperTab.outline(rect, flipped: isFlipped)
+            outline.close()
+            path = outline.cgPath
+            perimeter = NativePaperTab.perimeter(rect)
+        } else {
+            let rect = nativeTerminalTabFrame(fuse.rect)
+            path = CGPath(rect: rect, transform: nil)
+            perimeter = 2 * (rect.width + rect.height)
+        }
         let container = CALayer()
         func stroke(length: CGFloat, alpha: CGFloat, width: CGFloat, color: NSColor) -> CAShapeLayer
         {

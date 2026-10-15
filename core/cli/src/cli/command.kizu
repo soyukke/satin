@@ -10,7 +10,7 @@ import std::process;
 import std::string;
 
 fn version() -> []u8 {
-    return "0.4.10";
+    return "0.4.11";
 }
 
 fn write_out(bytes: []u8) -> void {
@@ -378,7 +378,9 @@ fn run(cli: &var Cli, allocator: Allocator) -> CliFailure!void {
         try resolve_socket(cli, allocator, &var socket);
     }
     let path = socket.as_bytes();
-    if cli.first_is("artifact") {
+    // `artifact` is the older name of `page`, kept for agents and skills
+    // that still use it.
+    if cli.first_is("page") or cli.first_is("artifact") {
         cli.shift(allocator);
         if run_artifact(cli, allocator, path) {} else |err| {
             if err == mem::Error::OutOfMemory {

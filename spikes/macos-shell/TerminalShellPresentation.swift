@@ -145,6 +145,7 @@ extension TerminalShellViewController {
             }
         }
         syncTmuxClientSize(immediately: tmuxClientResizeImmediately)
+        syncPageReaderChrome()
     }
 
     func syncTmuxClientSize(immediately: Bool = false) {

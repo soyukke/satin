@@ -467,11 +467,11 @@ fn validate_title(allocator: Allocator, message: &var string::String, title: []u
         }
     }
     if blank or controls {
-        explain(allocator, message, "artifact title must be non-empty and contain no control characters", "", "");
+        explain(allocator, message, "page title must be non-empty and contain no control characters", "", "");
         return ArtifactError::Failed;
     }
     if mem::len(title) > 512 {
-        explain(allocator, message, "artifact title is too long", "", "");
+        explain(allocator, message, "page title is too long", "", "");
         return ArtifactError::Failed;
     }
     return;
@@ -486,7 +486,7 @@ fn validate_artifact_id(allocator: Allocator, message: &var string::String, id: 
         }
     }
     if !valid {
-        explain(allocator, message, "invalid artifact ID", "", "");
+        explain(allocator, message, "invalid page ID", "", "");
         return ArtifactError::Failed;
     }
     return;

@@ -204,7 +204,7 @@ fn snapshot_destination(
         return;
     }
     if assets.len() == max_embedded_images() {
-        explain(allocator, message, "Markdown artifacts support at most 4 local PNG images", "", "");
+        explain(allocator, message, "Markdown pages support at most 4 local PNG images", "", "");
         return ArtifactError::Failed;
     }
     var asset = ArtifactAsset { relative_path: string::new(allocator), bytes: string::new(allocator) };

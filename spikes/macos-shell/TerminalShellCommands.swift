@@ -371,6 +371,7 @@ extension TerminalShellViewController {
         UserDefaults.standard.set(optionAsAltEnabled, forKey: NativePreferenceKey.optionAsAlt)
         for pane in paneStore.runtimes.values {
             (pane as? TerminalPane)?.setOptionAsAlt(optionAsAltEnabled)
+            (pane as? TerminalPane)?.setThemeColors(paneThemeColors)
         }
     }
 

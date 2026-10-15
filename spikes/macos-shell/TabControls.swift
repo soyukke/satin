@@ -282,13 +282,20 @@ final class NativeTabControl: NSSegmentedControl {
             else {
                 continue
             }
-            drawSelectedSurfaceIfNeeded(forSegment: segment, in: segmentRect)
+            if NativePageStyle.paper {
+                drawPaperTab(forSegment: segment, in: segmentRect)
+            } else {
+                drawSelectedSurfaceIfNeeded(forSegment: segment, in: segmentRect)
+            }
             drawInteractionOverlay(forSegment: segment, in: segmentRect)
             drawTitle(forSegment: segment, in: segmentRect)
             if closeGlyphVisible(forSegment: segment) {
                 drawCloseGlyph(forSegment: segment)
             }
             drawDragIndicatorIfNeeded(forSegment: segment, in: segmentRect)
+        }
+        if NativePageStyle.paper {
+            drawPaperBaseline()
         }
     }
 
@@ -657,35 +664,51 @@ final class NativeTabControl: NSSegmentedControl {
         path.fill()
     }
 
+    /// The terminal look marks the chosen tab as a datasheet does a field: a
+    /// square violet frame over a faint violet wash.
     private func drawSelectedSurfaceIfNeeded(forSegment segment: Int, in segmentRect: NSRect) {
         guard segment == selectedSegment else {
             return
         }
-        let rect = tabSurfaceRect(
-            forSegment: segment,
-            in: segmentRect,
-            verticalInset: Metrics.selectedVerticalInset
-        )
+        let rect = nativeTerminalTabFrame(segmentRect)
         guard rect.width > 0, rect.height > 0 else {
             return
         }
-        let path = tabSurfacePath(forSegment: segment, in: rect)
-
-        NSGraphicsContext.saveGraphicsState()
-        let shadow = NSShadow()
-        shadow.shadowBlurRadius = 3
-        shadow.shadowOffset = NSSize(width: 0, height: -1)
-        shadow.shadowColor = NSColor.black.withAlphaComponent(
-            window?.isKeyWindow == true ? 0.24 : 0.12
-        )
-        shadow.set()
-        NSColor.unemphasizedSelectedContentBackgroundColor.setFill()
+        let path = NSBezierPath(rect: rect)
+        let violet = NativePageStyle.violet
+        violet.withAlphaComponent(window?.isKeyWindow == true ? 0.08 : 0.04).setFill()
         path.fill()
-        NSGraphicsContext.restoreGraphicsState()
-
-        NSColor.separatorColor.setStroke()
+        violet.withAlphaComponent(window?.isKeyWindow == true ? 0.7 : 0.35).setStroke()
         path.lineWidth = 1
         path.stroke()
+    }
+
+    private func drawPaperTab(forSegment segment: Int, in segmentRect: NSRect) {
+        NativePaperTab.draw(
+            in: NativePaperTab.rect(segmentRect, flipped: isFlipped),
+            selected: segment == selectedSegment, flipped: isFlipped)
+    }
+
+    /// The ink line the tabs stand on, broken under the chosen one.
+    private func drawPaperBaseline() {
+        guard let first = segmentRect(for: 0) else {
+            return
+        }
+        let tab = NativePaperTab.rect(first, flipped: isFlipped)
+        let foot = isFlipped ? tab.maxY : tab.minY
+        let chosen = segmentRect(for: selectedSegment).map {
+            NativePaperTab.rect($0, flipped: isFlipped)
+        }
+        let line = NSBezierPath()
+        line.move(to: NSPoint(x: bounds.minX, y: foot))
+        if let chosen {
+            line.line(to: NSPoint(x: chosen.minX, y: foot))
+            line.move(to: NSPoint(x: chosen.maxX, y: foot))
+        }
+        line.line(to: NSPoint(x: bounds.maxX, y: foot))
+        NativePageStyle.text.setStroke()
+        line.lineWidth = 2
+        line.stroke()
     }
 
     private func drawTitle(forSegment segment: Int, in segmentRect: NSRect) {
@@ -697,22 +720,29 @@ final class NativeTabControl: NSSegmentedControl {
         let selected = segment == selectedSegment
         let hovered = segment == hoveredSegment
         let color: NSColor
-        if selected {
-            color = .labelColor
+        if NativePageStyle.paper {
+            color = selected ? NativePageStyle.text : NativePageStyle.muted
+        } else if selected {
+            color = NativePageStyle.text
         } else if hovered {
-            color = .labelColor.withAlphaComponent(0.72)
+            color = NativePageStyle.text.withAlphaComponent(0.8)
         } else {
-            color = .secondaryLabelColor
+            color = NativePageStyle.muted
         }
         let paragraph = NSMutableParagraphStyle()
         paragraph.alignment = .center
         paragraph.lineBreakMode = .byTruncatingTail
+        // The terminal look numbers its tabs in a datasheet's mono type.
+        let terminal = !NativePageStyle.paper
         let attributes: [NSAttributedString.Key: Any] = [
-            .font: NSFont.systemFont(ofSize: 13, weight: selected ? .semibold : .medium),
+            .font: terminal
+                ? NSFont.monospacedSystemFont(ofSize: 12, weight: selected ? .semibold : .regular)
+                : NSFont.systemFont(ofSize: 13, weight: selected ? .bold : .medium),
             .foregroundColor: color,
             .paragraphStyle: paragraph,
         ]
-        let attributed = NSAttributedString(string: label, attributes: attributes)
+        let shown = terminal ? String(format: "%02d %@", segment + 1, label) : label
+        let attributed = NSAttributedString(string: shown, attributes: attributes)
         let height = ceil(attributed.size().height)
         if let badge = statusBadges[segment] {
             NativeTabStatusBadgeRenderer.draw(

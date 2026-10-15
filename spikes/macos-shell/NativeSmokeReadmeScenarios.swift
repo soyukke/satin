@@ -42,6 +42,13 @@ import Foundation
             for (suffix, action) in [
                 ("select", { [weak self] in self?.advanceAttentionSelection() }),
                 ("commit", { [weak self] in self?.commitAttentionSelection() }),
+                ("binder", { [weak self] in self?.togglePageBinder(nil) }),
+                ("deal", { [weak self] in self?.pageBinder?.toggleDeal() }),
+                ("read", { [weak self] in self?.openFirstUnreadPageForSmoke() }),
+                ("close", { [weak self] in self?.closePageReader() }),
+                ("older", { [weak self] in self?.stepPageForSmoke(-1) }),
+                ("mode", { [weak self] in self?.toggleAppearanceModeForSmoke() }),
+                ("newer", { [weak self] in self?.stepPageForSmoke(1) }),
             ] where FileManager.default.fileExists(atPath: "\(resultPath).\(suffix)") {
                 try? FileManager.default.removeItem(atPath: "\(resultPath).\(suffix)")
                 action()
@@ -51,6 +58,25 @@ import Foundation
             }
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
                 self?.pollReadmeHandPlay(resultPath, retries: retries - 1)
+            }
+        }
+
+        func toggleAppearanceModeForSmoke() {
+            settings.appearanceMode =
+                appearanceMode == .paper
+                ? NativeAppearanceMode.terminal.rawValue : NativeAppearanceMode.paper.rawValue
+            applyAppearanceMode()
+        }
+
+        func stepPageForSmoke(_ step: Int) {
+            if let page = pageReaderPage {
+                openPage(page, version: UInt32(max(1, Int(pageReaderVersion) + step)))
+            }
+        }
+
+        func openFirstUnreadPageForSmoke() {
+            if let page = pageInbox.unread.first {
+                openPage(page)
             }
         }
 

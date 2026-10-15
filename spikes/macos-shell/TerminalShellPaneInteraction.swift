@@ -71,6 +71,7 @@ extension TerminalShellViewController {
         paneStore.workingDirectories[paneId] = cwd
         terminalTextView.refreshPaneChromeActionAvailability(paneId: paneId)
         (pane as? TerminalPane)?.setOptionAsAlt(optionAsAltEnabled)
+        (pane as? TerminalPane)?.setThemeColors(paneThemeColors)
         if pane.kind == .neovim {
             scheduleNvimDirectoryCorrection(
                 paneId: paneId,

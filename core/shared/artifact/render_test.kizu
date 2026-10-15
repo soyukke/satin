@@ -212,11 +212,11 @@ test "a diff is colored by line and reports what it cut" {
     let ansi = rendered.ansi.as_bytes();
     testing::expect(rendered.compacted and rendered.omitted_items == 1);
     testing::expect(screen_contains(&rendered, "· +1 omitted"));
-    testing::expect(contains(ansi, "[38;2;126;211;154m+new"));
-    testing::expect(contains(ansi, "[38;2;242;139;130m-old line"));
-    testing::expect(contains(ansi, "[38;2;91;192;235m@@ -1 +1 @@"));
-    testing::expect(contains(ansi, "[1;38;2;244;247;252mdiff --git"));
-    testing::expect(contains(ansi, "[38;2;220;224;230m--- a/notes"));
+    testing::expect(contains(ansi, "[32m+new"));
+    testing::expect(contains(ansi, "[31m-old line"));
+    testing::expect(contains(ansi, "[36m@@ -1 +1 @@"));
+    testing::expect(contains(ansi, "[1;39mdiff --git"));
+    testing::expect(contains(ansi, "[39m--- a/notes"));
     testing::expect(rows_fit(&rendered, 40, true));
 }
 

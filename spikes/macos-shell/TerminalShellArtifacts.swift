@@ -3,11 +3,7 @@ import Foundation
 
 extension TerminalShellViewController {
     @objc func showArtifacts(_ sender: NSButton) {
-        guard let paneId = artifactSourcePaneId() else {
-            NSSound.beep()
-            return
-        }
-        showArtifactsPopover(relativeTo: sender, paneId: paneId)
+        togglePageBinder(sender)
     }
 
     func artifactSourcePaneId() -> Int? {
@@ -20,64 +16,8 @@ extension TerminalShellViewController {
         return lastSnapshot.flatMap(activePaneId(in:))
     }
 
-    func showArtifactsPopover(relativeTo sourceView: NSView, paneId: Int) {
-        if let popover = artifactsPopover, popover.isShown {
-            popover.performClose(sourceView)
-            artifactsPopover = nil
-            artifactsPopoverPaneId = nil
-            return
-        }
-        let popover = NSPopover()
-        #if SATIN_SMOKE_SCENARIOS
-            popover.behavior =
-                smokeState.artifactPopoverResultPath == nil ? .transient : .applicationDefined
-        #else
-            popover.behavior = .transient
-        #endif
-        popover.animates = true
-        let loading = NativeArtifactsPopoverViewController(artifacts: [])
-        popover.contentViewController = loading
-        popover.contentSize = loading.view.frame.size
-        artifactsPopover = popover
-        artifactsPopoverPaneId = paneId
-        popover.show(relativeTo: sourceView.bounds, of: sourceView, preferredEdge: .maxY)
-        loadRecentArtifacts { [weak self, weak popover] artifacts in
-            guard let self, let popover, self.artifactsPopover === popover, popover.isShown else {
-                return
-            }
-            let content = NativeArtifactsPopoverViewController(artifacts: artifacts)
-            content.onSelect = { [weak self] artifact in
-                self?.openArtifactFromPopover(artifact)
-            }
-            popover.contentViewController = content
-            popover.contentSize = content.view.frame.size
-            #if SATIN_SMOKE_SCENARIOS
-                if let resultPath = self.smokeState.artifactPopoverResultPath {
-                    self.smokeState.artifactPopoverResultPath = nil
-                    DispatchQueue.main.async {
-                        let target =
-                            ProcessInfo.processInfo.environment["SATIN_NATIVE_SMOKE_ARTIFACT"]
-                            ?? ""
-                        let targetAvailable = artifacts.contains { $0.id == target }
-                        let status = targetAvailable ? "ok" : "failed"
-                        self.writeArtifactPopoverSmokeResult(
-                            resultPath,
-                            result: "\(status) artifact-popover items=\(artifacts.count)\n"
-                        )
-                        if targetAvailable {
-                            self.waitForArtifactPopoverSmokeOpen(
-                                content,
-                                artifact: target,
-                                attempts: 300
-                            )
-                        }
-                    }
-                }
-            #endif
-        }
-    }
-
     func loadRecentArtifacts(
+        limit: Int = 5,
         completion: @escaping ([NativeArtifactListItem]) -> Void
     ) {
         let executable = controlCliPath
@@ -91,7 +31,7 @@ extension TerminalShellViewController {
             let output = Pipe()
             process.executableURL = URL(fileURLWithPath: executable)
             process.arguments = [
-                "--socket", socket, "--json", "artifact", "list", "--limit", "5",
+                "--socket", socket, "--json", "artifact", "list", "--limit", String(limit),
             ]
             process.standardOutput = output
             process.standardError = Pipe()
@@ -111,24 +51,6 @@ extension TerminalShellViewController {
                 }
             }
         }
-    }
-
-    func openArtifactFromPopover(_ artifact: String) {
-        let paneId = artifactsPopoverPaneId
-        artifactsPopover?.performClose(nil)
-        artifactsPopover = nil
-        artifactsPopoverPaneId = nil
-        guard let paneId,
-            lastSnapshot?.tabs.contains(where: { $0.panes.contains(paneId) }) == true,
-            validControlArtifactSelector(artifact),
-            controlArtifactExists(artifact),
-            FileManager.default.isExecutableFile(atPath: controlCliPath),
-            showArtifactSidebar(artifact: artifact, sourcePaneId: paneId, focus: true) != nil
-        else {
-            NSSound.beep()
-            return
-        }
-        focusTerminal()
     }
 
     @discardableResult
@@ -172,6 +94,7 @@ extension TerminalShellViewController {
         paneStore.workingDirectories[nativeArtifactSidebarPaneId] = cwd
         paneStore.modes[nativeArtifactSidebarPaneId] = .terminal
         viewer.setOptionAsAlt(optionAsAltEnabled)
+        viewer.setThemeColors(paneThemeColors)
         installPaneWakeup(paneId: nativeArtifactSidebarPaneId, pane: viewer)
         paneStore.scrollRemainders[nativeArtifactSidebarPaneId] = 0
         lastNvimModelScrollShift = nil
@@ -195,6 +118,7 @@ extension TerminalShellViewController {
         }
         removeControlState(paneId)
         removePaneRuntime(paneId)
+        removePageReaderChrome()
         paneStore.artifactSelectors.removeValue(forKey: paneId)
         paneStore.discardMetadata(for: paneId)
         if activePaneId == paneId {
@@ -207,24 +131,10 @@ extension TerminalShellViewController {
         return true
     }
 
+    /// The page reader floats over the middle of the work, which keeps its
+    /// whole width.
     func artifactSidebarFrames(in rect: NSRect) -> (workspace: NSRect, sidebar: NSRect) {
-        let maximumSidebarWidth = min(520, rect.width * 0.5)
-        let sidebarWidth = min(max(240, rect.width * 0.38), maximumSidebarWidth)
-        let workspaceWidth = max(1, rect.width - sidebarWidth)
-        return (
-            workspace: NSRect(
-                x: rect.minX,
-                y: rect.minY,
-                width: workspaceWidth,
-                height: rect.height
-            ),
-            sidebar: NSRect(
-                x: rect.minX + workspaceWidth,
-                y: rect.minY,
-                width: max(1, rect.width - workspaceWidth),
-                height: rect.height
-            )
-        )
+        (workspace: rect, sidebar: nativePageReaderFrames(in: rect).pane)
     }
 
     func workspaceContentRect() -> NSRect {

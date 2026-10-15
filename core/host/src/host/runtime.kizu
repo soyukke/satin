@@ -469,6 +469,23 @@ export "c" fn satin_runtime_set_option_as_alt(handle: ?ptr<term::Runtime>, enabl
     return 1;
 }
 
+export "c" fn satin_runtime_set_theme_colors(
+    handle: ?ptr<term::Runtime>,
+    bytes: ?ptr<const u8>,
+    length: usize
+) -> u8 {
+    let live = handle orelse return 0;
+    let data = bytes orelse return 0;
+    // SAFETY: the host passes length readable bytes at data.
+    let rgb = unsafe view_from_ptr(data, cast<i64>(length));
+    // SAFETY: the host holds live from a create and calls from one thread.
+    let runtime = unsafe &var live.*;
+    if runtime.set_theme_colors(rgb) {
+        return 1;
+    }
+    return 0;
+}
+
 export "c" fn satin_runtime_find(handle: ?ptr<term::Runtime>, query: ?ptr<const u8>, backwards: u8) -> u8 {
     let live = handle orelse return 0;
     let text = query orelse return 0;
