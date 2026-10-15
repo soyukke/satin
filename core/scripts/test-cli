@@ -102,7 +102,7 @@ if command -v tmux > /dev/null 2>&1; then
         tmux -S "$tmux_socket" show-options -pqv -t "$tmux_pane" @satin-status | sed 's/^\([a-z]*\) [0-9][0-9]* /\1 MS /'
     }
     check "a tmux status is kept on the tmux pane" "waiting MS Bash(npm test)?" "$(kept)"
-    TMUX="$tmux_socket,1,0" TMUX_PANE="$tmux_pane" \
+    TMUX="$tmux_socket,1,0" TMUX_PANE="$tmux_pane" SATIN_PANE_ID=4 \
         "$satin" --socket "$socket" status session-start codex > /dev/null
     check "a session start is kept on the tmux pane" "idle MS Codex ready" "$(kept)"
     TMUX="$tmux_socket,1,0" TMUX_PANE="$tmux_pane" \
