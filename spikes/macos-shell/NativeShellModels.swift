@@ -100,14 +100,30 @@ struct NativeArtifactListItem: Decodable {
     let version: UInt32
     let updatedAtMs: UInt64
     let preview: String
+    /// The latest version read on any client of the store; 0 when none was.
+    var readVersion: UInt32 = 0
 
-    private enum CodingKeys: String, CodingKey {
+    fileprivate enum CodingKeys: String, CodingKey {
         case id
         case title
         case kind
         case version
         case updatedAtMs = "updated_at_ms"
         case preview
+        case readVersion = "read_version"
+    }
+}
+
+extension NativeArtifactListItem {
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        title = try container.decode(String.self, forKey: .title)
+        kind = try container.decode(String.self, forKey: .kind)
+        version = try container.decode(UInt32.self, forKey: .version)
+        updatedAtMs = try container.decode(UInt64.self, forKey: .updatedAtMs)
+        preview = try container.decode(String.self, forKey: .preview)
+        readVersion = try container.decodeIfPresent(UInt32.self, forKey: .readVersion) ?? 0
     }
 }
 

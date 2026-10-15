@@ -440,6 +440,8 @@ pub struct ArtifactListItem {
     pub updated_at: string::String,
     pub preview: string::String,
     pub directory: string::String,
+    /// The latest version that has been read; 0 when none was.
+    pub read_version: i64,
 }
 
 pub fn (self: ArtifactListItem) deinit(allocator: Allocator) -> void {

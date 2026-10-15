@@ -1,0 +1,178 @@
+// Which version of each page has been read, kept as `.read.json` in the
+// store beside the pages, so every client of the store reads the same
+// marks: the window, the command, or a phone over SSH.
+import std::array;
+import std::fs;
+import std::io;
+import std::json;
+import std::mem;
+import std::string;
+
+/// The latest version of one page that has been read.
+pub struct ReadMark {
+    pub id: string::String,
+    pub version: i64,
+}
+
+fn (self: ReadMark) deinit(allocator: Allocator) -> void {
+    self.id.deinit(allocator);
+    return;
+}
+
+/// The marks as `.read.json` holds them. Its one field is taken whole, so
+/// it needs no deinit of its own.
+pub struct ReadDocument {
+    pub pages: array::Array<ReadMark>,
+}
+
+fn read_marks_path(allocator: Allocator, message: &var string::String, socket: []u8) -> ArtifactFailure!string::String {
+    let root = try artifact_root(allocator, message, socket);
+    defer root.deinit(allocator);
+    let bytes = root.as_bytes();
+    return joined(allocator, bytes, ".read.json");
+}
+
+/// The read marks of the store beside socket; none when nothing was read.
+pub fn load_read_marks(
+    allocator: Allocator,
+    message: &var string::String,
+    socket: []u8
+) -> ArtifactFailure!array::Array<ReadMark> {
+    let path = try read_marks_path(allocator, message, socket);
+    defer path.deinit(allocator);
+    let name = path.as_bytes();
+    var content = string::new(allocator);
+    defer content.deinit(allocator);
+    if fs::read_file_into(io::blocking(), allocator, name, &var content) {} else |err| {
+        if err == fs::Error::NotFound {
+            return array::new<ReadMark>(allocator);
+        }
+        explain(allocator, message, "open page read marks ", name, "");
+        return ArtifactError::Failed;
+    }
+    let bytes = content.as_bytes();
+    if json::decode_ignore_unknown<ReadDocument>(allocator, bytes) |document| {
+        return move document.pages;
+    } else |_| {}
+    explain(allocator, message, "decode page read marks ", name, "");
+    return ArtifactError::Failed;
+}
+
+/// The latest version of the page id that has been read; 0 when none was.
+pub fn read_version(marks: &array::Array<ReadMark>, id: []u8) -> i64 {
+    for 0..marks.len() |index| {
+        if marks.at(index) |mark| {
+            let mark_id = mark.id.as_bytes();
+            if mem::equal_bytes(mark_id, id) {
+                return mark.version;
+            }
+        }
+    }
+    return 0;
+}
+
+/// Raises the mark of id to version; a mark already past it stays.
+fn raise_mark(
+    allocator: Allocator,
+    marks: &var array::Array<ReadMark>,
+    id: []u8,
+    version: i64
+) -> mem::Error!void {
+    for 0..marks.len() |index| {
+        if marks.at_mut(index) |mark| {
+            let mark_id = mark.id.as_bytes();
+            if mem::equal_bytes(mark_id, id) {
+                if mark.version < version {
+                    mark.version = version;
+                }
+                return;
+            }
+        }
+    }
+    let owned = try string::from_bytes(allocator, id);
+    try marks.append(allocator, ReadMark { id: move owned, version: version });
+    return;
+}
+
+fn save_read_marks(
+    allocator: Allocator,
+    message: &var string::String,
+    socket: []u8,
+    marks: &array::Array<ReadMark>
+) -> ArtifactFailure!void {
+    var encoder = json::encoder_with_spaces(allocator, 2);
+    defer encoder.deinit(allocator);
+    try encoder.begin_object();
+    try encoder.begin_array_field("pages");
+    for 0..marks.len() |index| {
+        if marks.at(index) |mark| {
+            let id = mark.id.as_bytes();
+            try encoder.begin_object();
+            try encoder.write_bytes_field("id", id);
+            try encoder.write_i64_field("version", mark.version);
+            try encoder.end_object();
+        }
+    }
+    try encoder.end_array();
+    try encoder.end_object();
+    var text = string::new(allocator);
+    defer text.deinit(allocator);
+    try encoder.finish_into(allocator, &var text);
+    try text.append_byte(allocator, 10);
+    let path = try read_marks_path(allocator, message, socket);
+    defer path.deinit(allocator);
+    let name = path.as_bytes();
+    let bytes = text.as_bytes();
+    try replace_file(allocator, message, name, bytes);
+    return;
+}
+
+/// Marks the page selector names as read in the store beside socket: `ID`
+/// up to its latest version, `ID@3` up to its third. The manifest of the
+/// version marked.
+pub fn mark_read(
+    allocator: Allocator,
+    message: &var string::String,
+    socket: []u8,
+    selector: []u8
+) -> ArtifactFailure!ArtifactManifest {
+    let root = try artifact_root(allocator, message, socket);
+    defer root.deinit(allocator);
+    let root_bytes = root.as_bytes();
+    let lock = try lock_artifact_store(allocator, message, root_bytes);
+    defer close_descriptor(lock);
+    var manifest = try load_manifest(allocator, message, socket, selector);
+    errdefer manifest.deinit(allocator);
+    var marks = try load_read_marks(allocator, message, socket);
+    defer marks.deinit(allocator);
+    let id = manifest.id.as_bytes();
+    try raise_mark(allocator, &var marks, id, manifest.version);
+    try save_read_marks(allocator, message, socket, &marks);
+    return move manifest;
+}
+
+/// Marks every page of the store beside socket as read up to its latest
+/// version. How many pages that read.
+pub fn mark_all_read(allocator: Allocator, message: &var string::String, socket: []u8) -> ArtifactFailure!i64 {
+    let root = try artifact_root(allocator, message, socket);
+    defer root.deinit(allocator);
+    let root_bytes = root.as_bytes();
+    let lock = try lock_artifact_store(allocator, message, root_bytes);
+    defer close_descriptor(lock);
+    let items = try list_artifacts(allocator, message, socket, -1);
+    defer items.deinit(allocator);
+    var marks = try load_read_marks(allocator, message, socket);
+    defer marks.deinit(allocator);
+    var count: i64 = 0;
+    for 0..items.len() |index| {
+        if items.at(index) |item| {
+            if item.read_version < item.version {
+                count = count + 1;
+            }
+            let id = item.id.as_bytes();
+            try raise_mark(allocator, &var marks, id, item.version);
+        }
+    }
+    try save_read_marks(allocator, message, socket, &marks);
+    return count;
+}

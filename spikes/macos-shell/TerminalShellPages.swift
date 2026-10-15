@@ -40,9 +40,38 @@ extension TerminalShellViewController {
         pageInbox.onChange = { [weak self] arrived in
             self?.pagesChanged(arrived: arrived)
         }
+        pageInbox.persistRead = { [weak self] selectors in
+            self?.markPagesRead(selectors)
+        }
         pageInbox.start(root: root) { [weak self] completion in
             guard let self else { return }
             self.loadRecentArtifacts(limit: 40, completion: completion)
+        }
+    }
+
+    /// Keeps pages read in the store with `satin page read`, where every
+    /// client of it sees them; the store's folder changing reloads the list.
+    private func markPagesRead(_ selectors: [String]) {
+        let executable = controlCliPath
+        let socket = controlSocketPath
+        guard FileManager.default.isExecutableFile(atPath: executable), !socket.isEmpty else {
+            return
+        }
+        DispatchQueue.global(qos: .utility).async {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: executable)
+            process.arguments = ["--socket", socket, "page", "read"] + selectors
+            process.standardOutput = FileHandle.nullDevice
+            process.standardError = FileHandle.nullDevice
+            do {
+                try process.run()
+                process.waitUntilExit()
+                if process.terminationStatus != 0 {
+                    NativeLog.runtimeError("page_read_failed")
+                }
+            } catch {
+                NativeLog.runtimeError("page_read_failed")
+            }
         }
     }
 

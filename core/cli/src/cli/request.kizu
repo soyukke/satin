@@ -1,5 +1,6 @@
 // The control request a command line stands for, as the JSON object the
 // server reads.
+import std::fmt;
 import std::io;
 import std::json;
 import std::mem;
@@ -145,7 +146,38 @@ fn write_status(
     return;
 }
 
-fn status_set_request(cli: &var Cli, allocator: Allocator, encoder: &var json::Encoder, pane: i64) -> CliFailure!void {
+/// Keeps a status on the tmux pane it comes from as the `@satin-status` pane
+/// option, `STATUS UNIX_MILLIS SUMMARY`, so another client of the same tmux
+/// server, such as one on a phone, reads it without this window. It does
+/// nothing outside tmux or when --pane named the pane, and a failing tmux
+/// leaves the request to the host alone.
+fn mirror_status(allocator: Allocator, explicit: bool, status: []u8, summary: []u8) -> mem::Error!void {
+    if explicit or tmux_pane_number() < 0 or mem::len(tmux_socket()) == 0 {
+        return;
+    }
+    let pane = process::env("TMUX_PANE") orelse return;
+    var value = string::new(allocator);
+    defer value.deinit(allocator);
+    try value.append_bytes(allocator, status);
+    try value.append_bytes(allocator, " ");
+    try fmt::append_i64(allocator, &var value, process::unix_millis());
+    try value.append_bytes(allocator, " ");
+    try value.append_bytes(allocator, summary);
+    let bytes = value.as_bytes();
+    // `-S` names the server TMUX names, as every tmux command Satin runs
+    // does; `-pt` keeps the line within the eight words a spawn takes.
+    let socket = tmux_socket();
+    if process::spawn_wait8(8, "tmux", "-S", socket, "set", "-pt", pane, "@satin-status", bytes) |_| {} else |_| {}
+    return;
+}
+
+fn status_set_request(
+    cli: &var Cli,
+    allocator: Allocator,
+    encoder: &var json::Encoder,
+    pane: i64,
+    explicit: bool
+) -> CliFailure!void {
     if cli.args.len() == 0 {
         cli.say(allocator, "status set requires STATUS [SUMMARY]", "", "");
         return CliError::Failed;
@@ -162,6 +194,7 @@ fn status_set_request(cli: &var Cli, allocator: Allocator, encoder: &var json::E
     let status_bytes = status.as_bytes();
     let summary_bytes = summary.as_bytes();
     try write_status(encoder, pane, status_bytes, summary_bytes, false);
+    try mirror_status(allocator, explicit, status_bytes, summary_bytes);
     return;
 }
 
@@ -187,7 +220,13 @@ fn status_wait_request(cli: &var Cli, allocator: Allocator, encoder: &var json::
     return;
 }
 
-fn status_event_request(cli: &var Cli, allocator: Allocator, encoder: &var json::Encoder, pane: i64) -> CliFailure!void {
+fn status_event_request(
+    cli: &var Cli,
+    allocator: Allocator,
+    encoder: &var json::Encoder,
+    pane: i64,
+    explicit: bool
+) -> CliFailure!void {
     if cli.args.len() != 1 {
         cli.say(allocator, "status event requires one agent name", "", "");
         return CliError::Failed;
@@ -213,6 +252,7 @@ fn status_event_request(cli: &var Cli, allocator: Allocator, encoder: &var json:
         return CliError::Failed;
     }
     try write_status(encoder, pane, status_word(number), status_summary(number), false);
+    try mirror_status(allocator, explicit, status_word(number), status_summary(number));
     return;
 }
 
@@ -235,15 +275,17 @@ fn status_request(cli: &var Cli, allocator: Allocator, encoder: &var json::Encod
     let explicit = cli.index_of("--pane") >= 0;
     let pane = try cli.pane(allocator);
     if kind == 1 {
-        try status_set_request(cli, allocator, encoder, pane);
+        try status_set_request(cli, allocator, encoder, pane, explicit);
     } else if kind == 2 {
         try status_wait_request(cli, allocator, encoder, pane);
     } else if kind == 3 {
-        try status_event_request(cli, allocator, encoder, pane);
+        try status_event_request(cli, allocator, encoder, pane, explicit);
     } else if cli.args.len() == 1 and cli.first_is("codex") {
         try write_status(encoder, pane, "idle", "Codex ready", true);
+        try mirror_status(allocator, explicit, "idle", "Codex ready");
     } else if cli.args.len() == 1 and cli.first_is("claude") {
         try write_status(encoder, pane, "idle", "Claude Code ready", true);
+        try mirror_status(allocator, explicit, "idle", "Claude Code ready");
     } else {
         cli.say(allocator, "status session-start requires codex or claude", "", "");
         return CliError::Failed;
@@ -409,6 +451,7 @@ fn usage() -> []u8 {
         \\  page list [ID] [--limit N]
         \\  page show [--pane ID] ID [--background]
         \\  page view ID [--no-wait]
+        \\  page read ID... | --all
         \\  list
         \\  read-screen [--pane ID]
         \\  send [--pane ID] TEXT|-
