@@ -16,6 +16,9 @@ jobs:
   release:
     runs-on: macos-15
     timeout-minutes: 60
+    # The code-signing certificate lives in this environment, which only
+    # release tags may use.
+    environment: release
     permissions:
       attestations: write
       contents: write
@@ -39,10 +42,44 @@ jobs:
       - name: Install Nix
         uses: DeterminateSystems/determinate-nix-action@021c8a1bd3570eb21f5c20a054812b0c4d9ca614 # v3
 
+      # A stable certificate keeps macOS privacy grants (removable volumes,
+      # folders) across updates; an ad-hoc signature changes with every build.
+      # The certificate is imported into a throwaway keychain, deleted below.
+      - name: Import code-signing certificate
+        env:
+          SIGNING_P12_B64: ${{ secrets.SATIN_SIGNING_P12_B64 }}
+          SIGNING_P12_PASSWORD: ${{ secrets.SATIN_SIGNING_P12_PASSWORD }}
+        run: |
+          keychain="$RUNNER_TEMP/signing.keychain-db"
+          keychain_password="$(openssl rand -hex 24)"
+          certificate="$RUNNER_TEMP/signing.p12"
+          printf '%s' "$SIGNING_P12_B64" | base64 --decode >"$certificate"
+          security create-keychain -p "$keychain_password" "$keychain"
+          security set-keychain-settings -lut 3600 "$keychain"
+          security unlock-keychain -p "$keychain_password" "$keychain"
+          security import "$certificate" -k "$keychain" -P "$SIGNING_P12_PASSWORD" -T /usr/bin/codesign
+          rm -f "$certificate"
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$keychain_password" "$keychain" >/dev/null
+          keychains=()
+          while IFS= read -r line; do keychains+=("$line"); done < <(security list-keychains -d user | tr -d '" ')
+          security list-keychains -d user -s "$keychain" "${keychains[@]}"
+          security find-identity -p codesigning "$keychain" | grep -q '"soyukke"'
+          echo "SATIN_SIGNING_IDENTITY=soyukke" >>"$GITHUB_ENV"
+
       - name: Build and verify signed arm64 release
         env:
           UPDATE_SIGNING_PRIVATE_KEY_B64: ${{ secrets.UPDATE_SIGNING_PRIVATE_KEY_B64 }}
         run: nix develop .#ci-release --command just native-signed-release
+
+      - name: Delete code-signing keychain
+        if: always()
+        run: security delete-keychain "$RUNNER_TEMP/signing.keychain-db" || true
+
+      - name: Check the release is signed with the certificate
+        run: |
+          app="$(mktemp -d)"
+          ditto -x -k spikes/macos-shell/.build/release/Satin-*-macOS-arm64.zip "$app"
+          codesign -dvv "$app/Satin.app" 2>&1 | grep -qx 'Authority=soyukke'
 
       - name: Attest release provenance
         id: attest
