@@ -403,11 +403,18 @@ extension TerminalShellViewController {
         else {
             return false
         }
-        guard reveal else {
-            return NSWorkspace.shared.open(url)
+        guard url.isFileURL else {
+            return !reveal && NSWorkspace.shared.open(url)
         }
-        guard url.isFileURL, FileManager.default.fileExists(atPath: url.path) else {
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory) else {
             return false
+        }
+        // A file no app opens is shown in Finder, as Option does, and so is
+        // an executable, which opening would run.
+        let runs = !isDirectory.boolValue && FileManager.default.isExecutableFile(atPath: url.path)
+        if !reveal, !runs, NSWorkspace.shared.urlForApplication(toOpen: url) != nil {
+            return NSWorkspace.shared.open(url)
         }
         NSWorkspace.shared.activateFileViewerSelecting([url])
         return true
