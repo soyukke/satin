@@ -68,6 +68,7 @@ struct SatinApplication {
                 ("pane drag and drop", runNativePaneDragSelfTests),
                 ("pane geometry", runNativePaneGeometrySelfTests),
                 ("terminal input", runTerminalTextInputSelfTests),
+                ("terminal file links", runNativeTerminalFileURLSelfTests),
                 ("main menu", NativeMainMenuController.runSelfTests),
                 ("agent activity", runNativeAgentActivitySelfTests),
                 ("work switcher", runNativeWorkSwitcherSelfTests),

@@ -312,6 +312,9 @@ security boundary.
 - `Command-+`, `Command--`, `Command-0`: shared terminal/Neovim font size for
   every pane in the current Satin window; reset uses the configured Appearance size
 - `Command-U`: check for signed updates in release builds
+- `Command`-click: open the URL, or the file or folder a path on screen names
+  (absolute, `~/`, or relative to the pane's directory), in its default app;
+  `Option-Command`-click shows that file selected in Finder
 
 ## Build from source
 

@@ -321,6 +321,13 @@ func satinRuntimeHyperlink(
     _ col: UInt16
 ) -> UnsafeMutablePointer<CChar>?
 
+@_silgen_name("satin_runtime_word")
+func satinRuntimeWord(
+    _ handle: UnsafeMutableRawPointer?,
+    _ row: UInt32,
+    _ col: UInt16
+) -> UnsafeMutablePointer<CChar>?
+
 @_silgen_name("satin_runtime_title")
 func satinRuntimeTitle(_ handle: UnsafeMutableRawPointer?) -> UnsafeMutablePointer<CChar>?
 
