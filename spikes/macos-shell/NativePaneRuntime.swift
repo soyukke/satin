@@ -335,6 +335,16 @@ class TerminalPane: NativePane {
         )
     }
 
+    func word(row: Int, col: Int) -> String? {
+        ownedCoreString(
+            satinRuntimeWord(
+                handle,
+                UInt32(max(0, row)),
+                clampedUInt16(col + 1) - 1
+            )
+        )
+    }
+
     func title() -> String? {
         ownedCoreString(satinRuntimeTitle(handle))
     }

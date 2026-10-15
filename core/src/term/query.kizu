@@ -509,6 +509,31 @@ pub unsafe fn(self: &var Queries) hyperlink_at(
         try tmux::append_lossy_utf8(allocator, out, bytes[0..cast<i64>(written.value)]);
         return true;
     }
+    var word = string::new(allocator);
+    defer word.deinit(allocator);
+    // SAFETY: the caller passes a live terminal of cols x rows.
+    if !try unsafe self.word_at(allocator, terminal, cols, rows, row, col, &var word) {
+        return false;
+    }
+    let word_bytes = word.as_bytes();
+    return normalize_terminal_url(allocator, word_bytes, out);
+}
+
+/// Appends the whitespace-delimited word at the viewport cell (col, row) to
+/// out. False when the cell holds no word.
+///
+/// terminal must be a live libghostty terminal of cols x rows.
+pub unsafe fn(self: &var Queries) word_at(
+    allocator: Allocator,
+    terminal: ptr<u8>,
+    cols: i64,
+    rows: i64,
+    row: i64,
+    col: i64,
+    out: &var string::String
+) -> Failure!bool {
+    // SAFETY: the caller passes a live terminal.
+    let target = try unsafe viewport_grid_ref(terminal, cols, rows, row, col);
     let slot = self.scratch.slot;
     // SAFETY: the slot is writable storage for the two boundary codepoints, space and tab.
     unsafe ptr_write(cast<ptr<u32>>(slot), 32);
@@ -533,14 +558,11 @@ pub unsafe fn(self: &var Queries) hyperlink_at(
     unsafe ptr_write(cast<ptr<Selection>>(slot), move selection);
     // SAFETY: the caller passes a live terminal; the slot holds the word's Selection.
     let length = try unsafe self.format_selection(allocator, terminal, true);
-    if length < 0 {
+    if length <= 0 {
         return false;
     }
-    var word = string::new(allocator);
-    defer word.deinit(allocator);
-    try self.append_buffer_lossy(allocator, length, &var word);
-    let word_bytes = word.as_bytes();
-    return normalize_terminal_url(allocator, word_bytes, out);
+    try self.append_buffer_lossy(allocator, length, out);
+    return true;
 }
 
 fn (self: &Queries) append_buffer_lossy(allocator: Allocator, length: i64, out: &var string::String) -> mem::Error!void {

@@ -390,15 +390,34 @@ extension TerminalShellViewController {
         return writeTerminalSelection(pane.selectedText(), to: .general)
     }
 
-    func openTerminalHyperlink(_ position: (row: Int, col: Int)) -> Bool {
+    /// Opens the link or file at position; with reveal, shows the file
+    /// selected in Finder instead.
+    func openTerminalHyperlink(_ position: (row: Int, col: Int), reveal: Bool = false) -> Bool {
         guard let paneId = activePaneId,
             let pane = paneStore.runtimes[paneId] as? TerminalPane,
-            let value = pane.hyperlink(row: position.row, col: position.col),
-            let url = URL(string: value)
+            let url = pane.hyperlink(row: position.row, col: position.col).flatMap(URL.init)
+                ?? pane.word(row: position.row, col: position.col).flatMap({
+                    nativeTerminalFileURL(
+                        $0, cwd: paneWorkingDirectory(paneId: paneId, logFailure: false))
+                })
         else {
             return false
         }
-        return NSWorkspace.shared.open(url)
+        guard url.isFileURL else {
+            return !reveal && NSWorkspace.shared.open(url)
+        }
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory) else {
+            return false
+        }
+        // A file no app opens is shown in Finder, as Option does, and so is
+        // an executable, which opening would run.
+        let runs = !isDirectory.boolValue && FileManager.default.isExecutableFile(atPath: url.path)
+        if !reveal, !runs, NSWorkspace.shared.urlForApplication(toOpen: url) != nil {
+            return NSWorkspace.shared.open(url)
+        }
+        NSWorkspace.shared.activateFileViewerSelecting([url])
+        return true
     }
 
     @discardableResult
@@ -510,4 +529,71 @@ extension TerminalShellViewController {
         return standardized
     }
 
+}
+
+/// The file a word on screen names, when it names one that exists: an
+/// absolute path, a `~` path, or a path relative to cwd. Prose brackets and
+/// punctuation around it, and a compiler's `:line:column` after it, are
+/// dropped.
+func nativeTerminalFileURL(
+    _ word: String,
+    cwd: String?,
+    home: String = NSHomeDirectory(),
+    exists: (String) -> Bool = { FileManager.default.fileExists(atPath: $0) }
+) -> URL? {
+    let trimmed = String(
+        word.drop(while: { "\"'`([{<「『（".contains($0) })
+            .reversed().drop(while: { "\"'`)]}>」』）.,;:!?。、".contains($0) })
+            .reversed())
+    guard !trimmed.isEmpty, !trimmed.contains("://") else {
+        return nil
+    }
+    var candidates = [trimmed]
+    var rest = Substring(trimmed)
+    // `path:12` and `path:12:5`, as compilers and grep print them.
+    for _ in 0..<2 {
+        guard let colon = rest.lastIndex(of: ":"),
+            !rest[rest.index(after: colon)...].isEmpty,
+            rest[rest.index(after: colon)...].allSatisfy(\.isASCII),
+            rest[rest.index(after: colon)...].allSatisfy(\.isNumber)
+        else {
+            break
+        }
+        rest = rest[..<colon]
+        candidates.append(String(rest))
+    }
+    for candidate in candidates {
+        let path: String
+        if candidate == "~" || candidate.hasPrefix("~/") {
+            path = home + candidate.dropFirst()
+        } else if candidate.hasPrefix("/") {
+            path = candidate
+        } else if let cwd, !candidate.hasPrefix("~") {
+            path = cwd + "/" + candidate
+        } else {
+            continue
+        }
+        let url = URL(fileURLWithPath: path).standardizedFileURL
+        if exists(url.path) {
+            return url
+        }
+    }
+    return nil
+}
+
+func runNativeTerminalFileURLSelfTests() -> Bool {
+    let files: Set = ["/home/a/shot.png", "/work/out/b.png", "/work/src/main.swift"]
+    func open(_ word: String) -> String? {
+        nativeTerminalFileURL(word, cwd: "/work", home: "/home/a", exists: files.contains)?.path
+    }
+    return open("~/shot.png") == "/home/a/shot.png"
+        && open("/work/out/b.png") == "/work/out/b.png"
+        && open("out/b.png") == "/work/out/b.png"
+        && open("./out/../out/b.png") == "/work/out/b.png"
+        && open("(out/b.png),") == "/work/out/b.png"
+        && open("「~/shot.png」") == "/home/a/shot.png"
+        && open("src/main.swift:12:5:") == "/work/src/main.swift"
+        && open("missing.png") == nil
+        && open("https://example.com/b.png") == nil
+        && open("~other/shot.png") == nil
 }
