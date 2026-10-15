@@ -1,0 +1,90 @@
+import std::fs;
+import std::io;
+import std::mem;
+import std::string;
+import std::testing;
+
+test "a read mark is kept in the store and never goes back" {
+    let allocator = mem::page_allocator();
+    let root = try test_directory(allocator, "read");
+    defer root.deinit(allocator);
+    let root_bytes = root.as_bytes();
+    defer remove_tree(allocator, root_bytes);
+    let socket = try joined(allocator, root_bytes, "control.sock");
+    defer socket.deinit(allocator);
+    let socket_bytes = socket.as_bytes();
+    let source = try joined(allocator, root_bytes, "plan.md");
+    defer source.deinit(allocator);
+    let source_bytes = source.as_bytes();
+    var message = string::new(allocator);
+    defer message.deinit(allocator);
+    let policy = try default_policy(allocator);
+    defer policy.deinit(allocator);
+    try fs::write_file(io::blocking(), source_bytes, "# Plan\n\nOne.\n");
+    let first = try register_test(allocator, &var message, socket_bytes, &policy, ArtifactKind::Markdown, "Plan",
+        source_bytes, "");
+    defer first.deinit(allocator);
+    let id = first.id.as_bytes();
+    try fs::write_file(io::blocking(), source_bytes, "# Plan\n\nTwo.\n");
+    let second = try register_test(allocator, &var message, socket_bytes, &policy, ArtifactKind::Markdown, "Plan",
+        source_bytes, id);
+    defer second.deinit(allocator);
+
+    let unread = try list_artifacts(allocator, &var message, socket_bytes, -1);
+    defer unread.deinit(allocator);
+    if unread.at(0) |item| {
+        testing::expect(item.version == 2 and item.read_version == 0);
+    } else {
+        testing::expect(false);
+    }
+
+    var selector = try string::from_bytes(allocator, id);
+    defer selector.deinit(allocator);
+    try selector.append_bytes(allocator, "@1");
+    let selector_bytes = selector.as_bytes();
+    let marked = try mark_read(allocator, &var message, socket_bytes, selector_bytes);
+    defer marked.deinit(allocator);
+    testing::expect(marked.version == 1);
+    testing::expect(try mark_all_read(allocator, &var message, socket_bytes) == 1);
+    let again = try mark_read(allocator, &var message, socket_bytes, selector_bytes);
+    defer again.deinit(allocator);
+
+    let marks = try load_read_marks(allocator, &var message, socket_bytes);
+    defer marks.deinit(allocator);
+    testing::expect(read_version(&marks, id) == 2);
+    testing::expect(read_version(&marks, "missing") == 0);
+    testing::expect(try mark_all_read(allocator, &var message, socket_bytes) == 0);
+}
+
+test "a store nobody read has no marks" {
+    let allocator = mem::page_allocator();
+    let root = try test_directory(allocator, "read-empty");
+    defer root.deinit(allocator);
+    let root_bytes = root.as_bytes();
+    defer remove_tree(allocator, root_bytes);
+    let socket = try joined(allocator, root_bytes, "control.sock");
+    defer socket.deinit(allocator);
+    let socket_bytes = socket.as_bytes();
+    var message = string::new(allocator);
+    defer message.deinit(allocator);
+    let marks = try load_read_marks(allocator, &var message, socket_bytes);
+    defer marks.deinit(allocator);
+    testing::expect(marks.len() == 0);
+}
+
+test "marking a page that is not there fails" {
+    let allocator = mem::page_allocator();
+    let root = try test_directory(allocator, "read-missing");
+    defer root.deinit(allocator);
+    let root_bytes = root.as_bytes();
+    defer remove_tree(allocator, root_bytes);
+    let socket = try joined(allocator, root_bytes, "control.sock");
+    defer socket.deinit(allocator);
+    let socket_bytes = socket.as_bytes();
+    var message = string::new(allocator);
+    defer message.deinit(allocator);
+    if mark_read(allocator, &var message, socket_bytes, "abcdef012345") |manifest| {
+        manifest.deinit(allocator);
+        testing::expect(false);
+    } else |_| {}
+}

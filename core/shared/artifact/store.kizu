@@ -2,7 +2,8 @@
 // each artifact as `<slug>--<id>/` with its `metadata.json`, one
 // `versions/vNNN/` a version, and `current.md` and `README.md` for a
 // reader; `.index/<id>` names an artifact's directory, `.policy.json` is
-// the policy, and `INDEX.md` lists what is there.
+// the policy, `.read.json` the versions read (read.kizu), and `INDEX.md`
+// lists what is there.
 import std::array;
 import std::fmt;
 import std::fs;
@@ -820,7 +821,8 @@ fn append_list_item(
         updated_at_ms: stored.updated_at_ms,
         updated_at: string::new(allocator),
         preview: string::new(allocator),
-        directory: string::new(allocator)
+        directory: string::new(allocator),
+        read_version: 0
     };
     errdefer item.deinit(allocator);
     try item.id.append_string(allocator, &stored.id);
@@ -888,6 +890,14 @@ pub fn list_artifacts(
         if err != fs::Error::NotFound {
             explain(allocator, message, "open artifact store ", root_bytes, "");
             return ArtifactError::Failed;
+        }
+    }
+    let marks = try load_read_marks(allocator, message, socket);
+    defer marks.deinit(allocator);
+    for 0..items.len() |index| {
+        if items.at_mut(index) |item| {
+            let id = item.id.as_bytes();
+            item.read_version = read_version(&marks, id);
         }
     }
     for 1..items.len() |index| {

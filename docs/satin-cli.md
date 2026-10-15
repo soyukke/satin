@@ -75,6 +75,7 @@ satin page list --json
 satin page list PAGE_ID --json
 satin page show PAGE_ID --background
 satin page show PAGE_ID@2
+satin page read PAGE_ID
 ```
 
 `--pane` defaults to `SATIN_PANE_ID`, and `--tab` defaults to
@@ -112,6 +113,12 @@ Claude Code hooks. It accepts one official hook-event JSON object, maps only
 lifecycle fields to a generic status summary, and does not retain prompt,
 response, cwd, or error text. Interactive automation should continue to use
 `status set`; `status event` is not a screen-content classifier.
+
+Inside tmux, a status without `--pane` is also kept on the tmux pane it came
+from, as the pane option `@satin-status` holding `STATUS UNIX_MILLIS SUMMARY`.
+Another client of the same tmux server, such as one on a phone, reads it
+without this window, and it is kept even when Satin is not running. `--pane`
+names a Satin pane and leaves tmux alone.
 
 `satin status session-start codex|claude` is the bundled zsh integration's
 internal boundary marker. It resets title initialization for the current pane
@@ -175,6 +182,13 @@ version; unchanged content is idempotent and retains the existing version.
 page's versions. `show ID` selects the latest snapshot and `show ID@N`
 selects an immutable prior version.
 
+`page read ID...` marks each page read up to the version its selector names,
+and `page read --all` marks every page up to its latest; a mark never goes
+back. The marks live in the store as `.read.json`, so the binder, the fan, and
+any other client of the store, such as a phone over SSH, agree on what is
+unread. `page list --json` reports each page's `read_version`, 0 when none
+was read.
+
 The normal store is owner-only at
 `~/Library/Application Support/Satin/artifacts`. For a custom control socket
 outside a `run` directory, the store is `<socket-parent>/artifacts`, which keeps
@@ -184,6 +198,7 @@ readable without Satin:
 ```text
 artifacts/
 ├── INDEX.md
+├── .read.json                  # the latest version read of each page
 └── title--ID/
     ├── README.md
     ├── current.md

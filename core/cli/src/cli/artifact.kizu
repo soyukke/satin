@@ -21,6 +21,7 @@ fn artifact_usage() -> []u8 {
         \\       satin page list [ID] [--limit N]
         \\       satin page show [--pane ID] ID [--background]
         \\       satin page view ID [--no-wait]
+        \\       satin page read ID... | --all
         \\
         \\kinds: text, markdown, table, tree, timeline, diff, image
     ;
@@ -155,6 +156,7 @@ fn write_list_item(encoder: &var json::Encoder, item: &artifact::ArtifactListIte
     try encoder.write_bytes_field("kind", artifact::kind_name(item.kind));
     try encoder.write_bytes_field("language", language);
     try encoder.write_bytes_field("preview", preview);
+    try encoder.write_i64_field("read_version", item.read_version);
     try encoder.write_bytes_field("title", title);
     try encoder.write_bytes_field("updated_at", updated_at);
     try encoder.write_i64_field("updated_at_ms", item.updated_at_ms);
@@ -500,6 +502,63 @@ fn artifact_view(cli: &var Cli, allocator: Allocator, socket: []u8) -> ArtifactC
     return;
 }
 
+/// `page read`: marks each page read up to the version its selector names,
+/// or with `--all` every page up to its latest, for every client of the
+/// store.
+fn artifact_read(cli: &var Cli, allocator: Allocator, socket: []u8) -> ArtifactCommandFailure!void {
+    let all = cli.remove_flag(allocator, "--all");
+    var encoder = json::encoder(allocator);
+    defer encoder.deinit(allocator);
+    var text = string::new(allocator);
+    defer text.deinit(allocator);
+    try begin_result(&var encoder);
+    if all {
+        try cli.ensure_empty(allocator);
+        let count = try artifact::mark_all_read(allocator, &var cli.message, socket);
+        try encoder.write_i64_field("read", count);
+        try fmt::append_i64(allocator, &var text, count);
+        try text.append_bytes(allocator, " pages read");
+    } else {
+        if cli.args.len() == 0 {
+            cli.say(allocator, "page read requires a page ID or --all", "", "");
+            return CliError::Failed;
+        }
+        try encoder.begin_array_field("pages");
+        var selector = string::new(allocator);
+        defer selector.deinit(allocator);
+        while try take_word(cli, allocator, &var selector) {
+            let selector_bytes = selector.as_bytes();
+            let manifest = try artifact::mark_read(allocator, &var cli.message, socket, selector_bytes);
+            defer manifest.deinit(allocator);
+            let id = manifest.id.as_bytes();
+            try encoder.begin_object();
+            try encoder.write_bytes_field("id", id);
+            try encoder.write_i64_field("read_version", manifest.version);
+            try encoder.end_object();
+            if text.len() > 0 {
+                try text.append_byte(allocator, 10);
+            }
+            try text.append_bytes(allocator, id);
+            try text.append_byte(allocator, 9);
+            try text.append_byte(allocator, 118);
+            try fmt::append_i64(allocator, &var text, manifest.version);
+            selector.clear();
+        }
+        try encoder.end_array();
+    }
+    try text.append_byte(allocator, 10);
+    let text_bytes = text.as_bytes();
+    try encoder.write_bytes_field("text", text_bytes);
+    try encoder.end_object();
+    try encoder.end_object();
+    var answer = string::new(allocator);
+    defer answer.deinit(allocator);
+    try encoder.finish_into(allocator, &var answer);
+    let answer_bytes = answer.as_bytes();
+    try print_response(cli, allocator, answer_bytes);
+    return;
+}
+
 /// Runs the artifact command the words name, against the store beside
 /// socket.
 fn run_artifact(cli: &var Cli, allocator: Allocator, socket: []u8) -> ArtifactCommandFailure!void {
@@ -524,6 +583,9 @@ fn run_artifact(cli: &var Cli, allocator: Allocator, socket: []u8) -> ArtifactCo
     }
     if mem::equal_bytes(word, "view") {
         return artifact_view(cli, allocator, socket);
+    }
+    if mem::equal_bytes(word, "read") {
+        return artifact_read(cli, allocator, socket);
     }
     cli.say(allocator, "unknown page command ", "", "");
     if fmt::append_bytes_literal(allocator, &var cli.message, word) {} else |_| {}
