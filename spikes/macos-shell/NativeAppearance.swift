@@ -75,12 +75,19 @@ final class NativeTerminalBackdropView: NSView {
     }
 
     override func draw(_ dirtyRect: NSRect) {
-        let base = NSColor(calibratedRed: 0.078, green: 0.086, blue: 0.102, alpha: 1)
-        base.setFill()
+        // The tabs lie on this: paper's stock, or the datasheet's near-black
+        // with a violet rule under the title bar.
+        guard !NativePageStyle.paper else {
+            NativePageStyle.raised.setFill()
+            dirtyRect.fill()
+            return
+        }
+        NativePageStyle.rgb(11, 9, 20).setFill()
         dirtyRect.fill()
-        let resolvedAccent = accentColor.usingColorSpace(.deviceRGB) ?? accentColor
-        let top = base.blended(withFraction: 0.42, of: resolvedAccent) ?? base
-        NSGradient(starting: base, ending: top)?.draw(in: bounds, angle: 90)
+        if let content = window?.contentLayoutRect, content.maxY < bounds.maxY {
+            NativePageStyle.violet.withAlphaComponent(0.25).setFill()
+            NSRect(x: bounds.minX, y: content.maxY - 1, width: bounds.width, height: 1).fill()
+        }
     }
 }
 

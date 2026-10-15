@@ -427,6 +427,13 @@ pub fn (self: &var Runtime) set_option_as_alt(enabled: bool) -> void {
     self.encoder.option_as_alt = enabled;
 }
 
+/// Draws with the theme's colors wherever the program sets none; rgb is
+/// laid out as default_colors_length describes.
+pub fn (self: &var Runtime) set_theme_colors(rgb: []u8) -> bool {
+    // SAFETY: the screen's terminal lives as long as the runtime.
+    return unsafe set_default_colors(self.screen.handle(), rgb);
+}
+
 /// Selects and reveals the next row holding query, searching on from the
 /// last match; false when no row does.
 pub fn (self: &var Runtime) find(allocator: Allocator, query: []u8, backwards: bool) -> Failure!bool {

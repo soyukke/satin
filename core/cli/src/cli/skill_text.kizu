@@ -3,7 +3,7 @@ fn skill_text() -> []u8 {
     return
         \\---
         \\name: satin
-        \\description: Control and organize a running Satin macOS terminal through its bundled CLI. Use when the user asks to inspect or operate Satin tabs or panes, save or version a bounded rich Markdown artifact, present tables, code, diagrams, trees, timelines, diffs, or images in Satin's sidebar, set session names, reorder or close workspaces, set up a development workspace, send terminal input, change themes, or coordinate pane status. Run only from a Satin-managed pane with a valid local control context.
+        \\description: Control and organize a running Satin macOS terminal through its bundled CLI. Use when the user asks to inspect or operate Satin tabs or panes, save or version a bounded rich Markdown page, present tables, code, diagrams, trees, timelines, diffs, or images in Satin's page reader, set session names, reorder or close workspaces, set up a development workspace, send terminal input, change themes, or coordinate pane status. Run only from a Satin-managed pane with a valid local control context.
         \\---
         \\
         \\# Satin
@@ -134,13 +134,19 @@ fn skill_text() -> []u8 {
         \\report a more precise blocked, failed, waiting, or completion summary. A
         \\terminal explicit status is not replaced by a title-derived turn ending.
         \\
-        \\## Present bounded artifacts
+        \\## Present bounded pages
         \\
-        \\Inspect saved artifacts and the live presentation policy before preparing one:
+        \\A Satin page is a Markdown document that Satin stores on this machine and draws in a reader over the
+        \\middle of the terminal window. It is a local terminal feature driven only by the `satin page`
+        \\commands below; it is not a feature of the chat interface you are running in, and nothing is uploaded
+        \\or published. `satin artifact` is an older alias of `satin page` and behaves identically; use
+        \\`satin page` in new work.
+        \\
+        \\Inspect saved pages and the live presentation policy before preparing one:
         \\
         \\```sh
-        \\satin artifact list --json
-        \\satin artifact policy --json
+        \\satin page list --json
+        \\satin page policy --json
         \\```
         \\
         \\Prepare the source for that policy: use the requested presentation language; put the conclusion or
@@ -152,7 +158,7 @@ fn skill_text() -> []u8 {
         \\
         \\Prefer one human-readable Markdown document containing headings, prose, tables, and fenced evidence.
         \\Write it inside the user's authorized workspace, then register it by absolute path. Satin snapshots the
-        \\document into its owner-only artifact store, generates `INDEX.md`, and returns a stable ID. Supported
+        \\document into its owner-only page store, generates `INDEX.md`, and returns a stable ID. Supported
         \\import kinds are `text`, `markdown`, `table`, `tree`, `timeline`, `diff`, and PNG `image`; JSON/CSV/TSV
         \\tables and PNG images also receive a Markdown document beside their retained source snapshot.
         \\
@@ -169,43 +175,46 @@ fn skill_text() -> []u8 {
         \\does not execute Mermaid JavaScript or raw HTML.
         \\
         \\```sh
-        \\result="$(satin artifact add --kind markdown --title "Test results" \
+        \\result="$(satin page add --kind markdown --title "Test results" \
         \\  --language ja-JP --file "$project/test-results.md" --json)"
-        \\artifact_id="$(printf '%s' "$result" | jq -r '.result.id')"
-        \\satin artifact show "$artifact_id" --background --json
+        \\page_id="$(printf '%s' "$result" | jq -r '.result.id')"
+        \\satin page show "$page_id" --background --json
         \\```
         \\
-        \\When revising the same logical artifact, reuse its exact ID. Satin appends a version only when the
+        \\When revising the same logical page, reuse its exact ID. Satin appends a version only when the
         \\document or retained source changed:
         \\
         \\```sh
-        \\update="$(satin artifact add --id "$artifact_id" --kind markdown --title "Test results" \
+        \\update="$(satin page add --id "$page_id" --kind markdown --title "Test results" \
         \\  --language ja-JP --file "$project/test-results.md" --json)"
-        \\artifact_version="$(printf '%s' "$update" | jq -r '.result.version')"
-        \\satin artifact list "$artifact_id" --json
-        \\satin artifact show "$artifact_id@$artifact_version" --background --json
+        \\page_version="$(printf '%s' "$update" | jq -r '.result.version')"
+        \\satin page list "$page_id" --json
+        \\satin page show "$page_id@$page_version" --background --json
         \\```
         \\
-        \\Omitting `--pane` targets `SATIN_PANE_ID`. `artifact show` atomically opens the window's right artifact
-        \\sidebar, or refreshes that same sidebar when it is already open. Do not create a split first and do not
-        \\emulate presentation with `split`, `send`, and `key`; the source terminal, Neovim, or tmux pane remains
-        \\live and visible. Use `--background` unless the user wants focus moved to the viewer. Humans can use the
-        \\Artifacts button at the right side of the native toolbar to inspect recent previews. Registration obeys
-        \\the configured preview budget; the viewer reflows the retained snapshot to the sidebar, reports
-        \\omissions, and closes through its common pane-header close action. A standalone viewer remains
-        \\interruptible with Ctrl+C. `show ID` selects the latest version and `show ID@N` selects an immutable
-        \\prior version. Legacy `--vertical` and `--horizontal` flags remain accepted but do not change sidebar
-        \\placement.
+        \\JSON results keep their established field names, such as `.result.id` and `.result.version`.
         \\
-        \\When the user asked to display an artifact, presentation is part of both creation and revision: do not
-        \\report the artifact operation complete until the matching `artifact show` response succeeds. On a
-        \\revision, show the version returned by `artifact add`; do not guess or hard-code its version number.
+        \\Omitting `--pane` targets `SATIN_PANE_ID`. `page show --background` delivers the page to the user's
+        \\binder: it waits there as an unread card and the user reads it when they choose. If the reader is
+        \\already open, it shows the new page in place. `page show` without `--background` opens the reader over
+        \\the middle of the window and moves focus to it; use that only when the user asked to see the page now.
+        \\Do not create a split first and do not emulate presentation with `split`, `send`, and `key`; the source
+        \\terminal, Neovim, or tmux pane remains live. Humans open the binder from the toolbar's Pages button.
+        \\Registration obeys the configured preview budget; the reader reflows the retained snapshot to its
+        \\width, reports omissions, and closes with Esc. A standalone viewer remains interruptible with Ctrl+C.
+        \\`show ID` selects the latest version and `show ID@N` selects an immutable prior version; in the reader
+        \\the arrow keys step through versions. Legacy `--vertical` and `--horizontal` flags remain accepted but
+        \\change nothing.
+        \\
+        \\When the user asked to display a page, presentation is part of both creation and revision: do not
+        \\report the page operation complete until the matching `page show` response succeeds. On a
+        \\revision, show the version returned by `page add`; do not guess or hard-code its version number.
         \\
         \\The overflow policy is `compact`, `defer`, or `reject`. If registration is rejected, revise the source
-        \\or ask before changing policy. Do not create a new artifact when the user is clearly revising an
-        \\existing one; identify it from `artifact list --json` and pass `--id`. Do not register secrets,
-        \\credentials, or unrelated files. Opening the sidebar is a layout mutation and still requires user
-        \\intent under the Safety rules below.
+        \\or ask before changing policy. Do not create a new page when the user is clearly revising an
+        \\existing one; identify it from `page list --json` and pass `--id`. Do not register secrets,
+        \\credentials, or unrelated files. Opening the reader moves focus and still requires user intent under the Safety rules
+        \\below.
         \\
         \\## Safety
         \\

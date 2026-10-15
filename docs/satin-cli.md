@@ -64,17 +64,17 @@ satin status set --pane 1 running "running tests"
 satin status wait --pane 1 --timeout 300
 satin status set --pane 1 done "tests passed"
 
-satin artifact policy --json
-satin artifact policy set --max-columns 80 --max-rows 32 \
+satin page policy --json
+satin page policy set --max-columns 80 --max-rows 32 \
   --language ja-JP --overflow compact
-satin artifact add --kind table --title "Test results" \
+satin page add --kind table --title "Test results" \
   --language ja-JP --file /absolute/path/results.json --json
-satin artifact add --id ARTIFACT_ID --kind markdown --title "Test results" \
+satin page add --id PAGE_ID --kind markdown --title "Test results" \
   --language ja-JP --file /absolute/path/results.md --json
-satin artifact list --json
-satin artifact list ARTIFACT_ID --json
-satin artifact show ARTIFACT_ID --background
-satin artifact show ARTIFACT_ID@2
+satin page list --json
+satin page list PAGE_ID --json
+satin page show PAGE_ID --background
+satin page show PAGE_ID@2
 ```
 
 `--pane` defaults to `SATIN_PANE_ID`, and `--tab` defaults to
@@ -87,8 +87,8 @@ Tab and pane targets use stable IDs from `list`; only `move-tab --index` uses
 the current zero-based presentation index. A new tab can set its cwd and title
 atomically. `--background` creates and starts the requested tab or split, then
 restores the previously active tab and pane. The final tab and final pane cannot
-be closed through automation. For artifacts, `--background` keeps focus in the
-workspace while the right sidebar opens or refreshes.
+be closed through automation. For pages, `--background` delivers the page to
+the binder's inbox, or refreshes the reader in place when it is open.
 
 The former `NVTERM_*` environment names remain accepted as one-way
 compatibility aliases for existing shell scripts. New integrations should use
@@ -118,11 +118,14 @@ internal boundary marker. It resets title initialization for the current pane
 without editing either agent's configuration. Interactive automation should not
 need to call it.
 
-## Artifacts
+## Pages
 
-Artifacts snapshot an absolute local source file into a versioned, bounded
-presentation.
-The default maximum is 80 terminal cells by 32 rows. `artifact policy set`
+Pages snapshot an absolute local source file into a versioned, bounded
+presentation that Satin draws in a reader over the middle of the terminal window.
+`satin artifact` is an older alias of `satin page` and remains accepted; the
+JSON field names, the control-protocol command `artifact-show`, and the
+on-disk store layout keep their original `artifact` names.
+The default maximum is 80 terminal cells by 32 rows. `page policy set`
 changes the maximum, presentation language, and overflow behavior:
 
 - `compact` registers the source and reports omitted rows or columns.
@@ -159,17 +162,17 @@ let width = 80;
 Registration snapshots up to four such PNGs, at most 32 MiB combined, and the
 viewer places them inline through Kitty graphics. Absolute paths, `..`, remote
 URLs, data URLs, and non-PNG media are not loaded. Changing only an embedded PNG
-still creates a new artifact version.
+still creates a new page version.
 
 Mermaid is not a rendered Markdown feature. A fenced `mermaid` block remains a
 readable code block. When a diagram matters, render it to a local PNG first and
 embed that PNG in the report; Satin does not bundle a browser or execute
 Mermaid JavaScript.
 
-`artifact add` returns a stable ID. Passing that ID back with `--id` appends a
+`page add` returns a stable ID. Passing that ID back with `--id` appends a
 version; unchanged content is idempotent and retains the existing version.
-`artifact list` shows the latest versions, while `artifact list ID` shows one
-artifact's versions. `show ID` selects the latest snapshot and `show ID@N`
+`page list` shows the latest versions, while `page list ID` shows one
+page's versions. `show ID` selects the latest snapshot and `show ID@N`
 selects an immutable prior version.
 
 The normal store is owner-only at
@@ -194,15 +197,19 @@ artifacts/
 JSON is internal metadata; Markdown is the human-facing document. `INDEX.md`
 and each `README.md` link to the current and prior snapshots.
 
-The Artifacts action at the right edge of the native toolbar opens a popover with
-the five most recent titles, versions, update times, and short previews. Selecting
-a row opens a window-scoped right sidebar without replacing a terminal, Neovim,
-or tmux pane. Selecting another artifact or running `artifact show` again replaces
-only the viewer inside that same sidebar. Omitting `--pane` targets
-`SATIN_PANE_ID`; `--background` preserves workspace focus. Legacy `--vertical`
+The Pages action at the right edge of the native toolbar opens the binder. Unread
+pages wait in a stack at its top; a click or Space deals them out, and a click on
+one opens it in the reader. Pages already read are listed in a table below. The
+toolbar button shows how many are unread, and a new page pulses the backdrop.
+The newest unread pages also rest in a small fan at the lower right of the
+window, beside the agent cards; a click on one opens it in the reader.
+The reader floats over the middle of the window without replacing a terminal,
+Neovim, or tmux pane; Esc closes it and the arrow keys step through versions.
+`page show` without `--background` opens the reader directly and moves focus to
+it. Omitting `--pane` targets `SATIN_PANE_ID`. Legacy `--vertical`
 and `--horizontal` flags are accepted as compatibility no-ops.
 
-`artifact view ID` is normally launched by `artifact show`. `--no-wait` emits
+`page view ID` is normally launched by `page show`. `--no-wait` emits
 one rendered frame for diagnostics without entering the alternate screen.
 
 The bundled `satin-nvim` launcher also uses a protocol-private `open-neovim`
@@ -223,7 +230,7 @@ are limited to 1 MiB, concurrent clients to 32, normal requests to 30 seconds,
 and status waits to one hour. The launcher-owned Neovim request lasts for the
 editor session so it can restore the original shell and return the exit status.
 
-Artifact payloads do not cross the control socket. Only a validated artifact
+Page payloads do not cross the control socket. Only a validated page
 selector and bounded control metadata are sent; snapshots remain local files.
 
 This boundary protects against other macOS users, not other processes running

@@ -638,9 +638,16 @@ final class TerminalTextView: NSView, NSTextInputClient {
                 width: paneRect.width,
                 height: height
             )
-            NSColor.black.withAlphaComponent(paneId == activePaneId ? 0.2 : 0.12).setFill()
+            // On paper the header is a faint ink tint over a ruled line.
+            let paper = NativePageStyle.paper
+            (paper ? NativePageStyle.text : NSColor.black)
+                .withAlphaComponent(
+                    paneId == activePaneId ? (paper ? 0.06 : 0.2) : (paper ? 0.03 : 0.12)
+                )
+                .setFill()
             headerRect.fill()
-            NSColor.separatorColor.withAlphaComponent(0.28).setFill()
+            (paper ? NativePageStyle.line : NSColor.separatorColor.withAlphaComponent(0.28))
+                .setFill()
             NSRect(x: headerRect.minX, y: headerRect.maxY - 1, width: headerRect.width, height: 1)
                 .fill()
         }

@@ -187,8 +187,8 @@ test "inline emphasis keeps its spans" {
     testing::expect(span_flags(content, "bold") == 3);
     testing::expect(span_flags(content, "italic") == 5);
     testing::expect(span_flags(content, "gone") == 9);
-    testing::expect(span_flags(content, "code") == 97);
-    testing::expect(span_flags(content, "a ` backtick") == 97);
+    testing::expect(span_flags(content, "code") == 33);
+    testing::expect(span_flags(content, "a ` backtick") == 33);
     testing::expect(span_flags(content, "plain ") == 1);
     testing::expect(span_flags("a [link](https://example.test) b", "link") == 49);
     testing::expect(span_flags("***both*** and __strong__", "both") == 7);
@@ -365,7 +365,7 @@ test "rich Markdown snapshots its images and draws structured blocks" {
     testing::expect(screen_contains(&rendered, "│ let answer = "));
     testing::expect(contains(ansi, "[3m"));
     testing::expect(contains(ansi, "[9m"));
-    testing::expect(contains(ansi, "[48;2;38;48;61m"));
+    testing::expect(contains(ansi, "[36mcargo test"));
     testing::expect(rendered.plain_lines.len() == 32);
     testing::expect(rows_fit(&rendered, 80, false));
     testing::expect(contains(ansi, "_Ga=T,f=100"));
@@ -432,7 +432,7 @@ test "a Markdown artifact keeps at most four pictures" {
     }
     let why = message.as_bytes();
     testing::expect(refused);
-    testing::expect(mem::equal_bytes(why, "Markdown artifacts support at most 4 local PNG images"));
+    testing::expect(mem::equal_bytes(why, "Markdown pages support at most 4 local PNG images"));
     assets.clear(allocator);
     refused = false;
     if snapshot_local_pngs(allocator, &var message, "![gone](missing.png)", source_bytes, &var assets) {} else |_| {

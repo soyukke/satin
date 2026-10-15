@@ -74,6 +74,9 @@ struct SatinApplication {
                 ("hand effects", runNativeHandEffectsSelfTests),
                 ("gpu renderer", runNativeGpuRendererSelfTests),
                 ("chill sound", nativeChillSoundSelfTestPassed),
+                ("page inbox", runNativePageInboxSelfTests),
+                ("page hand", runNativePageHandSelfTests),
+                ("paper mode", runNativePaperModeSelfTests),
                 ("attention hand", runNativeAttentionHandSelfTests),
                 ("attention hand view", runNativeAttentionHandViewSelfTests),
             ]

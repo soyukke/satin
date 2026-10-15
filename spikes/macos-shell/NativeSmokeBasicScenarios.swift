@@ -952,31 +952,38 @@ import Foundation
                     return
                 }
                 self.artifactButton.performClick(nil)
+                self.waitForArtifactPopoverSmokeOpen(attempts: 600)
             }
         }
 
-        func waitForArtifactPopoverSmokeOpen(
-            _ content: NativeArtifactsPopoverViewController,
-            artifact: String,
-            attempts: Int
-        ) {
-            guard let path = smokeState.artifactPopoverOpenPath, attempts > 0 else {
+        /// The binder stands in for the old popover: once it lists the target
+        /// page the smoke reports, then opens that page when asked.
+        func waitForArtifactPopoverSmokeOpen(attempts: Int) {
+            guard let resultPath = smokeState.artifactPopoverResultPath, attempts > 0 else {
                 return
             }
-            if FileManager.default.fileExists(atPath: path) {
-                smokeState.artifactPopoverOpenPath = nil
-                _ = content.performSelectionForSmoke(artifact)
-                return
-            }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self, weak content] in
-                guard let self, let content else {
-                    return
+            let target = ProcessInfo.processInfo.environment["SATIN_NATIVE_SMOKE_ARTIFACT"] ?? ""
+            if let page = pageInbox.pages.first(where: { $0.id == target }), pageBinder != nil {
+                if smokeState.artifactPopoverOpenPath != nil {
+                    if !FileManager.default.fileExists(atPath: resultPath) {
+                        writeArtifactPopoverSmokeResult(
+                            resultPath,
+                            result: "ok artifact-popover items=\(pageInbox.pages.count)\n")
+                    }
+                    if let open = smokeState.artifactPopoverOpenPath,
+                        FileManager.default.fileExists(atPath: open)
+                    {
+                        smokeState.artifactPopoverOpenPath = nil
+                        smokeState.artifactPopoverResultPath = nil
+                        openPage(page)
+                        return
+                    }
                 }
-                self.waitForArtifactPopoverSmokeOpen(
-                    content,
-                    artifact: artifact,
-                    attempts: attempts - 1
-                )
+            } else if pageBinder != nil {
+                pageInbox.reload()
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+                self?.waitForArtifactPopoverSmokeOpen(attempts: attempts - 1)
             }
         }
 

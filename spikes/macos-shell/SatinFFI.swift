@@ -334,6 +334,13 @@ func satinRuntimeFind(
     _ backwards: UInt8
 ) -> UInt8
 
+@_silgen_name("satin_runtime_set_theme_colors")
+func satinRuntimeSetThemeColors(
+    _ handle: UnsafeMutableRawPointer?,
+    _ bytes: UnsafePointer<UInt8>?,
+    _ length: Int
+) -> UInt8
+
 @_silgen_name("satin_runtime_set_option_as_alt")
 func satinRuntimeSetOptionAsAlt(
     _ handle: UnsafeMutableRawPointer?,

@@ -1,0 +1,62 @@
+import std::mem;
+import std::string;
+import std::testing;
+
+/// Default colors with a cream background, ink foreground and a palette
+/// whose entry 1 is a known red; every other byte is grey.
+fn paper_colors(allocator: Allocator) -> mem::Error!string::String {
+    var rgb = string::new(allocator);
+    errdefer rgb.deinit(allocator);
+    for 0..default_colors_length() |_| {
+        try rgb.append_byte(allocator, 128);
+    }
+    return move rgb;
+}
+
+fn set_rgb(rgb: &var string::String, index: i64, r: u8, g: u8, b: u8) -> void {
+    let bytes = rgb.as_mut_bytes();
+    bytes[index * 3] = r;
+    bytes[index * 3 + 1] = g;
+    bytes[index * 3 + 2] = b;
+}
+
+test "draws with the theme's colors until a program sets its own" {
+    let allocator = mem::page_allocator();
+    var rgb = try paper_colors(allocator);
+    defer rgb.deinit(allocator);
+    set_rgb(&var rgb, 0, 43, 34, 51);
+    set_rgb(&var rgb, 1, 241, 232, 212);
+    set_rgb(&var rgb, 4, 176, 42, 67);
+    let terminal = new_terminal(4, 1, 100) orelse return GhosttyError::Refused;
+    let bytes = rgb.as_bytes();
+    // SAFETY: terminal is live until free_terminal below.
+    testing::expect(unsafe set_default_colors(terminal, bytes));
+    // SAFETY: as above.
+    testing::expect(!unsafe set_default_colors(terminal, bytes[0..9]));
+    // SAFETY: as above.
+    testing::expect(unsafe set_default_colors(terminal, bytes[0..0]));
+    // SAFETY: as above.
+    testing::expect(unsafe set_default_colors(terminal, bytes));
+    var input = string::new(allocator);
+    defer input.deinit(allocator);
+    try input.append_byte(allocator, 97);
+    try input.append_byte(allocator, 27);
+    try input.append_bytes(allocator, "[31mb");
+    let text = input.as_bytes();
+    // SAFETY: as above.
+    unsafe write_terminal(terminal, text);
+    var frame = new_frame(allocator);
+    defer frame.deinit(allocator);
+    var renderer = try new_frame_renderer();
+    // SAFETY: as above.
+    let result = unsafe renderer.collect(allocator, terminal, &var frame);
+    renderer.deinit();
+    // SAFETY: terminal came from new_terminal and nothing uses it after this.
+    unsafe free_terminal(terminal);
+    try result;
+    testing::expect(frame.background.r == 241 and frame.background.g == 232);
+    let plain = frame.cells.get(0) orelse return GhosttyError::Refused;
+    testing::expect(plain.fg.r == 43 and plain.fg.b == 51);
+    let red = frame.cells.get(1) orelse return GhosttyError::Refused;
+    testing::expect(red.fg.r == 176 and red.fg.g == 42);
+}

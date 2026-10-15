@@ -103,7 +103,7 @@ final class NativeGpuRenderer {
             float pixel;
             float vivid;
             float pulse;
-            float pad1;
+            float paper;
             float4 first;
             float4 second;
             float4 third;
@@ -147,6 +147,18 @@ final class NativeGpuRenderer {
             float p2 = max(0.0, 1.0 - m * abs(paint));
             float p3 = 1.0 - min(1.0, p1 + p2);
             float3 color = u.first.rgb * p1 + u.second.rgb * p2 + u.third.rgb * p3;
+            if (u.paper > 0.5) {
+                // Paper: the same currents as faint ink soaked into cream
+                // stock, with the grain of its fibres.
+                float2 fibre = floor(in.position.xy);
+                float grain = fract(sin(dot(fibre, float2(12.9898, 78.233))) * 43758.5453);
+                float3 sheet = u.third.rgb;
+                sheet = mix(sheet, u.first.rgb, 0.17 * clamp(p1, 0.0, 1.0));
+                sheet = mix(sheet, u.second.rgb, 0.15 * clamp(p2, 0.0, 1.0));
+                sheet *= 0.985 + 0.03 * grain;
+                sheet = mix(sheet, u.tint.rgb, 0.3 * u.pulse * (0.4 + p1));
+                return float4(sheet, 1.0);
+            }
             color = mix(u.third.rgb, color, clamp(u.vivid, 0.0, 1.5) / 1.5 + 0.2);
             // A pulse floods the paint with the tint of what just happened.
             color = mix(color, u.tint.rgb * (0.55 + 0.6 * p1), 0.6 * u.pulse);
@@ -170,6 +182,8 @@ final class NativeGpuRenderer {
         ]
         /// How strongly an event's tint shows, from 1 when it lands to 0.
         var pulse: Float = 0
+        /// Ink soaking into paper, rather than swirling paint.
+        var paper = false
         var tint = SIMD4<Float>(0, 0, 0, 1)
     }
 
@@ -180,7 +194,7 @@ final class NativeGpuRenderer {
         var pixel: Float
         var vivid: Float
         var pulse: Float
-        var pad1: Float = 0
+        var paper: Float
         var first: SIMD4<Float>
         var second: SIMD4<Float>
         var third: SIMD4<Float>
@@ -366,6 +380,7 @@ final class NativeGpuRenderer {
             pixel: backdrop.pixel,
             vivid: backdrop.vivid,
             pulse: backdrop.pulse,
+            paper: backdrop.paper ? 1 : 0,
             first: backdrop.colors[0],
             second: backdrop.colors[1],
             third: backdrop.colors[2],

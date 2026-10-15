@@ -58,10 +58,10 @@ and changes across the workspace.
   session picker switches, creates, attaches, detaches, and safely ends local sessions;
   ordinary `tmux attach` remains a terminal TUI.
 - A release-matched skill, available through `satin skill`, that lets terminal
-  AIs identify their pane and operate tabs, splits, input, status, and artifacts
+  AIs identify their pane and operate tabs, splits, input, status, and pages
   through an owner-only local control socket.
-- Experimental bounded, versioned Markdown artifacts with a native recent-item
-  picker and reusable, window-scoped sidebar. The terminal viewer renders GFM
+- Experimental bounded, versioned Markdown pages with a native binder whose
+  unread pages wait as a stack of cards, and a reader over the window. The terminal viewer renders GFM
   tables, inline emphasis, fenced code in one uniform style, and snapshotted
   relative PNG images without an embedded browser.
 - Native tabs, recursive splits, working-directory inheritance, and session
@@ -134,18 +134,18 @@ selected pane's current screen.
   scraping terminal text. Click for the 16-second MP4.</sub>
 </p>
 
-### AI artifacts
+### AI pages
 
-Artifacts are experimental. Ask a terminal AI to use Satin's embedded skill and
-it can turn a response into a bounded Markdown artifact, then open or refresh
-the snapshot in a reusable right sidebar without replacing its working pane.
+Pages are experimental. Ask a terminal AI to use Satin's embedded skill and
+it can turn a response into a bounded Markdown page with `satin page`, then open or refresh
+the snapshot in Satin's reader without replacing its working pane.
 The release-matched skill is exposed by Satin itself, so there is no separate
 plugin to install.
 
 <p align="center">
   <a href="assets/satin-artifact-demo.mp4">
     <img src="assets/satin-artifact-demo.gif" width="880"
-      alt="A Satin terminal opening and refreshing a Markdown artifact sidebar">
+      alt="A Satin terminal opening and refreshing a Markdown page">
   </a>
 </p>
 
@@ -305,7 +305,7 @@ security boundary.
 - `Command-R`: rename the active tab
 - a borderless new-tab action immediately after the native tab strip
 - per-pane vertical split, horizontal split, Finder-directory, and `×` actions
-- right-side toolbar actions for the Artifact sidebar and Work Switcher
+- right-side toolbar actions for the page binder and Work Switcher
 - `Command-N`: open the unified native Neovim UI while retaining the current shell
 - `Command-C`, `Command-V`, `Command-A`, `Command-F`: copy, paste, select all,
   and scrollback search

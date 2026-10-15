@@ -46,6 +46,14 @@ native_swift_sources=(
   spikes/macos-shell/TerminalMetalView.swift
   spikes/macos-shell/NativeGpuRenderer.swift
   spikes/macos-shell/NativeChillSound.swift
+  spikes/macos-shell/NativePageInbox.swift
+  spikes/macos-shell/NativePageViews.swift
+  spikes/macos-shell/NativePageBinder.swift
+  spikes/macos-shell/TerminalShellPages.swift
+  spikes/macos-shell/NativePaperMode.swift
+  spikes/macos-shell/NativePaperTab.swift
+  spikes/macos-shell/NativePageHandView.swift
+  spikes/macos-shell/NativeSettingsModel.swift
   spikes/macos-shell/TerminalShellArtifacts.swift
   spikes/macos-shell/TerminalShellCommands.swift
   spikes/macos-shell/TerminalShellControl.swift

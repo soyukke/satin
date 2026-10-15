@@ -353,6 +353,14 @@ class TerminalPane: NativePane {
         _ = satinRuntimeSetOptionAsAlt(handle, enabled ? 1 : 0)
     }
 
+    /// Draws with the mode's colors where the program sets none; empty
+    /// returns to the terminal's own.
+    func setThemeColors(_ rgb: [UInt8]) {
+        _ = rgb.withUnsafeBufferPointer { bytes in
+            satinRuntimeSetThemeColors(handle, bytes.baseAddress, bytes.count)
+        }
+    }
+
     @discardableResult
     func drain() -> Bool {
         let changed = satinRuntimeDrain(handle) != 0

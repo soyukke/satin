@@ -471,7 +471,7 @@ fn preview_summary(
 ) -> ArtifactFailure!ArtifactPreviewSummary {
     if overflow == ArtifactOverflow::Reject and body.compacted {
         explain(allocator, message,
-            "artifact preview exceeds the configured bounds; change the source or overflow policy", "", "");
+            "page preview exceeds the configured bounds; change the source or overflow policy", "", "");
         return ArtifactError::Failed;
     }
     var status = ArtifactPreviewStatus::Ready;
@@ -497,14 +497,16 @@ fn append_line_end(allocator: Allocator, out: &var string::String) -> mem::Error
 
 /// Appends the escape sequence that starts text of a line style.
 fn append_style_escape(allocator: Allocator, out: &var string::String, style: LineStyle) -> mem::Error!void {
+    // Colors by the terminal's own palette, so a page reads in whatever
+    // theme the window wears, dark or paper.
     let sequence = match style {
-        Normal => "[38;2;220;224;230m",
-        Heading => "[1;38;2;244;247;252m",
-        Muted => "[38;2;132;142;156m",
-        Accent => "[38;2;91;192;235m",
-        Added => "[38;2;126;211;154m",
-        Removed => "[38;2;242;139;130m",
-        Warning => "[1;38;2;240;190;85m",
+        Normal => "[39m",
+        Heading => "[1;39m",
+        Muted => "[90m",
+        Accent => "[36m",
+        Added => "[32m",
+        Removed => "[31m",
+        Warning => "[1;33m",
     };
     try append_escape(allocator, out, sequence);
     return;
@@ -987,7 +989,7 @@ pub fn render_artifact(
         }
     }
     if columns < 20 or rows < 8 {
-        explain(allocator, message, "artifact pane requires at least 20 columns and 8 rows", "", "");
+        explain(allocator, message, "page pane requires at least 20 columns and 8 rows", "", "");
         return ArtifactError::Failed;
     }
     if policy.overflow == ArtifactOverflow::Defer {

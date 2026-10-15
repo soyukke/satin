@@ -403,7 +403,7 @@ test "a version cannot change its artifact's kind" {
     }
     let why = message.as_bytes();
     testing::expect(refused);
-    testing::expect(mem::equal_bytes(why, "an artifact version cannot change its kind"));
+    testing::expect(mem::equal_bytes(why, "a page version cannot change its kind"));
 }
 
 test "concurrent updates receive distinct versions" {

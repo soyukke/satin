@@ -1,0 +1,43 @@
+// The colors a terminal draws with when its program sets none: the
+// embedder's theme, which an OSC color change still overrides.
+import std::mem;
+
+/// How many bytes default colors take: foreground, background and cursor,
+/// then the 256-color palette, three bytes a color.
+pub fn default_colors_length() -> i64 {
+    return 3 * 259;
+}
+
+/// Sets terminal's default foreground, background, cursor and palette from
+/// rgb, laid out as default_colors_length describes, or clears them back to
+/// libghostty's own when rgb is empty; false when rgb is another length or
+/// libghostty refused one of them.
+///
+/// terminal must be a live libghostty terminal.
+pub unsafe fn set_default_colors(terminal: ptr<u8>, rgb: []u8) -> bool {
+    if mem::len(rgb) == 0 {
+        var cleared = true;
+        for 11..15 |option| {
+            // SAFETY: a null value clears the option's default.
+            cleared = cleared and unsafe ghostty_terminal_set(terminal, cast<i32>(option), null) == success();
+        }
+        return cleared;
+    }
+    if mem::len(rgb) != default_colors_length() {
+        return false;
+    }
+    var accepted = true;
+    for 0..3 |index| {
+        let color = rgb[index * 3..index * 3 + 3];
+        // SAFETY: a cast of the address alone; libghostty only reads through it.
+        let value = unsafe cast<ptr<u8>>(ptr_of(color));
+        // SAFETY: options 11 to 13 read one GhosttyColorRgb, three bytes, during the call.
+        accepted = accepted and unsafe ghostty_terminal_set(terminal, 11 + cast<i32>(index), value) == success();
+    }
+    let palette = rgb[9..mem::len(rgb)];
+    // SAFETY: a cast of the address alone; libghostty only reads through it.
+    let entries = unsafe cast<ptr<u8>>(ptr_of(palette));
+    // SAFETY: option 14 reads 256 GhosttyColorRgb values, 768 bytes, during the call.
+    accepted = accepted and unsafe ghostty_terminal_set(terminal, 14, entries) == success();
+    return accepted;
+}

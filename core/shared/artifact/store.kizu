@@ -436,7 +436,7 @@ fn resolve_artifact_directory(
         return ArtifactError::Failed;
     }
     if count == 0 {
-        explain(allocator, message, "artifact ", id, " does not exist");
+        explain(allocator, message, "page ", id, " does not exist");
         return ArtifactError::Failed;
     }
     return move found;
@@ -608,7 +608,7 @@ fn manifest_from_stored(
         position = requested_version - 1;
     }
     if position < 0 or position >= artifact.versions.len() {
-        explain(allocator, message, "artifact ", id, " has no version ");
+        explain(allocator, message, "page ", id, " has no version ");
         if fmt::append_i64(allocator, message, requested_version) {} else |_| {}
         return ArtifactError::Failed;
     }
@@ -693,7 +693,7 @@ fn parse_artifact_selector(
         return ArtifactError::Failed;
     }
     if number == 0 {
-        explain(allocator, message, "artifact versions start at 1", "", "");
+        explain(allocator, message, "page versions start at 1", "", "");
         return ArtifactError::Failed;
     }
     version = number;
@@ -1014,7 +1014,7 @@ fn prepare_source_content(
         return move prepared;
     }
     if !is_valid_utf8(bytes) {
-        explain(allocator, message, "artifact source is not UTF-8: ", path, "");
+        explain(allocator, message, "page source is not UTF-8: ", path, "");
         return ArtifactError::Failed;
     }
     if kind == ArtifactKind::Markdown {
@@ -1038,7 +1038,7 @@ fn prepare_artifact_source(
         defer resolved.deinit(allocator);
         try canonical.append_string(allocator, &resolved);
     } else |_| {
-        explain(allocator, message, "resolve artifact source ", source, "");
+        explain(allocator, message, "resolve page source ", source, "");
         return ArtifactError::Failed;
     }
     let path = canonical.as_bytes();
@@ -1711,7 +1711,7 @@ pub fn register_artifact(
         defer stored.deinit(allocator);
         let stored_kind = stored.kind.as_bytes();
         if !mem::equal_bytes(stored_kind, kind_name(request.kind)) {
-            explain(allocator, message, "an artifact version cannot change its kind", "", "");
+            explain(allocator, message, "a page version cannot change its kind", "", "");
             return ArtifactError::Failed;
         }
         if try stored_artifact_matches(allocator, message, socket, &stored, title, language_bytes, &prepared) {

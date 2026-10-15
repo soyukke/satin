@@ -330,7 +330,8 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
     let newTabButton = NativeHoverIconButton(symbolName: "plus", title: "New Tab")
     let artifactButton = NativeHoverIconButton(
         symbolName: "doc.on.doc",
-        title: "Recent Artifacts"
+        title: "Pages (⌘⇧P)",
+        supportsBadge: true
     )
     let workSwitcherButton = NativeHoverIconButton(
         symbolName: "square.grid.2x2",
@@ -340,6 +341,7 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
     let sessionControlButton = NSButton(frame: .zero)
     let backdropView = NativeTerminalBackdropView(frame: .zero)
     let attentionHandView = NativeAttentionHandView(frame: .zero)
+    let pageHandView = NativePageHandView(frame: .zero)
     var attentionHandStripConstraint: NSLayoutConstraint?
     var attentionHandRun = NativeHandRun()
     /// The pane whose card ⌘J just played, until the hand shows it gone.
@@ -409,8 +411,12 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
     var nvimLauncherPath = ""
     var zshIntegrationPath = ""
     var claudeSettingsPath = ""
-    var artifactsPopover: NSPopover?
-    var artifactsPopoverPaneId: Int?
+    let pageInbox = NativePageInbox()
+    var pageBinder: NativePageBinderView?
+    var pageReaderChrome: NativePageReaderChrome?
+    var pageReaderPage: NativeArtifactListItem?
+    var pageReaderVersion: UInt32 = 0
+    var pageKeyMonitor: Any?
     let paneStatuses = NativePaneStatusStore()
     let chillSound = NativeChillSound()
     var announcedStatuses: [Int: String] = [:]
@@ -604,6 +610,8 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
         metalView.addSubview(terminalTextView)
         attentionHandView.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(attentionHandView)
+        pageHandView.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(pageHandView)
         let handStrip = metalView.bottomAnchor.constraint(equalTo: view.bottomAnchor)
         attentionHandStripConstraint = handStrip
 
@@ -620,6 +628,10 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
             attentionHandView.trailingAnchor.constraint(equalTo: metalView.trailingAnchor),
             attentionHandView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
             attentionHandView.topAnchor.constraint(equalTo: metalView.topAnchor),
+            pageHandView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            pageHandView.trailingAnchor.constraint(equalTo: metalView.trailingAnchor),
+            pageHandView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            pageHandView.topAnchor.constraint(equalTo: metalView.topAnchor),
             terminalTextView.topAnchor.constraint(equalTo: metalView.topAnchor),
             terminalTextView.leadingAnchor.constraint(equalTo: metalView.leadingAnchor),
             terminalTextView.trailingAnchor.constraint(equalTo: metalView.trailingAnchor),
@@ -629,6 +641,8 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
         metalView.setBackdropEnabled(settings.animatedBackdrop)
         chillSound.ambient = settings.ambientSound
         chillSound.chimes = settings.agentChimes
+        startPageInbox()
+        applyAppearanceMode()
     }
 
     override func viewDidLayout() {
@@ -667,6 +681,7 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
     override func viewDidAppear() {
         super.viewDidAppear()
         updateTabStripToolbarWidth()
+        view.window?.appearance = NSAppearance(named: appearanceMode == .paper ? .aqua : .darkAqua)
     }
 
     private func startPaneRuntimeIfReady() {
@@ -749,6 +764,9 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
         }
         chillSound.ambient = settings.ambientSound
         chillSound.chimes = settings.agentChimes
+        if previous.appearanceMode != settings.appearanceMode {
+            applyAppearanceMode()
+        }
         if previous.attentionHand != settings.attentionHand {
             setAttentionHandVisible(settings.attentionHand)
         }

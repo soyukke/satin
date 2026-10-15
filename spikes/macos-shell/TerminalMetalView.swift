@@ -370,6 +370,7 @@ final class TerminalMetalView: MTKView, CAMetalDisplayLinkDelegate, MTKViewDeleg
         if enabled {
             if gpu.backdrop == nil {
                 gpu.backdrop = NativeGpuRenderer.Backdrop()
+                applyBackdropLook()
             }
         } else {
             gpu.backdrop = nil
@@ -377,6 +378,31 @@ final class TerminalMetalView: MTKView, CAMetalDisplayLinkDelegate, MTKViewDeleg
         updateBackdropPixel()
         updateBackdropTimer()
         requestFrame()
+    }
+
+    private var backdropPaper = false
+
+    /// Paints the backdrop as ink on paper, or as the terminal's swirl.
+    func setBackdropPaper(_ paper: Bool) {
+        backdropPaper = paper
+        applyBackdropLook()
+        requestFrame()
+    }
+
+    private func applyBackdropLook() {
+        guard gpuRenderer?.backdrop != nil else {
+            return
+        }
+        let look = NativeGpuRenderer.Backdrop()
+        gpuRenderer?.backdrop?.paper = backdropPaper
+        gpuRenderer?.backdrop?.colors =
+            backdropPaper
+            ? [
+                SIMD4(0.42, 0.29, 0.77, 1),
+                SIMD4(0.12, 0.54, 0.54, 1),
+                SIMD4(0.945, 0.91, 0.83, 1),
+            ] : look.colors
+        updateBackdropPixel()
     }
 
     /// Floods the backdrop with a color for a moment, as an event lands.
@@ -398,7 +424,7 @@ final class TerminalMetalView: MTKView, CAMetalDisplayLinkDelegate, MTKViewDeleg
 
     private func updateBackdropPixel() {
         let scale = Float(window?.backingScaleFactor ?? 2)
-        gpuRenderer?.backdrop?.pixel = 4 * scale
+        gpuRenderer?.backdrop?.pixel = (backdropPaper ? 1 : 4) * scale
     }
 
     /// Runs the backdrop's clock at 30 frames a second while the window can

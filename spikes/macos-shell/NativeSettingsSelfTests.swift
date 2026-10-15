@@ -39,6 +39,7 @@ extension NativeSettingsStore {
             !initial.attentionHand,
             !initial.animatedBackdrop,
             !initial.ambientSound,
+            initial.appearanceMode == "terminal",
             !initial.agentChimes,
             initial.sessionRestore,
             initial.confirmBeforeQuit,

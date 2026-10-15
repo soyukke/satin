@@ -403,12 +403,12 @@ fn usage() -> []u8 {
         \\commands:
         \\  skill
         \\  identify
-        \\  artifact policy [set [--max-columns N] [--max-rows N] [--language TAG]
-        \\                       [--overflow compact|defer|reject]]
-        \\  artifact add [--id ID] --kind KIND --title TITLE --file PATH [--language TAG]
-        \\  artifact list [ID] [--limit N]
-        \\  artifact show [--pane ID] ID [--background]
-        \\  artifact view ID [--no-wait]
+        \\  page policy [set [--max-columns N] [--max-rows N] [--language TAG]
+        \\                   [--overflow compact|defer|reject]]
+        \\  page add [--id ID] --kind KIND --title TITLE --file PATH [--language TAG]
+        \\  page list [ID] [--limit N]
+        \\  page show [--pane ID] ID [--background]
+        \\  page view ID [--no-wait]
         \\  list
         \\  read-screen [--pane ID]
         \\  send [--pane ID] TEXT|-
