@@ -413,6 +413,20 @@ pub fn (self: &var Runtime) hyperlink_at(
     return try unsafe self.queries.hyperlink_at(allocator, self.screen.handle(), cols, rows, row, col, out);
 }
 
+/// Appends the whitespace-delimited word at the viewport cell to out. False
+/// when the cell holds none.
+pub fn (self: &var Runtime) word_at(
+    allocator: Allocator,
+    row: i64,
+    col: i64,
+    out: &var string::String
+) -> Failure!bool {
+    let cols = self.cols();
+    let rows = self.rows();
+    // SAFETY: the screen's terminal is live.
+    return try unsafe self.queries.word_at(allocator, self.screen.handle(), cols, rows, row, col, out);
+}
+
 /// Appends the terminal's title to out; false when it has none.
 pub fn (self: &Runtime) title(allocator: Allocator, out: &var string::String) -> mem::Error!bool {
     // SAFETY: the screen's terminal is live.

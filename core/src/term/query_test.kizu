@@ -86,6 +86,25 @@ test "an OSC 8 hyperlink wins over the word" {
     unsafe free_terminal(terminal);
 }
 
+test "reads the word under a cell, a path that is no URL" {
+    let allocator = mem::page_allocator();
+    let terminal = try query_terminal(allocator, 40, 4, "saved /tmp/out/shot.png here");
+    var queries = try new_queries(allocator);
+    defer queries.deinit(allocator);
+    var out = string::new(allocator);
+    defer out.deinit(allocator);
+    // SAFETY: terminal is live until free_terminal below.
+    testing::expect(try unsafe queries.word_at(allocator, terminal, 40, 4, 0, 10, &var out));
+    testing::expect(text_is(&out, "/tmp/out/shot.png"));
+    out.clear();
+    // SAFETY: as above.
+    testing::expect(!try unsafe queries.hyperlink_at(allocator, terminal, 40, 4, 0, 10, &var out));
+    // SAFETY: as above.
+    testing::expect(!try unsafe queries.word_at(allocator, terminal, 40, 4, 2, 0, &var out));
+    // SAFETY: terminal came from new_terminal and nothing uses it after this.
+    unsafe free_terminal(terminal);
+}
+
 test "selects everything and clears it" {
     let allocator = mem::page_allocator();
     let terminal = try query_terminal(allocator, 20, 4, "one$two");

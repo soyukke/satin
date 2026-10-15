@@ -8,7 +8,7 @@ final class TerminalTextView: NSView, NSTextInputClient {
     var onMouseInput: ((NativeMouseInput) -> NativeMouseHandling)?
     var onMouseTrackingRequested: (() -> Bool)?
     var onSelectionEvent: ((NativeTerminalSelectionEvent) -> Bool)?
-    var onHyperlinkRequested: (((row: Int, col: Int)) -> Bool)?
+    var onHyperlinkRequested: (((row: Int, col: Int), _ reveal: Bool) -> Bool)?
     var onCopyRequested: (() -> Bool)?
     var onPasteRequested: (() -> Bool)?
     var onSelectAllRequested: (() -> Bool)?
@@ -216,7 +216,7 @@ final class TerminalTextView: NSView, NSTextInputClient {
         }
         if event.modifierFlags.contains(.command),
             let position = mouseGridPosition(point),
-            onHyperlinkRequested?(position) == true
+            onHyperlinkRequested?(position, event.modifierFlags.contains(.option)) == true
         {
             return
         }

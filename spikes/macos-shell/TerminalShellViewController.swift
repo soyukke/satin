@@ -546,8 +546,8 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
         self.terminalTextView.onSelectionEvent = { [weak self] event in
             self?.handleTerminalSelection(event) ?? false
         }
-        self.terminalTextView.onHyperlinkRequested = { [weak self] position in
-            self?.openTerminalHyperlink(position) ?? false
+        self.terminalTextView.onHyperlinkRequested = { [weak self] position, reveal in
+            self?.openTerminalHyperlink(position, reveal: reveal) ?? false
         }
         self.terminalTextView.onCopyRequested = { [weak self] in
             self?.copySelection() ?? false
