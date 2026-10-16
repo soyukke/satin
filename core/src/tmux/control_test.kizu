@@ -243,7 +243,7 @@ fn feed_response(allocator: Allocator, control: &var Control, guard: []u8, body:
 
 fn admit_control_client(allocator: Allocator, control: &var Control) -> !void {
     try feed_quiet(allocator, control, "%begin 9 1 0\n%end 9 1 0\n");
-    try expect_outgoing(allocator, control, "list-clients -t '' -F '#{client_control_mode}' -f '#{client_control_mode}'\n");
+    try expect_outgoing(allocator, control, "list-clients -t '' -F '#{client_control_mode}' -f '#{&&:#{client_control_mode},#{?#{m:*ignore-size*,#{client_flags}},0,1}}'\n");
     try feed_quiet(allocator, control, "%begin 9 2 0\n1\n%end 9 2 0\n");
     try expect_outgoing(allocator, control,
         "refresh-client -f pause-after=5 -B 'satin-pane-title:%*:#{q:pane_title}' -B 'satin-session-clients::#{session_attached_list}'\n"
@@ -872,7 +872,7 @@ test "initial handshake subscribes to pane titles" {
     var control = new_control(allocator);
     defer control.deinit(allocator);
     try feed_quiet(allocator, &var control, "\eP1000p%begin 1 1 0\n%end 1 1 0\n");
-    try expect_outgoing(allocator, &var control, "list-clients -t '' -F '#{client_control_mode}' -f '#{client_control_mode}'\n");
+    try expect_outgoing(allocator, &var control, "list-clients -t '' -F '#{client_control_mode}' -f '#{&&:#{client_control_mode},#{?#{m:*ignore-size*,#{client_flags}},0,1}}'\n");
     try feed_quiet(allocator, &var control, "%begin 1 2 0\n1\n%end 1 2 0\n");
     try expect_outgoing(allocator, &var control,
         "refresh-client -f pause-after=5 -B 'satin-pane-title:%*:#{q:pane_title}' -B 'satin-session-clients::#{session_attached_list}'\n"

@@ -441,11 +441,14 @@ enum NativeTmuxProjectionAdmission {
         }
     }
 
+    /// Prints `1` for each control client that projects the session. One
+    /// attached with `-f ignore-size` leaves the window size alone and only
+    /// reads and types, such as one on a phone over SSH, so it prints nothing.
     static func clientArguments(for descriptor: NativeTmuxSessionDescriptor) -> [String] {
         [
             "-u", "-S", descriptor.socketPath,
             "list-clients", "-t", "=\(descriptor.name)",
-            "-F", "#{client_control_mode}",
+            "-F", "#{&&:#{client_control_mode},#{?#{m:*ignore-size*,#{client_flags}},0,1}}",
         ]
     }
 
