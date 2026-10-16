@@ -275,7 +275,9 @@ final class NativeAttentionHandView: NSView {
     /// Carries the card for `paneId` out of the hand and over the panes.
     /// `arrive` runs while the card covers them: it switches to the card's
     /// pane and answers where that pane now is, in this view's coordinates.
-    func play(paneId: Int, arrive: @escaping () -> NSRect?) {
+    /// `step` is which way the tab lies from the current one, -1, 0 or 1:
+    /// the card slides off the other way, as the strip moves under it.
+    func play(paneId: Int, step: Int = 0, arrive: @escaping () -> NSRect?) {
         guard let slot = slots.first(where: { $0.cardView.card.paneId == paneId }),
             !NativeHandEffects.reducesMotion, window != nil
         else {
@@ -304,23 +306,34 @@ final class NativeAttentionHandView: NSView {
                     NativeHandComet.burst(
                         in: host, at: CGPoint(x: tabX, y: self.bounds.maxY - 2), color: color)
                 }
+                let outline = flyer.takeOutline()
+                flyer.superview?.addSubview(outline, positioned: .above, relativeTo: flyer)
+                // Another tab's sheet slides off sideways, the way the tabs
+                // moved; a pane in the same tab only has the sheet lift off.
+                let away =
+                    step == 0
+                    ? target.insetBy(dx: 1, dy: 1)
+                    : cover.offsetBy(dx: -CGFloat(step.signum()) * cover.width * 0.35, dy: 0)
                 NSAnimationContext.runAnimationGroup(
                     { context in
-                        context.duration = 0.3
-                        context.timingFunction = CAMediaTimingFunction(name: .easeOut)
-                        flyer.animator().frame = target.insetBy(dx: 1, dy: 1)
-                        flyer.fadeFill()
+                        context.duration = 0.34
+                        context.timingFunction = CAMediaTimingFunction(
+                            controlPoints: 0.2, 0.8, 0.2, 1)
+                        flyer.animator().frame = away
+                        flyer.animator().alphaValue = 0
+                        outline.animator().frame = target.insetBy(dx: 1, dy: 1)
                     },
                     completionHandler: {
+                        flyer.removeFromSuperview()
                         // The outline stays on the pane that took the focus.
                         NSAnimationContext.runAnimationGroup(
                             { context in
                                 context.duration = 0.9
                                 context.timingFunction = CAMediaTimingFunction(name: .easeIn)
-                                flyer.animator().alphaValue = 0
+                                outline.animator().alphaValue = 0
                             },
                             completionHandler: {
-                                flyer.removeFromSuperview()
+                                outline.removeFromSuperview()
                             }
                         )
                     }

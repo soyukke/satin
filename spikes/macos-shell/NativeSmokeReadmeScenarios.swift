@@ -51,6 +51,7 @@ import Foundation
                 ("older", { [weak self] in self?.stepPageForSmoke(-1) }),
                 ("mode", { [weak self] in self?.toggleAppearanceModeForSmoke() }),
                 ("newer", { [weak self] in self?.stepPageForSmoke(1) }),
+                ("linkhover", { [weak self] in self?.hoverLinkForSmoke() }),
             ] where FileManager.default.fileExists(atPath: "\(resultPath).\(suffix)") {
                 try? FileManager.default.removeItem(atPath: "\(resultPath).\(suffix)")
                 action()
@@ -73,6 +74,25 @@ import Foundation
         func stepPageForSmoke(_ step: Int) {
             if let page = pageReaderPage {
                 openPage(page, version: UInt32(max(1, Int(pageReaderVersion) + step)))
+            }
+        }
+
+        /// Holds ⌘ over the active pane's third row, fifth column, where the
+        /// recipe prints a file's name.
+        func hoverLinkForSmoke() {
+            guard let window = view.window else {
+                return
+            }
+            let rect = terminalTextView.terminalTextRect()
+            let size = terminalTextView.terminalCellSize()
+            let point = terminalTextView.convert(
+                NSPoint(x: rect.minX + size.width * 4.5, y: rect.minY + size.height * 2.5), to: nil)
+            if let event = NSEvent.mouseEvent(
+                with: .mouseMoved, location: point, modifierFlags: .command, timestamp: 0,
+                windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 0,
+                pressure: 0)
+            {
+                terminalTextView.mouseMoved(with: event)
             }
         }
 

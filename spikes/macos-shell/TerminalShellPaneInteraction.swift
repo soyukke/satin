@@ -420,6 +420,43 @@ extension TerminalShellViewController {
         return true
     }
 
+    /// The columns of what ⌘-click at `position` would open: the link's run
+    /// of cells, or the word naming a file without the prose around it.
+    func terminalHyperlinkSpan(_ position: (row: Int, col: Int)) -> ClosedRange<Int>? {
+        guard let paneId = activePaneId,
+            let pane = paneStore.runtimes[paneId] as? TerminalPane
+        else {
+            return nil
+        }
+        let row = position.row
+        let cols = terminalTextView.terminalGridSize().cols
+        func run(_ same: (Int) -> Bool) -> ClosedRange<Int> {
+            var start = position.col
+            var end = position.col
+            while start > 0, same(start - 1) {
+                start -= 1
+            }
+            while end < cols - 1, same(end + 1) {
+                end += 1
+            }
+            return start...end
+        }
+        if let link = pane.hyperlink(row: row, col: position.col) {
+            return run { pane.hyperlink(row: row, col: $0) == link }
+        }
+        let cwd = paneWorkingDirectory(paneId: paneId, logFailure: false)
+        guard let word = pane.word(row: row, col: position.col),
+            nativeTerminalFileURL(word, cwd: cwd) != nil
+        else {
+            return nil
+        }
+        let span = run { pane.word(row: row, col: $0) == word }
+        let trim = nativeTerminalFileTrim(word)
+        let start = span.lowerBound + trim.leading
+        let end = span.upperBound - trim.trailing
+        return start <= end ? start...end : span
+    }
+
     @discardableResult
     func pasteClipboard() -> Bool {
         guard let paneId = activePaneId,
@@ -535,6 +572,22 @@ extension TerminalShellViewController {
 /// absolute path, a `~` path, or a path relative to cwd. Prose brackets and
 /// punctuation around it, and a compiler's `:line:column` after it, are
 /// dropped.
+/// What prose puts around a path, which a file link leaves out.
+private let nativeTerminalFileOpeners = Set("\"'`([{<「『（")
+private let nativeTerminalFileClosers = Set("\"'`)]}>」』）.,;:!?。、")
+
+/// How many cells of prose lie before and after the path in `word`; the
+/// full-width marks take two cells each.
+func nativeTerminalFileTrim(_ word: String) -> (leading: Int, trailing: Int) {
+    func cells(_ marks: some Sequence<Character>) -> Int {
+        marks.reduce(0) { $0 + ($1.unicodeScalars.first.map { $0.isASCII } == true ? 1 : 2) }
+    }
+    let leading = word.prefix(while: nativeTerminalFileOpeners.contains)
+    let rest = word.dropFirst(leading.count)
+    let trailing = rest.reversed().prefix(while: nativeTerminalFileClosers.contains)
+    return (cells(leading), cells(trailing))
+}
+
 func nativeTerminalFileURL(
     _ word: String,
     cwd: String?,
@@ -542,8 +595,8 @@ func nativeTerminalFileURL(
     exists: (String) -> Bool = { FileManager.default.fileExists(atPath: $0) }
 ) -> URL? {
     let trimmed = String(
-        word.drop(while: { "\"'`([{<「『（".contains($0) })
-            .reversed().drop(while: { "\"'`)]}>」』）.,;:!?。、".contains($0) })
+        word.drop(while: nativeTerminalFileOpeners.contains)
+            .reversed().drop(while: nativeTerminalFileClosers.contains)
             .reversed())
     guard !trimmed.isEmpty, !trimmed.contains("://") else {
         return nil
@@ -596,4 +649,7 @@ func runNativeTerminalFileURLSelfTests() -> Bool {
         && open("missing.png") == nil
         && open("https://example.com/b.png") == nil
         && open("~other/shot.png") == nil
+        && nativeTerminalFileTrim("(out/b.png),") == (1, 2)
+        && nativeTerminalFileTrim("「~/shot.png」。") == (2, 4)
+        && nativeTerminalFileTrim("out/b.png") == (0, 0)
 }

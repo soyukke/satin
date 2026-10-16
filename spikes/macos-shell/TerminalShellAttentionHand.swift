@@ -152,7 +152,11 @@ extension TerminalShellViewController {
         guard attentionHandInFlight.insert(card.paneId).inserted else {
             return
         }
-        attentionHandView.play(paneId: card.paneId) { [weak self] in
+        let step = lastSnapshot.flatMap { snapshot in
+            snapshot.tabs.first { $0.id == card.tabId }
+                .map { ($0.index - snapshot.active_tab).signum() }
+        }
+        attentionHandView.play(paneId: card.paneId, step: Int(step ?? 0)) { [weak self] in
             guard let self else {
                 return nil
             }
