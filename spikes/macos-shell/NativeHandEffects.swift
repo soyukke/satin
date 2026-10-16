@@ -241,87 +241,39 @@ final class NativeHandPreviewView: NSView {
 }
 
 extension NativeHandEffects {
-    /// Puts cards away whole: each shrinks to half its size toward its head,
-    /// then drops out of sight as it fades; bringing them back runs the same
-    /// in reverse. Snapshots stand in for the cards meanwhile, so the cards'
-    /// own frames and rotations are left alone. Calls done when it ends, at
-    /// once when motion is reduced.
-    static func tuck(
-        _ cards: [NSView], in host: NSView, away: Bool, done: @escaping () -> Void = {}
-    ) {
-        guard !reducesMotion, let window = host.window, let hostLayer = host.layer else {
+    /// Puts cards away whole: each keeps its shape and slides a little down
+    /// as it fades, gone before the window's edge would cut into it more.
+    /// Bringing them back runs the same in reverse, from where the cards
+    /// already stand. Calls done when it ends, at once when motion is reduced.
+    static func tuck(_ cards: [NSView], away: Bool, done: @escaping () -> Void = {}) {
+        let drop: CGFloat = 28
+        guard !reducesMotion, cards.first?.window != nil else {
+            for card in cards {
+                card.alphaValue = away ? 0 : 1
+            }
             done()
             return
         }
-        var standIns: [CALayer] = []
-        CATransaction.begin()
-        CATransaction.setCompletionBlock {
-            for layer in standIns {
-                layer.removeFromSuperlayer()
-            }
-            done()
-        }
+        var targets: [(NSView, NSPoint)] = []
         for card in cards {
-            guard let image = snapshot(card) else {
-                continue
+            let origin = card.frame.origin
+            if away {
+                targets.append((card, NSPoint(x: origin.x, y: origin.y - drop)))
+            } else {
+                card.setFrameOrigin(NSPoint(x: origin.x, y: origin.y - drop))
+                card.alphaValue = 0
+                targets.append((card, origin))
             }
-            let frame = host.convert(card.frame, from: card.superview)
-            let angle = card.frameCenterRotation * .pi / 180
-            let height = card.bounds.height
-            // The head: the middle of the card's top edge, as it is turned.
-            let head = CGPoint(
-                x: frame.midX - sin(angle) * height / 2, y: frame.midY + cos(angle) * height / 2)
-            let layer = CALayer()
-            layer.contents = image
-            layer.contentsScale = window.backingScaleFactor
-            layer.bounds = CGRect(origin: .zero, size: card.bounds.size)
-            layer.anchorPoint = CGPoint(x: 0.5, y: 1)
-            layer.position = head
-            layer.zPosition = 100
-            let turned = CATransform3DMakeRotation(angle, 0, 0, 1)
-            layer.transform = turned
-            layer.opacity = away ? 0 : 1
-            hostLayer.addSublayer(layer)
-            standIns.append(layer)
-
-            let half = CATransform3DScale(turned, 0.5, 0.5, 1)
-            let below = CGPoint(x: head.x, y: head.y - max(head.y, 0) - 6)
-            func keyframes(_ path: String, _ values: [Any], _ times: [NSNumber])
-                -> CAKeyframeAnimation
-            {
-                let animation = CAKeyframeAnimation(keyPath: path)
-                animation.values = away ? values : values.reversed()
-                animation.keyTimes =
-                    away ? times : times.reversed().map { NSNumber(value: 1 - $0.doubleValue) }
-                return animation
-            }
-            let group = CAAnimationGroup()
-            group.animations = [
-                keyframes(
-                    "transform", [turned, half, half].map { NSValue(caTransform3D: $0) },
-                    [0, 0.45, 1]),
-                keyframes(
-                    "position", [head, head, below].map { NSValue(point: $0) }, [0, 0.45, 1]),
-                keyframes("opacity", [1, 1, 0], [0, 0.55, 1]),
-            ]
-            group.duration = 0.46
-            group.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
-            group.fillMode = .both
-            group.isRemovedOnCompletion = false
-            layer.add(group, forKey: "satin.hand.tuck")
         }
-        CATransaction.commit()
-    }
-
-    private static func snapshot(_ view: NSView) -> NSImage? {
-        guard view.bounds.width > 0, view.bounds.height > 0,
-            let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds)
-        else {
-            return nil
-        }
-        view.cacheDisplay(in: view.bounds, to: rep)
-        let image = NSImage(size: view.bounds.size)
-        image.addRepresentation(rep)
-        return image
+        NSAnimationContext.runAnimationGroup(
+            { context in
+                context.duration = away ? 0.22 : 0.3
+                context.timingFunction = CAMediaTimingFunction(name: away ? .easeIn : .easeOut)
+                for (card, origin) in targets {
+                    card.animator().setFrameOrigin(origin)
+                    card.animator().alphaValue = away ? 0 : 1
+                }
+            },
+            completionHandler: done)
     }
 }

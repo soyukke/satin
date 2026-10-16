@@ -217,11 +217,10 @@ pub fn (self: &var RenderModel) update(allocator: Allocator, frame: &Frame) -> m
         }
     }
     if inferred != 0 {
-        // Primary-screen shell output can arrive faster than the spring can
-        // settle (holding Return is the common case). Keep the newest
-        // transition animated without accumulating a visual backlog behind
-        // the PTY's current screen.
-        self.window.reset_scroll_animation();
+        // Every row the output moved slides, from wherever the last slide
+        // has got to, so the whole screen moves as one. The backlog is
+        // capped when the frame is flushed, so output faster than the spring
+        // (holding Return) never leaves the screen far behind the PTY.
         self.pending = no_scroll();
         var update = no_scroll();
         update.rows = inferred;
@@ -250,6 +249,7 @@ pub fn (self: &var RenderModel) update(allocator: Allocator, frame: &Frame) -> m
         self.pending = no_scroll();
     }
     try self.window.flush(allocator, 1);
+    self.window.limit_scroll_backlog(scroll_backlog_rows());
     self.has_last_scrollbar = true;
     self.last_scrollbar = frame.scrollbar;
     self.has_last_screen = true;
@@ -389,6 +389,11 @@ fn (self: &var RenderModel) prepare_pending_scroll_region(height: i64) -> void {
     return;
 }
 
+/// The most rows a scroll animation trails the screen it is heading for.
+fn scroll_backlog_rows() -> i64 {
+    return 4;
+}
+
 /// The rows the primary screen's output scrolled since the last frame, read
 /// from the scrollback it grew by; zero when it did not.
 fn (self: &RenderModel) inferred_output_scroll(frame: &Frame) -> i64 {
@@ -398,9 +403,7 @@ fn (self: &RenderModel) inferred_output_scroll(frame: &Frame) -> i64 {
     if !is_at_bottom(self.last_scrollbar) or frame.scrollbar.total <= self.last_scrollbar.total {
         return 0;
     }
-    // A primary-shell frame may batch many prompt redraws between display-link
-    // ticks. Animating that batch as a multi-row displacement makes the live
-    // bottom line visibly race after the PTY has already reached its newest
-    // prompt. The retained screen is current, so animate only the newest row.
-    return 1;
+    // A frame may batch many rows between display-link ticks; they all
+    // slide, and the backlog cap keeps the slide short.
+    return cast<i64>(frame.scrollbar.total - self.last_scrollbar.total);
 }

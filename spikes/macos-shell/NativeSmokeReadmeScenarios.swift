@@ -52,6 +52,8 @@ import Foundation
                 ("mode", { [weak self] in self?.toggleAppearanceModeForSmoke() }),
                 ("newer", { [weak self] in self?.stepPageForSmoke(1) }),
                 ("linkhover", { [weak self] in self?.hoverLinkForSmoke() }),
+                ("handhover", { [weak self] in self?.hoverHandForSmoke(over: true) }),
+                ("handleave", { [weak self] in self?.hoverHandForSmoke(over: false) }),
             ] where FileManager.default.fileExists(atPath: "\(resultPath).\(suffix)") {
                 try? FileManager.default.removeItem(atPath: "\(resultPath).\(suffix)")
                 action()
@@ -93,6 +95,23 @@ import Foundation
                 pressure: 0)
             {
                 terminalTextView.mouseMoved(with: event)
+            }
+        }
+
+        /// Moves the pointer onto the attention hand's heads, or well above them.
+        func hoverHandForSmoke(over: Bool) {
+            guard let window = view.window else {
+                return
+            }
+            let hand = attentionHandView
+            let point = hand.convert(
+                NSPoint(x: hand.bounds.midX - 30, y: over ? 20 : hand.bounds.maxY - 40), to: nil)
+            if let event = NSEvent.mouseEvent(
+                with: .mouseMoved, location: point, modifierFlags: [], timestamp: 0,
+                windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 0,
+                pressure: 0)
+            {
+                hand.mouseMoved(with: event)
             }
         }
 

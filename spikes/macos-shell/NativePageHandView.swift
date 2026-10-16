@@ -20,9 +20,6 @@ final class NativePageHandView: NSView {
     private var hovered: NativePageCardView?
     private var trackingArea: NSTrackingArea?
     private(set) var sunk = false
-    /// Whether stand-ins are bringing the cards back, which stay hidden till
-    /// they land.
-    private var tucking = false
 
     /// The room the fan takes at the right, margin included; none when empty.
     var fanWidth: CGFloat {
@@ -130,20 +127,15 @@ final class NativePageHandView: NSView {
         self.sunk = sunk
         if sunk {
             hovered = nil
-            NativeHandEffects.tuck(cards, in: self, away: true)
-            place(animated: false)
+            NativeHandEffects.tuck(cards, away: true) { [weak self] in
+                if self?.sunk == true {
+                    self?.place(animated: false)
+                }
+            }
             return
         }
-        // The stand-ins are taken from the cards in place before they hide.
         place(animated: false)
-        NativeHandEffects.tuck(cards, in: self, away: false) { [weak self] in
-            self?.tucking = false
-            self?.place(animated: false)
-        }
-        tucking = true
-        for card in cards {
-            card.alphaValue = 0
-        }
+        NativeHandEffects.tuck(cards, away: false)
     }
 
     func refreshLook() {
@@ -192,7 +184,7 @@ final class NativePageHandView: NSView {
                 card.frameCenterRotation = 0
                 card.frame = frame
                 card.frameCenterRotation = rotation
-                card.alphaValue = self.tucking ? 0 : 1
+                card.alphaValue = 1
             }
             return
         }
@@ -203,7 +195,7 @@ final class NativePageHandView: NSView {
                 card.frameCenterRotation = 0
                 card.animator().frame = frame
                 card.animator().frameCenterRotation = rotation
-                card.animator().alphaValue = self.tucking ? 0 : 1
+                card.animator().alphaValue = 1
             }
         }
     }
