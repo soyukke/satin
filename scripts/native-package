@@ -25,7 +25,10 @@ project_license_source="LICENSE"
 third_party_notices_source="THIRD_PARTY_NOTICES.md"
 font_license_source="assets/fonts/LICENSE"
 iconset="$package_root/AppIcon.iconset"
-identity="${APPLE_SIGNING_IDENTITY:--}"
+# APPLE_SIGNING_IDENTITY is a Developer ID that native-notarize then
+# notarizes; SATIN_SIGNING_IDENTITY is a certificate that only keeps the
+# signature stable from release to release. Ad hoc when neither is set.
+identity="${APPLE_SIGNING_IDENTITY:-${SATIN_SIGNING_IDENTITY:--}}"
 minimum_macos="14.0"
 host_arch="$(uname -m)"
 if [[ "$host_arch" != "arm64" ]]; then

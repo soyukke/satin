@@ -26,7 +26,7 @@ fn max_startup_bytes() -> i64 {
 
 /// The application version the child reads as TERM_PROGRAM_VERSION.
 fn program_version() -> []u8 {
-    return "0.4.12";
+    return "0.4.13";
 }
 
 /// How to start a terminal's child. cwd and shell are read only when their

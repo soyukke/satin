@@ -15,6 +15,12 @@ Without Apple credentials, the archive is ad-hoc code-signed, the manifest is
 marked as `development`, and the first launch can require approval in macOS
 Privacy & Security.
 
+Published releases are signed with a self-signed `soyukke` certificate:
+set `SATIN_SIGNING_IDENTITY` to the name of a code-signing identity in the
+keychain search list. The archive is still not notarized, but its designated
+requirement names that certificate instead of each build's hash, so macOS
+keeps privacy grants (removable volumes, protected folders) across updates.
+
 For a Developer ID build, set both `APPLE_SIGNING_IDENTITY` and
 `APPLE_NOTARY_PROFILE` before running `just native-release`. The release path
 adds a secure timestamp, notarizes and staples the bundle, validates the ticket,
@@ -43,6 +49,10 @@ generates release notes, and records GitHub build provenance. It also attaches
 without fetching it from GitHub's attestation API.
 
 The workflow reads `UPDATE_SIGNING_PRIVATE_KEY_B64` from GitHub Actions Secrets.
+It runs in the `release` environment, which only `v*` tags may use, and reads
+the code-signing certificate from that environment's `SATIN_SIGNING_P12_B64`
+and `SATIN_SIGNING_P12_PASSWORD`. The certificate is imported into a
+throwaway keychain that is deleted once the bundle is signed.
 Signing credentials and notary secrets must never be stored in the repository.
 
 Verify a downloaded archive against GitHub's stored attestation with:
