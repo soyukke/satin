@@ -91,7 +91,11 @@ final class NativeGpuRenderer {
             }
             float4 sampled = texture.sample(nearest, in.uv);
             if (in.mode == 1) {
-                return color * sampled.a;
+                // A glyph's edge is blended in sRGB values, which thins
+                // text, dark text on a light ground most: its coverage is
+                // thickened a little, the more the darker the text.
+                float light = dot(in.color.rgb, float3(0.2126, 0.7152, 0.0722));
+                return color * pow(sampled.a, mix(0.7, 0.9, light));
             }
             return sampled * in.color.a;
         }

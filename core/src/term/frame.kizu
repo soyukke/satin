@@ -1,6 +1,7 @@
 // One frame of a terminal's viewport: every cell's text, colors and style,
 // the cursor, and the scrollbar. The Rust `TerminalFrameRenderer`.
 import std::array;
+import std::math;
 import std::mem;
 import std::string;
 
@@ -350,6 +351,66 @@ fn faint_color(foreground: Color, background: Color) -> Color {
     };
 }
 
+/// The least contrast text keeps with what is under it. A program that
+/// hard-codes a color for one look, white for a dark one, would write it
+/// invisibly on the other.
+fn minimum_contrast() -> f64 {
+    return 3.0;
+}
+
+/// foreground, moved toward black or white, whichever reads better on
+/// background, just far enough to keep minimum_contrast with it; foreground
+/// itself when it already does.
+fn readable_color(foreground: Color, background: Color) -> Color {
+    let under = luminance(background);
+    if contrast(luminance(foreground), under) >= minimum_contrast() {
+        return foreground;
+    }
+    var target = black();
+    if contrast(1.0, under) > contrast(0.0, under) {
+        target = Color { r: 255, g: 255, b: 255 };
+    }
+    var low = 0.0;
+    var high = 1.0;
+    for 0..10 |_| {
+        let middle = (low + high) / 2.0;
+        if contrast(luminance(mix_color(foreground, target, middle)), under) >= minimum_contrast() {
+            high = middle;
+        } else {
+            low = middle;
+        }
+    }
+    return mix_color(foreground, target, high);
+}
+
+/// Relative luminance, with sRGB's curve taken as a square.
+fn luminance(color: Color) -> f64 {
+    let r = cast<f64>(color.r) / 255.0;
+    let g = cast<f64>(color.g) / 255.0;
+    let b = cast<f64>(color.b) / 255.0;
+    return 0.2126 * r * r + 0.7152 * g * g + 0.0722 * b * b;
+}
+
+fn contrast(first: f64, second: f64) -> f64 {
+    if first > second {
+        return (first + 0.05) / (second + 0.05);
+    }
+    return (second + 0.05) / (first + 0.05);
+}
+
+fn mix_color(from: Color, to: Color, amount: f64) -> Color {
+    return Color {
+        r: mix_channel(from.r, to.r, amount),
+        g: mix_channel(from.g, to.g, amount),
+        b: mix_channel(from.b, to.b, amount)
+    };
+}
+
+fn mix_channel(from: u8, to: u8, amount: f64) -> u8 {
+    let value = cast<f64>(from) + (cast<f64>(to) - cast<f64>(from)) * amount;
+    return cast<u8>(math::round<f64>(value));
+}
+
 fn faint_channel(foreground: u8, background: u8) -> u8 {
     let mixed = (cast<i64>(foreground) * 55 + cast<i64>(background) * 45 + 50) / 100;
     return cast<u8>(mixed);
@@ -580,6 +641,11 @@ fn (self: &var FrameRenderer) collect_cell(
     if style.faint {
         fg = faint_color(fg, background);
     }
+    var under = background;
+    if has_bg {
+        under = bg;
+    }
+    fg = readable_color(fg, under);
     if has_bg and same_color(bg, background) {
         has_bg = false;
     }
