@@ -68,14 +68,14 @@ test "keeps the extended styles of a cell" {
 
 test "resolves colors, inverse and the alternate screen" {
     let allocator = mem::page_allocator();
-    let frame = try collected(allocator, 8, 2, "^[?1049h^[38;2;1;2;3;48;2;4;5;6mA^[7mB");
+    let frame = try collected(allocator, 8, 2, "^[?1049h^[38;2;1;2;3;48;2;240;230;220mA^[7mB");
     defer frame.deinit(allocator);
     testing::expect(frame.alternate);
     let direct = frame.cells.get(0) orelse return GhosttyError::Refused;
     testing::expect(same_color(direct.fg, Color { r: 1, g: 2, b: 3 }));
-    testing::expect(direct.has_bg and same_color(direct.bg, Color { r: 4, g: 5, b: 6 }));
+    testing::expect(direct.has_bg and same_color(direct.bg, Color { r: 240, g: 230, b: 220 }));
     let inverse = frame.cells.get(1) orelse return GhosttyError::Refused;
-    testing::expect(same_color(inverse.fg, Color { r: 4, g: 5, b: 6 }));
+    testing::expect(same_color(inverse.fg, Color { r: 240, g: 230, b: 220 }));
     testing::expect(inverse.has_bg and same_color(inverse.bg, Color { r: 1, g: 2, b: 3 }));
 }
 
@@ -99,4 +99,21 @@ test "reads the screen as lines without trailing blanks" {
     testing::expect(mem::starts_with(bytes, "ab"));
     testing::expect(bytes[2] == cast<u8>(10) and bytes[6] == cast<u8>(10));
     testing::expect(mem::equal_bytes(bytes[3..6], "c d"));
+}
+
+test "text too close to what is under it is moved until it reads" {
+    let cream = Color { r: 241, g: 234, b: 216 };
+    let night = Color { r: 11, g: 9, b: 20 };
+    let white = Color { r: 255, g: 255, b: 255 };
+    let ink = Color { r: 40, g: 30, b: 60 };
+    // Readable text is left as it is.
+    testing::expect(same_color(readable_color(ink, cream), ink));
+    testing::expect(same_color(readable_color(white, night), white));
+    // White on cream darkens, ink on night lightens, each to the minimum.
+    let darkened = readable_color(white, cream);
+    testing::expect(cast<i64>(darkened.r) < 200);
+    testing::expect(contrast(luminance(darkened), luminance(cream)) >= minimum_contrast());
+    let lightened = readable_color(ink, night);
+    testing::expect(cast<i64>(lightened.r) > cast<i64>(ink.r));
+    testing::expect(contrast(luminance(lightened), luminance(night)) >= minimum_contrast());
 }
