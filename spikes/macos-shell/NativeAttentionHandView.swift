@@ -8,11 +8,13 @@ import QuartzCore
 final class NativeAttentionHandView: NSView {
     /// The room the hand keeps below the panes: none, the cards lie over them.
     static let stripHeight: CGFloat = 0
-    /// How much of a card at rest shows above the window's edge.
-    private static let restShowing: CGFloat = 104
+    /// How much of a card at rest shows above the window's edge: its head,
+    /// enough for the name and the status light.
+    private static let restShowing: CGFloat = 40
+    /// How much shows under the pointer, enough to read.
+    private static let peekShowing: CGFloat = 188
     static let reach: CGFloat = 268
     private static let hoverGrace: TimeInterval = 0.35
-    private static let peekLift: CGFloat = 84
     /// How far the chosen card rises past the others, in the fan at most.
     private static let chosenLift: CGFloat = 46
     private static let dealtRaise: TimeInterval = 2.2
@@ -48,6 +50,9 @@ final class NativeAttentionHandView: NSView {
     /// pointer only lifts the cards where they stand, so they stay under it.
     private var fanned = false
     private var hovering = false
+    /// Whether the cards stood raised the last time they were placed, so a
+    /// rise or a fall gets its own motion.
+    private var placedRaised = false
     private var lowerWorkItem: DispatchWorkItem?
     private var allClearUntil: Date?
     private var refreshTimer: Timer?
@@ -130,7 +135,9 @@ final class NativeAttentionHandView: NSView {
         let overCard = slot(at: point)
         setHovering(
             !slots.isEmpty
-                && (point.y <= Self.stripHeight || overCard != nil || fanZone.contains(point)))
+                && (point.y <= Self.stripHeight || overCard != nil || fanZone.contains(point)
+                    || restZone.contains(point))
+        )
         if let overCard {
             setSelected(overCard.cardView.card.paneId)
         } else if !selectionOpen {
@@ -350,30 +357,23 @@ final class NativeAttentionHandView: NSView {
         needsLayout = true
     }
 
-    /// Puts the hand away, or brings it back, each card whole: it shrinks
-    /// toward its head before it drops, rather than slide past the window's
-    /// edge cut in half.
+    /// Puts the hand away, or brings it back, each card whole: it fades as
+    /// it slides down, rather than slide past the window's edge cut in half.
     func setSunk(_ sunk: Bool) {
         guard sunk != self.sunk else {
             return
         }
         self.sunk = sunk
         if sunk {
-            NativeHandEffects.tuck(slots.map(\.cardView), in: self, away: true)
-            place(animated: false)
+            NativeHandEffects.tuck(slots, away: true) { [weak self] in
+                if self?.sunk == true {
+                    self?.place(animated: false)
+                }
+            }
             return
         }
-        // The stand-ins are taken from the cards in place before they hide.
         place(animated: false)
-        let shown = slots
-        NativeHandEffects.tuck(shown.map(\.cardView), in: self, away: false) {
-            for slot in shown {
-                slot.alphaValue = 1
-            }
-        }
-        for slot in shown {
-            slot.alphaValue = 0
-        }
+        NativeHandEffects.tuck(slots, away: false)
     }
 
     func setRaised(_ raised: Bool, animated: Bool) {
@@ -458,6 +458,17 @@ final class NativeAttentionHandView: NSView {
         }
     }
 
+    /// Where the pointer calls the sunk hand up: a band a little taller than
+    /// the heads that show, as wide as the hand.
+    private var restZone: NSRect {
+        guard !raised, !sunk, !slots.isEmpty else {
+            return .zero
+        }
+        let heads = slots.reduce(NSRect.null) { $0.union($1.frame) }
+        return NSRect(
+            x: heads.minX - 16, y: 0, width: heads.width + 32, height: Self.restShowing + 20)
+    }
+
     /// Where the pointer keeps a raised hand up: the fan and a margin around it.
     private var fanZone: NSRect {
         guard raised else {
@@ -508,14 +519,14 @@ final class NativeAttentionHandView: NSView {
             // The neighbors of a chosen card draw aside to show all of it.
             let aside: CGFloat = chosenIndex.map { index < $0 ? -34 : (index > $0 ? 34 : 0) } ?? 0
             let lift: CGFloat = chosen ? Self.chosenLift : (first && chosenIndex == nil ? 12 : 0)
-            let restY = Self.restShowing - size.height - offset * offset * 5 + (first ? 6 : 0)
+            let curve = offset * offset
             var y: CGFloat
             if fan {
-                y = 20 - offset * offset * 7 + lift
+                y = 20 - curve * 7 + lift
             } else if raised {
-                y = restY + Self.peekLift + (chosen ? 30 : 0)
+                y = Self.peekShowing - size.height - curve * 5 + (first ? 6 : 0) + (chosen ? 30 : 0)
             } else {
-                y = restY
+                y = Self.restShowing - size.height - curve * 2 + (first ? 4 : 0)
             }
             if sunk {
                 y = -size.height - 40
@@ -530,6 +541,9 @@ final class NativeAttentionHandView: NSView {
         }
         updateTethers()
         updatePreview()
+        let rising = raised && !placedRaised && !sunk
+        let falling = !raised && placedRaised && !sunk
+        placedRaised = raised
         guard animated, !NativeHandEffects.reducesMotion, window != nil else {
             for (slot, origin, rotation) in moves {
                 slot.setFrameOrigin(origin)
@@ -537,12 +551,39 @@ final class NativeAttentionHandView: NSView {
             }
             return
         }
-        NSAnimationContext.runAnimationGroup { context in
-            context.duration = 0.28
-            context.timingFunction = CAMediaTimingFunction(name: .easeOut)
-            for (slot, origin, rotation) in moves {
-                slot.animator().setFrameOrigin(origin)
-                slot.cardView.animator().frameCenterRotation = rotation
+        guard rising || falling else {
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = 0.28
+                context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+                for (slot, origin, rotation) in moves {
+                    slot.animator().setFrameOrigin(origin)
+                    slot.cardView.animator().frameCenterRotation = rotation
+                }
+            }
+            return
+        }
+        // The cards come up one after another from the pointer outward, each
+        // overshooting a little and settling, as a hand is drawn up in a
+        // card game; they go back down together and quicker.
+        let pointer =
+            window.map { convert($0.mouseLocationOutsideOfEventStream, from: nil).x } ?? bounds.midX
+        let order = moves.indices.sorted {
+            abs(moves[$0].1.x - pointer) < abs(moves[$1].1.x - pointer)
+        }
+        for (rank, index) in order.enumerated() {
+            let slot = moves[index].0
+            let delay = rising ? Double(rank) * 0.035 : Double(rank) * 0.012
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+                // Where the latest placing put the card, should it have moved on.
+                NSAnimationContext.runAnimationGroup { context in
+                    context.duration = rising ? 0.42 : 0.22
+                    context.timingFunction =
+                        rising
+                        ? CAMediaTimingFunction(controlPoints: 0.3, 1.45, 0.55, 1)
+                        : CAMediaTimingFunction(controlPoints: 0.5, 0, 0.75, 0.6)
+                    slot.animator().setFrameOrigin(slot.restOrigin)
+                    slot.cardView.animator().frameCenterRotation = slot.restRotation
+                }
             }
         }
     }
