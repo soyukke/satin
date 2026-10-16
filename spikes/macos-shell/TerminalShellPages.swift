@@ -102,7 +102,7 @@ extension TerminalShellViewController {
         binder.autoresizingMask = [.width, .height]
         binder.panel = nativePageReaderFrames(in: terminalTextView.terminalContentRect()).panel
         binder.onOpen = { [weak self] page in
-            self?.openPage(page)
+            self?.openPage(page, fromBinder: true)
         }
         binder.onClose = { [weak self] in
             self?.closePageBinder()
@@ -133,9 +133,17 @@ extension TerminalShellViewController {
         attentionHandView.setSunk(open)
     }
 
-    /// Opens a page in the reader, at its latest version unless asked.
-    func openPage(_ page: NativeArtifactListItem, version: UInt32? = nil) {
+    /// Opens a page in the reader, at its latest version unless asked. A page
+    /// opened from the binder goes back to it; stepping through versions
+    /// keeps where the page came from.
+    func openPage(
+        _ page: NativeArtifactListItem, version: UInt32? = nil, fromBinder: Bool? = nil
+    ) {
+        let returnsToBinder =
+            fromBinder ?? (pageReaderFromBinder && pageReaderPage?.id == page.id)
         closePageBinder()
+        pageReaderFromBinder = returnsToBinder
+        pageReaderChrome?.returnsToBinder = returnsToBinder
         guard let sourcePaneId = artifactSourcePaneId() else {
             NSSound.beep()
             return
@@ -175,15 +183,71 @@ extension TerminalShellViewController {
             }
         }
         chrome.pageId = id
+        chrome.returnsToBinder = pageReaderFromBinder
         chrome.title = pageReaderPage?.title ?? id
         chrome.version = pageReaderVersion
         chrome.latest = pageReaderPage?.version ?? pageReaderVersion
+        syncPageReaderDocument(id: id, selector: selector, pane: frames.pane, above: chrome)
+    }
+
+    /// Lays the rendered Markdown over the reader's pane. Other kinds of page
+    /// keep the pane's own terminal rendering.
+    private func syncPageReaderDocument(
+        id: String, selector: String, pane: NSRect, above chrome: NSView
+    ) {
+        let version =
+            selector.split(separator: "@").dropFirst().first
+            .flatMap { UInt32($0.trimmingCharacters(in: CharacterSet(charactersIn: "v"))) }
+            ?? pageReaderPage?.version ?? 1
+        guard pageReaderPage?.kind == "markdown",
+            let document = pageDocument(id: id, version: version)
+        else {
+            pageReaderDocument?.removeFromSuperview()
+            pageReaderDocument = nil
+            return
+        }
+        let view = pageReaderDocument ?? NativePageDocumentView(frame: pane)
+        if pageReaderDocument == nil {
+            terminalTextView.addSubview(view, positioned: .below, relativeTo: chrome)
+            pageReaderDocument = view
+        }
+        view.frame = pane
+        view.show(
+            markdown: document.markdown, images: document.folder, key: "\(id)@\(version)")
+    }
+
+    /// The Markdown of one version of a page, and the folder its images sit in.
+    func pageDocument(id: String, version: UInt32) -> (markdown: String, folder: URL)? {
+        guard let root = pageStoreRoot(),
+            let name = try? FileManager.default.contentsOfDirectory(atPath: root.path)
+                .first(where: { $0.hasSuffix("--\(id)") })
+        else {
+            return nil
+        }
+        let page = root.appendingPathComponent(name, isDirectory: true)
+        var path = String(format: "versions/v%03d/artifact.md", Int(version))
+        if let data = try? Data(contentsOf: page.appendingPathComponent("metadata.json")),
+            let metadata = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+            let versions = metadata["versions"] as? [[String: Any]],
+            let entry = versions.first(where: { ($0["version"] as? Int) == Int(version) }),
+            let document = entry["document"] as? String, !document.contains("..")
+        {
+            path = document
+        }
+        let file = page.appendingPathComponent(path)
+        guard let markdown = try? String(contentsOf: file, encoding: .utf8) else {
+            return nil
+        }
+        return (markdown, file.deletingLastPathComponent())
     }
 
     private func makePageReaderChrome() -> NativePageReaderChrome {
         let chrome = NativePageReaderChrome(frame: terminalTextView.bounds)
         chrome.onClose = { [weak self] in
             self?.closePageReader()
+        }
+        chrome.onBack = { [weak self] in
+            self?.leavePageReader()
         }
         terminalTextView.addSubview(chrome, positioned: .above, relativeTo: nil)
         pageReaderChrome = chrome
@@ -200,7 +264,10 @@ extension TerminalShellViewController {
     func removePageReaderChrome() {
         pageReaderChrome?.removeFromSuperview()
         pageReaderChrome = nil
+        pageReaderDocument?.removeFromSuperview()
+        pageReaderDocument = nil
         pageReaderPage = nil
+        pageReaderFromBinder = false
         updateHandsSunk()
         if let monitor = pageKeyMonitor {
             NSEvent.removeMonitor(monitor)
@@ -215,16 +282,42 @@ extension TerminalShellViewController {
         removePageReaderChrome()
     }
 
-    /// Esc closes the reader; the arrows step through the page's versions.
+    /// Closes the reader, back to the binder when the page came from it.
+    func leavePageReader() {
+        let back = pageReaderFromBinder
+        closePageReader()
+        if back {
+            openPageBinder()
+        }
+    }
+
+    /// Esc leaves the reader; the arrows step through the page's versions.
     private func handlePageReaderKey(_ event: NSEvent) -> Bool {
         guard event.window === view.window, activePaneId == nativeArtifactSidebarPaneId,
             event.modifierFlags.intersection([.command, .control, .option]).isEmpty
         else {
             return false
         }
+        if let document = pageReaderDocument {
+            // The document scrolls by itself: Space and the page keys by a
+            // screen, the up and down arrows by a few lines.
+            switch event.keyCode {
+            case 49:
+                document.scroll(down: !event.modifierFlags.contains(.shift))
+                return true
+            case 121, 116:
+                document.scroll(down: event.keyCode == 121)
+                return true
+            case 125, 126:
+                document.scroll(lines: 3, down: event.keyCode == 125)
+                return true
+            default:
+                break
+            }
+        }
         switch event.keyCode {
         case 53:
-            closePageReader()
+            leavePageReader()
             return true
         case 123, 124:
             guard let page = pageReaderPage else {

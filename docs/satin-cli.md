@@ -219,7 +219,12 @@ toolbar button shows how many are unread, and a new page pulses the backdrop.
 The newest unread pages also rest in a small fan at the lower right of the
 window, beside the agent cards; a click on one opens it in the reader.
 The reader floats over the middle of the window without replacing a terminal,
-Neovim, or tmux pane; Esc closes it and the arrow keys step through versions.
+Neovim, or tmux pane. A Markdown page is set as a native document, with
+proportional type, headings, tables, code blocks and PNG images; Space and the
+up and down arrows scroll it. Esc goes back to the binder when the page was
+opened from it and closes the reader otherwise; the left and right arrows step
+through versions. The reader's pane stays behind the document, so `read-screen`
+and `close-pane` keep working on it.
 `page show` without `--background` opens the reader directly and moves focus to
 it. Omitting `--pane` targets `SATIN_PANE_ID`. Legacy `--vertical`
 and `--horizontal` flags are accepted as compatibility no-ops.

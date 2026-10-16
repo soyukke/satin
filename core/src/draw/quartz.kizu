@@ -1337,13 +1337,14 @@ fn (self: &var Painter) system_fallback(allocator: Allocator, bytes: []u8, count
     return slot;
 }
 
-/// Chooses the font of bytes, one cell's text, for a style, as the Rust
-/// shaper chose a cluster's: the first of the style's fonts that has every
-/// character, or else the one of them that has the most; the default
-/// family for a monochrome symbol; a font already fallen back to that has
-/// them; and at last the font the system falls back to. A symbol's choice
-/// is -1 minus its place, which says its glyph is drawn as the font's
-/// character map has it.
+/// Chooses the font of bytes, one cell's text, for a style: the first of
+/// the style's fonts that has every character, or else the one of them that
+/// has the most; the default family for a monochrome symbol; the font the
+/// system falls back to; and only when the system has none, a font already
+/// fallen back to that has them. The system is asked before the fonts
+/// collected so far, so a character's font does not depend on what the
+/// session printed before it. A symbol's choice is -1 minus its place, which
+/// says its glyph is drawn as the font's character map has it.
 fn (self: &var Painter) choose_font(allocator: Allocator, bytes: []u8, scalar: i64, style: i64) -> mem::Error!i64 {
     let count = self.write_units(bytes);
     let wanted = self.wanted_scalars(count);
@@ -1373,6 +1374,10 @@ fn (self: &var Painter) choose_font(allocator: Allocator, bytes: []u8, scalar: i
             }
         }
     }
+    let system = try self.system_fallback(allocator, bytes, count);
+    if system != last_resort_slot() {
+        return system;
+    }
     var index = self.fonts.len() - 1;
     while index >= default_slot() {
         if index != last_resort_slot() {
@@ -1392,7 +1397,7 @@ fn (self: &var Painter) choose_font(allocator: Allocator, bytes: []u8, scalar: i
     if best >= 0 {
         return best;
     }
-    return try self.system_fallback(allocator, bytes, count);
+    return system;
 }
 
 /// choose_font, remembered for a cell of one character.

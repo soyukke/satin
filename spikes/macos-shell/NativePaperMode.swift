@@ -78,6 +78,7 @@ extension TerminalShellViewController {
         attentionHandView.applyLook()
         pageHandView.refreshLook()
         pageReaderChrome?.needsDisplay = true
+        pageReaderDocument?.refreshLook()
         if let binder = pageBinder {
             binder.show(pages: pageInbox.pages, unread: pageInbox.unread)
         }
