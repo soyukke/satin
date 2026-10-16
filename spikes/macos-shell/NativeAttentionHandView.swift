@@ -337,12 +337,30 @@ final class NativeAttentionHandView: NSView {
         needsLayout = true
     }
 
+    /// Puts the hand away, or brings it back, each card whole: it shrinks
+    /// toward its head before it drops, rather than slide past the window's
+    /// edge cut in half.
     func setSunk(_ sunk: Bool) {
         guard sunk != self.sunk else {
             return
         }
         self.sunk = sunk
-        place(animated: true)
+        if sunk {
+            NativeHandEffects.tuck(slots.map(\.cardView), in: self, away: true)
+            place(animated: false)
+            return
+        }
+        // The stand-ins are taken from the cards in place before they hide.
+        place(animated: false)
+        let shown = slots
+        NativeHandEffects.tuck(shown.map(\.cardView), in: self, away: false) {
+            for slot in shown {
+                slot.alphaValue = 1
+            }
+        }
+        for slot in shown {
+            slot.alphaValue = 0
+        }
     }
 
     func setRaised(_ raised: Bool, animated: Bool) {

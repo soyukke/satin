@@ -416,6 +416,10 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
     var pageReaderChrome: NativePageReaderChrome?
     var pageReaderPage: NativeArtifactListItem?
     var pageReaderVersion: UInt32 = 0
+    /// Whether the open page came from the binder, so Esc goes back to it.
+    var pageReaderFromBinder = false
+    /// The rendered Markdown laid over the reader's pane.
+    var pageReaderDocument: NativePageDocumentView?
     var pageKeyMonitor: Any?
     let paneStatuses = NativePaneStatusStore()
     let chillSound = NativeChillSound()

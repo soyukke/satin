@@ -46,6 +46,8 @@ import Foundation
                 ("deal", { [weak self] in self?.pageBinder?.toggleDeal() }),
                 ("read", { [weak self] in self?.openFirstUnreadPageForSmoke() }),
                 ("close", { [weak self] in self?.closePageReader() }),
+                ("back", { [weak self] in self?.leavePageReader() }),
+                ("scroll", { [weak self] in self?.pageReaderDocument?.scroll(down: true) }),
                 ("older", { [weak self] in self?.stepPageForSmoke(-1) }),
                 ("mode", { [weak self] in self?.toggleAppearanceModeForSmoke() }),
                 ("newer", { [weak self] in self?.stepPageForSmoke(1) }),
@@ -75,8 +77,8 @@ import Foundation
         }
 
         func openFirstUnreadPageForSmoke() {
-            if let page = pageInbox.unread.first {
-                openPage(page)
+            if let page = pageInbox.unread.first ?? pageInbox.pages.first {
+                openPage(page, fromBinder: pageBinder != nil)
             }
         }
 

@@ -226,6 +226,48 @@ test "a character the family lacks is drawn from a fallback font" {
     testing::expect(colored > 10);
 }
 
+/// Whether text falls back to the same font in a fresh painter and in one
+/// that fell back to other fonts before.
+fn same_fallback(allocator: Allocator, fresh: &var Painter, used: &var Painter, text: []u8) -> mem::Error!bool {
+    var left = try fresh.cell_font(allocator, text, 0);
+    var right = try used.cell_font(allocator, text, 0);
+    if left < 0 {
+        left = -1 - left;
+    }
+    if right < 0 {
+        right = -1 - right;
+    }
+    let a = fresh.font(left) orelse return false;
+    let b = used.font(right) orelse return false;
+    // SAFETY: both are live CTFonts held by their painters.
+    return unsafe CFEqual(a, b);
+}
+
+test "a fallback font does not depend on what was drawn before" {
+    let allocator = mem::page_allocator();
+    var fresh = new_painter(allocator) orelse return;
+    defer fresh.deinit(allocator);
+    var used = new_painter(allocator) orelse return;
+    defer used.deinit(allocator);
+    let geometry = pane_geometry(110, 36, 12.0, 24.0);
+    let fresh_metrics = try fresh.metrics(allocator, geometry);
+    let used_metrics = try used.metrics(allocator, geometry);
+    testing::expect(fresh_metrics.ascent == used_metrics.ascent);
+    // A session that already printed Japanese, Thai and an emoji.
+    let japanese = try used.cell_font(allocator, "日", 0);
+    let thai = try used.cell_font(allocator, "ก", 0);
+    let emoji = try used.cell_font(allocator, "😀", 0);
+    testing::expect(japanese != emoji and thai != emoji);
+    testing::expect(try same_fallback(allocator, &var fresh, &var used, "ℹ"));
+    testing::expect(try same_fallback(allocator, &var fresh, &var used, "☀"));
+    testing::expect(try same_fallback(allocator, &var fresh, &var used, "☎"));
+    testing::expect(try same_fallback(allocator, &var fresh, &var used, "♻"));
+    testing::expect(try same_fallback(allocator, &var fresh, &var used, "①"));
+    testing::expect(try same_fallback(allocator, &var fresh, &var used, "★"));
+    testing::expect(try same_fallback(allocator, &var fresh, &var used, "♪"));
+    testing::expect(try same_fallback(allocator, &var fresh, &var used, "Ⅻ"));
+}
+
 test "cli status symbols use the monochrome default family" {
     let allocator = mem::page_allocator();
     var list = new_display_list(allocator);

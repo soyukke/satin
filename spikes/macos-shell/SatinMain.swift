@@ -77,6 +77,7 @@ struct SatinApplication {
                 ("chill sound", nativeChillSoundSelfTestPassed),
                 ("page inbox", runNativePageInboxSelfTests),
                 ("page hand", runNativePageHandSelfTests),
+                ("page document", runNativePageDocumentSelfTests),
                 ("paper mode", runNativePaperModeSelfTests),
                 ("attention hand", runNativeAttentionHandSelfTests),
                 ("attention hand view", runNativeAttentionHandViewSelfTests),

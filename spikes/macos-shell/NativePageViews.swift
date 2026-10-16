@@ -212,7 +212,10 @@ final class NativePageReaderChrome: NSView {
     var version: UInt32 = 1 { didSet { needsDisplay = true } }
     var latest: UInt32 = 1 { didSet { needsDisplay = true } }
     var pageId = "" { didSet { needsDisplay = true } }
+    /// Whether leaving goes back to the binder rather than to the work.
+    var returnsToBinder = false { didSet { needsDisplay = true } }
     var onClose: (() -> Void)?
+    var onBack: (() -> Void)?
 
     override var isFlipped: Bool { true }
 
@@ -225,7 +228,22 @@ final class NativePageReaderChrome: NSView {
         let point = convert(event.locationInWindow, from: nil)
         if !panel.contains(point) {
             onClose?()
+        } else if point.y >= panel.maxY - NativePageStyle.footer {
+            onBack?()
         }
+    }
+
+    /// The keys the footer names, terminal or paper style.
+    private func footerKeys(paper: Bool) -> String {
+        var keys = [
+            paper
+                ? (returnsToBinder ? "‹ Esc  back to pages" : "Esc  close")
+                : (returnsToBinder ? "‹ ESC  BACK TO PAGES" : "ESC  CLOSE")
+        ]
+        if latest > 1 {
+            keys.append(paper ? "← →  versions" : "← →  VERSION")
+        }
+        return keys.joined(separator: "     ")
     }
 
     override func draw(_ dirtyRect: NSRect) {
@@ -287,12 +305,8 @@ final class NativePageReaderChrome: NSView {
         let footerTop = panel.maxY - NativePageStyle.footer
         NativePageStyle.line.setFill()
         NSRect(x: panel.minX, y: footerTop, width: panel.width, height: 1).fill()
-        var keys = ["ESC  CLOSE"]
-        if latest > 1 {
-            keys.insert("← →  VERSION", at: 0)
-        }
         NativePageStyle.draw(
-            keys.joined(separator: "     "),
+            footerKeys(paper: false),
             at: NSPoint(x: panel.minX + 14, y: footerTop + 8),
             font: NativePageStyle.mono(10.5), color: NativePageStyle.muted)
     }
@@ -355,12 +369,8 @@ final class NativePageReaderChrome: NSView {
         let footerTop = panel.maxY - NativePageStyle.footer
         NativePageStyle.text.setFill()
         NSRect(x: panel.minX + 1, y: footerTop, width: panel.width - 2, height: 2).fill()
-        var keys = ["Esc  close"]
-        if latest > 1 {
-            keys.insert("← →  versions", at: 0)
-        }
         NativePageStyle.draw(
-            keys.joined(separator: "     "),
+            footerKeys(paper: true),
             at: NSPoint(x: panel.minX + 18, y: footerTop + 8),
             font: NativePageStyle.sans(11, .medium), color: NativePageStyle.muted)
     }

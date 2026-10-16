@@ -53,6 +53,7 @@ native_swift_sources=(
   spikes/macos-shell/NativePaperMode.swift
   spikes/macos-shell/NativePaperTab.swift
   spikes/macos-shell/NativePageHandView.swift
+  spikes/macos-shell/NativePageDocument.swift
   spikes/macos-shell/NativeSettingsModel.swift
   spikes/macos-shell/TerminalShellArtifacts.swift
   spikes/macos-shell/TerminalShellCommands.swift
