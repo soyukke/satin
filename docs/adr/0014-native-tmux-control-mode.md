@@ -167,7 +167,10 @@ connection while native surfaces render the individual panes.
   Subscribe to changes in the session's attached-client list and repeat that
   check so an older release attaching later also revokes the newer projection.
   These checks close manual `tmux -CC` and attach-race gaps; failure sends
-  `detach-client` and restores the local workspace.
+  `detach-client` and restores the local workspace. Both checks skip a control
+  client attached with `-f ignore-size`: it leaves the window size to Satin
+  and only reads and types, such as a client on a phone over SSH, so it is not
+  another projection and may share the session.
 - Continuously checkpoint the reattach descriptor while control mode is attached
   and clear it when the projection ends. Save it only when the socket is a local
   Unix socket and tmux's reported server PID is live, alongside the preserved

@@ -191,8 +191,11 @@ fn session_list_command() -> []u8 {
     return "list-sessions -F '#{q:session_id}|#{q:session_name}|#{session_windows}|#{q:socket_path}|#{pid}'";
 }
 
+// A control client attached with `-f ignore-size` leaves the window size to
+// Satin and only reads and types, such as one on a phone over SSH, so it does
+// not count as another projection of the session.
 fn control_client_check_command() -> []u8 {
-    return "list-clients -t '' -F '#{client_control_mode}' -f '#{client_control_mode}'";
+    return "list-clients -t '' -F '#{client_control_mode}' -f '#{&&:#{client_control_mode},#{?#{m:*ignore-size*,#{client_flags}},0,1}}'";
 }
 
 pub fn (self: &Control) is_active() -> bool {
