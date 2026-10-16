@@ -349,7 +349,8 @@ final class NativeHandSlotView: NSView {
 
 /// A played card on its way to its pane. It grows from the card's place in the
 /// hand until it covers the panes, so the switch to another tab happens under
-/// it, then settles onto the pane it was played for and fades.
+/// it, then slides off toward the tab it came from as its outline settles
+/// onto the pane it was played for.
 final class NativeHandFlyerView: NSView {
     private let face = NSImageView(frame: .zero)
     private let fill = NSView(frame: .zero)
@@ -357,7 +358,11 @@ final class NativeHandFlyerView: NSView {
     init(frame: NSRect, color: NSColor, face image: NSImage?) {
         super.init(frame: frame)
         wantsLayer = true
-        let stock = NSColor(srgbRed: 0.05, green: 0.07, blue: 0.14, alpha: 1)
+        // A sheet of the panes' own stock, so covering them reads as a page
+        // turned and not as the lights going down.
+        let stock =
+            NativePageStyle.paper
+            ? NativePageStyle.raised : NSColor(srgbRed: 0.05, green: 0.07, blue: 0.14, alpha: 1)
         fill.frame = bounds
         fill.autoresizingMask = [.width, .height]
         fill.wantsLayer = true
@@ -387,8 +392,15 @@ final class NativeHandFlyerView: NSView {
         face.animator().alphaValue = 0
     }
 
-    /// Leaves only the outline, which stays on the pane a moment longer.
-    func fadeFill() {
-        fill.animator().alphaValue = 0
+    /// Hands the outline over to a view of its own, placed where the sheet
+    /// is, so the sheet can leave while the outline settles on the pane.
+    func takeOutline() -> NSView {
+        let outline = NSView(frame: frame)
+        outline.wantsLayer = true
+        outline.layer?.borderColor = layer?.borderColor
+        outline.layer?.borderWidth = 2
+        outline.layer?.cornerRadius = 10
+        layer?.borderWidth = 0
+        return outline
     }
 }

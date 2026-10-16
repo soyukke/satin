@@ -9,6 +9,8 @@ final class TerminalTextView: NSView, NSTextInputClient {
     var onMouseTrackingRequested: (() -> Bool)?
     var onSelectionEvent: ((NativeTerminalSelectionEvent) -> Bool)?
     var onHyperlinkRequested: (((row: Int, col: Int), _ reveal: Bool) -> Bool)?
+    /// The columns, on the hovered row, of what ⌘-click would open there.
+    var onHyperlinkHover: (((row: Int, col: Int)) -> ClosedRange<Int>?)?
     var onCopyRequested: (() -> Bool)?
     var onPasteRequested: (() -> Bool)?
     var onSelectAllRequested: (() -> Bool)?
@@ -66,6 +68,10 @@ final class TerminalTextView: NSView, NSTextInputClient {
     var messageSelectionActive = false
     var wheelMouseRemainder: CGFloat = 0
     var terminalKeysDown = Set<UInt16>()
+    private var hoverTrackingArea: NSTrackingArea?
+    /// The hovered cell while ⌘ is held, and the link under it, underlined.
+    private var linkHoverCell: (row: Int, col: Int)?
+    private var linkHoverRect: NSRect?
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -96,6 +102,89 @@ final class TerminalTextView: NSView, NSTextInputClient {
         drawSplitDividerFeedback()
         paneDragInteraction.draw()
         drawScrollbar()
+        drawLinkHover()
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let hoverTrackingArea {
+            removeTrackingArea(hoverTrackingArea)
+        }
+        let area = NSTrackingArea(
+            rect: .zero,
+            options: [.mouseMoved, .mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect],
+            owner: self)
+        addTrackingArea(area)
+        hoverTrackingArea = area
+    }
+
+    override func mouseMoved(with event: NSEvent) {
+        updateLinkHover(event)
+        super.mouseMoved(with: event)
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        setLinkHover(cell: nil, rect: nil)
+        super.mouseExited(with: event)
+    }
+
+    override func flagsChanged(with event: NSEvent) {
+        updateLinkHover(event)
+        super.flagsChanged(with: event)
+    }
+
+    /// With ⌘ held, what a click would open under the pointer is underlined
+    /// and the pointer becomes a hand, as links are in a browser.
+    private func updateLinkHover(_ event: NSEvent) {
+        guard let window, event.modifierFlags.contains(.command) else {
+            setLinkHover(cell: nil, rect: nil)
+            return
+        }
+        // A modifier key's event carries no place for the pointer.
+        let point = convert(
+            event.type == .flagsChanged
+                ? window.mouseLocationOutsideOfEventStream : event.locationInWindow,
+            from: nil)
+        guard divider(at: point) == nil, let cell = mouseGridPosition(point) else {
+            setLinkHover(cell: nil, rect: nil)
+            return
+        }
+        if let hovered = linkHoverCell, hovered == cell {
+            return
+        }
+        let rect = onHyperlinkHover?(cell).map { span in
+            let textRect = terminalTextRect()
+            let size = terminalCellSize()
+            return NSRect(
+                x: textRect.minX + CGFloat(span.lowerBound) * size.width,
+                y: textRect.minY + CGFloat(cell.row) * size.height,
+                width: CGFloat(span.count) * size.width,
+                height: size.height)
+        }
+        setLinkHover(cell: cell, rect: rect)
+    }
+
+    private func setLinkHover(cell: (row: Int, col: Int)?, rect: NSRect?) {
+        linkHoverCell = cell
+        guard rect != linkHoverRect else {
+            return
+        }
+        linkHoverRect = rect
+        if rect != nil {
+            NSCursor.pointingHand.set()
+        } else {
+            NSCursor.arrow.set()
+            window?.invalidateCursorRects(for: self)
+        }
+        needsDisplay = true
+    }
+
+    private func drawLinkHover() {
+        guard let rect = linkHoverRect else {
+            return
+        }
+        NativePageStyle.teal.setFill()
+        NSRect(x: rect.minX, y: rect.maxY - 2, width: rect.width, height: 1.5).fill()
     }
 
     override func resetCursorRects() {

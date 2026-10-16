@@ -315,7 +315,8 @@ security boundary.
 - `Command`-click: open the URL, or the file or folder a path on screen names
   (absolute, `~/`, or relative to the pane's directory), in its default app;
   `Option-Command`-click shows that file selected in Finder, as a plain click
-  does for a file no app opens or an executable
+  does for a file no app opens or an executable. Holding `Command` underlines
+  what a click would open under the pointer
 
 ## Build from source
 
