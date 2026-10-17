@@ -237,7 +237,8 @@ extension TerminalShellViewController {
             deferPendingTmuxReattach(
                 attachment,
                 message: message,
-                sequence: sequence
+                sequence: sequence,
+                serverGone: true
             )
             return
         }
@@ -334,7 +335,8 @@ extension TerminalShellViewController {
     func deferPendingTmuxReattach(
         _ attachment: NativeTmuxAttachment,
         message: String,
-        sequence: Int
+        sequence: Int,
+        serverGone: Bool = false
     ) {
         guard tmuxAdmissionSequence == sequence,
             pendingTmuxReattach == attachment
@@ -346,6 +348,14 @@ extension TerminalShellViewController {
         tmuxReattachDeferred = true
         NativeLog.sessionWarning("tmux_reattach_deferred message=\(message)")
         saveSessionState()
+        // No server answers on the socket, as after a crash or a restart.
+        if serverGone,
+            offerTmuxRestore(
+                sessionName: attachment.sessionName, socketPath: attachment.socketPath,
+                crashed: false)
+        {
+            return
+        }
         presentTmuxSessionError(message)
     }
 
@@ -366,7 +376,11 @@ extension TerminalShellViewController {
         consumePersistedTmuxAttachment()
         NativeLog.sessionWarning("tmux_reattach_failed message=\(message)")
         saveSessionState()
-        presentTmuxSessionError(message)
+        if !offerTmuxRestore(
+            sessionName: attachment.sessionName, socketPath: attachment.socketPath, crashed: false)
+        {
+            presentTmuxSessionError(message)
+        }
     }
 
     func startTmuxReattach(

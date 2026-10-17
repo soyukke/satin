@@ -34,7 +34,7 @@ enum NativeTmuxResolution: Equatable {
     case unavailable(String)
 }
 
-private struct NativeProcessOutput {
+struct NativeProcessOutput {
     let status: Int32
     let standardOutput: Data
     let standardError: Data
@@ -58,7 +58,7 @@ private final class NativeProcessTimeoutState: @unchecked Sendable {
     }
 }
 
-private enum NativeTmuxProcessRunner {
+enum NativeTmuxProcessRunner {
     private static let maximumCapturedBytes = 16 * 1_024 * 1_024
 
     static func run(
