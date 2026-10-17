@@ -1,30 +1,62 @@
 import AppKit
+import QuartzCore
+
+/// A picture of the work taken before a tab switch, waiting for the switch
+/// to show. A local switch shows at once; a tmux one shows when tmux reports
+/// the window it chose.
+struct NativeTabTransition {
+    let image: CGImage
+    let rect: NSRect
+    let target: Int
+    let step: Int
+    let taken: CFTimeInterval
+
+    /// Past this, the picture is too old to slide away from.
+    static let patience: CFTimeInterval = 0.5
+}
 
 /// Switching tabs pushes the old tab's work aside: a picture of it is taken
 /// before the switch and slides away toward the side the old tab sits on,
 /// fading, over the new tab's work.
 extension TerminalShellViewController {
-    /// Takes the picture of the work before a switch to tab `index`. Nil
-    /// when there is nothing to move, such as choosing the tab already shown.
-    func beginTabTransition(to index: Int) -> (image: CGImage, rect: NSRect, step: Int)? {
+    /// Takes the picture of the work before a switch to tab `index`. Nothing
+    /// is taken when there is nothing to move, such as choosing the tab
+    /// already shown.
+    func beginTabTransition(to index: Int) {
+        pendingTabTransition = nil
         guard !NativeHandEffects.reducesMotion, let active = lastSnapshot?.active_tab,
             active != index, terminalTextView.window != nil
         else {
-            return nil
+            return
         }
         let rect = terminalTextView.terminalContentRect()
         guard let image = metalView.captureFrame(),
             let cropped = image.cropping(to: pixelRect(of: rect, in: image))
         else {
-            return nil
-        }
-        return (cropped, rect, index > active ? 1 : -1)
-    }
-
-    func finishTabTransition(_ transition: (image: CGImage, rect: NSRect, step: Int)?) {
-        guard let transition, lastSnapshot?.active_tab != nil else {
             return
         }
+        pendingTabTransition = NativeTabTransition(
+            image: cropped, rect: rect, target: index, step: index > active ? 1 : -1,
+            taken: CACurrentMediaTime())
+    }
+
+    /// Plays the waiting picture once the tab it waits for is shown, and
+    /// drops it when that takes too long.
+    func settleTabTransition(_ snapshot: TerminalCoreSnapshot) {
+        guard let transition = pendingTabTransition else {
+            return
+        }
+        let fresh = CACurrentMediaTime() - transition.taken < NativeTabTransition.patience
+        guard snapshot.active_tab == transition.target || !fresh else {
+            return
+        }
+        pendingTabTransition = nil
+        if fresh {
+            playTabTransition(transition)
+        }
+    }
+
+    private func playTabTransition(_ transition: NativeTabTransition) {
         let old = NSView(frame: transition.rect)
         old.wantsLayer = true
         old.layer?.contents = transition.image

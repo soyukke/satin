@@ -13,11 +13,13 @@ extension TerminalShellViewController {
         syncTabs(snapshot)
         syncPaneLayout(snapshot)
         syncActivePane(snapshot)
+        settleTabTransition(snapshot)
         view.window?.title = windowTitle(snapshot)
         refreshWorkSwitcherPresentation()
     }
 
     func selectTab(_ index: Int) {
+        beginTabTransition(to: index)
         if let session = tmuxSession,
             let tab = lastSnapshot?.tabs.first(where: { $0.index == index }),
             let windowId = session.tmuxWindowIds[tab.id]
@@ -31,10 +33,8 @@ extension TerminalShellViewController {
             focusTerminal()
             return
         }
-        let transition = beginTabTransition(to: index)
         _ = core.selectTab(index)
         syncFromCore()
-        finishTabTransition(transition)
         focusTerminal()
     }
 
