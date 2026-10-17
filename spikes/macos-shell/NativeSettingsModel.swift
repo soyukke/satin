@@ -14,6 +14,7 @@ enum NativePreferenceKey {
     static let sessionRestore = "restoreSession"
     static let confirmBeforeQuit = "confirmBeforeQuit"
     static let sessionState = "sessionState"
+    static let tmuxRestorePlan = "tmuxRestorePlan"
     static let defaultTheme = "defaultTheme"
     static let attentionHand = "attentionHand"
     static let animatedBackdrop = "animatedBackdrop"

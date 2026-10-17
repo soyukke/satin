@@ -205,7 +205,14 @@ extension TerminalShellViewController {
         case "command_error":
             NativeLog.runtimeError("tmux_command_error message=\(event.message ?? "unknown")")
         case "exited":
+            let crashed = NativeTmuxRestore.serverCrashed(reason: event.reason)
+            let name = tmuxSession?.sessionName
+            let socket = tmuxSession?.socketPath
             endTmuxSession(gatewayPaneId: gatewayPaneId)
+            if crashed {
+                NativeLog.runtimeError("tmux_server_crashed reason=\(event.reason ?? "")")
+                offerTmuxRestore(sessionName: name, socketPath: socket, crashed: true)
+            }
         default:
             NativeLog.runtimeError("tmux_unknown_event kind=\(event.kind)")
         }
@@ -327,6 +334,7 @@ extension TerminalShellViewController {
         {
             session.executablePath = executablePath
         }
+        recordTmuxRestorePlan(snapshot, session: session)
         session.activeWindowZoomed =
             snapshot.windows
             .first(where: { $0.window_id == snapshot.active_window_id })?.zoomed ?? false
