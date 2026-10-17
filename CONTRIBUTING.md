@@ -48,8 +48,6 @@ commands. Install the repository-managed pre-commit hook once per clone with
 - For a renderer change, follow [docs/renderer.md](docs/renderer.md) and run the
   relevant terminal and Neovim smoke tests.
 - Record significant architecture decisions in [docs/adr](docs/adr).
-- Do not increase a grandfathered source-file size ceiling. When a large file
-  shrinks, lower its ceiling in `scripts/source-size-lint` in the same change.
 - Keep compiler and linter output warning-free.
 
 ## Required checks
