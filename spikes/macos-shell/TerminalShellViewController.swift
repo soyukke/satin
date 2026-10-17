@@ -398,6 +398,7 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
     #endif
     var activePaneId: Int?
     var lastSnapshot: TerminalCoreSnapshot?
+    var pendingTabTransition: NativeTabTransition?
     var lastNvimModelScrollShift: OutputScrollShift?
     var pendingGeometryResizeWorkItem: DispatchWorkItem?
     #if SATIN_SMOKE_SCENARIOS
