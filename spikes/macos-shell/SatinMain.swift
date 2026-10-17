@@ -78,6 +78,7 @@ struct SatinApplication {
                 ("page inbox", runNativePageInboxSelfTests),
                 ("page hand", runNativePageHandSelfTests),
                 ("page document", runNativePageDocumentSelfTests),
+                ("tmux workspace repair", runNativeTmuxWorkspaceRepairSelfTests),
                 ("paper mode", runNativePaperModeSelfTests),
                 ("attention hand", runNativeAttentionHandSelfTests),
                 ("attention hand view", runNativeAttentionHandViewSelfTests),
