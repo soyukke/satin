@@ -28,7 +28,12 @@ extension TerminalShellViewController {
             return
         }
         pageHandView.onOpen = { [weak self] page in
-            self?.openPage(page)
+            guard let self else { return }
+            self.openPage(page)
+            if let chrome = self.pageReaderChrome {
+                NativePageFlight.fadeIn(
+                    [chrome] + (self.pageReaderDocument.map { [$0] } ?? []), delay: 0)
+            }
         }
         pageHandView.arrivalPoint = { [weak self] in
             guard let self, self.artifactButton.window != nil else {
@@ -96,19 +101,28 @@ extension TerminalShellViewController {
         }
     }
 
-    func openPageBinder() {
-        closePageReader()
+    /// Opens the binder; coming back from a page, that page's row is
+    /// highlighted.
+    func openPageBinder(focusing pageId: String? = nil) {
+        closePageReader(animated: false)
         let binder = NativePageBinderView(frame: terminalTextView.bounds)
         binder.autoresizingMask = [.width, .height]
         binder.panel = nativePageReaderFrames(in: terminalTextView.terminalContentRect()).panel
-        binder.onOpen = { [weak self] page in
-            self?.openPage(page, fromBinder: true)
+        binder.onOpen = { [weak self, weak binder] page in
+            guard let self else { return }
+            let from = binder?.rect(for: page.id)
+            self.openPage(page, fromBinder: true)
+            self.flyPageIntoReader(from: from)
         }
         binder.onClose = { [weak self] in
             self?.closePageBinder()
         }
         terminalTextView.addSubview(binder, positioned: .above, relativeTo: nil)
         binder.show(pages: pageInbox.pages, unread: pageInbox.unread)
+        if let pageId {
+            binder.focus(pageId: pageId)
+        }
+        binder.appear()
         pageBinder = binder
         updateHandsSunk()
         view.window?.makeFirstResponder(binder)
@@ -119,7 +133,7 @@ extension TerminalShellViewController {
         guard let binder = pageBinder else {
             return
         }
-        binder.removeFromSuperview()
+        NativePageFlight.fadeOut(binder)
         pageBinder = nil
         updateHandsSunk()
         focusTerminal()
@@ -261,10 +275,16 @@ extension TerminalShellViewController {
         return chrome
     }
 
-    func removePageReaderChrome() {
-        pageReaderChrome?.removeFromSuperview()
+    /// Takes the reader's frame away; fading, it and the page go out softly.
+    func removePageReaderChrome(fading: Bool = false) {
+        for view in [pageReaderChrome, pageReaderDocument].compactMap({ $0 as NSView? }) {
+            if fading {
+                NativePageFlight.fadeOut(view)
+            } else {
+                view.removeFromSuperview()
+            }
+        }
         pageReaderChrome = nil
-        pageReaderDocument?.removeFromSuperview()
         pageReaderDocument = nil
         pageReaderPage = nil
         pageReaderFromBinder = false
@@ -275,20 +295,61 @@ extension TerminalShellViewController {
         }
     }
 
-    func closePageReader() {
+    /// Closes the reader. Animated, the page is put away as a sheet that
+    /// shrinks into the pages button.
+    func closePageReader(animated: Bool = true) {
+        let panel = pageReaderChrome?.panel
+        // Closing the pane takes the frame away at once, so fade it first.
+        removePageReaderChrome(fading: animated)
         if paneStore.runtimes[nativeArtifactSidebarPaneId] != nil {
             closeArtifactSidebar()
         }
-        removePageReaderChrome()
+        if animated, let panel, let button = pagesButtonRect() {
+            NativePageFlight.fly(in: terminalTextView, from: panel, to: button, duration: 0.26)
+        }
     }
 
-    /// Closes the reader, back to the binder when the page came from it.
+    /// Closes the reader, back to the binder when the page came from it:
+    /// the page shrinks back into its row.
     func leavePageReader() {
         let back = pageReaderFromBinder
-        closePageReader()
-        if back {
-            openPageBinder()
+        guard back, let panel = pageReaderChrome?.panel else {
+            closePageReader()
+            return
         }
+        let pageId = pageReaderPage?.id
+        closePageReader(animated: false)
+        openPageBinder(focusing: pageId)
+        if let pageId, let row = pageBinder?.rect(for: pageId) {
+            NativePageFlight.fly(
+                in: terminalTextView, from: panel, to: row, duration: 0.3, strip: pageFlightStrip)
+        }
+    }
+
+    /// The opened page grows out of where it was listed, and the reader
+    /// fades in under it as it lands.
+    private func flyPageIntoReader(from: NSRect?) {
+        guard let from, let chrome = pageReaderChrome else {
+            return
+        }
+        NativePageFlight.fly(
+            in: terminalTextView, from: from, to: chrome.panel, duration: 0.3,
+            strip: pageFlightStrip)
+        NativePageFlight.fadeIn([chrome] + (pageReaderDocument.map { [$0] } ?? []))
+    }
+
+    /// The terminal look's reader heads a page with its kind's color.
+    private var pageFlightStrip: NSColor? {
+        NativePageStyle.paper ? nil : NativePageStyle.edge(for: pageReaderPage?.kind ?? "markdown")
+    }
+
+    /// The pages button, in the terminal view's own coordinates.
+    private func pagesButtonRect() -> NSRect? {
+        guard artifactButton.window != nil else {
+            return nil
+        }
+        let frame = artifactButton.convert(artifactButton.bounds, to: nil)
+        return terminalTextView.convert(frame, from: nil).insetBy(dx: 2, dy: 2)
     }
 
     /// Esc leaves the reader; the arrows step through the page's versions.
