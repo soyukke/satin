@@ -479,16 +479,6 @@ pub fn (self: &var WindowCache) viewport(rows: i64) -> void {
     return;
 }
 
-/// Brings a scroll that trails by more than rows to rows behind, keeping
-/// the rest of its motion.
-pub fn (self: &var WindowCache) limit_scroll_backlog(rows: i64) -> void {
-    let limit = cast<f32>(rows);
-    if math::abs<f32>(self.spring.position) > limit {
-        self.spring.position = math::clamp<f32>(self.spring.position, zero() - limit, limit);
-    }
-    return;
-}
-
 pub fn (self: &var WindowCache) set_margins(margins: Margins) -> void {
     self.margins = margins;
 }

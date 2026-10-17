@@ -199,26 +199,13 @@ test "a prompt redraw on the primary screen does not animate" {
     testing::expect(position_is(&model, 0.0));
 }
 
-test "scrollback growth animates every row it grew by" {
+test "scrollback growth animates only the newest row" {
     let allocator = mem::page_allocator();
     var model = try new_render_model(allocator, 16, 4);
     defer model.deinit(allocator);
     try show_primary(allocator, &var model, "one/two/three/prompt>", 0, 4);
     try show_primary(allocator, &var model, "three/four/five/prompt>", 2, 6);
-    testing::expect(position_is(&model, -2.0));
-}
-
-test "output that scrolls again mid-slide adds to the slide" {
-    let allocator = mem::page_allocator();
-    var model = try new_render_model(allocator, 16, 8);
-    defer model.deinit(allocator);
-    try show_primary(allocator, &var model, "1/2/3/4/5/6/7/>", 0, 8);
-    try show_primary(allocator, &var model, "2/3/4/5/6/7/8/>", 1, 9);
-    testing::expect(model.advance_animations(cast<f32>(0.05)));
-    let midway = model.scroll_position();
-    testing::expect(midway > cast<f32>(-1.0) and midway < cast<f32>(0.0));
-    try show_primary(allocator, &var model, "3/4/5/6/7/8/9/>", 2, 10);
-    testing::expect(model.scroll_position() == midway - cast<f32>(1.0));
+    testing::expect(position_is(&model, -1.0));
 }
 
 test "the rows a program keeps at the foot stay still while output scrolls" {
@@ -233,7 +220,7 @@ test "the rows a program keeps at the foot stay still while output scrolls" {
     testing::expect(line_is(&model, 5, "status"));
     // Nothing is kept still once the foot changes with the output.
     try show_primary(allocator, &var model, "three/four/five/six/seven/prompt>", 4, 10);
-    testing::expect(position_is(&model, -3.0));
+    testing::expect(position_is(&model, -1.0));
     testing::expect(model.window.margins.bottom == 0);
 }
 
@@ -281,15 +268,12 @@ test "primary output does not build an animation backlog" {
     let allocator = mem::page_allocator();
     var model = try new_render_model(allocator, 16, 4);
     defer model.deinit(allocator);
-    try show_primary(allocator, &var model, "one/two/three/four", 0, 4);
-    try show_primary(allocator, &var model, "two/three/four/five", 1, 5);
+    try show_primary(allocator, &var model, "one/two/three/prompt>", 0, 4);
+    try show_primary(allocator, &var model, "two/three/prompt>/prompt>", 1, 5);
     testing::expect(position_is(&model, -1.0));
-    // However fast the output, the slide trails it by a few rows at most.
     model.record_scroll_delta(24);
-    try show_primary(allocator, &var model, "three/four/five/six", 2, 6);
-    testing::expect(position_is(&model, -2.0));
-    try show_primary(allocator, &var model, "six/seven/eight/nine", 5, 9);
-    testing::expect(position_is(&model, -4.0));
+    try show_primary(allocator, &var model, "three/prompt>/prompt>/prompt>", 2, 6);
+    testing::expect(position_is(&model, -1.0));
 }
 
 test "a line records the runs of its backgrounds" {
