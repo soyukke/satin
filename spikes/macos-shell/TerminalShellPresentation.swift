@@ -31,8 +31,10 @@ extension TerminalShellViewController {
             focusTerminal()
             return
         }
+        let transition = beginTabTransition(to: index)
         _ = core.selectTab(index)
         syncFromCore()
+        finishTabTransition(transition)
         focusTerminal()
     }
 

@@ -17,6 +17,7 @@ native_swift_sources=(
   spikes/macos-shell/NativeFrameScheduling.swift
   spikes/macos-shell/NativeKeyBindings.swift
   spikes/macos-shell/NativeMainMenuController.swift
+  spikes/macos-shell/NativeMotion.swift
   spikes/macos-shell/NativePaneGeometry.swift
   spikes/macos-shell/PaneDragInteraction.swift
   spikes/macos-shell/PaneChromeView.swift
@@ -44,6 +45,7 @@ native_swift_sources=(
   spikes/macos-shell/NativeTabStripView.swift
   spikes/macos-shell/NativeTabStatusBadge.swift
   spikes/macos-shell/TabControls.swift
+  spikes/macos-shell/TabRenamePanel.swift
   spikes/macos-shell/TerminalMetalView.swift
   spikes/macos-shell/NativeGpuRenderer.swift
   spikes/macos-shell/NativeChillSound.swift
@@ -66,6 +68,7 @@ native_swift_sources=(
   spikes/macos-shell/TerminalShellRuntime.swift
   spikes/macos-shell/TerminalShellAttentionHand.swift
   spikes/macos-shell/TerminalShellSession.swift
+  spikes/macos-shell/TerminalShellTabTransition.swift
   spikes/macos-shell/TerminalShellViewController.swift
   spikes/macos-shell/TerminalShellWorkSwitcher.swift
   spikes/macos-shell/TerminalReturnRepeatGate.swift

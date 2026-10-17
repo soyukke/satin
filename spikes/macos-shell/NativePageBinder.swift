@@ -137,6 +137,16 @@ final class NativePageBinderView: NSView {
     private var unreadIds = Set<String>()
     private var cards: [NativePageCardView] = []
     private(set) var dealt = false
+    /// The row the pointer or the arrow keys rest on; Return opens it.
+    private(set) var focusedRow: Int?
+    private var cursorRect: NSRect?
+    private let cursorMotion = NativeTween()
+    private var hoveredCard: NativePageCardView?
+    private var stackHovered = false
+    /// Seconds into the rows' entrance, nil once they have all landed.
+    private var revealTime: CGFloat?
+    private let revealMotion = NativeTween()
+    private var tracking: NSTrackingArea?
 
     override var isFlipped: Bool { true }
 
@@ -157,6 +167,8 @@ final class NativePageBinderView: NSView {
         if cards.isEmpty {
             dealt = false
         }
+        hoveredCard = nil
+        stackHovered = false
         layoutContent()
         needsDisplay = true
     }
@@ -167,6 +179,8 @@ final class NativePageBinderView: NSView {
             return
         }
         dealt.toggle()
+        hoveredCard = nil
+        stackHovered = false
         let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
         for (index, card) in cards.enumerated() {
             let order = dealt ? index : cards.count - 1 - index
@@ -207,12 +221,17 @@ final class NativePageBinderView: NSView {
         if dealt {
             let room = inbox.width - 32 - size.width
             let step = min(size.width + 16, room / CGFloat(max(1, cards.count - 1)))
-            origin = NSPoint(x: inbox.minX + 16 + CGFloat(index) * step, y: inbox.minY + 36)
-            angle = 0
-        } else {
+            let lift: CGFloat = card === hoveredCard ? 14 : 0
             origin = NSPoint(
-                x: inbox.minX + 24 + CGFloat(index) * 7, y: inbox.minY + 48 - CGFloat(index) * 4)
-            angle = CGFloat(index - 1) * -2.5
+                x: inbox.minX + 16 + CGFloat(index) * step, y: inbox.minY + 36 - lift)
+            angle = card === hoveredCard ? 1.5 : 0
+        } else {
+            // Under the pointer the stack fans a little, asking to be dealt.
+            let spread: CGFloat = stackHovered ? 18 : 7
+            origin = NSPoint(
+                x: inbox.minX + 24 + CGFloat(index) * spread,
+                y: inbox.minY + 48 - CGFloat(index) * 4 - (stackHovered ? 6 : 0))
+            angle = CGFloat(index - 1) * (stackHovered ? -5 : -2.5)
         }
         // A rotated view's frame is its rotated bounds: place it upright.
         card.frameCenterRotation = 0
@@ -221,12 +240,28 @@ final class NativePageBinderView: NSView {
     }
 
     private func layoutContent() {
-        // The top card of the stack is the newest, drawn last.
-        for (index, card) in cards.enumerated().reversed() {
-            addSubview(card, positioned: .above, relativeTo: nil)
+        restack()
+        for (index, card) in cards.enumerated() {
             place(card, index: index)
         }
+        if let row = focusedRow {
+            if row < visibleRowCount {
+                cursorMotion.stop()
+                cursorRect = rowRect(row)
+            } else {
+                focusedRow = nil
+                cursorRect = nil
+            }
+        }
+        window?.invalidateCursorRects(for: self)
         needsDisplay = true
+    }
+
+    /// The top card of the stack is the newest, drawn last.
+    private func restack() {
+        for card in cards.reversed() {
+            addSubview(card, positioned: .above, relativeTo: nil)
+        }
     }
 
     private var readPages: [NativeArtifactListItem] {
@@ -249,9 +284,8 @@ final class NativePageBinderView: NSView {
         if inboxRect.contains(point), !cards.isEmpty, dealt {
             return
         }
-        for (index, page) in readPages.enumerated() where rowRect(index).contains(point) {
-            onOpen?(page)
-            return
+        if let row = row(at: point) {
+            onOpen?(readPages[row])
         }
     }
 
@@ -259,8 +293,188 @@ final class NativePageBinderView: NSView {
         switch event.keyCode {
         case 53: onClose?()
         case 49: toggleDeal()
+        case 125, 126:
+            let count = visibleRowCount
+            guard count > 0 else { return }
+            let step = event.keyCode == 125 ? 1 : -1
+            focus(row: focusedRow.map { min(max($0 + step, 0), count - 1) } ?? 0)
+        case 36, 76:
+            if let row = focusedRow, row < readPages.count {
+                onOpen?(readPages[row])
+            }
         default: super.keyDown(with: event)
         }
+    }
+
+    // MARK: Pointer
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let tracking {
+            removeTrackingArea(tracking)
+        }
+        let area = NSTrackingArea(
+            rect: .zero,
+            options: [.mouseMoved, .mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect],
+            owner: self)
+        addTrackingArea(area)
+        tracking = area
+    }
+
+    override func mouseMoved(with event: NSEvent) {
+        pointerMoved(to: convert(event.locationInWindow, from: nil))
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        pointerMoved(to: nil)
+    }
+
+    override func resetCursorRects() {
+        for index in 0..<visibleRowCount {
+            addCursorRect(rowRect(index), cursor: .pointingHand)
+        }
+    }
+
+    /// The pointer lifts the card under it, fans the stack, or moves the
+    /// row highlight; the highlight stays where it was left.
+    func pointerMoved(to point: NSPoint?) {
+        let card = point.flatMap { point in cards.first { $0.frame.contains(point) } }
+        if dealt {
+            setHoveredCard(card)
+        } else {
+            setStackHovered(card != nil)
+        }
+        if card == nil, let point, let row = row(at: point) {
+            focus(row: row)
+        }
+    }
+
+    private func setHoveredCard(_ card: NativePageCardView?) {
+        guard card !== hoveredCard else { return }
+        let previous = hoveredCard
+        hoveredCard = card
+        if let card {
+            addSubview(card, positioned: .above, relativeTo: nil)
+        } else if previous != nil {
+            restack()
+        }
+        animatePlacement([previous, card].compactMap { $0 })
+    }
+
+    private func setStackHovered(_ hovered: Bool) {
+        guard hovered != stackHovered else { return }
+        stackHovered = hovered
+        animatePlacement(cards)
+    }
+
+    private func animatePlacement(_ moved: [NativePageCardView]) {
+        let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = reduceMotion ? 0 : 0.26
+            context.timingFunction = NativeEase.landing
+            context.allowsImplicitAnimation = true
+            for card in moved {
+                guard let index = cards.firstIndex(where: { $0 === card }) else { continue }
+                place(card, index: index)
+                card.layer?.shadowRadius = card === hoveredCard ? 22 : 14
+                card.layer?.shadowOffset = CGSize(
+                    width: 0, height: card === hoveredCard ? -18 : -10)
+            }
+        }
+    }
+
+    // MARK: Rows
+
+    private var visibleRowCount: Int {
+        let bottom = panel.maxY - NativePageStyle.footer
+        var count = 0
+        while count < readPages.count, rowRect(count).maxY < bottom {
+            count += 1
+        }
+        return count
+    }
+
+    private func row(at point: NSPoint) -> Int? {
+        (0..<visibleRowCount).first { rowRect($0).contains(point) }
+    }
+
+    /// Slides the highlight to a row. The first one grows in from its left.
+    func focus(row: Int, animated: Bool = true) {
+        guard row != focusedRow || cursorRect == nil else { return }
+        focusedRow = row
+        let target = rowRect(row)
+        let from =
+            cursorRect ?? NSRect(x: target.minX, y: target.minY, width: 0, height: target.height)
+        guard animated else {
+            cursorMotion.stop()
+            cursorRect = target
+            needsDisplay = true
+            return
+        }
+        cursorMotion.run(duration: 0.24) { [weak self] progress in
+            self?.cursorRect = NativeEase.mix(
+                from, target, NativeEase.back(progress, overshoot: 1.1))
+            self?.needsDisplay = true
+        }
+    }
+
+    /// Highlights a page's row, for coming back to the binder from it.
+    func focus(pageId: String) {
+        if let row = readPages.firstIndex(where: { $0.id == pageId }), row < visibleRowCount {
+            focus(row: row, animated: false)
+        }
+    }
+
+    /// Where a page is shown in the binder: its card or its row.
+    func rect(for pageId: String) -> NSRect? {
+        if let card = cards.first(where: { $0.page.id == pageId }) {
+            return card.frame
+        }
+        return readPages.firstIndex { $0.id == pageId }
+            .flatMap { $0 < visibleRowCount ? rowRect($0) : nil }
+    }
+
+    // MARK: Entrance
+
+    /// Fades the binder in, raises the inbox's cards and drops the rows in
+    /// one after another.
+    func appear() {
+        guard !NativeHandEffects.reducesMotion else { return }
+        alphaValue = 0
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.18
+            context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            animator().alphaValue = 1
+        }
+        let rows = CGFloat(min(visibleRowCount, 12))
+        let total = 0.26 + rows * 0.03
+        revealTime = 0
+        revealMotion.run(duration: Double(total)) { [weak self] progress in
+            self?.revealTime = progress >= 1 ? nil : progress * total
+            self?.needsDisplay = true
+        }
+        for (index, card) in cards.enumerated() {
+            let resting = card.frame
+            card.alphaValue = 0
+            card.setFrameOrigin(NSPoint(x: resting.minX, y: resting.minY + 40))
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.04 + Double(index) * 0.05) {
+                [weak self, weak card] in
+                guard let self, let card else { return }
+                NSAnimationContext.runAnimationGroup { context in
+                    context.duration = 0.38
+                    context.timingFunction = NativeEase.landing
+                    context.allowsImplicitAnimation = true
+                    card.alphaValue = 1
+                    self.place(card, index: index)
+                }
+            }
+        }
+    }
+
+    /// How far a row has come in, from 0 to 1.
+    private func revealed(_ row: Int) -> CGFloat {
+        guard let time = revealTime else { return 1 }
+        return NativeEase.out((time - CGFloat(row) * 0.03) / 0.26)
     }
 
     override var acceptsFirstResponder: Bool { true }
@@ -345,32 +559,68 @@ final class NativePageBinderView: NSView {
                 "NOTHING FILED YET", at: NSPoint(x: columnX(0), y: rowRect(0).minY + 12),
                 font: NativePageStyle.mono(11), color: NativePageStyle.muted)
         }
+        if let cursor = cursorRect, focusedRow != nil {
+            drawCursor(cursor)
+        }
         for (index, page) in readPages.enumerated() {
             let row = rowRect(index)
             guard row.maxY < bottom else { break }
-            let y = row.minY + 12
-            NativePageStyle.draw(
-                NativePageStyle.shortId(page.id), at: NSPoint(x: columnX(0), y: y),
-                font: NativePageStyle.mono(12), color: NativePageStyle.teal)
-            NativePageStyle.draw(
-                page.title,
-                in: NSRect(x: columnX(100), y: y - 1, width: width * 0.66 - 110, height: 18),
-                font: NativePageStyle.sans(13.5, .medium), color: NativePageStyle.text)
-            NativePageStyle.draw(
-                page.kind, at: NSPoint(x: columnX(0.66), y: y),
-                font: NativePageStyle.mono(12), color: NativePageStyle.muted)
-            NativePageStyle.draw(
-                NativePageStyle.age(page.updatedAtMs), at: NSPoint(x: columnX(0.8), y: y),
-                font: NativePageStyle.mono(12), color: NativePageStyle.muted)
-            NativePageStyle.draw(
-                "v\(page.version)", at: NSPoint(x: columnX(0.92), y: y),
-                font: NativePageStyle.mono(12, .bold), color: NativePageStyle.violet)
-            NativePageStyle.line.withAlphaComponent(0.14).setFill()
-            NSRect(x: row.minX, y: row.maxY - 1, width: row.width, height: 1).fill()
+            let shown = revealed(index)
+            guard shown > 0 else { continue }
+            NSGraphicsContext.saveGraphicsState()
+            NSGraphicsContext.current?.cgContext.setAlpha(shown)
+            NSGraphicsContext.current?.cgContext.translateBy(x: 0, y: (1 - shown) * -12)
+            drawRow(page, in: row, focused: index == focusedRow, width: width, x: columnX)
+            NSGraphicsContext.restoreGraphicsState()
         }
+        let keys = "↑↓  CHOOSE     RETURN  OPEN     SPACE  DEAL     ESC  CLOSE"
         NativePageStyle.draw(
-            "SPACE  DEAL     CLICK  OPEN     ESC  CLOSE",
+            keys,
             at: NSPoint(x: panel.minX + 14, y: bottom + 8),
             font: NativePageStyle.mono(10.5), color: NativePageStyle.muted)
+    }
+}
+
+extension NativePageBinderView {
+    /// The highlight under the chosen row: a wash with a bar at its left.
+    fileprivate func drawCursor(_ cursor: NSRect) {
+        let accent = NativePageStyle.paper ? NativePageStyle.teal : NativePageStyle.violet
+        let band = NSBezierPath(roundedRect: cursor.insetBy(dx: 0, dy: 3), xRadius: 4, yRadius: 4)
+        accent.withAlphaComponent(NativePageStyle.paper ? 0.14 : 0.18).setFill()
+        band.fill()
+        (NativePageStyle.paper ? NativePageStyle.text : accent).setFill()
+        NSBezierPath(
+            roundedRect: NSRect(
+                x: cursor.minX, y: cursor.minY + 9, width: 3, height: max(0, cursor.height - 18)),
+            xRadius: 1.5, yRadius: 1.5
+        ).fill()
+    }
+
+    fileprivate func drawRow(
+        _ page: NativeArtifactListItem, in row: NSRect, focused: Bool, width: CGFloat,
+        x columnX: (CGFloat) -> CGFloat
+    ) {
+        let y = row.minY + 12
+        // The chosen row's title steps right, out of the bar's way.
+        let nudge: CGFloat = focused ? 6 : 0
+        NativePageStyle.draw(
+            NativePageStyle.shortId(page.id), at: NSPoint(x: columnX(0) + nudge, y: y),
+            font: NativePageStyle.mono(12), color: NativePageStyle.teal)
+        NativePageStyle.draw(
+            page.title,
+            in: NSRect(x: columnX(100) + nudge, y: y - 1, width: width * 0.66 - 110, height: 18),
+            font: NativePageStyle.sans(13.5, focused ? .semibold : .medium),
+            color: NativePageStyle.text)
+        NativePageStyle.draw(
+            page.kind, at: NSPoint(x: columnX(0.66), y: y),
+            font: NativePageStyle.mono(12), color: NativePageStyle.muted)
+        NativePageStyle.draw(
+            NativePageStyle.age(page.updatedAtMs), at: NSPoint(x: columnX(0.8), y: y),
+            font: NativePageStyle.mono(12), color: NativePageStyle.muted)
+        NativePageStyle.draw(
+            "v\(page.version)", at: NSPoint(x: columnX(0.92), y: y),
+            font: NativePageStyle.mono(12, .bold), color: NativePageStyle.violet)
+        NativePageStyle.line.withAlphaComponent(0.14).setFill()
+        NSRect(x: row.minX, y: row.maxY - 1, width: row.width, height: 1).fill()
     }
 }

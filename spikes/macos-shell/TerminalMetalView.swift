@@ -361,6 +361,57 @@ final class TerminalMetalView: MTKView, CAMetalDisplayLinkDelegate, MTKViewDeleg
         }
     }
 
+    /// Draws what is on screen now into a picture, off screen. A transition
+    /// takes it before the work under it changes.
+    func captureFrame() -> CGImage? {
+        let size = expectedDrawableSize()
+        let descriptor = MTLTextureDescriptor.texture2DDescriptor(
+            pixelFormat: colorPixelFormat, width: size.width, height: size.height,
+            mipmapped: false)
+        descriptor.usage = [.renderTarget, .shaderRead]
+        descriptor.storageMode = .shared
+        guard let device, let target = device.makeTexture(descriptor: descriptor),
+            let commandBuffer = commandQueue.makeCommandBuffer(),
+            let frame = frameBuffer(matching: target)
+        else {
+            return nil
+        }
+        _ = satinSkiaMetalBeginFrame(skiaRenderer)
+        guard renderProvider?(frame, skiaRenderer) == true else {
+            return nil
+        }
+        if let gpu = gpuRenderer {
+            guard let encoded = NativeGpuRenderer.frame(from: skiaRenderer),
+                gpu.encode(
+                    encoded, renderer: skiaRenderer, into: commandBuffer,
+                    target: target, clearColor: clearColor)
+            else {
+                return nil
+            }
+        } else if let blit = commandBuffer.makeBlitCommandEncoder() {
+            blit.copy(from: frame.texture, to: target)
+            blit.endEncoding()
+        }
+        commandBuffer.commit()
+        commandBuffer.waitUntilCompleted()
+        let rowBytes = size.width * 4
+        var pixels = [UInt8](repeating: 0, count: rowBytes * size.height)
+        target.getBytes(
+            &pixels, bytesPerRow: rowBytes,
+            from: MTLRegionMake2D(0, 0, size.width, size.height), mipmapLevel: 0)
+        guard let provider = CGDataProvider(data: Data(pixels) as CFData) else {
+            return nil
+        }
+        return CGImage(
+            width: size.width, height: size.height, bitsPerComponent: 8, bitsPerPixel: 32,
+            bytesPerRow: rowBytes,
+            space: (layer as? CAMetalLayer)?.colorspace ?? CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGBitmapInfo(
+                rawValue: CGImageAlphaInfo.premultipliedFirst.rawValue
+                    | CGBitmapInfo.byteOrder32Little.rawValue),
+            provider: provider, decode: nil, shouldInterpolate: true, intent: .defaultIntent)
+    }
+
     /// Draws the experimental animated backdrop under the panes, or stops.
     /// It needs the GPU renderer; it holds still when motion is reduced.
     func setBackdropEnabled(_ enabled: Bool) {
