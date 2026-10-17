@@ -403,8 +403,15 @@ extension TerminalShellViewController {
         session.tmuxWindowIds = Dictionary(
             uniqueKeysWithValues: session.nativeTabIds.map { ($0.value, $0.key) }
         )
-        guard core.applyWorkspace(tmuxWorkspace(snapshot, session: session)) else {
-            NativeLog.runtimeError("tmux_workspace_apply_failed")
+        let repair = NativeTmuxWorkspaceRepair(
+            tmuxWorkspace(snapshot, session: session), previous: lastSnapshot)
+        for note in repair.notes {
+            NativeLog.runtimeError("tmux_window_repaired \(note)")
+        }
+        guard let workspace = repair.workspace, core.applyWorkspace(workspace) else {
+            NativeLog.runtimeError(
+                "tmux_workspace_apply_failed windows=\(snapshot.windows.count)"
+                    + " kept=\(repair.workspace?.tabs.count ?? 0)")
             return
         }
         syncFromCore()

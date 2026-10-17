@@ -32,6 +32,7 @@ native_swift_sources=(
   spikes/macos-shell/NativeShellModels.swift
   spikes/macos-shell/NativeTmux.swift
   spikes/macos-shell/NativeTmuxSessionLease.swift
+  spikes/macos-shell/TmuxWorkspaceRepair.swift
   spikes/macos-shell/NativeWireModels.swift
   spikes/macos-shell/NativeWorkSwitcher.swift
   spikes/macos-shell/NativeWorkSwitcherPreview.swift
