@@ -54,6 +54,10 @@ import Foundation
                 ("linkhover", { [weak self] in self?.hoverLinkForSmoke() }),
                 ("handhover", { [weak self] in self?.hoverHandForSmoke(over: true) }),
                 ("handleave", { [weak self] in self?.hoverHandForSmoke(over: false) }),
+                ("down", { [weak self] in self?.pressBinderKeyForSmoke(125) }),
+                ("enter", { [weak self] in self?.pressBinderKeyForSmoke(36) }),
+                ("tabnext", { [weak self] in self?.stepTabForSmoke(1) }),
+                ("tabprev", { [weak self] in self?.stepTabForSmoke(-1) }),
             ] where FileManager.default.fileExists(atPath: "\(resultPath).\(suffix)") {
                 try? FileManager.default.removeItem(atPath: "\(resultPath).\(suffix)")
                 action()
@@ -71,6 +75,24 @@ import Foundation
                 appearanceMode == .paper
                 ? NativeAppearanceMode.terminal.rawValue : NativeAppearanceMode.paper.rawValue
             applyAppearanceMode()
+        }
+
+        func pressBinderKeyForSmoke(_ keyCode: UInt16) {
+            guard let binder = pageBinder, let window = view.window,
+                let event = NSEvent.keyEvent(
+                    with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0,
+                    windowNumber: window.windowNumber, context: nil, characters: "",
+                    charactersIgnoringModifiers: "", isARepeat: false, keyCode: keyCode)
+            else {
+                return
+            }
+            binder.keyDown(with: event)
+        }
+
+        func stepTabForSmoke(_ step: Int) {
+            if let snapshot = lastSnapshot, !snapshot.tabs.isEmpty {
+                selectTab((snapshot.active_tab + step + snapshot.tabs.count) % snapshot.tabs.count)
+            }
         }
 
         func stepPageForSmoke(_ step: Int) {
