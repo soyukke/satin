@@ -101,16 +101,12 @@ Review that map when upgrading the tool. Snake-case core and control-protocol
 keys use type-scoped naming exceptions; Swift FFI identifiers remain camel-case
 while `@_silgen_name` preserves the exported C ABI symbol.
 
-### Complexity and size ratchet
+### File size
 
-New Swift source files may not exceed 1,000 lines; the lint does not cover the
-Kizu sources under `core/`. Files already over
-that limit are listed with their current ceilings in `scripts/source-size-lint`.
-They may shrink but may not grow. A change that reduces one of those files must
-lower its ceiling in the same change.
-
-Line count is only a regression signal. It does not justify compressed code,
-artificial file splitting, or abstractions without a clear owner and purpose.
+There is no line limit on source files. Split a file when a part of it has its
+own owner and purpose, and refactor as the code calls for it. A line count
+alone does not justify compressed code, artificial file splitting, or
+abstractions without a clear owner and purpose.
 
 ### CI and supply chain
 

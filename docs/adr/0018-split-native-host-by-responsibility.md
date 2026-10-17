@@ -57,3 +57,10 @@ can review control, pane, session, and tmux changes independently. The
 controller extensions remain coordination seams rather than fully independent
 services; future stateful behavior should move behind a store or coordinator
 instead of adding another controller dictionary.
+
+## Later change
+
+The 1,000-line limit on source units, and its lint, were later dropped: a fixed
+line count pushed files to be split where they had no natural seam. Source
+units are still split by responsibility, as this decision describes, and
+refactored as the code calls for it.

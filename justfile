@@ -561,7 +561,7 @@ release-merge pr:
 
 # Lint repository metadata, documentation, spelling, and Nix expressions.
 repo-lint:
-    @if [[ -z "${IN_NIX_SHELL:-}" ]]; then exec nix develop --command just repo-lint; else mapfile -d '' -t markdown_files < <(git ls-files --cached --others --exclude-standard -z -- '*.md'); markdownlint-cli2 "${markdown_files[@]}" && typos && deadnix --fail flake.nix && ./scripts/source-size-lint && ./scripts/tmux-isolation-lint; fi
+    @if [[ -z "${IN_NIX_SHELL:-}" ]]; then exec nix develop --command just repo-lint; else mapfile -d '' -t markdown_files < <(git ls-files --cached --others --exclude-standard -z -- '*.md'); markdownlint-cli2 "${markdown_files[@]}" && typos && deadnix --fail flake.nix && ./scripts/tmux-isolation-lint; fi
 
 # Lint release/smoke shell scripts and GitHub Actions workflows.
 ops-lint:
