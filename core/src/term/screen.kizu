@@ -177,6 +177,20 @@ pub fn (self: &Screen) prompt_generation() -> u64 {
     return self.prompt.ready_generation;
 }
 
+/// Counts the commands the shell started, and those that finished.
+pub fn (self: &Screen) commands_started() -> u64 {
+    return self.prompt.commands_started;
+}
+
+pub fn (self: &Screen) commands_finished() -> u64 {
+    return self.prompt.commands_finished;
+}
+
+/// The exit status of the last finished command, or -1 when unknown.
+pub fn (self: &Screen) last_exit() -> i64 {
+    return self.prompt.last_exit;
+}
+
 pub fn (self: &var Screen) reset_prompt() -> void {
     self.prompt.reset();
 }

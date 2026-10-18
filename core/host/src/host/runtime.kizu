@@ -639,6 +639,27 @@ export "c" fn satin_runtime_tmux_prompt_generation(pane: ?ptr<term::Runtime>) ->
     return runtime.tmux_prompt_generation();
 }
 
+export "c" fn satin_runtime_shell_commands_started(pane: ?ptr<term::Runtime>) -> u64 {
+    let live = pane orelse return 0;
+    // SAFETY: the host holds live from a create and calls from one thread.
+    let runtime = unsafe &live.*;
+    return runtime.shell_commands_started();
+}
+
+export "c" fn satin_runtime_shell_commands_finished(pane: ?ptr<term::Runtime>) -> u64 {
+    let live = pane orelse return 0;
+    // SAFETY: the host holds live from a create and calls from one thread.
+    let runtime = unsafe &live.*;
+    return runtime.shell_commands_finished();
+}
+
+export "c" fn satin_runtime_shell_last_exit(pane: ?ptr<term::Runtime>) -> i64 {
+    let live = pane orelse return -1;
+    // SAFETY: the host holds live from a create and calls from one thread.
+    let runtime = unsafe &live.*;
+    return runtime.shell_last_exit();
+}
+
 export "c" fn satin_runtime_tmux_reset_prompt_tracking(pane: ?ptr<term::Runtime>) -> u8 {
     let live = pane orelse return 0;
     // SAFETY: the host holds live from a create and calls from one thread.

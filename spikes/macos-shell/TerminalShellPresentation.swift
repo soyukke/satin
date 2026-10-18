@@ -26,6 +26,7 @@ extension TerminalShellViewController {
         {
             if session.gateway.tmuxCommand("select-window -t @\(windowId)") {
                 workAttentionStore.markSeen(paneId: tab.active_pane)
+                shellCommands.markSeen(paneId: tab.active_pane)
                 if let snapshot = lastSnapshot {
                     syncTabStatusBadges(snapshot)
                 }

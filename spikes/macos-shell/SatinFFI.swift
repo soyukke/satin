@@ -209,6 +209,21 @@ func satinRuntimeTmuxPromptGeneration(
     _ pane: UnsafeMutableRawPointer?
 ) -> UInt64
 
+@_silgen_name("satin_runtime_shell_commands_started")
+func satinRuntimeShellCommandsStarted(
+    _ pane: UnsafeMutableRawPointer?
+) -> UInt64
+
+@_silgen_name("satin_runtime_shell_commands_finished")
+func satinRuntimeShellCommandsFinished(
+    _ pane: UnsafeMutableRawPointer?
+) -> UInt64
+
+@_silgen_name("satin_runtime_shell_last_exit")
+func satinRuntimeShellLastExit(
+    _ pane: UnsafeMutableRawPointer?
+) -> Int64
+
 @_silgen_name("satin_runtime_tmux_reset_prompt_tracking")
 func satinRuntimeTmuxResetPromptTracking(
     _ pane: UnsafeMutableRawPointer?

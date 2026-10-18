@@ -23,6 +23,14 @@ pub struct PromptTracker {
     /// Counts the prompts that became ready for input, once per prompt.
     pub ready_generation: u64,
     ready_reported: bool,
+    /// Counts the commands the shell started running (`133;C`).
+    pub commands_started: u64,
+    /// Counts the started commands that finished (`133;D`).
+    pub commands_finished: u64,
+    /// The exit status the last finished command reported, or -1 when its
+    /// mark carried none.
+    pub last_exit: i64,
+    command_open: bool,
 }
 
 pub fn (self: PromptTracker) deinit(allocator: Allocator) -> void {
@@ -35,7 +43,11 @@ pub fn new_prompt_tracker(allocator: Allocator) -> PromptTracker {
         payload: string::new(allocator),
         observed: false,
         ready_generation: 0,
-        ready_reported: false
+        ready_reported: false,
+        commands_started: 0,
+        commands_finished: 0,
+        last_exit: -1,
+        command_open: false
     };
 }
 
@@ -46,6 +58,10 @@ pub fn (self: &var PromptTracker) reset() -> void {
     self.observed = false;
     self.ready_generation = 0;
     self.ready_reported = false;
+    self.commands_started = 0;
+    self.commands_finished = 0;
+    self.last_exit = -1;
+    self.command_open = false;
 }
 
 pub fn (self: &var PromptTracker) feed(allocator: Allocator, bytes: []u8) -> mem::Error!void {
@@ -115,6 +131,14 @@ fn (self: &var PromptTracker) finish_payload() -> void {
         return;
     }
     let command = bytes[4];
+    if command == cast<u8>(67) {
+        self.commands_started = self.commands_started + 1;
+        self.command_open = true;
+    } else if command == cast<u8>(68) and self.command_open {
+        self.commands_finished = self.commands_finished + 1;
+        self.last_exit = exit_status(bytes);
+        self.command_open = false;
+    }
     if command == cast<u8>(65) or command == cast<u8>(67) or command == cast<u8>(68) {
         self.ready_reported = false;
     } else if command == cast<u8>(66) and !self.ready_reported {
@@ -122,4 +146,22 @@ fn (self: &var PromptTracker) finish_payload() -> void {
         self.ready_reported = true;
     }
     return;
+}
+
+/// The exit status in a `133;D;N` mark, or -1 when it carries none.
+fn exit_status(bytes: []u8) -> i64 {
+    if mem::len(bytes) < 7 or bytes[5] != cast<u8>(59) {
+        return -1;
+    }
+    var value: i64 = 0;
+    var index = 6;
+    while index < mem::len(bytes) and bytes[index] != cast<u8>(59) {
+        let digit = bytes[index];
+        if digit < cast<u8>(48) or digit > cast<u8>(57) or value > 100000 {
+            return -1;
+        }
+        value = value * 10 + cast<i64>(digit - cast<u8>(48));
+        index = index + 1;
+    }
+    return value;
 }
