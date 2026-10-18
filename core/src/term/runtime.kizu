@@ -603,6 +603,21 @@ pub fn (self: &Runtime) tmux_prompt_generation() -> u64 {
     return self.screen.prompt_generation();
 }
 
+/// Counts the commands the shell started, as its `133;C` marks tell.
+pub fn (self: &Runtime) shell_commands_started() -> u64 {
+    return self.screen.commands_started();
+}
+
+/// Counts the started commands that finished, as `133;D` marks tell.
+pub fn (self: &Runtime) shell_commands_finished() -> u64 {
+    return self.screen.commands_finished();
+}
+
+/// The exit status of the last finished command, or -1 when unknown.
+pub fn (self: &Runtime) shell_last_exit() -> i64 {
+    return self.screen.last_exit();
+}
+
 pub fn (self: &var Runtime) reset_tmux_prompt_tracking() -> void {
     self.screen.reset_prompt();
 }

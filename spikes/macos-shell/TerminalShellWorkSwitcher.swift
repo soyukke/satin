@@ -94,7 +94,8 @@ extension TerminalShellViewController {
                     )
                 }
             }
-            let badge = nativeTabStatusBadge(for: paneStates)
+            let badge = [nativeTabStatusBadge(for: paneStates), shellCommandBadge(tab.panes)]
+                .compactMap { $0 }.max { $0.rawValue < $1.rawValue }
             badges[tab.index] = badge
             let statusLine = badge.map { "\nStatus: \($0.toolTipDescription)" } ?? ""
             tabControl.setToolTip(
@@ -156,6 +157,7 @@ extension TerminalShellViewController {
             return
         }
         workAttentionStore.markSeen(paneId: activePaneId)
+        shellCommands.markSeen(paneId: activePaneId)
         if let snapshot = lastSnapshot {
             syncTabStatusBadges(snapshot)
         }
@@ -231,7 +233,7 @@ extension TerminalShellViewController {
         return mode == .neovim ? "Neovim" : "Terminal"
     }
 
-    private func paneIsVisibleForAttention(_ paneId: Int) -> Bool {
+    func paneIsVisibleForAttention(_ paneId: Int) -> Bool {
         paneId == activePaneId
             && NSApp.isActive
             && view.window?.firstResponder === terminalTextView
@@ -280,6 +282,7 @@ extension TerminalShellViewController {
             syncFromCore()
         }
         workAttentionStore.markSeen(paneId: paneId)
+        shellCommands.markSeen(paneId: paneId)
         if let snapshot = lastSnapshot {
             syncTabStatusBadges(snapshot)
         }

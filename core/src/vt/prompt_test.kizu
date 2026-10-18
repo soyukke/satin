@@ -71,3 +71,30 @@ test "reset forgets the marks" {
     testing::expect(!tracker.observed);
     testing::expect_equal<u64>(0, tracker.ready_generation);
 }
+
+test "counts the commands a shell runs and how they ended" {
+    let allocator = mem::page_allocator();
+    var tracker = new_prompt_tracker(allocator);
+    defer tracker.deinit(allocator);
+    try feed(allocator, &var tracker, "\e]133;D;0\e\\");
+    testing::expect_equal<u64>(0, tracker.commands_finished);
+
+    try feed(allocator, &var tracker, "\e]133;C\e\\");
+    testing::expect_equal<u64>(1, tracker.commands_started);
+    testing::expect_equal<u64>(0, tracker.commands_finished);
+    try feed(allocator, &var tracker, "\e]133;D;127\a");
+    testing::expect_equal<u64>(1, tracker.commands_finished);
+    testing::expect_equal<i64>(127, tracker.last_exit);
+    try feed(allocator, &var tracker, "\e]133;D;0\a");
+    testing::expect_equal<u64>(1, tracker.commands_finished);
+
+    try feed(allocator, &var tracker, "\e]133;C\a\e]133;D;0;aid=1\a");
+    testing::expect_equal<u64>(2, tracker.commands_finished);
+    testing::expect_equal<i64>(0, tracker.last_exit);
+    try feed(allocator, &var tracker, "\e]133;C\a\e]133;D\a");
+    testing::expect_equal<i64>(-1, tracker.last_exit);
+
+    tracker.reset();
+    testing::expect_equal<u64>(0, tracker.commands_started);
+    testing::expect_equal<i64>(-1, tracker.last_exit);
+}

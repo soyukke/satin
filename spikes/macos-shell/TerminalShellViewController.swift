@@ -423,6 +423,8 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
     var pageReaderDocument: NativePageDocumentView?
     var pageKeyMonitor: Any?
     let paneStatuses = NativePaneStatusStore()
+    let shellCommands = NativeShellCommandStore()
+    var pendingShellBadgeRefresh: DispatchWorkItem?
     let chillSound = NativeChillSound()
     var announcedStatuses: [Int: String] = [:]
     let workAttentionStore = NativeWorkAttentionStore()

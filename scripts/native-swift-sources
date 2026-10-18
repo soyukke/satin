@@ -45,6 +45,9 @@ native_swift_sources=(
   spikes/macos-shell/SettingsWindow.swift
   spikes/macos-shell/NativeTabStripView.swift
   spikes/macos-shell/NativeTabStatusBadge.swift
+  spikes/macos-shell/NativeShellCommandStatus.swift
+  spikes/macos-shell/TerminalShellCommandStatus.swift
+  spikes/macos-shell/NativeTabSignal.swift
   spikes/macos-shell/TabControls.swift
   spikes/macos-shell/TabRenamePanel.swift
   spikes/macos-shell/TerminalMetalView.swift

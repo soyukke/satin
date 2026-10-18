@@ -353,6 +353,20 @@ class TerminalPane: NativePane {
         satinRuntimeTakeBellCount(handle)
     }
 
+    /// The commands the shell's prompt marks say it started and finished,
+    /// the last one's exit status, and whether a program holds the whole
+    /// screen.
+    func shellCommandMarks() -> (
+        started: UInt64, finished: UInt64, lastExit: Int64, fullScreen: Bool
+    ) {
+        (
+            satinRuntimeShellCommandsStarted(handle),
+            satinRuntimeShellCommandsFinished(handle),
+            satinRuntimeShellLastExit(handle),
+            satinRuntimeTmuxShellPromptState(handle) == 0
+        )
+    }
+
     func find(_ query: String, backwards: Bool) -> Bool {
         query.withCString { value in
             satinRuntimeFind(handle, value, backwards ? 1 : 0) != 0
