@@ -67,6 +67,17 @@ pub struct RenderModel {
     last_rows: array::Array<u64>,
     /// The same of the frame being drawn.
     next_rows: array::Array<u64>,
+    /// The time the frame being drawn is drawn at, once a clock tells it.
+    has_clock: bool,
+    clock_millis: i64,
+    /// When output last scrolled.
+    has_last_scroll: bool,
+    last_scroll_millis: i64,
+}
+
+/// Scrolls closer together than this are output streaming in.
+fn streaming_gap_millis() -> i64 {
+    return 400;
 }
 
 /// The mark of a row that shows nothing.
@@ -155,7 +166,11 @@ pub fn new_render_model(allocator: Allocator, cols: i64, rows: i64) -> mem::Erro
         has_last_screen: false,
         last_alternate: false,
         last_rows: array::new<u64>(allocator),
-        next_rows: array::new<u64>(allocator)
+        next_rows: array::new<u64>(allocator),
+        has_clock: false,
+        clock_millis: 0,
+        has_last_scroll: false,
+        last_scroll_millis: 0
     };
 }
 
@@ -194,6 +209,13 @@ pub fn (self: &var RenderModel) record_scroll_update(update: tmux::ScrollUpdate)
     return;
 }
 
+/// Tells the time the next frame is drawn at, so that scrolls arriving in a
+/// stream are told from one that comes alone.
+pub fn (self: &var RenderModel) set_clock(millis: i64) -> void {
+    self.has_clock = true;
+    self.clock_millis = millis;
+}
+
 /// Draws frame into the window and starts the scroll recorded since the
 /// last frame.
 pub fn (self: &var RenderModel) update(allocator: Allocator, frame: &Frame) -> mem::Error!void {
@@ -217,10 +239,8 @@ pub fn (self: &var RenderModel) update(allocator: Allocator, frame: &Frame) -> m
         }
     }
     if inferred != 0 {
-        // Primary-screen shell output can arrive faster than the spring can
-        // settle (holding Return is the common case). Keep the newest
-        // transition animated without accumulating a visual backlog behind
-        // the PTY's current screen.
+        // Each scroll starts from rest, so the screen never trails behind
+        // the PTY with a backlog of slides.
         self.window.reset_scroll_animation();
         self.pending = no_scroll();
         var update = no_scroll();
@@ -234,6 +254,9 @@ pub fn (self: &var RenderModel) update(allocator: Allocator, frame: &Frame) -> m
             update.region = tmux::Region { top: 1, bottom: height - pinned, left: 0, right: 0 };
         }
         self.record_scroll_update(update);
+    }
+    if self.pending.rows != 0 {
+        self.settle_streaming_scroll();
     }
     try self.resize_window(allocator, width, height);
     if !self.has_last_screen or self.last_alternate != frame.alternate {
@@ -258,6 +281,26 @@ pub fn (self: &var RenderModel) update(allocator: Allocator, frame: &Frame) -> m
     let marks = self.next_rows.as_slice();
     for 0..mem::count<u64>(marks) |row| {
         try self.last_rows.append(allocator, marks[row]);
+    }
+    return;
+}
+
+/// Output that streams in, a reply being written or a log, scrolls again
+/// before the last scroll has settled. Restarting the slide each time makes
+/// the text jump and drag by turns, so while it streams the screen shows
+/// each frame where it is, as a terminal without slides does, and only a
+/// scroll that comes alone slides.
+fn (self: &var RenderModel) settle_streaming_scroll() -> void {
+    if !self.has_clock {
+        return;
+    }
+    let streaming = self.has_last_scroll and
+        self.clock_millis - self.last_scroll_millis < streaming_gap_millis();
+    self.has_last_scroll = true;
+    self.last_scroll_millis = self.clock_millis;
+    if streaming {
+        self.window.reset_scroll_animation();
+        self.pending = no_scroll();
     }
     return;
 }
@@ -398,9 +441,8 @@ fn (self: &RenderModel) inferred_output_scroll(frame: &Frame) -> i64 {
     if !is_at_bottom(self.last_scrollbar) or frame.scrollbar.total <= self.last_scrollbar.total {
         return 0;
     }
-    // A primary-shell frame may batch many prompt redraws between display-link
-    // ticks. Animating that batch as a multi-row displacement makes the live
-    // bottom line visibly race after the PTY has already reached its newest
-    // prompt. The retained screen is current, so animate only the newest row.
-    return 1;
+    // Output streaming in does not slide (settle_streaming_scroll), so a
+    // scroll here came alone and slides all the rows it brought.
+    let grown = cast<i64>(frame.scrollbar.total - self.last_scrollbar.total);
+    return math::min<i64>(grown, math::max<i64>(frame.row_count(), 1));
 }

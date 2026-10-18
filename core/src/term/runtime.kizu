@@ -5,6 +5,7 @@
 import satin::tmux;
 import std::fmt;
 import std::mem;
+import std::process;
 import std::string;
 
 pub error RuntimeError {
@@ -737,6 +738,7 @@ pub fn (self: &var Runtime) update_model(allocator: Allocator) -> Failure!void {
     }
     self.held_frames = 0;
     try self.collect_frame(allocator);
+    self.model.set_clock(process::monotonic_millis());
     try self.model.update(allocator, &self.frame);
     self.has_model_frame = true;
     return;

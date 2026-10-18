@@ -199,12 +199,35 @@ test "a prompt redraw on the primary screen does not animate" {
     testing::expect(position_is(&model, 0.0));
 }
 
-test "scrollback growth animates only the newest row" {
+test "scrollback growth slides every row it grew by" {
     let allocator = mem::page_allocator();
     var model = try new_render_model(allocator, 16, 4);
     defer model.deinit(allocator);
     try show_primary(allocator, &var model, "one/two/three/prompt>", 0, 4);
     try show_primary(allocator, &var model, "three/four/five/prompt>", 2, 6);
+    testing::expect(position_is(&model, -2.0));
+}
+
+test "output streaming in shows each frame where it is" {
+    let allocator = mem::page_allocator();
+    var model = try new_render_model(allocator, 16, 10);
+    defer model.deinit(allocator);
+    model.set_clock(1000);
+    try show(allocator, &var model, "#title/one/two/three/four/five/six/seven/> /#status");
+    // A scroll after a quiet spell slides.
+    model.set_clock(3000);
+    try show(allocator, &var model, "#title/three/four/five/six/seven/eight/nine/> /#status");
+    testing::expect(position_is(&model, -2.0));
+    // The next one close behind it does not, and stops the slide.
+    model.set_clock(3080);
+    try show(allocator, &var model, "#title/four/five/six/seven/eight/nine/ten/> /#status");
+    testing::expect(position_is(&model, 0.0));
+    model.set_clock(3160);
+    try show(allocator, &var model, "#title/six/seven/eight/nine/ten/eleven/twelve/> /#status");
+    testing::expect(position_is(&model, 0.0));
+    // Once the stream pauses, a scroll slides again.
+    model.set_clock(4000);
+    try show(allocator, &var model, "#title/seven/eight/nine/ten/eleven/twelve/end/> /#status");
     testing::expect(position_is(&model, -1.0));
 }
 
@@ -220,7 +243,7 @@ test "the rows a program keeps at the foot stay still while output scrolls" {
     testing::expect(line_is(&model, 5, "status"));
     // Nothing is kept still once the foot changes with the output.
     try show_primary(allocator, &var model, "three/four/five/six/seven/prompt>", 4, 10);
-    testing::expect(position_is(&model, -1.0));
+    testing::expect(position_is(&model, -3.0));
     testing::expect(model.window.margins.bottom == 0);
 }
 
