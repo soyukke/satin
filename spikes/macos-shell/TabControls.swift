@@ -41,6 +41,17 @@ final class NativeTabControl: NSSegmentedControl {
         addSubview(view)
         return view
     }()
+    private(set) lazy var signalView: NativeTabSignalView = {
+        let view = NativeTabSignalView(frame: bounds)
+        view.segmentRect = { [weak self] in self?.segmentFrameForNavigation($0) }
+        view.badgeCenter = { [weak self] segment in
+            self?.segmentRect(for: segment).map {
+                NSPoint(x: $0.minX + Metrics.badgeCenterInset, y: $0.midY)
+            }
+        }
+        addSubview(view)
+        return view
+    }()
     private var activityTimer: Timer?
     /// The tab the selection is moving away from, while it moves.
     private var selectionFrom: Int?
@@ -420,6 +431,7 @@ final class NativeTabControl: NSSegmentedControl {
         statusBadges = next
         updateActivityTimer()
         updateFuses()
+        signalView.update(running: Set(statusBadges.filter { $0.value == .running }.keys))
         needsDisplay = true
     }
 
@@ -453,8 +465,17 @@ final class NativeTabControl: NSSegmentedControl {
             && menu?.items.last?.representedObject as? Int == segment
     }
 
+    /// Plays the end of a tab's work over the tab.
+    func signalFinish(segment: Int, failed: Bool) {
+        guard segment >= 0, segment < segmentCount else {
+            return
+        }
+        signalView.finish(segment: segment, failed: failed)
+    }
+
     func finishSnapshotSync(previousFrame: NSRect) {
         fuseView.needsLayout = true
+        signalView.needsLayout = true
         sizeToFit()
         invalidateIntrinsicContentSize()
         needsLayout = true

@@ -80,6 +80,7 @@ struct SatinApplication {
                 ("page document", runNativePageDocumentSelfTests),
                 ("tmux workspace repair", runNativeTmuxWorkspaceRepairSelfTests),
                 ("tmux restore", runNativeTmuxRestoreSelfTests),
+                ("shell command status", runNativeShellCommandStatusSelfTests),
                 ("paper mode", runNativePaperModeSelfTests),
                 ("attention hand", runNativeAttentionHandSelfTests),
                 ("attention hand view", runNativeAttentionHandViewSelfTests),

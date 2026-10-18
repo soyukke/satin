@@ -264,6 +264,7 @@ extension TerminalShellViewController {
 
     func removeControlState(_ paneId: Int) {
         paneStatuses.remove(paneId: paneId)
+        shellCommands.remove(paneId: paneId)
     }
 
     func discardPaneState(_ paneId: Int) {

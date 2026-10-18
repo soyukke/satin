@@ -75,6 +75,7 @@ extension TerminalShellViewController {
         terminalTextView.needsDisplay = true
         tabControl.needsDisplay = true
         tabControl.fuseView.refreshLook()
+        tabControl.signalView.refreshLook()
         attentionHandView.applyLook()
         pageHandView.refreshLook()
         pageReaderChrome?.needsDisplay = true

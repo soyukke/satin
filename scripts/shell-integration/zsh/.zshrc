@@ -29,14 +29,22 @@ precmd_functions=(${precmd_functions:#_satin_report_pwd} _satin_report_pwd)
 _satin_report_pwd
 
 _satin_prepare_prompt() {
+  builtin local exit_status=$?
   builtin emulate -L zsh
   builtin local ready_marker=$'\e]133;B\e\\'
-  builtin print -nr -- $'\e]133;A\e\\'
+  builtin print -nr -- $'\e]133;D;'"$exit_status"$'\e\\\e]133;A\e\\'
   if [[ $PS1 != *$ready_marker* ]]; then
     PS1+="%{$ready_marker%}"
   fi
 }
 precmd_functions=(${precmd_functions:#_satin_prepare_prompt} _satin_prepare_prompt)
+
+# Marks where a command starts running, so the tab can show it working.
+_satin_mark_command() {
+  builtin print -nr -- $'\e]133;C\e\\'
+}
+builtin typeset -ga preexec_functions
+preexec_functions=(${preexec_functions:#_satin_mark_command} _satin_mark_command)
 
 if [[ -x ${SATIN_NVIM_LAUNCHER:-} ]]; then
   unalias nvim 2>/dev/null || true

@@ -102,6 +102,9 @@ extension TerminalShellViewController {
                 while let event = terminal.takeTmuxEvent() {
                     tmuxEvents.append((paneId, terminal, event))
                 }
+                if changed, tmuxSession?.gatewayPaneId != paneId {
+                    observeShellCommand(terminal, paneId: paneId)
+                }
                 if terminal is TmuxPane {
                     updateTerminalBells(terminal)
                 } else if tmuxSession?.gatewayPaneId != paneId {
