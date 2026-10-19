@@ -54,7 +54,7 @@ check() {
     fi
 }
 
-check "the launcher names its version" "satin-nvim 0.4.22" "$("$launcher" --satin-launcher-version)"
+check "the launcher names its version" "satin-nvim 0.4.23" "$("$launcher" --satin-launcher-version)"
 
 out="$(PATH="$work/bin:/usr/bin:/bin" "$launcher" -u NONE "file name" < /dev/null)"
 check "without a terminal the real nvim runs" "real nvim: [-u] [NONE] [file name]" "$out"
