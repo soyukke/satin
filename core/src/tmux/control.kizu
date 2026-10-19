@@ -843,10 +843,12 @@ fn (self: &var Control) resume_paused_pane(allocator: Allocator, pane: i64) -> m
     if !try set_add(allocator, &var self.rehydrating_panes, pane) {
         return;
     }
-    var command = try string::from_bytes(allocator, "refresh-client -A %");
+    // Quoted: tmux's command parser rejects a bare `%7:continue` as a syntax
+    // error, which would leave the pane paused for good.
+    var command = try string::from_bytes(allocator, "refresh-client -A '%");
     errdefer command.deinit(allocator);
     try fmt::append_i64(allocator, &var command, pane);
-    try command.append_bytes(allocator, ":continue");
+    try command.append_bytes(allocator, ":continue'");
     return self.queue_command(allocator, move command, PendingKind::Resume, pane);
 }
 
