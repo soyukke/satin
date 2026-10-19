@@ -343,6 +343,13 @@ func satinRuntimeWord(
     _ col: UInt16
 ) -> UnsafeMutablePointer<CChar>?
 
+@_silgen_name("satin_runtime_wrapped_word")
+func satinRuntimeWrappedWord(
+    _ handle: UnsafeMutableRawPointer?,
+    _ row: UInt32,
+    _ col: UInt16
+) -> UnsafeMutablePointer<CChar>?
+
 @_silgen_name("satin_runtime_title")
 func satinRuntimeTitle(_ handle: UnsafeMutableRawPointer?) -> UnsafeMutablePointer<CChar>?
 

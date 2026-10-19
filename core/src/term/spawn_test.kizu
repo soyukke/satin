@@ -125,6 +125,9 @@ test "the terminal environment replaces the launcher's presentation" {
     testing::expect(try environment.value(allocator, "LANG", &var value));
     testing::expect(bytes_are(&value, "en_US.utf-8"));
     value.clear();
+    testing::expect(try environment.value(allocator, "FORCE_HYPERLINK", &var value));
+    testing::expect(bytes_are(&value, "1"));
+    value.clear();
     testing::expect(try environment.value(allocator, "PWD", &var value));
     testing::expect(bytes_are(&value, "/work"));
     value.clear();

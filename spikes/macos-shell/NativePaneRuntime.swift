@@ -345,6 +345,18 @@ class TerminalPane: NativePane {
         )
     }
 
+    /// The word at the cell when it runs on across rows, as a program that
+    /// breaks its own long lines leaves it; nil when it stays on its row.
+    func wrappedWord(row: Int, col: Int) -> String? {
+        ownedCoreString(
+            satinRuntimeWrappedWord(
+                handle,
+                UInt32(max(0, row)),
+                clampedUInt16(col + 1) - 1
+            )
+        )
+    }
+
     func title() -> String? {
         ownedCoreString(satinRuntimeTitle(handle))
     }

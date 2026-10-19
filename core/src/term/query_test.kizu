@@ -105,6 +105,65 @@ test "reads the word under a cell, a path that is no URL" {
     unsafe free_terminal(terminal);
 }
 
+test "a path a program broke at the right edge reads whole from every row" {
+    let allocator = mem::page_allocator();
+    let terminal = try query_terminal(allocator, 14, 4, "see /work/aaaa$  bbbb.png now");
+    var queries = try new_queries(allocator);
+    defer queries.deinit(allocator);
+    var out = string::new(allocator);
+    defer out.deinit(allocator);
+    // SAFETY: terminal is live until free_terminal below.
+    testing::expect(try unsafe queries.wrapped_word_at(allocator, terminal, 14, 4, 0, 6, &var out));
+    testing::expect(text_is(&out, "/work/aaaabbbb.png"));
+    out.clear();
+    // SAFETY: as above.
+    testing::expect(try unsafe queries.wrapped_word_at(allocator, terminal, 14, 4, 1, 4, &var out));
+    testing::expect(text_is(&out, "/work/aaaabbbb.png"));
+    out.clear();
+    // SAFETY: as above.
+    testing::expect(!try unsafe queries.wrapped_word_at(allocator, terminal, 14, 4, 0, 1, &var out));
+    // SAFETY: as above.
+    testing::expect(!try unsafe queries.wrapped_word_at(allocator, terminal, 14, 4, 1, 12, &var out));
+    // SAFETY: as above.
+    testing::expect(try unsafe queries.word_at(allocator, terminal, 14, 4, 0, 6, &var out));
+    testing::expect(text_is(&out, "/work/aaaa"));
+    // SAFETY: terminal came from new_terminal and nothing uses it after this.
+    unsafe free_terminal(terminal);
+}
+
+test "a broken word keeps its wide characters" {
+    let allocator = mem::page_allocator();
+    let terminal = try query_terminal(allocator, 10, 4, "/work/資料$  b.png");
+    var queries = try new_queries(allocator);
+    defer queries.deinit(allocator);
+    var out = string::new(allocator);
+    defer out.deinit(allocator);
+    // SAFETY: terminal is live until free_terminal below.
+    testing::expect(try unsafe queries.wrapped_word_at(allocator, terminal, 10, 4, 1, 3, &var out));
+    testing::expect(text_is(&out, "/work/資料b.png"));
+    // SAFETY: terminal came from new_terminal and nothing uses it after this.
+    unsafe free_terminal(terminal);
+}
+
+test "a row the terminal wrapped goes on only at the next row's first cell" {
+    let allocator = mem::page_allocator();
+    let terminal = try query_terminal(allocator, 14, 4, "see /work/aaaa bbbb");
+    var queries = try new_queries(allocator);
+    defer queries.deinit(allocator);
+    var out = string::new(allocator);
+    defer out.deinit(allocator);
+    // SAFETY: terminal is live until free_terminal below.
+    testing::expect(!try unsafe queries.wrapped_word_at(allocator, terminal, 14, 4, 0, 6, &var out));
+    // SAFETY: terminal came from new_terminal and nothing uses it after this.
+    unsafe free_terminal(terminal);
+    let wrapped = try query_terminal(allocator, 14, 4, "see /work/aaaabbbb.png");
+    // SAFETY: wrapped is live until free_terminal below.
+    testing::expect(try unsafe queries.wrapped_word_at(allocator, wrapped, 14, 4, 0, 6, &var out));
+    testing::expect(text_is(&out, "/work/aaaabbbb.png"));
+    // SAFETY: wrapped came from new_terminal and nothing uses it after this.
+    unsafe free_terminal(wrapped);
+}
+
 test "selects everything and clears it" {
     let allocator = mem::page_allocator();
     let terminal = try query_terminal(allocator, 20, 4, "one$two");
