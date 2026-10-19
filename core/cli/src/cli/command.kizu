@@ -10,7 +10,7 @@ import std::process;
 import std::string;
 
 fn version() -> []u8 {
-    return "0.4.21";
+    return "0.4.22";
 }
 
 fn write_out(bytes: []u8) -> void {
