@@ -73,6 +73,11 @@ extern "c" struct Length {
     value: usize,
 }
 
+/// libghostty's `GhosttyCell` or `GhosttyRow`, read with its `_get` call.
+extern "c" struct Opaque {
+    value: u64,
+}
+
 /// libghostty's `GhosttyString`: bytes the terminal owns until it next
 /// changes.
 extern "c" struct BorrowedText {
@@ -108,6 +113,14 @@ extern "c" fn ghostty_grid_ref_hyperlink_uri(
     out_len: usize,
     written: &var Length
 ) -> i32
+@link_library("ghostty-vt")
+extern "c" fn ghostty_grid_ref_cell(target: &GridRef, out: &var Opaque) -> i32
+@link_library("ghostty-vt")
+extern "c" fn ghostty_grid_ref_row(target: &GridRef, out: &var Opaque) -> i32
+@link_library("ghostty-vt")
+extern "c" fn ghostty_cell_get(cell: u64, data: i32, out: ptr<u8>) -> i32
+@link_library("ghostty-vt")
+extern "c" fn ghostty_row_get(row: u64, data: i32, out: ptr<u8>) -> i32
 @link_library("ghostty-vt")
 extern "c" fn ghostty_terminal_select_all(terminal: ptr<u8>, out: &var Selection) -> i32
 @link_library("ghostty-vt")
@@ -563,6 +576,232 @@ pub unsafe fn(self: &var Queries) word_at(
     }
     try self.append_buffer_lossy(allocator, length, out);
     return true;
+}
+
+fn row_data_wrap() -> i32 {
+    return 1;
+}
+
+fn cell_data_wide() -> i32 {
+    return 3;
+}
+
+fn cell_wide_spacer_tail() -> i32 {
+    return 2;
+}
+
+/// How many rows a broken word is followed onto, either way.
+fn max_wrapped_rows() -> i64 {
+    return 8;
+}
+
+/// Appends the word at the viewport cell (col, row) to out when it runs on
+/// across rows: a word that reaches the right edge goes on at the next
+/// row's first word, as a program that breaks its own long lines leaves
+/// it, and a row the terminal wrapped goes on at the next row's first cell.
+/// False when the word stays on its own row.
+///
+/// terminal must be a live libghostty terminal of cols x rows.
+pub unsafe fn(self: &Queries) wrapped_word_at(
+    allocator: Allocator,
+    terminal: ptr<u8>,
+    cols: i64,
+    rows: i64,
+    row: i64,
+    col: i64,
+    out: &var string::String
+) -> Failure!bool {
+    if row < 0 or row >= rows or col < 0 or col >= cols {
+        return false;
+    }
+    // SAFETY: the caller passes a live terminal of cols x rows, which every call below reads.
+    if !try unsafe self.word_cell(terminal, row, col) {
+        return false;
+    }
+    // SAFETY: as above.
+    var first_col = try unsafe self.word_start(terminal, row, col);
+    var first_row = row;
+    // SAFETY: as above.
+    var last_col = try unsafe self.word_end(terminal, cols, row, col);
+    var last_row = row;
+    var steps = 0;
+    while steps < max_wrapped_rows() and last_col == cols - 1 and last_row + 1 < rows {
+        // SAFETY: as above.
+        let next = try unsafe self.continuation_start(terminal, cols, last_row);
+        if next < 0 {
+            break;
+        }
+        last_row = last_row + 1;
+        // SAFETY: as above.
+        last_col = try unsafe self.word_end(terminal, cols, last_row, next);
+        steps = steps + 1;
+    }
+    steps = 0;
+    while steps < max_wrapped_rows() and first_row > 0 {
+        // SAFETY: as above.
+        if !try unsafe self.word_cell(terminal, first_row - 1, cols - 1) {
+            break;
+        }
+        // SAFETY: as above.
+        let start = try unsafe self.continuation_start(terminal, cols, first_row - 1);
+        if start != first_col {
+            break;
+        }
+        first_row = first_row - 1;
+        // SAFETY: as above.
+        first_col = try unsafe self.word_start(terminal, first_row, cols - 1);
+        steps = steps + 1;
+    }
+    if first_row == last_row {
+        return false;
+    }
+    var current_row = first_row;
+    var start_col = first_col;
+    while current_row <= last_row {
+        var end_col = cols - 1;
+        if current_row == last_row {
+            end_col = last_col;
+        }
+        for start_col..end_col + 1 |cell_col| {
+            // SAFETY: as above.
+            try unsafe self.append_cell_text(allocator, terminal, current_row, cell_col, out);
+        }
+        if current_row < last_row {
+            // SAFETY: as above.
+            start_col = try unsafe self.continuation_start(terminal, cols, current_row);
+        }
+        current_row = current_row + 1;
+    }
+    return true;
+}
+
+/// Where a word that fills viewport row to its right edge goes on in the
+/// next row: its first cell when the terminal wrapped the row, else the
+/// first word in the left half of the row. -1 when it goes on nowhere.
+///
+/// terminal must be a live libghostty terminal of cols columns and more
+/// than row + 1 rows.
+unsafe fn(self: &Queries) continuation_start(terminal: ptr<u8>, cols: i64, row: i64) -> Failure!i64 {
+    // SAFETY: the caller passes a live terminal holding row and the next.
+    if try unsafe self.row_wraps(terminal, row) {
+        // SAFETY: as above.
+        if try unsafe self.word_cell(terminal, row + 1, 0) {
+            return 0;
+        }
+        return -1;
+    }
+    for 0..(cols + 1) / 2 |col| {
+        // SAFETY: as above.
+        if try unsafe self.word_cell(terminal, row + 1, col) {
+            return col;
+        }
+    }
+    return -1;
+}
+
+/// The first column of the word holding viewport cell (col, row) within
+/// its row.
+///
+/// terminal must be a live libghostty terminal holding the cell.
+unsafe fn(self: &Queries) word_start(terminal: ptr<u8>, row: i64, col: i64) -> Failure!i64 {
+    var start = col;
+    // SAFETY: the caller passes a live terminal holding the row.
+    while start > 0 and try unsafe self.word_cell(terminal, row, start - 1) {
+        start = start - 1;
+    }
+    return start;
+}
+
+/// The last column of the word holding viewport cell (col, row) within
+/// its row.
+///
+/// terminal must be a live libghostty terminal of cols columns holding the
+/// cell.
+unsafe fn(self: &Queries) word_end(terminal: ptr<u8>, cols: i64, row: i64, col: i64) -> Failure!i64 {
+    var end = col;
+    // SAFETY: the caller passes a live terminal holding the row.
+    while end < cols - 1 and try unsafe self.word_cell(terminal, row, end + 1) {
+        end = end + 1;
+    }
+    return end;
+}
+
+/// Whether viewport cell (col, row) is part of a word: it holds text other
+/// than a space or tab, or the right half of a wide character.
+///
+/// terminal must be a live libghostty terminal holding the cell.
+unsafe fn(self: &Queries) word_cell(terminal: ptr<u8>, row: i64, col: i64) -> Failure!bool {
+    // SAFETY: the caller passes a live terminal holding the cell.
+    let target = try unsafe grid_ref_at(terminal, point_viewport(), col, row);
+    let slot = self.scratch.slot;
+    var written = Length { value: 0 };
+    // SAFETY: target is a cell of the live terminal; the slot holds slot_codepoints() u32s.
+    let result = unsafe ghostty_grid_ref_graphemes(&target, slot, slot_codepoints(), &var written);
+    if result == out_of_space() {
+        return true;
+    }
+    if result == success() and written.value > 0 {
+        // SAFETY: libghostty wrote at least one u32 codepoint to the slot.
+        let first = unsafe ptr_read(cast<ptr<u32>>(slot));
+        return first != 32 and first != 9;
+    }
+    var cell = Opaque { value: 0 };
+    // SAFETY: target is a cell of the live terminal.
+    if unsafe ghostty_grid_ref_cell(&target, &var cell) != success() {
+        return false;
+    }
+    // SAFETY: cell came from the live terminal; the slot holds a cell width.
+    if unsafe ghostty_cell_get(cell.value, cell_data_wide(), slot) != success() {
+        return false;
+    }
+    return slot_i32(slot) == cell_wide_spacer_tail();
+}
+
+/// Whether the terminal wrapped viewport row onto the next.
+///
+/// terminal must be a live libghostty terminal holding the row.
+unsafe fn(self: &Queries) row_wraps(terminal: ptr<u8>, row: i64) -> Failure!bool {
+    // SAFETY: the caller passes a live terminal holding the row.
+    let target = try unsafe grid_ref_at(terminal, point_viewport(), 0, row);
+    var value = Opaque { value: 0 };
+    // SAFETY: target is a cell of the live terminal.
+    if unsafe ghostty_grid_ref_row(&target, &var value) != success() {
+        return false;
+    }
+    let slot = self.scratch.slot;
+    clear_slot(slot);
+    // SAFETY: value came from the live terminal; the slot holds a bool.
+    if unsafe ghostty_row_get(value.value, row_data_wrap(), slot) != success() {
+        return false;
+    }
+    return slot_bool(slot);
+}
+
+/// Appends the text of viewport cell (col, row) to out.
+///
+/// terminal must be a live libghostty terminal holding the cell.
+unsafe fn(self: &Queries) append_cell_text(
+    allocator: Allocator,
+    terminal: ptr<u8>,
+    row: i64,
+    col: i64,
+    out: &var string::String
+) -> Failure!void {
+    // SAFETY: the caller passes a live terminal holding the cell.
+    let target = try unsafe grid_ref_at(terminal, point_viewport(), col, row);
+    let slot = self.scratch.slot;
+    var written = Length { value: 0 };
+    // SAFETY: target is a cell of the live terminal; the slot holds slot_codepoints() u32s.
+    let result = unsafe ghostty_grid_ref_graphemes(&target, slot, slot_codepoints(), &var written);
+    if result != success() {
+        return;
+    }
+    // SAFETY: libghostty wrote written.value u32 codepoints to the slot.
+    let codepoints = unsafe view_from_ptr(cast<ptr<u32>>(slot), cast<i64>(written.value));
+    for 0..mem::count<u32>(codepoints) |index| {
+        try append_scalar(allocator, out, cast<i64>(codepoints[index]));
+    }
+    return;
 }
 
 fn (self: &Queries) append_buffer_lossy(allocator: Allocator, length: i64, out: &var string::String) -> mem::Error!void {

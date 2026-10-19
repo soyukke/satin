@@ -454,6 +454,21 @@ export "c" fn satin_runtime_word(handle: ?ptr<term::Runtime>, row: u32, col: u16
     return null;
 }
 
+export "c" fn satin_runtime_wrapped_word(handle: ?ptr<term::Runtime>, row: u32, col: u16) -> ?ptr<u8> {
+    let live = handle orelse return null;
+    let allocator = mem::page_allocator();
+    // SAFETY: the host holds live from a create and calls from one thread.
+    let runtime = unsafe &var live.*;
+    var word = string::new(allocator);
+    defer word.deinit(allocator);
+    if runtime.wrapped_word_at(allocator, cast<i64>(row), cast<i64>(col), &var word) |found| {
+        if found {
+            return owned_out(&word);
+        }
+    } else |_| {}
+    return null;
+}
+
 export "c" fn satin_runtime_title(handle: ?ptr<term::Runtime>) -> ?ptr<u8> {
     let live = handle orelse return null;
     let allocator = mem::page_allocator();

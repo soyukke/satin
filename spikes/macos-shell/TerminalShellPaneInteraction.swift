@@ -396,10 +396,9 @@ extension TerminalShellViewController {
         guard let paneId = activePaneId,
             let pane = paneStore.runtimes[paneId] as? TerminalPane,
             let url = pane.hyperlink(row: position.row, col: position.col).flatMap(URL.init)
-                ?? pane.word(row: position.row, col: position.col).flatMap({
-                    nativeTerminalFileURL(
-                        $0, cwd: paneWorkingDirectory(paneId: paneId, logFailure: false))
-                })
+                ?? terminalFile(
+                    pane, position, cwd: paneWorkingDirectory(paneId: paneId, logFailure: false)
+                )?.url
         else {
             return false
         }
@@ -445,16 +444,35 @@ extension TerminalShellViewController {
             return run { pane.hyperlink(row: row, col: $0) == link }
         }
         let cwd = paneWorkingDirectory(paneId: paneId, logFailure: false)
-        guard let word = pane.word(row: row, col: position.col),
-            nativeTerminalFileURL(word, cwd: cwd) != nil
+        guard let file = terminalFile(pane, position, cwd: cwd),
+            let piece = pane.word(row: row, col: position.col)
         else {
             return nil
         }
-        let span = run { pane.word(row: row, col: $0) == word }
-        let trim = nativeTerminalFileTrim(word)
-        let start = span.lowerBound + trim.leading
-        let end = span.upperBound - trim.trailing
+        let span = run { pane.word(row: row, col: $0) == piece }
+        // The prose around a word broken across rows sits at its ends, so
+        // only the rows holding them lose it.
+        let trim = nativeTerminalFileTrim(file.word)
+        let start = span.lowerBound + (file.word.hasPrefix(piece) ? trim.leading : 0)
+        let end = span.upperBound - (file.word.hasSuffix(piece) ? trim.trailing : 0)
         return start <= end ? start...end : span
+    }
+
+    /// The file the word at `position` names, and that word: the whole word
+    /// when a program broke it across rows, else the word on its own row.
+    private func terminalFile(
+        _ pane: TerminalPane, _ position: (row: Int, col: Int), cwd: String?
+    ) -> (url: URL, word: String)? {
+        let words = [
+            pane.wrappedWord(row: position.row, col: position.col),
+            pane.word(row: position.row, col: position.col),
+        ]
+        for case let word? in words {
+            if let url = nativeTerminalFileURL(word, cwd: cwd) {
+                return (url, word)
+            }
+        }
+        return nil
     }
 
     @discardableResult

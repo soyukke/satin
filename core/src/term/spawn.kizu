@@ -277,6 +277,10 @@ pub fn configure_terminal_environment(
     try environment.set(allocator, "COLORTERM", "truecolor");
     try environment.set(allocator, "TERM_PROGRAM", "satin");
     try environment.set(allocator, "TERM_PROGRAM_VERSION", program_version());
+    // Satin reads OSC 8 links, so programs that ask before writing one, as
+    // the supports-hyperlinks check does, keep each link whole across the
+    // rows it wraps onto.
+    try environment.set(allocator, "FORCE_HYPERLINK", "1");
     try environment.set(allocator, "SHELL", shell);
     try environment.set(allocator, "SATIN_PROTO", "libghostty-vt");
     try environment.set(allocator, "NVTERM_PROTO", "libghostty-vt");

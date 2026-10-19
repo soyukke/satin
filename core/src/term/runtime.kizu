@@ -428,6 +428,21 @@ pub fn (self: &var Runtime) word_at(
     return try unsafe self.queries.word_at(allocator, self.screen.handle(), cols, rows, row, col, out);
 }
 
+/// Appends the word at the viewport cell to out when it runs on across
+/// rows, as a program that breaks its own long lines leaves it. False when
+/// it stays on its own row.
+pub fn (self: &var Runtime) wrapped_word_at(
+    allocator: Allocator,
+    row: i64,
+    col: i64,
+    out: &var string::String
+) -> Failure!bool {
+    let cols = self.cols();
+    let rows = self.rows();
+    // SAFETY: the screen's terminal is live.
+    return try unsafe self.queries.wrapped_word_at(allocator, self.screen.handle(), cols, rows, row, col, out);
+}
+
 /// Appends the terminal's title to out; false when it has none.
 pub fn (self: &Runtime) title(allocator: Allocator, out: &var string::String) -> mem::Error!bool {
     // SAFETY: the screen's terminal is live.
