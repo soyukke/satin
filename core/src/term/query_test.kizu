@@ -145,6 +145,64 @@ test "a broken word keeps its wide characters" {
     unsafe free_terminal(terminal);
 }
 
+/// Whether the word at (col, row) of a 4-row terminal reads expected.
+///
+/// terminal must be a live libghostty terminal of cols x 4.
+unsafe fn word_is(
+    allocator: Allocator,
+    queries: &var Queries,
+    terminal: ptr<u8>,
+    cols: i64,
+    row: i64,
+    col: i64,
+    expected: []u8
+) -> !bool {
+    var out = string::new(allocator);
+    defer out.deinit(allocator);
+    // SAFETY: the caller passes a live terminal of cols x 4.
+    if !try unsafe queries.word_at(allocator, terminal, cols, 4, row, col, &var out) {
+        return false;
+    }
+    return text_is(&out, expected);
+}
+
+test "a word keeps its wide characters from every cell" {
+    let allocator = mem::page_allocator();
+    let terminal = try query_terminal(allocator, 40, 4, "see /o/資料_聞く.png now");
+    var queries = try new_queries(allocator);
+    defer queries.deinit(allocator);
+    // The slash, both halves of a wide character, and the extension.
+    // SAFETY: terminal is live until free_terminal below.
+    testing::expect(try unsafe word_is(allocator, &var queries, terminal, 40, 0, 4, "/o/資料_聞く.png"));
+    // SAFETY: as above.
+    testing::expect(try unsafe word_is(allocator, &var queries, terminal, 40, 0, 7, "/o/資料_聞く.png"));
+    // SAFETY: as above.
+    testing::expect(try unsafe word_is(allocator, &var queries, terminal, 40, 0, 8, "/o/資料_聞く.png"));
+    // SAFETY: as above.
+    testing::expect(try unsafe word_is(allocator, &var queries, terminal, 40, 0, 13, "/o/資料_聞く.png"));
+    // SAFETY: as above.
+    testing::expect(try unsafe word_is(allocator, &var queries, terminal, 40, 0, 17, "/o/資料_聞く.png"));
+    var space = string::new(allocator);
+    defer space.deinit(allocator);
+    // SAFETY: terminal is live until free_terminal below.
+    testing::expect(!try unsafe queries.word_at(allocator, terminal, 40, 4, 0, 3, &var space));
+    // SAFETY: terminal came from new_terminal and nothing uses it after this.
+    unsafe free_terminal(terminal);
+}
+
+test "a word goes on through rows the terminal wrapped" {
+    let allocator = mem::page_allocator();
+    let terminal = try query_terminal(allocator, 14, 4, "see /work/aaaabbbb.png");
+    var queries = try new_queries(allocator);
+    defer queries.deinit(allocator);
+    // SAFETY: terminal is live until free_terminal below.
+    testing::expect(try unsafe word_is(allocator, &var queries, terminal, 14, 0, 6, "/work/aaaabbbb.png"));
+    // SAFETY: as above.
+    testing::expect(try unsafe word_is(allocator, &var queries, terminal, 14, 1, 6, "/work/aaaabbbb.png"));
+    // SAFETY: terminal came from new_terminal and nothing uses it after this.
+    unsafe free_terminal(terminal);
+}
+
 test "a row the terminal wrapped goes on only at the next row's first cell" {
     let allocator = mem::page_allocator();
     let terminal = try query_terminal(allocator, 14, 4, "see /work/aaaa bbbb");
