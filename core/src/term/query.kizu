@@ -51,14 +51,6 @@ extern "c" struct ScrollViewport {
     value: ScrollValue,
 }
 
-/// libghostty's `GhosttyTerminalSelectWordOptions`.
-extern "c" struct SelectWordOptions {
-    size: usize,
-    target: GridRef,
-    boundary_codepoints: ?ptr<u8>,
-    boundary_codepoints_len: usize,
-}
-
 /// libghostty's `GhosttyTerminalSelectionFormatOptions`.
 extern "c" struct FormatOptions {
     size: usize,
@@ -123,12 +115,6 @@ extern "c" fn ghostty_cell_get(cell: u64, data: i32, out: ptr<u8>) -> i32
 extern "c" fn ghostty_row_get(row: u64, data: i32, out: ptr<u8>) -> i32
 @link_library("ghostty-vt")
 extern "c" fn ghostty_terminal_select_all(terminal: ptr<u8>, out: &var Selection) -> i32
-@link_library("ghostty-vt")
-extern "c" fn ghostty_terminal_select_word(
-    terminal: ptr<u8>,
-    options: &SelectWordOptions,
-    out: &var Selection
-) -> i32
 @link_library("ghostty-vt")
 extern "c" fn ghostty_terminal_selection_format_buf(
     terminal: ptr<u8>,
@@ -533,7 +519,8 @@ pub unsafe fn(self: &var Queries) hyperlink_at(
 }
 
 /// Appends the whitespace-delimited word at the viewport cell (col, row) to
-/// out. False when the cell holds no word.
+/// out, on through rows the terminal wrapped. False when the cell holds no
+/// word.
 ///
 /// terminal must be a live libghostty terminal of cols x rows.
 pub unsafe fn(self: &var Queries) word_at(
@@ -545,37 +532,11 @@ pub unsafe fn(self: &var Queries) word_at(
     col: i64,
     out: &var string::String
 ) -> Failure!bool {
-    // SAFETY: the caller passes a live terminal.
-    let target = try unsafe viewport_grid_ref(terminal, cols, rows, row, col);
-    let slot = self.scratch.slot;
-    // SAFETY: the slot is writable storage for the two boundary codepoints, space and tab.
-    unsafe ptr_write(cast<ptr<u32>>(slot), 32);
-    // SAFETY: as above; the second codepoint sits four bytes in.
-    unsafe ptr_write(cast<ptr<u32>>(ptr_offset(slot, 4)), 9);
-    let options = SelectWordOptions {
-        size: mem::size_of<SelectWordOptions>(),
-        target: move target,
-        boundary_codepoints: slot,
-        boundary_codepoints_len: 2
-    };
-    var selection = empty_selection();
-    // SAFETY: the caller passes a live terminal, whose cell target is; the slot holds two codepoints.
-    let word_result = unsafe ghostty_terminal_select_word(terminal, &options, &var selection);
-    if word_result == no_value() {
-        return false;
-    }
-    if word_result != success() {
-        return GhosttyError::Refused;
-    }
-    // SAFETY: the slot is writable storage larger than a Selection.
-    unsafe ptr_write(cast<ptr<Selection>>(slot), move selection);
-    // SAFETY: the caller passes a live terminal; the slot holds the word's Selection.
-    let length = try unsafe self.format_selection(allocator, terminal, true);
-    if length <= 0 {
-        return false;
-    }
-    try self.append_buffer_lossy(allocator, length, out);
-    return true;
+    // libghostty's own word selection ends a word at the right half of a
+    // wide character, so a path with Japanese in it came back cut short.
+    // SAFETY: the caller passes a live terminal of cols x rows.
+    let spanned = try unsafe self.word_run(allocator, terminal, cols, rows, row, col, false, 1, out);
+    return spanned > 0;
 }
 
 fn row_data_wrap() -> i32 {
@@ -611,12 +572,35 @@ pub unsafe fn(self: &Queries) wrapped_word_at(
     col: i64,
     out: &var string::String
 ) -> Failure!bool {
+    // SAFETY: the caller passes a live terminal of cols x rows.
+    let spanned = try unsafe self.word_run(allocator, terminal, cols, rows, row, col, true, 2, out);
+    return spanned > 0;
+}
+
+/// Appends the word at the viewport cell (col, row) to out when it spans at
+/// least min_rows rows, and returns how many it spans, or 0 when it holds
+/// no word or spans fewer. The word goes on at the next row's first cell
+/// when the terminal wrapped the row and, with broken, also where a
+/// program broke it at the right edge.
+///
+/// terminal must be a live libghostty terminal of cols x rows.
+unsafe fn(self: &Queries) word_run(
+    allocator: Allocator,
+    terminal: ptr<u8>,
+    cols: i64,
+    rows: i64,
+    row: i64,
+    col: i64,
+    broken: bool,
+    min_rows: i64,
+    out: &var string::String
+) -> Failure!i64 {
     if row < 0 or row >= rows or col < 0 or col >= cols {
-        return false;
+        return 0;
     }
     // SAFETY: the caller passes a live terminal of cols x rows, which every call below reads.
     if !try unsafe self.word_cell(terminal, row, col) {
-        return false;
+        return 0;
     }
     // SAFETY: as above.
     var first_col = try unsafe self.word_start(terminal, row, col);
@@ -627,7 +611,7 @@ pub unsafe fn(self: &Queries) wrapped_word_at(
     var steps = 0;
     while steps < max_wrapped_rows() and last_col == cols - 1 and last_row + 1 < rows {
         // SAFETY: as above.
-        let next = try unsafe self.continuation_start(terminal, cols, last_row);
+        let next = try unsafe self.next_word_start(terminal, cols, last_row, broken);
         if next < 0 {
             break;
         }
@@ -643,7 +627,7 @@ pub unsafe fn(self: &Queries) wrapped_word_at(
             break;
         }
         // SAFETY: as above.
-        let start = try unsafe self.continuation_start(terminal, cols, first_row - 1);
+        let start = try unsafe self.next_word_start(terminal, cols, first_row - 1, broken);
         if start != first_col {
             break;
         }
@@ -652,8 +636,9 @@ pub unsafe fn(self: &Queries) wrapped_word_at(
         first_col = try unsafe self.word_start(terminal, first_row, cols - 1);
         steps = steps + 1;
     }
-    if first_row == last_row {
-        return false;
+    let spanned = last_row - first_row + 1;
+    if spanned < min_rows {
+        return 0;
     }
     var current_row = first_row;
     var start_col = first_col;
@@ -668,11 +653,30 @@ pub unsafe fn(self: &Queries) wrapped_word_at(
         }
         if current_row < last_row {
             // SAFETY: as above.
-            start_col = try unsafe self.continuation_start(terminal, cols, current_row);
+            start_col = try unsafe self.next_word_start(terminal, cols, current_row, broken);
         }
         current_row = current_row + 1;
     }
-    return true;
+    return spanned;
+}
+
+/// Where a word that fills viewport row to its right edge goes on in the
+/// next row: its first cell when the terminal wrapped the row and, with
+/// broken, the first word in the left half of the row. -1 when it goes on
+/// nowhere.
+///
+/// terminal must be a live libghostty terminal of cols columns and more
+/// than row + 1 rows.
+unsafe fn(self: &Queries) next_word_start(terminal: ptr<u8>, cols: i64, row: i64, broken: bool) -> Failure!i64 {
+    if broken {
+        // SAFETY: the caller passes a live terminal holding row and the next.
+        return unsafe self.continuation_start(terminal, cols, row);
+    }
+    // SAFETY: as above.
+    if try unsafe self.row_wraps(terminal, row) and try unsafe self.word_cell(terminal, row + 1, 0) {
+        return 0;
+    }
+    return -1;
 }
 
 /// Where a word that fills viewport row to its right edge goes on in the
