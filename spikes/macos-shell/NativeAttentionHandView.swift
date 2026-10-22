@@ -8,9 +8,9 @@ import QuartzCore
 final class NativeAttentionHandView: NSView {
     /// The room the hand keeps below the panes: none, the cards lie over them.
     static let stripHeight: CGFloat = 0
-    /// How much of a card at rest shows above the window's edge: its head,
-    /// enough for the name and the status light.
-    private static let restShowing: CGFloat = 40
+    /// How much of a card at rest shows above the window's edge: the top of
+    /// its head, enough to tell a card is there and its status light.
+    private static let restShowing: CGFloat = 20
     /// How much shows under the pointer, enough to read.
     private static let peekShowing: CGFloat = 188
     static let reach: CGFloat = 268
