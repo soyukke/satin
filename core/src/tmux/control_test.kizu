@@ -517,6 +517,89 @@ test "pause continues and forces a fresh capture" {
     try expect_outgoing(allocator, &var control, "capture-pane -p -e -C -S -3 -t %7\n");
 }
 
+fn drop_events(allocator: Allocator, control: &var Control) -> !void {
+    var got = string::new(allocator);
+    defer got.deinit(allocator);
+    while try control.take_event(allocator, &var got) {}
+    return;
+}
+
+/// Enters control mode and hydrates pane %7, leaving its capture in flight.
+fn start_capture(allocator: Allocator, control: &var Control, row: &string::String) -> !void {
+    try feed_quiet(allocator, control, "\eP1000p%session-changed $0 satin\n");
+    try admit_control_client(allocator, control);
+    try expect_outgoing_prefix(allocator, control, "list-panes -s");
+    try feed_response(allocator, control, "1 2 0", row);
+    try acknowledge_passthrough_setup(allocator, control, "1 3 0");
+    return expect_outgoing_prefix(allocator, control, "capture-pane");
+}
+
+test "a pane paused again during its capture continues and is captured again" {
+    let allocator = mem::page_allocator();
+    var control = new_control(allocator);
+    defer control.deinit(allocator);
+    let row = try snapshot_row(allocator, "/tmp", 3, false, false);
+    defer row.deinit(allocator);
+    try start_capture(allocator, &var control, &row);
+    try feed_quiet(allocator, &var control, "%pause %7\n");
+    try expect_outgoing(allocator, &var control, "refresh-client -A '%7:continue'\n");
+    try feed_quiet(allocator, &var control, "%begin 1 4 0\nstale\n%end 1 4 0\n");
+    try expect_outgoing(allocator, &var control, "capture-pane -p -e -C -S -3 -t %7\n");
+    try feed_quiet(allocator, &var control, "%begin 1 5 0\n%continue %7\n%end 1 5 0\n");
+    try expect_no_outgoing(allocator, &var control);
+}
+
+test "a response whose end never came is abandoned at the next command's end" {
+    let allocator = mem::page_allocator();
+    var control = new_control(allocator);
+    defer control.deinit(allocator);
+    let row = try snapshot_row(allocator, "/tmp", 3, false, false);
+    defer row.deinit(allocator);
+    try start_capture(allocator, &var control, &row);
+    try feed_quiet(allocator, &var control, "%begin 1 3 0\nready\n%end 1 3 0\n");
+    try expect_outgoing_prefix(allocator, &var control, "list-panes -s");
+    try drop_events(allocator, &var control);
+    // The snapshot's end goes missing, so what follows reads as its lines.
+    try feed_quiet(allocator, &var control, "%begin 1 4 0\n%output %7 lost\n%window-add @3\n");
+    try expect_no_outgoing(allocator, &var control);
+    try expect_no_event(allocator, &var control);
+    testing::expect(try control.command(allocator, "select-pane -t %7"));
+    try expect_outgoing(allocator, &var control, "select-pane -t %7\n");
+    try feed_quiet(allocator, &var control, "%begin 1 5 1\n%end 1 5 1\n");
+    let report = try expect_event_kind(allocator, &var control, "command_error");
+    defer report.deinit(allocator);
+    let report_bytes = report.as_bytes();
+    if !contains(report_bytes, "tmux response 1 4 0 (snapshot) never ended; abandoned 2 lines starting with: %output %7 lost") {
+        testing::fail(report_bytes);
+    }
+    try expect_no_event(allocator, &var control);
+    try expect_outgoing_prefix(allocator, &var control, "list-panes -s");
+    try feed_quiet(allocator, &var control, "%output %7 live\n");
+    let output = try expect_event_kind(allocator, &var control, "pane_output");
+    output.deinit(allocator);
+    try feed_response(allocator, &var control, "1 6 0", &row);
+    try expect_outgoing(allocator, &var control, "capture-pane -p -e -C -S -3 -t %7\n");
+}
+
+test "an end matching no begun command stays part of the open response" {
+    let allocator = mem::page_allocator();
+    var control = new_control(allocator);
+    defer control.deinit(allocator);
+    let row = try snapshot_row(allocator, "/tmp", 3, false, false);
+    defer row.deinit(allocator);
+    try start_capture(allocator, &var control, &row);
+    try drop_events(allocator, &var control);
+    try feed_quiet(allocator, &var control, "%begin 1 3 0\n%end 1 9 0\n%begin 1 1 0\n%end 1 1 0\n%end 1 3 0\n");
+    let hydration = try expect_event_kind(allocator, &var control, "pane_hydration");
+    defer hydration.deinit(allocator);
+    let hydration_bytes = hydration.as_bytes();
+    // `%end 1 9 0`, as the event's byte array.
+    testing::expect(contains(hydration_bytes, "37,101,110,100,32,49,32,57,32,48"));
+    try expect_no_event(allocator, &var control);
+    try expect_outgoing_prefix(allocator, &var control, "list-panes -s");
+    try expect_no_outgoing(allocator, &var control);
+}
+
 /// Parses row as a snapshot and returns a copy of its one pane.
 fn row_pane(allocator: Allocator, row: &string::String) -> !Pane {
     var why = string::new(allocator);

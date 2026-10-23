@@ -383,6 +383,9 @@ fn (self: &var Control) handle_line(allocator: Allocator, line: []u8, why: &var 
             try self.finish_response(allocator, false, why);
             return;
         }
+        if try self.recover_lost_end(allocator, line, why) {
+            return;
+        }
         try self.push_response_line(allocator, line, why);
         return;
     }
@@ -840,8 +843,12 @@ fn (self: &var Control) resume_paused_pane(allocator: Allocator, pane: i64) -> m
     if self.closing {
         return;
     }
-    if !try set_add(allocator, &var self.rehydrating_panes, pane) {
-        return;
+    // tmux keeps a paused pane paused until told to continue, even one
+    // paused again while its capture is in flight. That capture misses the
+    // output tmux dropped, so it is taken again once it lands.
+    let fresh = try set_add(allocator, &var self.rehydrating_panes, pane);
+    if !fresh and set_has(&self.capture_pending, pane) {
+        try set_add(allocator, &var self.recapture_panes, pane);
     }
     // Quoted: tmux's command parser rejects a bare `%7:continue` as a syntax
     // error, which would leave the pane paused for good.
@@ -979,6 +986,199 @@ fn (self: &var Control) finish_response(allocator: Allocator, succeeded: bool, w
         try self.push_event(try message_event(allocator, "command_error", bytes));
     }
     return;
+}
+
+/// The command number of a guard, `time number flags`, or -1 when guard is
+/// not one.
+fn guard_number(guard: []u8) -> i64 {
+    var fields = 0;
+    var digits = 0;
+    var number: i64 = 0;
+    var index = 0;
+    while index <= mem::len(guard) {
+        if index == mem::len(guard) or guard[index] == cast<u8>(32) {
+            if digits == 0 {
+                return -1;
+            }
+            fields = fields + 1;
+            digits = 0;
+        } else {
+            let value = cast<i64>(guard[index]) - 48;
+            if value < 0 or value > 9 or digits >= 10 {
+                return -1;
+            }
+            if fields == 1 {
+                number = number * 10 + value;
+            }
+            digits = digits + 1;
+        }
+        index = index + 1;
+    }
+    if fields != 3 {
+        return -1;
+    }
+    return number;
+}
+
+fn pending_kind_name(kind: PendingKind) -> []u8 {
+    if kind == PendingKind::Initial {
+        return "initial";
+    }
+    if kind == PendingKind::ControlClientCheck {
+        return "control client check";
+    }
+    if kind == PendingKind::Ignore {
+        return "command";
+    }
+    if kind == PendingKind::Snapshot {
+        return "snapshot";
+    }
+    if kind == PendingKind::Sessions {
+        return "sessions";
+    }
+    if kind == PendingKind::Resume {
+        return "resume";
+    }
+    if kind == PendingKind::AlternateBacking {
+        return "alternate backing";
+    }
+    return "capture";
+}
+
+/// tmux answers one command at a time, so the `%end` or `%error` of a later
+/// command whose `%begin` already sits among the open response's lines means
+/// the open response's own end never arrived. Every line since then was read
+/// as the open response's, pane output and notifications included, so the
+/// open response is abandoned, the later one is answered from the lines after
+/// its `%begin`, and the session is read and captured again.
+fn (self: &var Control) recover_lost_end(allocator: Allocator, line: []u8, why: &var string::String) -> Failure!bool {
+    var prefix = "%end ";
+    var succeeded = true;
+    if mem::starts_with(line, "%error ") {
+        prefix = "%error ";
+        succeeded = false;
+    } else if !mem::starts_with(line, "%end ") {
+        return false;
+    }
+    let guard = rest_after(line, prefix);
+    let number = guard_number(guard);
+    let open = self.response_guard.as_bytes();
+    if number < 0 or number <= guard_number(open) {
+        return false;
+    }
+    let begin_at = self.swallowed_begin(guard);
+    if begin_at < 0 {
+        return false;
+    }
+    var later = array::new<string::String>(allocator);
+    defer later.deinit(allocator);
+    try self.take_lines_after(allocator, begin_at, &var later);
+    try self.report_lost_end(allocator);
+    let lost = self.response_kind;
+    self.clear_response(allocator);
+    try self.abandon_response(allocator, lost);
+    try self.begin_response(allocator, guard);
+    try drain_lines(allocator, &var later, &var self.response_lines);
+    try self.finish_response(allocator, succeeded, why);
+    try self.resynchronize(allocator);
+    return true;
+}
+
+/// The index of the last open-response line that is `%begin guard`, or -1.
+fn (self: &Control) swallowed_begin(guard: []u8) -> i64 {
+    var found = -1;
+    var index = 0;
+    while self.response_lines.at(index) |line| {
+        let bytes = line.as_bytes();
+        if mem::starts_with(bytes, "%begin ") and mem::equal_bytes(bytes[7..mem::len(bytes)], guard) {
+            found = index;
+        }
+        index = index + 1;
+    }
+    return found;
+}
+
+/// Moves the open response's lines after index into into, in order, and
+/// drops the line at index.
+fn (self: &var Control) take_lines_after(allocator: Allocator, index: i64, into: &var array::Array<string::String>) -> mem::Error!void {
+    var reversed = array::new<string::String>(allocator);
+    defer reversed.deinit(allocator);
+    while self.response_lines.len() > index + 1 {
+        if self.response_lines.pop() |line| {
+            try reversed.append(allocator, move line);
+        }
+    }
+    if self.response_lines.pop() |begin| {
+        begin.deinit(allocator);
+    }
+    while reversed.pop() |line| {
+        try into.append(allocator, move line);
+    }
+    return;
+}
+
+/// Reports the open response as never ended, with its first line: what tmux
+/// answered just before the end went missing.
+fn (self: &var Control) report_lost_end(allocator: Allocator) -> mem::Error!void {
+    var message = try string::from_bytes(allocator, "tmux response ");
+    defer message.deinit(allocator);
+    try message.append_string(allocator, &self.response_guard);
+    try message.append_bytes(allocator, " (");
+    try message.append_bytes(allocator, pending_kind_name(self.response_kind.kind));
+    try message.append_bytes(allocator, ") never ended; abandoned ");
+    try fmt::append_i64(allocator, &var message, self.response_lines.len());
+    try message.append_bytes(allocator, " lines");
+    if self.response_lines.at(0) |first| {
+        let bytes = first.as_bytes();
+        var end = mem::len(bytes);
+        if end > 160 {
+            end = 160;
+        }
+        try message.append_bytes(allocator, " starting with: ");
+        try append_lossy_utf8(allocator, &var message, bytes[0..end]);
+    }
+    let text = message.as_bytes();
+    return self.push_event(try message_event(allocator, "command_error", text));
+}
+
+/// Clears what waiting for lost's response held, and sends again what tmux
+/// must still be told.
+fn (self: &var Control) abandon_response(allocator: Allocator, lost: Pending) -> mem::Error!void {
+    let pane = lost.pane_id;
+    if lost.kind == PendingKind::ControlClientCheck {
+        self.control_client_check_pending = false;
+        return self.queue_control_client_check(allocator);
+    }
+    if lost.kind == PendingKind::Initial and !self.control_client_admitted {
+        return self.queue_control_client_check(allocator);
+    }
+    if lost.kind == PendingKind::Snapshot {
+        self.sync_pending = false;
+        return;
+    }
+    if lost.kind == PendingKind::Sessions {
+        let none = array::new<string::String>(allocator);
+        defer none.deinit(allocator);
+        return self.finish_sessions(allocator, false, &none);
+    }
+    if lost.kind == PendingKind::Resume {
+        return self.resume_paused_pane(allocator, pane);
+    }
+    if lost.kind == PendingKind::Capture {
+        set_drop(&var self.capture_pending, pane);
+        set_drop(&var self.recapture_panes, pane);
+        set_drop(&var self.rehydrating_panes, pane);
+        return self.flush_rehydration_passthrough(allocator, pane);
+    }
+    return;
+}
+
+/// The lines an abandoned response took may have been pane output and
+/// notifications, so the topology is read again and every pane captured
+/// again.
+fn (self: &var Control) resynchronize(allocator: Allocator) -> mem::Error!void {
+    self.hydrated_panes.clear(allocator);
+    return self.request_sync(allocator);
 }
 
 fn (self: &var Control) finish_control_client_check(allocator: Allocator, succeeded: bool, lines: &array::Array<string::String>) -> mem::Error!void {
