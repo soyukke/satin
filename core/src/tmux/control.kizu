@@ -294,7 +294,10 @@ fn (self: &var Control) feed_control_byte(
         defer line.deinit(allocator);
         let bytes = line.as_bytes();
         var end = mem::len(bytes);
-        if end > 0 and bytes[end - 1] == cast<u8>(13) {
+        // tmux sets the PTY to turn each newline into CR LF. When the PTY's
+        // output queue fills between the two, macOS writes the CR again on
+        // the retry, so a line can end in several CRs.
+        while end > 0 and bytes[end - 1] == cast<u8>(13) {
             end = end - 1;
         }
         try self.handle_line(allocator, bytes[0..end], why);

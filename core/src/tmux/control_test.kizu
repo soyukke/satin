@@ -749,6 +749,20 @@ test "rejected tmux commands are reported without detaching" {
     testing::expect(control.is_active());
 }
 
+test "lines ending in repeated carriage returns are read whole" {
+    let allocator = mem::page_allocator();
+    var control = admitted(allocator);
+    defer control.deinit(allocator);
+    testing::expect(try control.command(allocator, "not-a-command"));
+    try expect_outgoing(allocator, &var control, "not-a-command\n");
+    try feed_quiet(allocator, &var control, "%begin 1 2 0\r\nunknown command: not-a-command\r\r\n%error 1 2 0\r\r\n");
+    try expect_event(allocator, &var control,
+        \\{"kind":"command_error","message":"unknown command: not-a-command"}
+    );
+    try feed_quiet(allocator, &var control, "%window-add @3\r\r\n");
+    try expect_outgoing_prefix(allocator, &var control, "list-panes -s");
+}
+
 test "session discovery uses the existing control client" {
     let allocator = mem::page_allocator();
     var control = admitted(allocator);
