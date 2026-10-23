@@ -22,6 +22,7 @@ final class NativeSettingsWindowController: NSWindowController, NSTextFieldDeleg
     private var agentChimesButton: NSButton?
     private var sessionRestoreButton: NSButton?
     private var confirmBeforeQuitButton: NSButton?
+    private var confirmBeforeClosingBusyTabButton: NSButton?
     private var shellField: NSTextField?
     private var tmuxField: NSTextField?
     private var directoryField: NSTextField?
@@ -90,6 +91,7 @@ final class NativeSettingsWindowController: NSWindowController, NSTextFieldDeleg
         settings.agentChimes = agentChimesButton?.state == .on
         settings.sessionRestore = sessionRestoreButton?.state == .on
         settings.confirmBeforeQuit = confirmBeforeQuitButton?.state == .on
+        settings.confirmBeforeClosingBusyTab = confirmBeforeClosingBusyTabButton?.state == .on
         settings.automaticUpdateChecks = automaticUpdatesButton?.state == .on
         updateIntervalPopup?.isEnabled = settings.automaticUpdateChecks
         commit()
@@ -254,14 +256,18 @@ final class NativeSettingsWindowController: NSWindowController, NSTextFieldDeleg
             "Restore tabs and panes on launch", action: #selector(booleanChanged(_:)))
         let confirmBeforeQuit = checkbox(
             "Confirm before quitting Satin", action: #selector(booleanChanged(_:)))
+        let confirmBeforeClosingBusyTab = checkbox(
+            "Confirm before closing a tab with a running program",
+            action: #selector(booleanChanged(_:)))
         optionAsAltButton = option
         notificationButton = notifications
         sessionRestoreButton = restore
         confirmBeforeQuitButton = confirmBeforeQuit
+        confirmBeforeClosingBusyTabButton = confirmBeforeClosingBusyTab
         return sectionView(
             title: "General",
             description: "General terminal, session, and application behavior.",
-            rows: [option, notifications, restore, confirmBeforeQuit],
+            rows: [option, notifications, restore, confirmBeforeQuit, confirmBeforeClosingBusyTab],
             footer: resetButton()
         )
     }
@@ -554,6 +560,8 @@ final class NativeSettingsWindowController: NSWindowController, NSTextFieldDeleg
         agentChimesButton?.state = settings.agentChimes ? .on : .off
         sessionRestoreButton?.state = settings.sessionRestore ? .on : .off
         confirmBeforeQuitButton?.state = settings.confirmBeforeQuit ? .on : .off
+        confirmBeforeClosingBusyTabButton?.state =
+            settings.confirmBeforeClosingBusyTab ? .on : .off
         fontPopup?.selectItem(
             withTitle: settings.fontFamily.isEmpty ? "Bundled Default" : settings.fontFamily
         )

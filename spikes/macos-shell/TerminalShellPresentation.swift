@@ -430,7 +430,7 @@ extension TerminalShellViewController {
             self?.renameTab(at: index)
         }
         tabControl.onCloseRequested = { [weak self] index in
-            self?.closeTab(at: index) ?? false
+            self?.requestClosingTab(at: index) ?? false
         }
         tabControl.onMoveRequested = { [weak self] source, target in
             self?.moveTab(from: source, to: target) ?? false

@@ -43,6 +43,7 @@ extension NativeSettingsStore {
             !initial.agentChimes,
             initial.sessionRestore,
             initial.confirmBeforeQuit,
+            initial.confirmBeforeClosingBusyTab,
             initial.automaticUpdateChecks,
             initial.defaultTheme == "Graphite",
             initial.finderEditorCommand == "nvim",
@@ -61,6 +62,7 @@ extension NativeSettingsStore {
         changed.finderEditorCommand = "vim"
         changed.tmuxExecutablePath = "/usr/bin/true"
         changed.confirmBeforeQuit = false
+        changed.confirmBeforeClosingBusyTab = false
         changed.automaticUpdateChecks = false
         changed.keyBindings[NativeCommandID.newTab.rawValue] = "cmd+shift+t"
         store.save(changed)

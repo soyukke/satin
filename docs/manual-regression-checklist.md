@@ -235,6 +235,10 @@ macOS screen-recording permission.
 - [ ] Quit Satin and cancel the warning once, then quit successfully. Disable
   **Confirm before quitting Satin** in General settings and confirm Quit no
   longer prompts.
+- [ ] Run `sleep 100` in a tab and click its close button; confirm Satin asks
+  first, Cancel keeps the tab, and Close Tab ends it. Confirm a tab with only a
+  shell closes without asking, and disabling **Confirm before closing a tab
+  with a running program** in General settings stops the prompt.
 
 ## Acceptance
 

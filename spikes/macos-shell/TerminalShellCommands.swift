@@ -599,7 +599,7 @@ extension TerminalShellViewController {
         guard let index = sender.representedObject as? Int else {
             return
         }
-        closeTab(at: index)
+        requestClosingTab(at: index)
     }
 
     @objc func openPaneDirectoryFromContextMenu(_ sender: NSMenuItem) {
@@ -642,6 +642,72 @@ extension TerminalShellViewController {
         return true
     }
 
+    /// Closes the tab, first asking when a program other than a shell runs
+    /// in it, since closing ends that program for good.
+    @discardableResult
+    func requestClosingTab(at index: Int) -> Bool {
+        #if SATIN_SMOKE_SCENARIOS
+            let smokeScenarioActive =
+                ProcessInfo.processInfo.environment["SATIN_NATIVE_SMOKE_SCENARIO"] != nil
+        #else
+            let smokeScenarioActive = false
+        #endif
+        guard settings.confirmBeforeClosingBusyTab, !smokeScenarioActive,
+            let tab = lastSnapshot?.tabs.first(where: { $0.index == index }),
+            tabRunsProgram(tab)
+        else {
+            return closeTab(at: index)
+        }
+        let tabId = tab.id
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Close \u{201C}\(tab.title)\u{201D}?"
+        alert.informativeText =
+            "A program is still running in this tab. Closing the tab ends it."
+        alert.addButton(withTitle: "Close Tab")
+        alert.addButton(withTitle: "Cancel")
+        let finish: (NSApplication.ModalResponse) -> Void = { [weak self] response in
+            guard let self else {
+                return
+            }
+            // Tabs may have moved while the alert was up.
+            guard response == .alertFirstButtonReturn,
+                let current = self.lastSnapshot?.tabs.first(where: { $0.id == tabId })
+            else {
+                self.focusTerminal()
+                return
+            }
+            self.closeTab(at: current.index)
+        }
+        if let window = view.window, window.isVisible {
+            guard window.attachedSheet == nil else {
+                return true
+            }
+            alert.beginSheetModal(for: window, completionHandler: finish)
+        } else {
+            finish(alert.runModal())
+        }
+        return true
+    }
+
+    /// Whether some pane of the tab runs a program other than its shell.
+    private func tabRunsProgram(_ tab: TerminalCoreTabSnapshot) -> Bool {
+        tab.panes.contains { paneId in
+            if let session = tmuxSession, let tmuxPaneId = session.tmuxPaneIds[paneId] {
+                let command = session.latestPanes[tmuxPaneId]?.current_command ?? ""
+                return !command.isEmpty && !tmuxCommandIsShell(command)
+            }
+            switch paneStore.runtimes[paneId] {
+            case let terminal as TerminalPane:
+                return satinRuntimeInteractiveShellOwnsForeground(terminal.handle) == 0
+            case is NeovimPane:
+                return true
+            default:
+                return false
+            }
+        }
+    }
+
     @objc func toggleTmuxPaneZoom(_ sender: Any?) {
         guard let session = tmuxSession,
             let paneId = activePaneId,
@@ -657,11 +723,11 @@ extension TerminalShellViewController {
         guard let session = tmuxSession,
             let snapshot = lastSnapshot,
             let tab = snapshot.tabs.first(where: { $0.index == snapshot.active_tab }),
-            let windowId = session.tmuxWindowIds[tab.id]
+            session.tmuxWindowIds[tab.id] != nil
         else {
             return
         }
-        _ = session.gateway.tmuxCommand("kill-window -t @\(windowId)")
+        requestClosingTab(at: tab.index)
     }
 
     @objc func zoomIn(_ sender: Any?) {

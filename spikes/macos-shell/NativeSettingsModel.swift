@@ -13,6 +13,7 @@ enum NativePreferenceKey {
     static let notifications = "bellNotifications"
     static let sessionRestore = "restoreSession"
     static let confirmBeforeQuit = "confirmBeforeQuit"
+    static let confirmBeforeClosingBusyTab = "confirmBeforeClosingBusyTab"
     static let sessionState = "sessionState"
     static let tmuxRestorePlan = "tmuxRestorePlan"
     static let defaultTheme = "defaultTheme"
@@ -58,6 +59,7 @@ struct NativeSettings: Equatable {
     var notifications: Bool
     var sessionRestore: Bool
     var confirmBeforeQuit: Bool
+    var confirmBeforeClosingBusyTab: Bool
     var defaultTheme: String
     var attentionHand: Bool
     var animatedBackdrop: Bool
@@ -127,6 +129,10 @@ final class NativeSettingsStore {
                 NativePreferenceKey.confirmBeforeQuit,
                 defaultValue: true
             ),
+            confirmBeforeClosingBusyTab: preferredBool(
+                NativePreferenceKey.confirmBeforeClosingBusyTab,
+                defaultValue: true
+            ),
             defaultTheme: validTheme(
                 defaults.string(forKey: NativePreferenceKey.defaultTheme) ?? nativeThemeNames[0]
             ),
@@ -172,6 +178,10 @@ final class NativeSettingsStore {
         defaults.set(settings.notifications, forKey: NativePreferenceKey.notifications)
         defaults.set(settings.sessionRestore, forKey: NativePreferenceKey.sessionRestore)
         defaults.set(settings.confirmBeforeQuit, forKey: NativePreferenceKey.confirmBeforeQuit)
+        defaults.set(
+            settings.confirmBeforeClosingBusyTab,
+            forKey: NativePreferenceKey.confirmBeforeClosingBusyTab
+        )
         defaults.set(validTheme(settings.defaultTheme), forKey: NativePreferenceKey.defaultTheme)
         defaults.set(settings.attentionHand, forKey: NativePreferenceKey.attentionHand)
         defaults.set(settings.animatedBackdrop, forKey: NativePreferenceKey.animatedBackdrop)
@@ -216,6 +226,7 @@ final class NativeSettingsStore {
             NativePreferenceKey.notifications,
             NativePreferenceKey.sessionRestore,
             NativePreferenceKey.confirmBeforeQuit,
+            NativePreferenceKey.confirmBeforeClosingBusyTab,
             NativePreferenceKey.defaultTheme,
             NativePreferenceKey.attentionHand,
             NativePreferenceKey.animatedBackdrop,
