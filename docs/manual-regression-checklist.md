@@ -230,7 +230,7 @@ macOS screen-recording permission.
 - [ ] Run `just terminal-nvim-cwd-smoke`; confirm it reports
   `cwd=inherited finder=neovim-live`.
 - [ ] In `just native-tmux-smoke`, confirm the native result also reports
-  `finder=tmux`.
+  `finder=tmux finder-after-cd=yes`.
 - [ ] Run `just precommit`.
 - [ ] Quit Satin and cancel the warning once, then quit successfully. Disable
   **Confirm before quitting Satin** in General settings and confirm Quit no

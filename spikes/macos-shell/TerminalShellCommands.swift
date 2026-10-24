@@ -243,7 +243,9 @@ extension TerminalShellViewController {
 
     @discardableResult
     func openPaneDirectoryInFinder(paneId: Int) -> Bool {
-        guard let directory = paneWorkingDirectory(paneId: paneId, logFailure: true) else {
+        guard
+            let directory = paneWorkingDirectory(paneId: paneId, logFailure: true, current: true)
+        else {
             presentPaneWorkingDirectoryError(title: "Could Not Open Finder")
             return false
         }

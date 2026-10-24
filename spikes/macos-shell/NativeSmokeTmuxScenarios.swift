@@ -816,6 +816,93 @@ import Foundation
                 }
                 return
             }
+            // A `cd` changes no layout, so only asking tmux finds where the
+            // pane is now; the synced snapshot keeps the old directory.
+            let target = "/private/tmp/satin-finder-cd-\(getpid())"
+            guard let paneId = activePaneId,
+                let tmuxPaneId = tmuxSession?.tmuxPaneIds[paneId],
+                (try? FileManager.default.createDirectory(
+                    atPath: target, withIntermediateDirectories: true)) != nil,
+                tmuxSession?.gateway.tmuxCommand(
+                    "send-keys -t %\(tmuxPaneId) -l "
+                        + tmuxCommandArgument("cd \(shellQuote(target))")
+                ) == true,
+                tmuxSession?.gateway.tmuxCommand("send-keys -t %\(tmuxPaneId) Enter") == true
+            else {
+                tmuxSession?.gateway.tmuxCommand("kill-session")
+                writeSessionSmokeResult(resultPath, result: "failed tmux-native finder-cd-send\n")
+                return
+            }
+            waitForTmuxSmokeFinderAfterCd(
+                resultPath, paneId: paneId, tmuxPaneId: tmuxPaneId, target: target, retries: 30)
+        }
+
+        func waitForTmuxSmokeFinderAfterCd(
+            _ resultPath: String,
+            paneId: Int,
+            tmuxPaneId: UInt32,
+            target: String,
+            retries: Int
+        ) {
+            guard let session = tmuxSession else {
+                writeSessionSmokeResult(
+                    resultPath, result: "failed tmux-native finder-cd-session\n")
+                return
+            }
+            let reported = NativeTmuxProcessRunner.run(
+                executable: session.executablePath,
+                arguments: [
+                    "-u", "-S", session.socketPath,
+                    "display-message", "-p", "-t", "%\(tmuxPaneId)", "#{pane_current_path}",
+                ],
+                timeout: 1
+            ).map {
+                String(decoding: $0.standardOutput, as: UTF8.self)
+                    .trimmingCharacters(in: .newlines)
+            }
+            var opened = false
+            if reported == target, let pane = session.latestPanes[tmuxPaneId] {
+                // Hold the snapshot at a directory from before the `cd`, as it
+                // stays when nothing about the layout changes after one.
+                session.latestPanes[tmuxPaneId] = TmuxPaneSnapshot(
+                    pane_id: pane.pane_id,
+                    index: pane.index,
+                    active: pane.active,
+                    current_path: "/",
+                    cols: pane.cols,
+                    rows: pane.rows,
+                    cursor_x: pane.cursor_x,
+                    cursor_y: pane.cursor_y,
+                    cursor_visible: pane.cursor_visible,
+                    origin_mode: pane.origin_mode,
+                    scroll_region_upper: pane.scroll_region_upper,
+                    current_command: pane.current_command,
+                    title: pane.title
+                )
+                opened = verifyPaneFinderActionForSmoke(paneId: paneId, expectedCwd: target)
+            }
+            guard opened else {
+                if retries > 0 {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+                        self?.waitForTmuxSmokeFinderAfterCd(
+                            resultPath, paneId: paneId, tmuxPaneId: tmuxPaneId, target: target,
+                            retries: retries - 1)
+                    }
+                } else {
+                    tmuxSession?.gateway.tmuxCommand("kill-session")
+                    writeSessionSmokeResult(
+                        resultPath,
+                        result: "failed tmux-native finder-after-cd=no "
+                            + "reported=\(reported ?? "nil") \(paneFinderSmokeFailure)\n"
+                    )
+                }
+                return
+            }
+            try? FileManager.default.removeItem(atPath: target)
+            endTmuxSmokeSession(resultPath)
+        }
+
+        func endTmuxSmokeSession(_ resultPath: String) {
             guard let session = tmuxSession else {
                 writeSessionSmokeResult(
                     resultPath, result: "failed tmux-native session-end-context\n")
@@ -860,7 +947,7 @@ import Foundation
                 restored && attachmentCleared
                 ? "ok tmux-native indicator=yes output=yes history=yes paste=yes zoom=yes "
                     + "font-zoom=yes "
-                    + "finder=tmux "
+                    + "finder=tmux finder-after-cd=yes "
                     + "agent-status=yes agent-title=stable activity=separate "
                     + "tab-badge=running+done+seen notification=yes "
                     + "rename=yes split=2 divider-resize=yes pane-dnd=noop+center+edge "
