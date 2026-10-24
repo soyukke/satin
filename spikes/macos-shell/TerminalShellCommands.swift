@@ -220,7 +220,7 @@ extension TerminalShellViewController {
     }
 
     @objc func closeActivePane(_ sender: Any?) {
-        closePane(activePaneId)
+        requestClosingPane(activePaneId)
     }
 
     func performPaneChromeAction(
@@ -230,7 +230,7 @@ extension TerminalShellViewController {
     ) {
         switch action {
         case .close:
-            closePane(paneId)
+            requestClosingPane(paneId)
         case .splitVertical:
             splitPane(paneId, axis: ffiSplitVertical)
         case .splitHorizontal:
@@ -646,65 +646,105 @@ extension TerminalShellViewController {
     /// in it, since closing ends that program for good.
     @discardableResult
     func requestClosingTab(at index: Int) -> Bool {
+        guard closingBusyPaneNeedsConfirmation,
+            let tab = lastSnapshot?.tabs.first(where: { $0.index == index }),
+            tab.panes.contains(where: paneRunsProgram)
+        else {
+            return closeTab(at: index)
+        }
+        let tabId = tab.id
+        confirmClosing(
+            title: "Close \u{201C}\(tab.title)\u{201D}?",
+            detail: "A program is still running in this tab. Closing the tab ends it.",
+            button: "Close Tab"
+        ) { [weak self] in
+            // Tabs may have moved while the alert was up.
+            guard let self,
+                let current = self.lastSnapshot?.tabs.first(where: { $0.id == tabId })
+            else {
+                return
+            }
+            self.closeTab(at: current.index)
+        }
+        return true
+    }
+
+    /// Closes the pane, first asking when a program other than its shell runs
+    /// in it. Closing a tab's last pane closes the tab, so this guards that too.
+    private func requestClosingPane(_ paneId: Int?) {
+        guard let paneId, closingBusyPaneNeedsConfirmation, paneRunsProgram(paneId) else {
+            closePane(paneId)
+            return
+        }
+        confirmClosing(
+            title: "Close this pane?",
+            detail: "A program is still running in this pane. Closing the pane ends it.",
+            button: "Close Pane"
+        ) { [weak self] in
+            guard let self,
+                self.tmuxSession?.tmuxPaneIds[paneId] != nil
+                    || self.paneStore.runtimes[paneId] != nil
+            else {
+                return
+            }
+            self.closePane(paneId)
+        }
+    }
+
+    private var closingBusyPaneNeedsConfirmation: Bool {
         #if SATIN_SMOKE_SCENARIOS
             let smokeScenarioActive =
                 ProcessInfo.processInfo.environment["SATIN_NATIVE_SMOKE_SCENARIO"] != nil
         #else
             let smokeScenarioActive = false
         #endif
-        guard settings.confirmBeforeClosingBusyTab, !smokeScenarioActive,
-            let tab = lastSnapshot?.tabs.first(where: { $0.index == index }),
-            tabRunsProgram(tab)
-        else {
-            return closeTab(at: index)
-        }
-        let tabId = tab.id
+        return settings.confirmBeforeClosingBusyTab && !smokeScenarioActive
+    }
+
+    /// Asks before closing, as a sheet on the window when there is one, and
+    /// runs `close` only when the user confirms.
+    private func confirmClosing(
+        title: String,
+        detail: String,
+        button: String,
+        close: @escaping () -> Void
+    ) {
         let alert = NSAlert()
         alert.alertStyle = .warning
-        alert.messageText = "Close \u{201C}\(tab.title)\u{201D}?"
-        alert.informativeText =
-            "A program is still running in this tab. Closing the tab ends it."
-        alert.addButton(withTitle: "Close Tab")
+        alert.messageText = title
+        alert.informativeText = detail
+        alert.addButton(withTitle: button)
         alert.addButton(withTitle: "Cancel")
         let finish: (NSApplication.ModalResponse) -> Void = { [weak self] response in
-            guard let self else {
+            guard response == .alertFirstButtonReturn else {
+                self?.focusTerminal()
                 return
             }
-            // Tabs may have moved while the alert was up.
-            guard response == .alertFirstButtonReturn,
-                let current = self.lastSnapshot?.tabs.first(where: { $0.id == tabId })
-            else {
-                self.focusTerminal()
-                return
-            }
-            self.closeTab(at: current.index)
+            close()
         }
         if let window = view.window, window.isVisible {
             guard window.attachedSheet == nil else {
-                return true
+                return
             }
             alert.beginSheetModal(for: window, completionHandler: finish)
         } else {
             finish(alert.runModal())
         }
-        return true
     }
 
-    /// Whether some pane of the tab runs a program other than its shell.
-    private func tabRunsProgram(_ tab: TerminalCoreTabSnapshot) -> Bool {
-        tab.panes.contains { paneId in
-            if let session = tmuxSession, let tmuxPaneId = session.tmuxPaneIds[paneId] {
-                let command = session.latestPanes[tmuxPaneId]?.current_command ?? ""
-                return !command.isEmpty && !tmuxCommandIsShell(command)
-            }
-            switch paneStore.runtimes[paneId] {
-            case let terminal as TerminalPane:
-                return satinRuntimeInteractiveShellOwnsForeground(terminal.handle) == 0
-            case is NeovimPane:
-                return true
-            default:
-                return false
-            }
+    /// Whether the pane runs a program other than its shell.
+    private func paneRunsProgram(_ paneId: Int) -> Bool {
+        if let session = tmuxSession, let tmuxPaneId = session.tmuxPaneIds[paneId] {
+            let command = session.latestPanes[tmuxPaneId]?.current_command ?? ""
+            return !command.isEmpty && !tmuxCommandIsShell(command)
+        }
+        switch paneStore.runtimes[paneId] {
+        case let terminal as TerminalPane:
+            return satinRuntimeInteractiveShellOwnsForeground(terminal.handle) == 0
+        case is NeovimPane:
+            return true
+        default:
+            return false
         }
     }
 
