@@ -257,7 +257,7 @@ final class NativeSettingsWindowController: NSWindowController, NSTextFieldDeleg
         let confirmBeforeQuit = checkbox(
             "Confirm before quitting Satin", action: #selector(booleanChanged(_:)))
         let confirmBeforeClosingBusyTab = checkbox(
-            "Confirm before closing a tab with a running program",
+            "Confirm before closing a tab or pane with a running program",
             action: #selector(booleanChanged(_:)))
         optionAsAltButton = option
         notificationButton = notifications
