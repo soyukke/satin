@@ -397,7 +397,8 @@ extension TerminalShellViewController {
             let pane = paneStore.runtimes[paneId] as? TerminalPane,
             let url = pane.hyperlink(row: position.row, col: position.col).flatMap(URL.init)
                 ?? terminalFile(
-                    pane, position, cwd: paneWorkingDirectory(paneId: paneId, logFailure: false)
+                    pane, position,
+                    cwd: paneWorkingDirectory(paneId: paneId, logFailure: false, current: true)
                 )?.url
         else {
             return false
@@ -544,10 +545,13 @@ extension TerminalShellViewController {
         guard let paneId = requestedPaneId ?? activePaneId else {
             return nil
         }
-        return paneWorkingDirectory(paneId: paneId, logFailure: true)
+        return paneWorkingDirectory(paneId: paneId, logFailure: true, current: true)
     }
 
-    func paneWorkingDirectory(paneId: Int, logFailure: Bool) -> String? {
+    /// The pane's directory. For tmux, `current` asks tmux for it now: the
+    /// synced snapshot's path is only as new as the last layout change, so it
+    /// misses a `cd` since then. Pass it for an action, not for drawing.
+    func paneWorkingDirectory(paneId: Int, logFailure: Bool, current: Bool = false) -> String? {
         func unavailable(_ reason: String) -> String? {
             if logFailure {
                 NativeLog.runtimeError("pane_cwd_unavailable pane=\(paneId) reason=\(reason)")
@@ -560,7 +564,9 @@ extension TerminalShellViewController {
             guard let tmuxPaneId = session.tmuxPaneIds[paneId] else {
                 return unavailable("tmux_mapping")
             }
-            directory = session.latestPanes[tmuxPaneId]?.current_path
+            directory =
+                (current ? currentTmuxPanePath(session, tmuxPaneId: tmuxPaneId) : nil)
+                ?? session.latestPanes[tmuxPaneId]?.current_path
         } else if let terminal = paneStore.runtimes[paneId] as? TerminalPane {
             directory = terminal.currentWorkingDirectory()
         } else if let neovim = paneStore.runtimes[paneId] as? NeovimPane {
@@ -582,6 +588,27 @@ extension TerminalShellViewController {
             return unavailable("not_directory")
         }
         return standardized
+    }
+
+    /// What tmux reports as the pane's directory now, from the local server
+    /// Satin is attached to.
+    private func currentTmuxPanePath(_ session: NativeTmuxSession, tmuxPaneId: UInt32) -> String? {
+        guard !session.executablePath.isEmpty, !session.socketPath.isEmpty,
+            let output = NativeTmuxProcessRunner.run(
+                executable: session.executablePath,
+                arguments: [
+                    "-u", "-S", session.socketPath,
+                    "display-message", "-p", "-t", "%\(tmuxPaneId)", "#{pane_current_path}",
+                ],
+                timeout: 1
+            ),
+            !output.timedOut, output.status == 0
+        else {
+            return nil
+        }
+        let path = String(decoding: output.standardOutput, as: UTF8.self)
+            .trimmingCharacters(in: .newlines)
+        return path.isEmpty ? nil : path
     }
 
 }
