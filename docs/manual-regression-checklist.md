@@ -196,6 +196,9 @@ it against `Satin Dev`, not an installed release build.
   across the whole Satin window and every tmux pane still fits its frame.
 - [ ] Rapidly grow the window and shrink it back. Confirm tmux settles on the
   final smaller grid rather than retaining the peak grid size.
+- [ ] Drag the divider between the left and right panes slowly across the
+  window. Confirm the panes never keep resizing on their own at any position;
+  `just native-tmux-zoom-resize-smoke` reports `split-sweep=<positions>`.
 - [ ] Confirm text, cursor, mouse targeting, and IME stay inside each pane after
   the resize, with no crop or renderer-only scaling.
 

@@ -38,6 +38,59 @@ func tmuxClientGridCapacity(
     }
 }
 
+/// The largest tmux client grid whose panes all fit in `size` once Satin draws
+/// them. It depends on the layout's shape alone, not on where tmux has put the
+/// splits. Summing the grids that fit each pane's current frame does not: a
+/// split that lands mid-cell loses a column, tmux moves the split to absorb the
+/// smaller client, the column comes back, and the client size never settles.
+func tmuxClientGridCapacity(
+    layout: PaneLayoutSnapshot,
+    size: NSSize,
+    cellSize: NSSize,
+    paneChromeHeight: CGFloat
+) -> NativePaneGridCapacity? {
+    guard cellSize.width > 0, cellSize.height > 0 else {
+        return nil
+    }
+    // Points a node needs beyond cols * cell width and rows * cell height:
+    // each pane draws a header above its cells, and the one-cell divider
+    // tmux counts between panes is not drawn.
+    func overhead(_ node: PaneLayoutSnapshot) -> NSSize? {
+        if node.kind == "leaf" {
+            return node.pane_id == nil ? nil : NSSize(width: 0, height: paneChromeHeight)
+        }
+        guard let axis = node.axis,
+            let first = node.first.flatMap(overhead),
+            let second = node.second.flatMap(overhead)
+        else {
+            return nil
+        }
+        switch axis {
+        case "vertical":
+            return NSSize(
+                width: first.width + second.width - cellSize.width,
+                height: max(first.height, second.height)
+            )
+        case "horizontal":
+            return NSSize(
+                width: max(first.width, second.width),
+                height: first.height + second.height - cellSize.height
+            )
+        default:
+            return nil
+        }
+    }
+    guard let overhead = overhead(layout) else {
+        return nil
+    }
+    // Tolerate the rounding in a frame that is an exact multiple of a cell.
+    let epsilon = 0.000_1
+    return NativePaneGridCapacity(
+        rows: max(1, Int(floor((size.height - overhead.height) / cellSize.height + epsilon))),
+        cols: max(1, Int(floor((size.width - overhead.width) / cellSize.width + epsilon)))
+    )
+}
+
 func paneFrameRequirements(
     layout: PaneLayoutSnapshot,
     leafRequirements: [Int: NSSize]
@@ -172,6 +225,22 @@ func runNativePaneGeometrySelfTests() -> Bool {
         firstRequirement: first,
         secondRequirement: second
     )
+    // Two headers stack, less the divider row tmux counts, and the bottom
+    // pane spans the width (800 / 8.4 is 95.2 cells). 252 / 8.4 is exactly 30.
+    let client = tmuxClientGridCapacity(
+        layout: layout,
+        size: NSSize(width: 800, height: 600),
+        cellSize: NSSize(width: 8.4, height: 17),
+        paneChromeHeight: 24
+    )
+    let single = tmuxClientGridCapacity(
+        layout: PaneLayoutSnapshot(kind: "leaf", paneId: 1),
+        size: NSSize(width: 252, height: 194),
+        cellSize: NSSize(width: 8.4, height: 17),
+        paneChromeHeight: 24
+    )
     return abs(fittedRatio - 0.425) < 0.001
         && abs(compressedRatio - (200.0 / 450.0)) < 0.001
+        && client == NativePaneGridCapacity(rows: 33, cols: 95)
+        && single == NativePaneGridCapacity(rows: 10, cols: 30)
 }
