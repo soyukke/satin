@@ -786,12 +786,148 @@ import Foundation
                 }
                 return
             }
-            tmuxSession?.gateway.tmuxCommand("kill-session")
-            waitForTmuxZoomResizeSmokeExit(
+            beginTmuxResizeSettleSweep(
                 resultPath,
-                diagnostics: diagnostics + " resized-nvim-reported=\(marker)",
-                retries: 30
+                paneIds: [zoomedPaneId] + siblingPaneIds,
+                diagnostics: diagnostics + " resized-nvim-reported=\(marker)"
             )
+        }
+
+        // Move the split between the left and right columns one cell at a time
+        // and wait at each step for the client size to settle. It must not
+        // change: a client grid composed from the panes' frames lost a column
+        // wherever the split fell mid-cell, and tmux moving the split to
+        // absorb that could flip it back and forth for good.
+        func beginTmuxResizeSettleSweep(
+            _ resultPath: String,
+            paneIds: [Int],
+            diagnostics: String
+        ) {
+            guard let session = tmuxSession,
+                let snapshot = lastSnapshot,
+                let tab = snapshot.tabs.first(where: { $0.index == snapshot.active_tab }),
+                let leftPaneId = firstPaneId(in: tab.layout),
+                let leftTmuxPaneId = session.tmuxPaneIds[leftPaneId],
+                let cols = session.requestedClientGrid?.cols,
+                cols > 40
+            else {
+                failTmuxZoomResizeSmoke(resultPath, reason: "settle-sweep-setup")
+                return
+            }
+            let grid = tmuxClientGrid()
+            continueTmuxResizeSettleSweep(
+                resultPath,
+                leftTmuxPaneId: leftTmuxPaneId,
+                widths: Array(10...(cols - 12)),
+                index: 0,
+                baseline: NativePaneGridCapacity(rows: grid.rows, cols: grid.cols),
+                paneIds: paneIds,
+                diagnostics: diagnostics
+            )
+        }
+
+        func continueTmuxResizeSettleSweep(
+            _ resultPath: String,
+            leftTmuxPaneId: UInt32,
+            widths: [Int],
+            index: Int,
+            baseline: NativePaneGridCapacity,
+            paneIds: [Int],
+            diagnostics: String
+        ) {
+            guard widths.indices.contains(index) else {
+                tmuxSession?.gateway.tmuxCommand("kill-session")
+                waitForTmuxZoomResizeSmokeExit(
+                    resultPath,
+                    diagnostics: diagnostics + " split-sweep=\(widths.count)",
+                    retries: 30
+                )
+                return
+            }
+            guard
+                tmuxSession?.gateway.tmuxCommand(
+                    "resize-pane -t %\(leftTmuxPaneId) -x \(widths[index])") == true
+            else {
+                failTmuxZoomResizeSmoke(resultPath, reason: "settle-sweep-resize")
+                return
+            }
+            waitForTmuxResizeSettle(
+                resultPath,
+                leftTmuxPaneId: leftTmuxPaneId,
+                widths: widths,
+                index: index,
+                baseline: baseline,
+                paneIds: paneIds,
+                diagnostics: diagnostics,
+                lastRequests: tmuxSession?.clientResizeRequestCount ?? 0,
+                quietPolls: 0,
+                retries: 60
+            )
+        }
+
+        func waitForTmuxResizeSettle(
+            _ resultPath: String,
+            leftTmuxPaneId: UInt32,
+            widths: [Int],
+            index: Int,
+            baseline: NativePaneGridCapacity,
+            paneIds: [Int],
+            diagnostics: String,
+            lastRequests: Int,
+            quietPolls: Int,
+            retries: Int
+        ) {
+            drainTerminalPanes()
+            let expected = tmuxClientGrid()
+            let client = NativePaneGridCapacity(rows: expected.rows, cols: expected.cols)
+            let requested = tmuxSession?.requestedClientGrid
+            let reported = tmuxReportedClientGrid()
+            let requests = tmuxSession?.clientResizeRequestCount ?? 0
+            let agreed = requested == client && reported == requested
+            let quiet = agreed && requests == lastRequests ? quietPolls + 1 : 0
+            // Six quiet polls outlast the client resize throttle and a tmux
+            // round trip, so a flip would have shown up.
+            if quiet >= 6, client == baseline, tmuxSmokeGridFitState(paneIds).valid {
+                continueTmuxResizeSettleSweep(
+                    resultPath,
+                    leftTmuxPaneId: leftTmuxPaneId,
+                    widths: widths,
+                    index: index + 1,
+                    baseline: baseline,
+                    paneIds: paneIds,
+                    diagnostics: diagnostics
+                )
+                return
+            }
+            guard retries > 0 else {
+                let left = tmuxSession?.latestPanes[leftTmuxPaneId]?.cols ?? 0
+                failTmuxZoomResizeSmoke(
+                    resultPath,
+                    reason: "split-sweep-unsettled",
+                    details: "left=\(widths[index]) reported-left=\(left) "
+                        + "baseline=\(baseline.cols)x\(baseline.rows) "
+                        + "client=\(client.cols)x\(client.rows) "
+                        + "requested=\(requested?.cols ?? -1)x\(requested?.rows ?? -1) "
+                        + "reported=\(reported?.cols ?? -1)x\(reported?.rows ?? -1) "
+                        + "tmux-resizes=\(requests) "
+                        + "fit=\(tmuxSmokeGridFitState(paneIds).summary)"
+                )
+                return
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
+                self?.waitForTmuxResizeSettle(
+                    resultPath,
+                    leftTmuxPaneId: leftTmuxPaneId,
+                    widths: widths,
+                    index: index,
+                    baseline: baseline,
+                    paneIds: paneIds,
+                    diagnostics: diagnostics,
+                    lastRequests: requests,
+                    quietPolls: quiet,
+                    retries: retries - 1
+                )
+            }
         }
 
         func waitForTmuxZoomResizeSmokeExit(

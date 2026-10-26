@@ -200,32 +200,25 @@ extension TerminalShellViewController {
 
     func tmuxClientGrid() -> (rows: Int, cols: Int, widthPixels: Int, heightPixels: Int) {
         // A tmux control client owns one grid for the whole window. Every pane
-        // uses the same cell size, so compose the real leaf capacities without
-        // introducing pane-specific zoom state.
-        let projectedPaneIds = paneStore.visibleFrames.keys.filter { paneId in
-            tmuxSession?.tmuxPaneIds[paneId] != nil
-        }
+        // uses the same cell size, so size it from the workspace and the
+        // layout's shape without introducing pane-specific zoom state.
+        let workspace = workspaceContentRect()
         let fallback = terminalTextView.terminalGridSize(
-            for: nativePaneContentFrame(workspaceContentRect()))
-        guard let snapshot = lastSnapshot,
-            let tab = snapshot.tabs.first(where: { $0.index == snapshot.active_tab })
+            for: nativePaneContentFrame(workspace))
+        guard let session = tmuxSession,
+            let snapshot = lastSnapshot,
+            let tab = snapshot.tabs.first(where: { $0.index == snapshot.active_tab }),
+            tab.panes.allSatisfy({ session.tmuxPaneIds[$0] != nil })
         else {
             return fallback
         }
-        let leafCapacities = Dictionary(
-            uniqueKeysWithValues: projectedPaneIds.compactMap { paneId in
-                paneStore.visibleFrames[paneId].map { frame in
-                    let grid = terminalTextView.terminalGridSize(for: frame)
-                    return (
-                        paneId,
-                        NativePaneGridCapacity(rows: grid.rows, cols: grid.cols)
-                    )
-                }
-            }
-        )
         guard
             let capacity = tmuxClientGridCapacity(
-                layout: tab.layout, leafCapacities: leafCapacities)
+                layout: tab.layout,
+                size: workspace.size,
+                cellSize: terminalTextView.terminalCellSize(),
+                paneChromeHeight: nativePaneChromeHeight
+            )
         else {
             return fallback
         }
