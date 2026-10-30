@@ -1,0 +1,426 @@
+/* Satin's page look. The two looks match NativePageStyle in the app; the host
+   may override any token through satinPage.setLook. */
+
+:root,
+:root[data-look="datasheet"] {
+  --surface: rgb(14, 12, 24);
+  --raised: rgb(21, 18, 42);
+  --text: rgb(236, 232, 247);
+  --muted: rgb(155, 148, 179);
+  --teal: rgb(79, 209, 197);
+  --violet: rgb(169, 139, 255);
+  --amber: rgb(242, 163, 58);
+  --rose: rgb(239, 90, 111);
+  --ink: rgb(7, 6, 13);
+  --line: rgba(169, 139, 255, 0.28);
+  --backdrop: rgb(7, 6, 13);
+  --font-sans: -apple-system, BlinkMacSystemFont, "Hiragino Sans", "Helvetica Neue", sans-serif;
+  --font-mono: ui-monospace, "SF Mono", Menlo, monospace;
+  --font-title: var(--font-sans);
+  --title-weight: 700;
+  color-scheme: dark;
+}
+
+:root[data-look="paper"] {
+  --surface: rgb(251, 245, 231);
+  --raised: rgb(241, 232, 212);
+  --text: rgb(43, 34, 51);
+  --muted: rgb(110, 98, 79);
+  --teal: rgb(31, 138, 138);
+  --violet: rgb(91, 63, 184);
+  --amber: rgb(184, 95, 14);
+  --rose: rgb(194, 54, 79);
+  --ink: rgb(251, 245, 231);
+  --line: rgba(43, 34, 51, 0.35);
+  --backdrop: rgb(222, 211, 186);
+  --font-title: ui-serif, "New York", "Hiragino Mincho ProN", serif;
+  --title-weight: 900;
+  color-scheme: light;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  background: var(--surface);
+  color: var(--text);
+}
+
+body {
+  font: 14.5px/1.7 var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  line-break: strict;
+  overflow-wrap: anywhere;
+}
+
+.sheet {
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 36px 32px 72px;
+}
+
+/* Type */
+
+h1,
+h2,
+h3,
+h4 {
+  line-height: 1.3;
+  margin: 1.6em 0 0.5em;
+  font-feature-settings: "palt";
+}
+
+h1 {
+  font-size: 26px;
+}
+
+h2 {
+  font-size: 20px;
+}
+
+h3 {
+  font-size: 16.5px;
+  font-weight: 600;
+}
+
+h4 {
+  font-size: 15px;
+  font-weight: 600;
+}
+
+h1,
+h2 {
+  font-family: var(--font-title);
+  font-weight: var(--title-weight);
+}
+
+:root[data-look="paper"] h1 {
+  font-size: 28px;
+}
+
+:root[data-look="paper"] h2 {
+  font-size: 22px;
+}
+
+.sheet > :first-child {
+  margin-top: 0;
+}
+
+p,
+ul,
+ol {
+  margin: 0 0 0.9em;
+}
+
+ul,
+ol {
+  padding-left: 1.4em;
+}
+
+li + li {
+  margin-top: 0.2em;
+}
+
+li > ul,
+li > ol {
+  margin: 0.2em 0 0;
+}
+
+a {
+  color: var(--teal);
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, var(--teal) 45%, transparent);
+  text-underline-offset: 0.2em;
+}
+
+strong {
+  font-weight: 650;
+}
+
+hr {
+  border: 0;
+  margin: 1.8em 0;
+  text-align: center;
+}
+
+hr::after {
+  content: "· · ·";
+  color: var(--muted);
+  letter-spacing: 0.3em;
+}
+
+blockquote {
+  margin: 0 0 1em;
+  padding: 2px 0 2px 14px;
+  border-left: 3px solid color-mix(in srgb, var(--teal) 70%, transparent);
+  color: var(--muted);
+}
+
+blockquote > :last-child {
+  margin-bottom: 0;
+}
+
+.omitted {
+  color: var(--muted);
+  font-style: italic;
+}
+
+/* Code */
+
+code {
+  font: 0.88em/1.5 var(--font-mono);
+  background: color-mix(in srgb, var(--text) 7%, transparent);
+  border-radius: 3px;
+  padding: 0.1em 0.35em;
+}
+
+pre.code {
+  position: relative;
+  margin: 0 0 1.1em;
+  padding: 12px 14px;
+  overflow-x: auto;
+  font: 12.5px/1.55 var(--font-mono);
+  background: color-mix(in srgb, var(--text) 6%, transparent);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  white-space: pre;
+  overflow-wrap: normal;
+}
+
+pre.code code {
+  font: inherit;
+  background: none;
+  padding: 0;
+}
+
+pre.code[data-lang]::before {
+  content: attr(data-lang);
+  position: absolute;
+  top: 6px;
+  right: 10px;
+  font: 10.5px/1 var(--font-sans);
+  color: var(--muted);
+  letter-spacing: 0.04em;
+}
+
+/* Tables */
+
+.table-frame {
+  margin: 0 0 1.2em;
+  overflow-x: auto;
+}
+
+table {
+  border-collapse: collapse;
+  min-width: 60%;
+  font-size: 13.5px;
+  line-height: 1.5;
+  font-variant-numeric: tabular-nums;
+}
+
+th,
+td {
+  padding: 7px 12px;
+  border: 0.5px solid var(--line);
+  vertical-align: top;
+}
+
+th {
+  background: color-mix(in srgb, var(--teal) 12%, transparent);
+  font-weight: 650;
+  text-align: left;
+}
+
+tbody tr:nth-child(even) td {
+  background: color-mix(in srgb, var(--text) 3%, transparent);
+}
+
+/* Images, inline SVG, figures */
+
+img,
+svg {
+  max-width: 100%;
+  height: auto;
+}
+
+p > img:only-child {
+  display: block;
+  margin: 0 auto;
+  border-radius: 4px;
+}
+
+figure {
+  margin: 0 0 1.3em;
+  padding: 16px;
+  background: var(--raised);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+
+figure .plot {
+  display: flex;
+  overflow-x: auto;
+}
+
+/* Centered when narrower than the figure, scrolled from its start when wider. */
+figure .plot > svg {
+  flex: none;
+  max-width: none;
+  margin: 0 auto;
+}
+
+figure.chart .plot {
+  position: relative;
+  display: block;
+  height: 280px;
+}
+
+figcaption {
+  margin-top: 10px;
+  font-size: 12.5px;
+  color: var(--muted);
+  text-align: center;
+}
+
+figure.failed .plot {
+  display: block;
+}
+
+.failure {
+  color: var(--rose);
+  font-size: 12.5px;
+  margin-bottom: 8px;
+}
+
+/* Callouts */
+
+.callout {
+  --accent: var(--violet);
+  margin: 0 0 1.1em;
+  padding: 10px 14px 10px 16px;
+  border-left: 3px solid var(--accent);
+  border-radius: 0 6px 6px 0;
+  background: color-mix(in srgb, var(--accent) 9%, transparent);
+}
+
+.callout.tip {
+  --accent: var(--teal);
+}
+
+.callout.warning {
+  --accent: var(--amber);
+}
+
+.callout.caution {
+  --accent: var(--rose);
+}
+
+.callout-title {
+  margin: 0 0 0.3em;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+
+.callout > :last-child {
+  margin-bottom: 0;
+}
+
+/* Task lists */
+
+ul.tasks {
+  list-style: none;
+  padding-left: 0.2em;
+}
+
+.check {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  margin-right: 0.55em;
+  vertical-align: -2px;
+  border: 1.5px solid var(--muted);
+  border-radius: 3px;
+}
+
+.check.done {
+  border-color: var(--teal);
+  background: var(--teal)
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 14 14'%3E%3Cpath d='M3 7.2l2.6 2.6L11 4.4' fill='none' stroke='white' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E")
+    center / 100% no-repeat;
+}
+
+li.task:has(.check.done) {
+  color: var(--muted);
+}
+
+/* The preview page outside the app: the sheet on a backdrop, as the reader
+   floats it over the window. */
+
+body.preview {
+  background: var(--backdrop);
+  min-height: 100vh;
+  padding: 56px 16px 48px;
+}
+
+body.preview .sheet {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.45);
+}
+
+:root[data-look="paper"] body.preview .sheet {
+  border: 2px solid var(--text);
+  border-radius: 4px;
+  box-shadow: 9px 9px 0 color-mix(in srgb, var(--teal) 80%, transparent);
+}
+
+.preview-bar {
+  position: fixed;
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  gap: 4px;
+  padding: 4px;
+  background: var(--raised);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  z-index: 1;
+}
+
+.preview-bar button {
+  font: 12px var(--font-sans);
+  color: var(--text);
+  background: none;
+  border: 0;
+  border-radius: 5px;
+  padding: 4px 10px;
+  cursor: pointer;
+}
+
+.preview-bar button:hover {
+  background: color-mix(in srgb, var(--text) 10%, transparent);
+}
+
+@media (max-width: 600px) {
+  .sheet {
+    padding: 24px 16px 56px;
+  }
+
+  body.preview {
+    padding: 52px 0 0;
+  }
+
+  body.preview .sheet {
+    border-left: 0;
+    border-right: 0;
+    border-radius: 0;
+  }
+}

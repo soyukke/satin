@@ -26,6 +26,10 @@ adr-new title:
     sed -e "s/NNNN/${next}/" -e "s/Title/${escaped_title}/" -e "s/YYYY-MM-DD/$(date +%F)/" docs/adr/template.md > "$path"; \
     echo "$path"
 
+# Serve the page renderer on localhost to preview a page in a browser.
+page-preview page="sample/artifact.md" port="8765":
+    @./scripts/page-preview "{{page}}" "{{port}}"
+
 # Build and launch Satin detached without adding build/runtime output to this terminal.
 terminal:
     @log="${TMPDIR:-/tmp}/satin-terminal.log"; \

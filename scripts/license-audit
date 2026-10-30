@@ -33,4 +33,14 @@ grep -F "Copyright (c) 2014 Ryan L McIntyre" THIRD_PARTY_NOTICES.md >/dev/null
 grep -F "Copyright (c) 2024 Mitchell Hashimoto, Ghostty contributors" THIRD_PARTY_NOTICES.md >/dev/null
 grep -F "a887df42c56f6de86c0fe6da9c4eeca37931e083" THIRD_PARTY_NOTICES.md >/dev/null
 grep -F "a887df42c56f6de86c0fe6da9c4eeca37931e083" core/scripts/build-ghostty >/dev/null
+# The page renderer's libraries are the unmodified files the notices name.
+while read -r hash file; do
+  test "$(shasum -a 256 "page-renderer/lib/$file" | awk '{print $1}')" = "$hash"
+  grep -F "$hash" THIRD_PARTY_NOTICES.md >/dev/null
+done <<'LIBS'
+38c70a1e7ca91ab40e2d9e6e60129851a717ed1c7d4acbbdd41bf9503791cf68 markdown-it.min.js
+a43bc1afd446f9c4cc66ac5dd45d02e8d65e26fc5344ec0ef787f88d6ddb6f9e mermaid.min.js
+2812cb8825fdc57469eb2f7bb055e9429244e599920511ee477e828499b632cb chart.umd.js
+LIBS
+test "$(find page-renderer/lib -type f | wc -l | tr -d ' ')" = 3
 printf 'license audit passed\n'

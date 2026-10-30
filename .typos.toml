@@ -5,5 +5,6 @@ paeth = "paeth"
 PN = "PN"
 
 [files]
-# Generated text and test vectors (base64, hex, fuzzed Markdown).
-extend-exclude = ["core/**/*_test.kizu", "core/**/*_text.kizu"]
+# Generated text and test vectors (base64, hex, fuzzed Markdown), and the
+# page renderer's vendored, minified libraries.
+extend-exclude = ["core/**/*_test.kizu", "core/**/*_text.kizu", "page-renderer/lib/**"]
