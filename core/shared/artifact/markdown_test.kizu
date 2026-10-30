@@ -285,6 +285,41 @@ test "unsafe or remote images are not snapshotted" {
     testing::expect(kept_destination("", "-"));
 }
 
+/// What safe_local_image_destination makes of destination, as
+/// kept_destination does.
+fn kept_image(destination: []u8, expected: []u8) -> bool {
+    let allocator = mem::page_allocator();
+    var out = string::new(allocator);
+    defer out.deinit(allocator);
+    var safe = false;
+    if safe_local_image_destination(allocator, destination, &var out) |kept| {
+        safe = kept;
+    } else |_| {}
+    if !safe {
+        return mem::equal_bytes(expected, "-");
+    }
+    let bytes = out.as_bytes();
+    return mem::equal_bytes(bytes, expected);
+}
+
+test "pages keep JPEG, GIF, WebP and SVG images too" {
+    testing::expect(kept_image("images/chart.png", "images/chart.png"));
+    testing::expect(kept_image("photo.JPG", "photo.JPG"));
+    testing::expect(kept_image("photo.jpeg", "photo.jpeg"));
+    testing::expect(kept_image("spin.gif", "spin.gif"));
+    testing::expect(kept_image("shot.webp", "shot.webp"));
+    testing::expect(kept_image("./images/flow.svg#top", "images/flow.svg"));
+    testing::expect(kept_image("../flow.svg", "-"));
+    testing::expect(kept_image("https://example.test/flow.svg", "-"));
+    testing::expect(kept_image("notes.txt", "-"));
+    testing::expect(kept_image("page.html", "-"));
+    testing::expect(image_matches_name("a.svg", "<?xml version='1.0'?><svg></svg>"));
+    testing::expect(!image_matches_name("a.svg", "<html></html>"));
+    testing::expect(image_matches_name("a.gif", "GIF89a..."));
+    testing::expect(!image_matches_name("a.jpg", "GIF89a..."));
+    testing::expect(image_matches_name("a.webp", "RIFFxxxxWEBPVP8 "));
+}
+
 test "rich Markdown snapshots its images and draws structured blocks" {
     let allocator = mem::page_allocator();
     let root = try test_directory(allocator, "rich-markdown");
@@ -381,7 +416,7 @@ fn write_test_file(path: []u8, content: &string::String) -> ArtifactFailure!void
     return;
 }
 
-test "a Markdown artifact keeps at most four pictures" {
+test "a Markdown artifact keeps every picture it shows" {
     let allocator = mem::page_allocator();
     let root = try test_directory(allocator, "markdown-images");
     defer root.deinit(allocator);
@@ -404,11 +439,11 @@ test "a Markdown artifact keeps at most four pictures" {
     defer message.deinit(allocator);
     var assets = array::new<ArtifactAsset>(allocator);
     defer assets.deinit(allocator);
-    try snapshot_local_pngs(allocator, &var message,
+    try snapshot_local_images(allocator, &var message,
         "![a](a.png) ![again](./a.png) ![far](https://example.test/d.png) ![up](../b.png)", source_bytes, &var assets);
     testing::expect(assets.len() == 1);
     assets.clear(allocator);
-    try snapshot_local_pngs(allocator, &var message,
+    try snapshot_local_images(allocator, &var message,
         \\![a](a.png) ![b](b.png)
         \\
         \\| t |
@@ -425,17 +460,20 @@ test "a Markdown artifact keeps at most four pictures" {
         testing::expect(asset.bytes.len() == png.len());
     }
     assets.clear(allocator);
-    var refused = false;
-    if snapshot_local_pngs(allocator, &var message, "![a](a.png) ![b](b.png) ![c](c.png) ![d](d.png) ![e](e.png)",
-        source_bytes, &var assets) {} else |_| {
-        refused = true;
+    let flow = try joined(allocator, root_bytes, "flow.svg");
+    defer flow.deinit(allocator);
+    let flow_bytes = flow.as_bytes();
+    try fs::write_file(io::blocking(), flow_bytes, "<svg xmlns='http://www.w3.org/2000/svg'></svg>");
+    try snapshot_local_images(allocator, &var message,
+        "![a](a.png) ![b](b.png) ![c](c.png) ![d](d.png) ![e](e.png) ![flow](flow.svg)", source_bytes, &var assets);
+    testing::expect(assets.len() == 6);
+    if assets.at(5) |asset| {
+        let name = asset.relative_path.as_bytes();
+        testing::expect(mem::equal_bytes(name, "flow.svg"));
     }
-    let why = message.as_bytes();
-    testing::expect(refused);
-    testing::expect(mem::equal_bytes(why, "Markdown pages support at most 4 local PNG images"));
     assets.clear(allocator);
-    refused = false;
-    if snapshot_local_pngs(allocator, &var message, "![gone](missing.png)", source_bytes, &var assets) {} else |_| {
+    var refused = false;
+    if snapshot_local_images(allocator, &var message, "![gone](missing.png)", source_bytes, &var assets) {} else |_| {
         refused = true;
     }
     let missing = message.as_bytes();
@@ -446,12 +484,12 @@ test "a Markdown artifact keeps at most four pictures" {
     let fake_bytes = fake.as_bytes();
     try fs::write_file(io::blocking(), fake_bytes, "not a picture, whatever its name says");
     refused = false;
-    if snapshot_local_pngs(allocator, &var message, "![fake](fake.png)", source_bytes, &var assets) {} else |_| {
+    if snapshot_local_images(allocator, &var message, "![fake](fake.png)", source_bytes, &var assets) {} else |_| {
         refused = true;
     }
     let undecoded = message.as_bytes();
     testing::expect(refused);
-    testing::expect(contains(undecoded, "decode PNG header "));
+    testing::expect(contains(undecoded, " is not the image its name says"));
 }
 
 test "headings, paragraphs and breaks are text blocks" {
