@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en" data-look="datasheet">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <!-- Only this renderer and the page's own snapshot load. A page's <script>
+         elements and on* attributes are refused by script-src. -->
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self' satin-page:; script-src 'self' satin-page:; style-src 'self' satin-page: 'unsafe-inline'; img-src 'self' satin-page: data: blob:; font-src 'self' satin-page: data:; connect-src 'self' satin-page:; object-src 'none'; base-uri 'none'; form-action 'none'">
+    <title>Satin page</title>
+    <link rel="stylesheet" href="satin-page.css">
+    <script src="lib/markdown-it.min.js"></script>
+    <script src="lib/mermaid.min.js"></script>
+    <script src="lib/chart.umd.js"></script>
+    <script src="satin-page.js" defer></script>
+  </head>
+  <body>
+    <main id="page" class="sheet"></main>
+  </body>
+</html>
