@@ -160,16 +160,23 @@ import kinds are `text`, `markdown`, `table`, `tree`, `timeline`, `diff`, and PN
 tables and PNG images also receive a Markdown document beside their retained source snapshot.
 
 Use GFM tables for compact records and fenced code blocks for exact commands, code, logs, or errors.
-Always put a language token on code that has one; Satin draws a code block in one style and does
-not syntax-highlight it. Use strong and emphasis sparingly to mark decisions or exceptions, and inline code for exact identifiers and commands.
-Satin preserves those inline styles through terminal-aware wrapping; do not use raw HTML for layout. A
-Markdown report may embed up to four PNG files, 32 MiB combined, through paths relative to the report and
-below its directory. Keep those images in the workspace until registration completes. Satin snapshots
-them, so do not use absolute paths, `..`, data URLs, or remote image URLs.
+Always put a language token on code that has one. Use strong and emphasis sparingly to mark decisions
+or exceptions, and inline code for exact identifiers and commands. Do not use raw HTML for layout.
 
-Satin does not render Mermaid. A fenced `mermaid` block is displayed as source code. When a diagram
-matters, render a PNG with the task's normal authorized tooling and embed that local PNG instead. Satin
-does not execute Mermaid JavaScript or raw HTML.
+The reader draws a few richer forms; prefer them to prose when they make the point faster:
+
+- A ` ```mermaid ` fence is drawn as a diagram (flowchart, sequence, state, and so on) in the
+  reader's colors. Text after the language becomes the caption: ` ```mermaid Request flow `.
+- A ` ```chart ` fence holds a Chart.js configuration as JSON (`type`, `data`, optional `options`)
+  and is drawn as a chart. Leave dataset colors out so the look's series colors apply.
+- `> [!NOTE]`, `> [!TIP]`, `> [!IMPORTANT]`, `> [!WARNING]`, and `> [!CAUTION]` become callouts.
+- `- [ ]` and `- [x]` items become checkboxes.
+- Inline `<svg>` is drawn; it may use the look's colors, such as `fill="var(--teal)"`.
+
+A Markdown report may embed PNG, JPEG, GIF, WebP, and SVG images through paths relative to the report
+and below its directory. One version, with its images, may hold up to 64 MiB. Keep those images in the
+workspace until registration completes. Satin snapshots them, so do not use absolute paths, `..`, data
+URLs, or remote image URLs. Pages do not run their own scripts, and remote content is not loaded.
 
 ```sh
 result="$(satin page add --kind markdown --title "Test results" \
