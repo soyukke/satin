@@ -1028,7 +1028,7 @@ fn prepare_source_content(
         return ArtifactError::Failed;
     }
     if kind == ArtifactKind::Markdown {
-        try snapshot_local_pngs(allocator, message, bytes, path, &var prepared.assets);
+        try snapshot_local_images(allocator, message, bytes, path, &var prepared.assets);
     }
     try append_artifact_markdown(allocator, message, &var prepared.document, kind, title, bytes, path);
     return move prepared;

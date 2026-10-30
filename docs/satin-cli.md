@@ -146,35 +146,40 @@ Each version has a human-readable `artifact.md`; non-Markdown imports retain a
 raw source snapshot beside it. The original input path is no longer required
 after registration.
 
-Markdown uses a terminal-native CommonMark/GFM presentation. It renders
-headings, paragraphs, ordered and unordered lists, task markers, blockquotes,
-strong, emphasis, strikethrough, links, inline and fenced code, thematic rules,
-and GFM tables instead of displaying their source punctuation. Inline styles
-remain local to their text span. Fenced code is drawn in one uniform style
-whatever its language token; there is no syntax highlighter. Raw HTML is not executed. A report can embed relative PNG files below the
-Markdown file's directory:
+The reader draws Markdown with the page renderer (ADR 0020): CommonMark with
+GFM tables, task items, strikethrough, and autolinks, styled by Satin's look.
+Fenced code is drawn in one uniform style whatever its language token. A few
+fences and forms draw more:
+
+- ` ```mermaid ` draws a Mermaid diagram in the look's colors.
+- ` ```chart ` draws a Chart.js configuration given as JSON.
+- Text after a fence's language becomes the figure's caption.
+- `> [!NOTE]`, `[!TIP]`, `[!IMPORTANT]`, `[!WARNING]`, and `[!CAUTION]` become
+  callouts.
+- Inline `<svg>` is drawn, and may use the look's tokens such as
+  `var(--teal)`.
+
+A page's scripts do not run and nothing remote is loaded. A report can embed
+relative PNG, JPEG, GIF, WebP, and SVG images below the Markdown file's
+directory:
 
 ````markdown
 | Check | Result |
 | --- | --- |
 | tests | pass |
 
-```rust
-let width = 80;
+```mermaid Request flow
+flowchart LR
+  client --> cache --> db
 ```
 
-![Trend](images/trend.png)
+![Trend](images/trend.svg)
 ````
 
-Registration snapshots up to four such PNGs, at most 32 MiB combined, and the
-viewer places them inline through Kitty graphics. Absolute paths, `..`, remote
-URLs, data URLs, and non-PNG media are not loaded. Changing only an embedded PNG
-still creates a new page version.
-
-Mermaid is not a rendered Markdown feature. A fenced `mermaid` block remains a
-readable code block. When a diagram matters, render it to a local PNG first and
-embed that PNG in the report; Satin does not bundle a browser or execute
-Mermaid JavaScript.
+Registration snapshots every such image; one version, with its images, may
+hold up to 64 MiB. Absolute paths, `..`, remote URLs, and data URLs are not
+loaded, and a file that is not the image its name says is refused. Changing
+only an embedded image still creates a new page version.
 
 `page add` returns a stable ID. Passing that ID back with `--id` appends a
 version; unchanged content is idempotent and retains the existing version.
@@ -219,9 +224,9 @@ toolbar button shows how many are unread, and a new page pulses the backdrop.
 The newest unread pages also rest in a small fan at the lower right of the
 window, beside the agent cards; a click on one opens it in the reader.
 The reader floats over the middle of the window without replacing a terminal,
-Neovim, or tmux pane. A Markdown page is set as a native document, with
-proportional type, headings, tables, code blocks and PNG images; Space and the
-up and down arrows scroll it. Esc goes back to the binder when the page was
+Neovim, or tmux pane. A Markdown page is drawn by the page renderer in a
+sandboxed web view that loads only the renderer and the version's own files;
+Space and the up and down arrows scroll it. Esc goes back to the binder when the page was
 opened from it and closes the reader otherwise; the left and right arrows step
 through versions. The reader's pane stays behind the document, so `read-screen`
 and `close-pane` keep working on it.

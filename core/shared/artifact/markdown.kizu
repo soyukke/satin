@@ -1,19 +1,16 @@
 // A Markdown artifact drawn for a pane: its blocks wrapped, boxed and
-// cut to the rows there are, and the local PNGs it links to, which are
-// kept with each version and drawn where the document shows them. Code
-// is not highlighted: a fenced block is drawn in one style.
+// cut to the rows there are, and the local images it links to, which are
+// kept with each version; the PNGs among them are drawn where the document
+// shows them. Code is not highlighted: a fenced block is drawn in one style.
 import std::array;
 import std::fs;
 import std::io;
 import std::mem;
 import std::string;
 
-fn max_embedded_images() -> i64 {
-    return 4;
-}
-
-fn max_embedded_image_bytes() -> i64 {
-    return 33554432;
+/// The most one version holds: its document and every image it keeps.
+fn max_version_bytes() -> i64 {
+    return 67108864;
 }
 
 fn min_image_rows() -> i64 {
@@ -29,6 +26,36 @@ fn max_code_line_bytes() -> i64 {
     return 4096;
 }
 
+/// Whether path names an image the reader draws: PNG, JPEG, GIF, WebP or
+/// SVG.
+fn is_image_name(path: []u8) -> bool {
+    return has_lowered_extension(path, "png") or has_lowered_extension(path, "jpg")
+        or has_lowered_extension(path, "jpeg") or has_lowered_extension(path, "gif")
+        or has_lowered_extension(path, "webp") or has_lowered_extension(path, "svg");
+}
+
+/// Whether bytes begin as the image the extension of name says they are.
+fn image_matches_name(name: []u8, bytes: []u8) -> bool {
+    let length = mem::len(bytes);
+    if has_lowered_extension(name, "png") {
+        var width: i64 = 0;
+        var height: i64 = 0;
+        return png_size(bytes, &var width, &var height);
+    }
+    if has_lowered_extension(name, "jpg") or has_lowered_extension(name, "jpeg") {
+        return length >= 3 and cast<i64>(bytes[0]) == 255 and cast<i64>(bytes[1]) == 216
+            and cast<i64>(bytes[2]) == 255;
+    }
+    if has_lowered_extension(name, "gif") {
+        return length >= 6 and mem::equal_bytes(bytes[0..4], "GIF8");
+    }
+    if has_lowered_extension(name, "webp") {
+        return length >= 12 and mem::equal_bytes(bytes[0..4], "RIFF")
+            and mem::equal_bytes(bytes[8..12], "WEBP");
+    }
+    return has_lowered_extension(name, "svg") and md_find(bytes, 0, "<svg") >= 0;
+}
+
 /// Writes the path an image destination names beside its document into
 /// out: without `.` names and what follows a `?` or `#`. False for a
 /// destination that is remote, absolute, no PNG, climbs out with `..`, or
@@ -36,6 +63,24 @@ fn max_code_line_bytes() -> i64 {
 fn safe_local_png_destination(
     allocator: Allocator,
     destination: []u8,
+    out: &var string::String
+) -> mem::Error!bool {
+    return safe_local_destination(allocator, destination, true, out);
+}
+
+/// As safe_local_png_destination, for any image the reader draws.
+fn safe_local_image_destination(
+    allocator: Allocator,
+    destination: []u8,
+    out: &var string::String
+) -> mem::Error!bool {
+    return safe_local_destination(allocator, destination, false, out);
+}
+
+fn safe_local_destination(
+    allocator: Allocator,
+    destination: []u8,
+    png_only: bool,
     out: &var string::String
 ) -> mem::Error!bool {
     out.clear();
@@ -53,7 +98,8 @@ fn safe_local_png_destination(
     }
     let untrimmed = destination[start..cut];
     let raw = untrimmed[0..trimmed_end(untrimmed)];
-    if raw[0] == cast<u8>(47) or !has_lowered_extension(raw, "png") {
+    let known = has_lowered_extension(raw, "png") or (!png_only and is_image_name(raw));
+    if raw[0] == cast<u8>(47) or !known {
         return false;
     }
     var from: i64 = 0;
@@ -121,6 +167,27 @@ fn path_is_under(path: &string::String, root: []u8) -> bool {
     return is_under(bytes, root);
 }
 
+/// Reads the image named relative under parent into out. Fails for a file
+/// that is not the image its name says or is larger than an image may be.
+fn read_markdown_image(
+    allocator: Allocator,
+    message: &var string::String,
+    parent: []u8,
+    relative: []u8,
+    out: &var string::String
+) -> ArtifactFailure!void {
+    let path = try resolve_source_asset(allocator, message, parent, relative);
+    defer path.deinit(allocator);
+    let bytes = path.as_bytes();
+    try read_bounded_source(allocator, message, bytes, max_image_bytes(), "Markdown image", out);
+    let image = out.as_bytes();
+    if !image_matches_name(relative, image) {
+        explain(allocator, message, "Markdown image ", bytes, " is not the image its name says");
+        return ArtifactError::Failed;
+    }
+    return;
+}
+
 /// Reads the PNG named relative under parent into out. Fails for a file
 /// that is no PNG or is larger than an image may be.
 fn read_markdown_png(
@@ -185,9 +252,9 @@ fn has_asset(assets: &array::Array<ArtifactAsset>, relative: []u8) -> bool {
     return false;
 }
 
-/// Appends the PNG under parent that destination names to assets, unless
-/// it names none or one that is there already. total counts the bytes
-/// of all of them.
+/// Appends the image under parent that destination names to assets,
+/// unless it names none or one that is there already. total counts the
+/// bytes of the version so far.
 fn snapshot_destination(
     allocator: Allocator,
     message: &var string::String,
@@ -198,39 +265,36 @@ fn snapshot_destination(
 ) -> ArtifactFailure!void {
     var relative = string::new(allocator);
     defer relative.deinit(allocator);
-    let safe = try safe_local_png_destination(allocator, destination, &var relative);
+    let safe = try safe_local_image_destination(allocator, destination, &var relative);
     let name = relative.as_bytes();
     if !safe or has_asset(assets, name) {
         return;
     }
-    if assets.len() == max_embedded_images() {
-        explain(allocator, message, "Markdown pages support at most 4 local PNG images", "", "");
-        return ArtifactError::Failed;
-    }
     var asset = ArtifactAsset { relative_path: string::new(allocator), bytes: string::new(allocator) };
     errdefer asset.deinit(allocator);
     try asset.relative_path.append_bytes(allocator, name);
-    try read_markdown_png(allocator, message, parent, name, &var asset.bytes);
+    try read_markdown_image(allocator, message, parent, name, &var asset.bytes);
     total = total + asset.bytes.len();
-    let exceeded = total > max_embedded_image_bytes();
+    let exceeded = total > max_version_bytes();
     if exceeded {
-        explain(allocator, message, "Markdown image snapshots exceed the 32 MiB combined limit", "", "");
+        explain(allocator, message, "a page version with its images exceeds the 64 MiB limit", "", "");
         return ArtifactError::Failed;
     }
     try assets.append(allocator, move asset);
     return;
 }
 
-/// Appends the PNGs under parent that destinations name to assets, each
-/// once: at most four, and 32 MiB between them.
+/// Appends the images under parent that destinations name to assets, each
+/// once, while the version, of document bytes so far, stays within 64 MiB.
 fn snapshot_destinations(
     allocator: Allocator,
     message: &var string::String,
     destinations: &array::Array<string::String>,
     parent: []u8,
+    document: i64,
     assets: &var array::Array<ArtifactAsset>
 ) -> ArtifactFailure!void {
-    var total: i64 = 0;
+    var total = document;
     for 0..destinations.len() |index| {
         if destinations.at(index) |destination| {
             let bytes = destination.as_bytes();
@@ -240,9 +304,9 @@ fn snapshot_destinations(
     return;
 }
 
-/// Appends the local PNGs the Markdown in content links to, read from
+/// Appends the local images the Markdown in content links to, read from
 /// beside its file at source, to assets.
-fn snapshot_local_pngs(
+fn snapshot_local_images(
     allocator: Allocator,
     message: &var string::String,
     content: []u8,
@@ -256,7 +320,7 @@ fn snapshot_local_pngs(
     var builder = new_markdown_builder(allocator);
     defer builder.deinit(allocator);
     try parse_markdown(allocator, &var builder, content);
-    try snapshot_destinations(allocator, message, &builder.destinations, parent_bytes, assets);
+    try snapshot_destinations(allocator, message, &builder.destinations, parent_bytes, mem::len(content), assets);
     return;
 }
 
