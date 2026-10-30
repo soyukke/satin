@@ -4,6 +4,9 @@
 # Needs git and zig 0.15 on PATH.
 # Usage: scripts/build-ghostty [ReleaseFast|ReleaseSafe|Debug]
 set -eu
+# A Git hook exports these, and they would point `git -C "$source"` at the
+# repository being committed instead of the Ghostty checkout.
+unset GIT_DIR GIT_INDEX_FILE GIT_WORK_TREE
 repo=https://github.com/ghostty-org/ghostty.git
 commit=a887df42c56f6de86c0fe6da9c4eeca37931e083
 optimize=${1:-ReleaseFast}
