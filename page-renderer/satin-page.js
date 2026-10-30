@@ -1,7 +1,7 @@
 // Draws one Satin page: the Markdown of a version's snapshot, with `mermaid`
 // and `chart` fences, GFM alerts, task lists, inline SVG, and the images beside
-// it. The host loads this file under index.html's Content-Security-Policy and
-// calls `satinPage.setLook` when the look changes.
+// it. A host loads index.html?host under its Content-Security-Policy, then
+// calls `satinPage.setLook` and `satinPage.open`.
 (function () {
   "use strict";
 
@@ -306,26 +306,41 @@
     document.body.prepend(bar);
   }
 
-  async function start() {
-    const params = new URLSearchParams(location.search);
-    root.lang = params.get("lang") || root.lang;
-    root.dataset.look = params.get("look") === "paper" ? "paper" : "datasheet";
-    if (params.has("preview")) {
-      addPreviewBar(params);
+  // Fetches a version's Markdown, relative to this document, and draws it in
+  // the page's language.
+  async function open(path, lang) {
+    if (lang) {
+      root.lang = lang;
     }
-    const url = new URL(params.get("page") || "artifact.md", location.href);
+    const url = new URL(path, location.href);
     const response = await fetch(url);
     if (!response.ok) {
       throw new Error(`${url.pathname}: ${response.status}`);
     }
     await render(await response.text(), url);
-    document.body.dataset.ready = "true";
   }
 
-  window.satinPage = { render, setLook };
-  start().catch((error) => {
-    const page = document.getElementById("page");
-    page.textContent = String(error);
-    document.body.dataset.ready = "failed";
-  });
+  async function start() {
+    const params = new URLSearchParams(location.search);
+    root.dataset.look = params.get("look") === "paper" ? "paper" : "datasheet";
+    // A host sets the look and opens each page itself.
+    if (params.has("host")) {
+      return;
+    }
+    if (params.has("preview")) {
+      addPreviewBar(params);
+    }
+    await open(params.get("page") || "artifact.md", params.get("lang"));
+  }
+
+  window.satinPage = { open, render, setLook };
+  start()
+    .then(() => {
+      document.body.dataset.ready = "true";
+    })
+    .catch((error) => {
+      const page = document.getElementById("page");
+      page.textContent = String(error);
+      document.body.dataset.ready = "failed";
+    });
 })();

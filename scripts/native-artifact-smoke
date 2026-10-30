@@ -176,6 +176,24 @@ jq -e --argjson pane "$rich_pane" '
   any(.result.panes[]; .id == $pane and .kittyImages == 1)
 ' <<<"$state" >/dev/null
 
+# The reader draws the page in its web view; the image beside it loads.
+for _ in {1..200}; do
+  if [[ -s "$popover_result.page" ]]; then
+    break
+  fi
+  sleep 0.05
+done
+page_result="$(cat "$popover_result.page" 2>/dev/null || true)"
+if [[ "$page_result" != "ok page ready=true "* ]] ||
+  ! grep -Fq " images=1 " <<<"$page_result" ||
+  ! grep -Fq " failed=0 " <<<"$page_result" ||
+  ! grep -Fq "cargo test" <<<"$page_result"; then
+  printf '%s\n' "${page_result:-<no page result>}" >&2
+  cat "$app_log" >&2
+  echo "artifact smoke failed: the reader did not draw the page" >&2
+  exit 1
+fi
+
 "$cli" --socket "$socket" key --pane "$rich_pane" q >/dev/null
 sleep 0.1
 rich_screen="$($cli --socket "$socket" read-screen --pane "$rich_pane")"

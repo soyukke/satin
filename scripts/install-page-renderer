@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Copies the page renderer the reader loads (ADR 0020) into DEST: index.html,
+# its stylesheet and script, and the bundled libraries. The sample and README
+# stay in the checkout.
+if [[ $# -ne 1 ]]; then
+  echo "usage: scripts/install-page-renderer DEST" >&2
+  exit 64
+fi
+dest="$1"
+rm -rf -- "$dest"
+mkdir -p "$dest/lib"
+for file in index.html satin-page.css satin-page.js; do
+  /usr/bin/ditto "page-renderer/$file" "$dest/$file"
+done
+/usr/bin/ditto page-renderer/lib "$dest/lib"
+test -s "$dest/lib/markdown-it.min.js"
+test -s "$dest/lib/mermaid.min.js"
+test -s "$dest/lib/chart.umd.js"

@@ -45,7 +45,8 @@
 html,
 body {
   margin: 0;
-  background: var(--surface);
+  /* A host may set --sheet to the color of the frame around the page. */
+  background: var(--sheet, var(--surface));
   color: var(--text);
 }
 

@@ -976,6 +976,7 @@ import Foundation
                         smokeState.artifactPopoverOpenPath = nil
                         smokeState.artifactPopoverResultPath = nil
                         openPage(page)
+                        waitForPageDrawnForSmoke(resultPath, attempts: 200)
                         return
                     }
                 }
@@ -984,6 +985,74 @@ import Foundation
             }
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
                 self?.waitForArtifactPopoverSmokeOpen(attempts: attempts - 1)
+            }
+        }
+
+        /// Once the opened page is drawn, writes what the renderer made of it
+        /// to `RESULT.page`; with SATIN_NATIVE_SMOKE_PAGE_SNAPSHOT set, also
+        /// that prefix's PNGs of the page in both looks, a screen at a time.
+        func waitForPageDrawnForSmoke(_ resultPath: String, attempts: Int) {
+            guard let document = pageReaderDocument, let webView = document.webView,
+                document.drawnKey != nil
+            else {
+                if attempts > 0 {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+                        self?.waitForPageDrawnForSmoke(resultPath, attempts: attempts - 1)
+                    }
+                } else {
+                    writeArtifactPopoverSmokeResult(
+                        "\(resultPath).page", result: "failed page drawn=no\n")
+                }
+                return
+            }
+            let inspect = """
+                const page = document.getElementById("page");
+                return [
+                  "ready=" + document.body.dataset.ready,
+                  "diagrams=" + page.querySelectorAll("figure.diagram svg").length,
+                  "charts=" + page.querySelectorAll("figure.chart canvas").length,
+                  "callouts=" + page.querySelectorAll("aside.callout").length,
+                  "images=" + [...page.querySelectorAll("img")].filter((i) => i.naturalWidth > 0).length,
+                  "failed=" + page.querySelectorAll("figure.failed").length,
+                  "text=" + JSON.stringify(page.textContent.slice(0, 120)),
+                ].join(" ");
+                """
+            webView.callAsyncJavaScript(inspect, arguments: [:], in: nil, in: .page) {
+                [weak self] result in
+                let summary = (try? result.get()) as? String ?? "inspect=failed"
+                self?.writeArtifactPopoverSmokeResult(
+                    "\(resultPath).page", result: "ok page \(summary)\n")
+                if let prefix = ProcessInfo.processInfo.environment[
+                    "SATIN_NATIVE_SMOKE_PAGE_SNAPSHOT"]
+                {
+                    self?.snapshotPageForSmoke(prefix, look: "datasheet", screen: 0)
+                }
+            }
+        }
+
+        private func snapshotPageForSmoke(_ prefix: String, look: String, screen: Int) {
+            guard let webView = pageReaderDocument?.webView else { return }
+            webView.evaluateJavaScript("window.scrollTo(0, \(screen) * (window.innerHeight - 60))")
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
+                webView.takeSnapshot(with: nil) { image, _ in
+                    if let image, let tiff = image.tiffRepresentation,
+                        let png = NSBitmapImageRep(data: tiff)?.representation(
+                            using: .png, properties: [:])
+                    {
+                        try? png.write(to: URL(fileURLWithPath: "\(prefix)-\(look)-\(screen).png"))
+                    }
+                    guard let self else { return }
+                    if screen < 3 {
+                        self.snapshotPageForSmoke(prefix, look: look, screen: screen + 1)
+                    } else if look == "datasheet" {
+                        self.toggleAppearanceModeForSmoke()
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+                            self?.snapshotPageForSmoke(prefix, look: "paper", screen: 0)
+                        }
+                    } else {
+                        try? Data().write(to: URL(fileURLWithPath: "\(prefix)-done"))
+                    }
+                }
             }
         }
 
