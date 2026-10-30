@@ -68,6 +68,9 @@ cp -f "$kizu_core/target/bin/satin" "$kizu_core/target/bin/satin-nvim" "$build_d
 # The renderer loads its bundled fonts from `fonts` beside the executable.
 rm -rf "$build_dir/fonts"
 cp -R "$kizu_core/assets/fonts" "$build_dir/fonts"
+# The page reader loads the renderer from `PageRenderer` beside the executable,
+# where Bundle.main finds resources of a bare executable.
+scripts/install-page-renderer "$build_dir/PageRenderer"
 env -u SDKROOT -u DEVELOPER_DIR \
   /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc \
   -O \
@@ -86,6 +89,7 @@ env -u SDKROOT -u DEVELOPER_DIR \
   -framework MetalKit \
   -framework Metal \
   -framework QuartzCore \
+  -framework WebKit \
   -framework CoreText \
   -framework CoreGraphics \
   -framework CoreFoundation \

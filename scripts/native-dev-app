@@ -61,6 +61,7 @@ SIZES
 fi
 
 /usr/bin/ditto "$icon_cache" "$contents/Resources/AppIcon.icns"
+/usr/bin/ditto spikes/macos-shell/.build/PageRenderer "$contents/Resources/PageRenderer"
 /usr/bin/ditto THIRD_PARTY_NOTICES.md "$contents/Resources/Legal/THIRD_PARTY_NOTICES.md"
 mkdir -p "$contents/Resources/ShellIntegration"
 /usr/bin/ditto scripts/shell-integration/zsh "$contents/Resources/ShellIntegration/zsh"

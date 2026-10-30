@@ -227,11 +227,15 @@ extension TerminalShellViewController {
         }
         view.frame = pane
         view.show(
-            markdown: document.markdown, images: document.folder, key: "\(id)@\(version)")
+            folder: document.folder, document: document.name, language: document.language,
+            key: "\(id)@\(version)")
     }
 
-    /// The Markdown of one version of a page, and the folder its images sit in.
-    func pageDocument(id: String, version: UInt32) -> (markdown: String, folder: URL)? {
+    /// One version of a page: the folder its files sit in, the Markdown
+    /// document's name there, and the page's language.
+    func pageDocument(id: String, version: UInt32) -> (
+        folder: URL, name: String, language: String
+    )? {
         guard let root = pageStoreRoot(),
             let name = try? FileManager.default.contentsOfDirectory(atPath: root.path)
                 .first(where: { $0.hasSuffix("--\(id)") })
@@ -240,19 +244,23 @@ extension TerminalShellViewController {
         }
         let page = root.appendingPathComponent(name, isDirectory: true)
         var path = String(format: "versions/v%03d/artifact.md", Int(version))
+        var language = ""
         if let data = try? Data(contentsOf: page.appendingPathComponent("metadata.json")),
-            let metadata = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-            let versions = metadata["versions"] as? [[String: Any]],
-            let entry = versions.first(where: { ($0["version"] as? Int) == Int(version) }),
-            let document = entry["document"] as? String, !document.contains("..")
+            let metadata = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
         {
-            path = document
+            language = metadata["language"] as? String ?? ""
+            if let versions = metadata["versions"] as? [[String: Any]],
+                let entry = versions.first(where: { ($0["version"] as? Int) == Int(version) }),
+                let document = entry["document"] as? String, !document.contains("..")
+            {
+                path = document
+            }
         }
         let file = page.appendingPathComponent(path)
-        guard let markdown = try? String(contentsOf: file, encoding: .utf8) else {
+        guard FileManager.default.fileExists(atPath: file.path) else {
             return nil
         }
-        return (markdown, file.deletingLastPathComponent())
+        return (file.deletingLastPathComponent(), file.lastPathComponent, language)
     }
 
     private func makePageReaderChrome() -> NativePageReaderChrome {

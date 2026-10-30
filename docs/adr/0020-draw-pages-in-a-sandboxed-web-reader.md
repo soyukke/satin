@@ -45,7 +45,7 @@ loads only the page's own snapshot and the libraries Satin bundles.
   interactive table. It is drawn under the same sandbox and stylesheet
   variables.
 - The bundled libraries (the Markdown parser, Mermaid, and Chart.js) are pinned,
-  shipped in the app bundle, served at `satin-page://lib/`, and listed in
+  shipped in the app bundle, served at `satin-page://reader/lib/`, and listed in
   `THIRD_PARTY_NOTICES.md`. No library is fetched at run time.
 - The cell budget and the overflow policy are removed. `page policy set` keeps
   `--language`; `--max-columns`, `--max-rows`, and `--overflow` are accepted as

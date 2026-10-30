@@ -85,6 +85,7 @@ env -u SDKROOT -u DEVELOPER_DIR \
   -framework MetalKit \
   -framework Metal \
   -framework QuartzCore \
+  -framework WebKit \
   -framework CoreText \
   -framework CoreGraphics \
   -framework CoreFoundation \
@@ -95,6 +96,8 @@ mv -f "$tmp_binary" "$binary"
 /usr/bin/ditto "$kizu_core/target/bin/satin-nvim" "$nvim_launcher"
 # The renderer loads its bundled fonts from Resources/fonts.
 /usr/bin/ditto "$kizu_core/assets/fonts" "$contents/Resources/fonts"
+# The page reader loads the renderer from Resources/PageRenderer.
+scripts/install-page-renderer "$contents/Resources/PageRenderer"
 chmod 755 "$control_binary"
 chmod 755 "$nvim_launcher"
 
@@ -148,6 +151,7 @@ test -s "$legal_resources/LICENSE.txt"
 test -s "$legal_resources/THIRD_PARTY_NOTICES.md"
 test -s "$legal_resources/FONT_LICENSE.txt"
 test -s "$contents/Resources/fonts/FiraCodeNerdFont-Regular.ttf"
+test -s "$contents/Resources/PageRenderer/index.html"
 jq -e '
   .schemaVersion == 1
     and .algorithm == "ed25519"

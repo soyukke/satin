@@ -3,8 +3,8 @@
 The page renderer draws one page version the way ADR 0020 describes: Markdown
 styled by one Satin stylesheet, with diagrams and charts drawn by bundled
 libraries. It is plain HTML, CSS, and JavaScript, so the Mac reader and a phone
-client can load the same files in their own `WKWebView`. Neither app loads it
-yet.
+client can load the same files in their own `WKWebView`. The Mac reader loads it
+from `Resources/PageRenderer` (`NativePageDocument.swift`).
 
 ```sh
 just page-preview                      # the sample, at the printed URL
@@ -23,8 +23,10 @@ lie below `page-renderer`, because the server serves only that directory.
   of `NativePageStyle` in the app.
 - `satin-page.js` reads `?page=` (default `artifact.md`), `?look=`
   (`datasheet` or `paper`), and `?lang=`, and exposes
-  `satinPage.render(markdown, url)` and `satinPage.setLook(look, colors)` for a
-  host. `colors` overrides tokens, as `{"--surface": "#fff"}`.
+  `satinPage.open(path, lang)`, `satinPage.render(markdown, url)`, and
+  `satinPage.setLook(look, colors)` for a host. `colors` overrides tokens, as
+  `{"--surface": "#fff"}`; `--sheet` sets the page's background. With `?host`
+  the script opens nothing itself and waits for the host.
 - `lib/` holds markdown-it, Mermaid, and Chart.js, unmodified and pinned. Their
   versions, hashes, and licenses are in `THIRD_PARTY_NOTICES.md`, and
   `just license-audit` checks the hashes.
