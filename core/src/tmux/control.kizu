@@ -442,6 +442,9 @@ fn topology_notification(line: []u8) -> bool {
         mem::starts_with(line, "%session-changed ") or mem::starts_with(line, "%session-renamed ") or
         mem::starts_with(line, "%session-window-changed ") or mem::starts_with(line, "%sessions-changed") or
         mem::starts_with(line, "%window-add ") or mem::starts_with(line, "%window-close ") or
+        // tmux reports a killed window that was not the current one this way,
+        // since it is gone from the session by the time clients are told.
+        mem::starts_with(line, "%unlinked-window-close ") or
         mem::starts_with(line, "%window-renamed ") or mem::starts_with(line, "%window-pane-changed ") or
         mem::starts_with(line, "%layout-change ") or mem::starts_with(line, "%pane-exited ") or
         mem::starts_with(line, "%pane-mode-changed ");

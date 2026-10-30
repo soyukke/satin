@@ -1031,6 +1031,14 @@ test "a topology change while a snapshot is pending queues a trailing sync" {
     testing::expect(!control.sync_requested_while_pending);
 }
 
+test "closing a window that is not the current one syncs the tabs" {
+    let allocator = mem::page_allocator();
+    var control = admitted(allocator);
+    defer control.deinit(allocator);
+    try feed_quiet(allocator, &var control, "%unlinked-window-close @1\n");
+    try expect_outgoing_prefix(allocator, &var control, "list-panes -s");
+}
+
 test "rehydration forwards live scroll metadata without replaying cells" {
     let allocator = mem::page_allocator();
     var control = new_control(allocator);
