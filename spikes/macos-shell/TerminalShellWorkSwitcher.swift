@@ -110,8 +110,18 @@ extension TerminalShellViewController {
 
     /// Focuses the longest-waiting agent pane, cycling on repeated presses.
     @objc func jumpToWaitingAgent(_ sender: Any?) {
-        if settings.attentionHand {
+        if settings.attentionHand, !attentionHandView.isHidden {
             jumpWithAttentionHand()
+            return
+        }
+        // With the windows sidebar open its foil card is the hand's first.
+        if windowsSidebarMode == .open, let card = currentAttentionHand().cards.first {
+            if focusWorkPane(tabId: card.tabId, paneId: card.paneId) {
+                attentionHandRun.play(now: Date())
+                dismissWorkSwitcher()
+                refreshWorkSwitcherPresentation()
+                focusTerminal()
+            }
             return
         }
         let attentionStatuses: Set<String> = ["waiting", "blocked", "failed"]

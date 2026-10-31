@@ -1,0 +1,487 @@
+import Foundation
+
+/// How a sidebar sits beside the panes: open with its cards, folded to a
+/// rail, or gone.
+enum NativeSidebarMode: String {
+    case open
+    case rail
+    case off
+}
+
+/// What a tab is doing, as its card in the windows sidebar shows it. Higher
+/// raw values want the user more.
+enum NativeWindowState: Int, Equatable {
+    case idle = 0
+    case running = 1
+    case clear = 2
+    case failed = 3
+    case waiting = 4
+
+    init(badge: NativeTabStatusBadge?) {
+        switch badge {
+        case .waiting: self = .waiting
+        case .failed: self = .failed
+        case .done: self = .clear
+        case .running: self = .running
+        case nil: self = .idle
+        }
+    }
+
+    var title: String {
+        switch self {
+        case .waiting: "WAITING"
+        case .failed: "FAILED"
+        case .clear: "CLEAR"
+        case .running: "RUNNING"
+        case .idle: "IDLE"
+        }
+    }
+
+    var glyph: String {
+        switch self {
+        case .waiting: "!"
+        case .failed: "×"
+        case .clear: "✓"
+        case .running: "›"
+        case .idle: "·"
+        }
+    }
+
+    /// The card kind of the hand the state shares its color with.
+    var handKind: NativeHandCardKind? {
+        switch self {
+        case .waiting: .waiting
+        case .failed: .failed
+        case .clear: .done
+        case .running, .idle: nil
+        }
+    }
+}
+
+/// One tab as a card in the windows sidebar.
+struct NativeWindowRow: Equatable {
+    let tabId: Int
+    let index: Int
+    let title: String
+    let state: NativeWindowState
+    /// The line printed under the title: what the agent said, or the last
+    /// line on the tab's screen.
+    let line: String
+    /// When the state began, for the clock and the gauge.
+    let since: Date?
+    let isCurrent: Bool
+    /// Whether ⌘J plays this tab's card next.
+    let isNext: Bool
+}
+
+/// Deals one card per tab. A tab's state is the most urgent of its panes',
+/// and the pane that set it says what the card prints.
+func nativeWindowRows(
+    tabs: [NativeAttentionTab],
+    activeTabIndex: Int,
+    status: (Int) -> NativePaneControlStatus?,
+    isUnread: (Int) -> Bool,
+    shellBadge: (Int) -> NativeTabStatusBadge?,
+    screenLine: (Int) -> String?,
+    nextPaneId: Int?
+) -> [NativeWindowRow] {
+    tabs.sorted { $0.index < $1.index }.map { tab in
+        var best: (badge: NativeTabStatusBadge, paneId: Int, since: Date?)?
+        for paneId in tab.panes {
+            let paneStatus = status(paneId)
+            let agent = paneStatus.flatMap { paneStatus in
+                nativeTabStatusBadge(for: [(paneStatus.status, isUnread(paneId))])
+            }
+            let candidates: [(NativeTabStatusBadge, Date?)] = [
+                agent.map { ($0, paneStatus?.updatedAt) },
+                shellBadge(paneId).map { ($0, nil) },
+            ].compactMap { $0 }
+            for (badge, since) in candidates {
+                guard let current = best else {
+                    best = (badge, paneId, since)
+                    continue
+                }
+                let older = (since ?? .distantFuture) < (current.since ?? .distantFuture)
+                if badge.rawValue > current.badge.rawValue
+                    || (badge == current.badge && older)
+                {
+                    best = (badge, paneId, since)
+                }
+            }
+        }
+        let state = NativeWindowState(badge: best?.badge)
+        let summary = best.flatMap { best in
+            status(best.paneId).map { nativeWorkSingleLine($0.summary, limit: 120) }
+        }
+        let line =
+            summary.flatMap { $0.isEmpty ? nil : $0 }
+            ?? screenLine(best?.paneId ?? tab.activePane) ?? ""
+        return NativeWindowRow(
+            tabId: tab.id,
+            index: tab.index,
+            title: tab.title,
+            state: state,
+            line: line,
+            since: state == .idle ? nil : best?.since,
+            isCurrent: tab.index == activeTabIndex,
+            isNext: nextPaneId.map { tab.panes.contains($0) } ?? false
+        )
+    }
+}
+
+/// What the items sidebar gathers from a pane's screen.
+enum NativeSidebarItemKind: Int, CaseIterable, Equatable {
+    case command
+    case quote
+    case link
+    case file
+
+    var glyph: String {
+        switch self {
+        case .command: "!"
+        case .quote: ">"
+        case .link: "↗"
+        case .file: "±"
+        }
+    }
+}
+
+/// One thing worth copying, already cleaned: a command without its `!` or
+/// `$`, a quote without its `>` and joined into a paragraph.
+struct NativeSidebarItem: Equatable {
+    let kind: NativeSidebarItemKind
+    /// What a click copies.
+    let text: String
+    /// A word on where it came from: "edited", "line 88", "3 lines".
+    let detail: String
+}
+
+private enum NativeSidebarPatterns {
+    static let url = regex(#"https?://[^\s<>"'`│┃]+"#)
+    static let codeCommand = regex(#"`[!$] ([^`]+)`"#)
+    static let tool = regex(#"\b(Update|Edit|MultiEdit|Write|Create|Read)\(([^()\s]+)\)"#)
+    static let fileLine = regex(
+        #"(?<![\w/.~-])((?:~|\.{1,2})?/?[\w.-]+(?:/[\w.-]+)*\.[A-Za-z][A-Za-z0-9]{0,7}):(\d+)(?::\d+)?(?![\w/])"#
+    )
+
+    /// The patterns are constants; a typo in one fails the self-test.
+    static func regex(_ pattern: String) -> NSRegularExpression? {
+        try? NSRegularExpression(pattern: pattern)
+    }
+}
+
+private func nativeSidebarMatches(_ regex: NSRegularExpression?, in text: String)
+    -> [NSTextCheckingResult]
+{
+    regex?.matches(in: text, range: NSRange(text.startIndex..., in: text)) ?? []
+}
+
+/// A screen line with the frame an agent's box draws around it taken off,
+/// and whether there was one.
+func nativeSidebarCleanLine(_ raw: String) -> (text: String, boxed: Bool) {
+    var text = raw
+    while text.last?.isWhitespace == true {
+        text.removeLast()
+    }
+    var boxed = false
+    let borders: Set<Character> = ["│", "┃"]
+    let leading = text.drop { $0 == " " }
+    if let first = leading.first, borders.contains(first) {
+        text = String(leading.dropFirst())
+        if text.first == " " {
+            text.removeFirst()
+        }
+        boxed = true
+        if let last = text.last, borders.contains(last) {
+            text.removeLast()
+        }
+        while text.last?.isWhitespace == true {
+            text.removeLast()
+        }
+    }
+    var trimmed = text.drop { $0 == " " }
+    if trimmed.first == "⎿" {
+        trimmed = trimmed.dropFirst().drop { $0 == " " }
+        text = String(trimmed)
+    }
+    return (text, boxed)
+}
+
+/// Finds what a screen offers to copy, in the order it reads.
+func nativeSidebarItems(screen: String) -> [NativeSidebarItem] {
+    var items: [NativeSidebarItem] = []
+    var seen = Set<String>()
+    func add(_ kind: NativeSidebarItemKind, _ text: String, _ detail: String) {
+        let text = text.trimmingCharacters(in: .whitespaces)
+        guard !text.isEmpty, text.count <= 400,
+            seen.insert("\(kind.rawValue)\u{0}\(text)").inserted
+        else {
+            return
+        }
+        items.append(NativeSidebarItem(kind: kind, text: text, detail: detail))
+    }
+
+    var quote: [String] = []
+    func flushQuote() {
+        defer { quote.removeAll() }
+        let body = quote.joined(separator: " ")
+            .replacingOccurrences(of: " \n\n ", with: "\n\n")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let count = quote.filter { $0 != "\n\n" }.count
+        add(.quote, body, count == 1 ? "1 line" : "\(count) lines")
+    }
+
+    for raw in screen.split(separator: "\n", omittingEmptySubsequences: false) {
+        let (line, boxed) = nativeSidebarCleanLine(String(raw))
+        let body = line.drop { $0 == " " }
+
+        if !boxed, body.first == ">", body.count == 1 || body.dropFirst().first == " " {
+            let content = body.dropFirst().trimmingCharacters(in: .whitespaces)
+            quote.append(content.isEmpty ? "\n\n" : content)
+            continue
+        }
+        if !quote.isEmpty {
+            flushQuote()
+        }
+
+        if let mark = body.first, mark == "!" || mark == "$", body.dropFirst().first == " " {
+            add(.command, String(body.dropFirst(2)), mark == "!" ? "run it" : "command")
+        }
+        for match in nativeSidebarMatches(NativeSidebarPatterns.codeCommand, in: line) {
+            if let command = Range(match.range(at: 1), in: line) {
+                add(.command, String(line[command]), "run it")
+            }
+        }
+
+        var rest = line
+        for match in nativeSidebarMatches(NativeSidebarPatterns.url, in: line).reversed() {
+            guard let found = Range(match.range, in: line) else {
+                continue
+            }
+            let url = nativeSidebarTrimURL(String(line[found]))
+            add(.link, url, URL(string: url)?.host ?? "link")
+            rest.replaceSubrange(found, with: " ")
+        }
+        for match in nativeSidebarMatches(NativeSidebarPatterns.tool, in: rest) {
+            guard let action = Range(match.range(at: 1), in: rest),
+                let path = Range(match.range(at: 2), in: rest)
+            else {
+                continue
+            }
+            add(.file, String(rest[path]), rest[action] == "Read" ? "read" : "edited")
+        }
+        for match in nativeSidebarMatches(NativeSidebarPatterns.fileLine, in: rest) {
+            guard let whole = Range(match.range, in: rest),
+                let number = Range(match.range(at: 2), in: rest)
+            else {
+                continue
+            }
+            add(.file, String(rest[whole]), "line \(rest[number])")
+        }
+    }
+    if !quote.isEmpty {
+        flushQuote()
+    }
+    return items
+}
+
+/// A URL without the punctuation that ends the sentence around it.
+func nativeSidebarTrimURL(_ url: String) -> String {
+    var url = url
+    while let last = url.last {
+        if ".,;:!?'\"]}".contains(last) {
+            url.removeLast()
+        } else if last == ")", url.filter({ $0 == "(" }).count < url.filter({ $0 == ")" }).count {
+            url.removeLast()
+        } else {
+            break
+        }
+    }
+    return url
+}
+
+/// The items every pane has shown, kept after they scroll away. Each pane
+/// keeps its newest, a few dozen of each kind.
+final class NativeSidebarItemStore {
+    struct Entry: Equatable {
+        let item: NativeSidebarItem
+        let paneId: Int
+        /// Rises with every item found, so later lines read as newer.
+        let order: Int
+    }
+
+    static let perKind = 30
+
+    private var entries: [Int: [Entry]] = [:]
+    private var screens: [Int: Int] = [:]
+    private var counter = 0
+
+    /// Reads a pane's screen; returns whether anything new turned up.
+    @discardableResult
+    func scan(paneId: Int, screen: String) -> Bool {
+        let hash = screen.hashValue
+        guard screens[paneId] != hash else {
+            return false
+        }
+        screens[paneId] = hash
+        var known = entries[paneId] ?? []
+        var changed = false
+        for item in nativeSidebarItems(screen: screen)
+        where !known.contains(where: { $0.item == item }) {
+            counter += 1
+            known.append(Entry(item: item, paneId: paneId, order: counter))
+            changed = true
+        }
+        guard changed else {
+            return false
+        }
+        var kept: [Entry] = []
+        for kind in NativeSidebarItemKind.allCases {
+            kept += known.filter { $0.item.kind == kind }
+                .sorted { $0.order > $1.order }
+                .prefix(Self.perKind)
+        }
+        entries[paneId] = kept
+        return true
+    }
+
+    /// The items of the given panes, or of every pane, newest first.
+    func items(panes: Set<Int>?) -> [NativeSidebarItemKind: [Entry]] {
+        var result: [NativeSidebarItemKind: [Entry]] = [:]
+        var seen = Set<String>()
+        let all = entries.filter { panes?.contains($0.key) ?? true }.values.flatMap { $0 }
+        for entry in all.sorted(by: { $0.order > $1.order }) {
+            let key = "\(entry.item.kind.rawValue)\u{0}\(entry.item.text)"
+            guard seen.insert(key).inserted else {
+                continue
+            }
+            result[entry.item.kind, default: []].append(entry)
+        }
+        return result
+    }
+
+    /// Lets go of panes that closed.
+    func keep(panes: Set<Int>) {
+        entries = entries.filter { panes.contains($0.key) }
+        screens = screens.filter { panes.contains($0.key) }
+    }
+}
+
+func runNativeSidebarModelSelfTests() -> Bool {
+    let screen = """
+        ● I added the sidebar. To see it with a page, run:
+
+          ! satin page put design.md --name "Sidebar design"
+
+          Or type `! gcloud auth login` in the prompt.
+          The pull request is at https://github.com/example/satin/pull/207.
+          (see https://en.wikipedia.org/wiki/Card_(game))
+
+        > Windows sit on the left, sorted by what needs you.
+        > What each window made sits on the right.
+        >
+        > A second paragraph.
+
+        ● Update(spikes/macos-shell/TerminalShellTabs.swift)
+          ⎿  Added 42 lines
+        ● Read(core/src/tmux/control.kizu)
+        error at TerminalShellTabs.swift:88:4 and ./scripts/build.sh:12
+        $ just fmt && just precommit
+        ╭──────────────────────────────╮
+        │ > what the user is typing     │
+        │ ! kizu test cli               │
+        ╰──────────────────────────────╯
+        at 12:30 the build ran
+        """
+    let items = nativeSidebarItems(screen: screen)
+    let expected: [NativeSidebarItem] = [
+        .init(
+            kind: .command, text: "satin page put design.md --name \"Sidebar design\"",
+            detail: "run it"),
+        .init(kind: .command, text: "gcloud auth login", detail: "run it"),
+        .init(
+            kind: .link, text: "https://github.com/example/satin/pull/207",
+            detail: "github.com"),
+        .init(
+            kind: .link, text: "https://en.wikipedia.org/wiki/Card_(game)",
+            detail: "en.wikipedia.org"),
+        .init(
+            kind: .quote,
+            text: "Windows sit on the left, sorted by what needs you. "
+                + "What each window made sits on the right.\n\nA second paragraph.",
+            detail: "3 lines"),
+        .init(
+            kind: .file, text: "spikes/macos-shell/TerminalShellTabs.swift", detail: "edited"),
+        .init(kind: .file, text: "core/src/tmux/control.kizu", detail: "read"),
+        .init(kind: .file, text: "TerminalShellTabs.swift:88:4", detail: "line 88"),
+        .init(kind: .file, text: "./scripts/build.sh:12", detail: "line 12"),
+        .init(kind: .command, text: "just fmt && just precommit", detail: "command"),
+        .init(kind: .command, text: "kizu test cli", detail: "run it"),
+    ]
+    guard items == expected else {
+        return false
+    }
+    guard nativeSidebarTrimURL("https://a.dev/x).") == "https://a.dev/x",
+        nativeSidebarCleanLine("  │ ! ls │  ") == ("! ls", true),
+        nativeSidebarCleanLine("  ⎿  done") == ("done", false)
+    else {
+        return false
+    }
+
+    let store = NativeSidebarItemStore()
+    guard store.scan(paneId: 1, screen: "$ make\n"),
+        !store.scan(paneId: 1, screen: "$ make\n"),
+        store.scan(paneId: 1, screen: "$ make\n$ make test\n"),
+        store.scan(paneId: 2, screen: "https://b.dev\n$ make\n")
+    else {
+        return false
+    }
+    let all = store.items(panes: nil)
+    let one = store.items(panes: [1])
+    guard all[.command]?.map(\.item.text) == ["make", "make test"],
+        all[.command]?.first?.paneId == 2,
+        all[.link]?.map(\.item.text) == ["https://b.dev"],
+        one[.command]?.map(\.item.text) == ["make test", "make"],
+        one[.link] == nil
+    else {
+        return false
+    }
+    store.keep(panes: [2])
+    guard store.items(panes: nil)[.command]?.map(\.item.text) == ["make"] else {
+        return false
+    }
+
+    let base = Date(timeIntervalSince1970: 1_000)
+    let statuses: [Int: NativePaneControlStatus] = [
+        11: NativePaneControlStatus(
+            status: "waiting", summary: "Wants to edit\n a file", revision: 1, updatedAt: base),
+        21: NativePaneControlStatus(
+            status: "running", summary: "", revision: 2, updatedAt: base),
+        22: NativePaneControlStatus(
+            status: "failed", summary: "", revision: 3, updatedAt: base.addingTimeInterval(5)),
+    ]
+    let tabs = [
+        NativeAttentionTab(id: 7, index: 1, title: "web", activePane: 21, panes: [21, 22]),
+        NativeAttentionTab(id: 5, index: 0, title: "api", activePane: 10, panes: [10, 11]),
+        NativeAttentionTab(id: 9, index: 2, title: "logs", activePane: 30, panes: [30]),
+    ]
+    let rows = nativeWindowRows(
+        tabs: tabs,
+        activeTabIndex: 1,
+        status: { statuses[$0] },
+        isUnread: { _ in false },
+        shellBadge: { $0 == 30 ? .running : nil },
+        screenLine: { "screen of \($0)" },
+        nextPaneId: 11
+    )
+    return rows.map(\.title) == ["api", "web", "logs"]
+        && rows.map(\.state) == [.waiting, .failed, .running]
+        && rows[0].line == "Wants to edit a file"
+        && rows[0].since == base
+        && rows[0].isNext && !rows[1].isNext
+        && rows[1].line == "screen of 22"
+        && rows[1].isCurrent
+        && rows[2].line == "screen of 30"
+        && rows[2].since == nil
+        && NativeWindowState(badge: nil) == .idle
+}

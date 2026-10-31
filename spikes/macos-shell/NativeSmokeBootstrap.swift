@@ -148,6 +148,10 @@ import Foundation
                 if let path = environment["SATIN_NATIVE_SMOKE_RESULT"], !path.isEmpty {
                     controller.applyFrameLivenessSmokeScenario(resultPath: path)
                 }
+            case "sidebars":
+                if let path = environment["SATIN_NATIVE_SMOKE_RESULT"], !path.isEmpty {
+                    controller.applySidebarsSmokeScenario(resultPath: path)
+                }
             case "artifact-popover":
                 if let path = environment["SATIN_NATIVE_SMOKE_RESULT"], !path.isEmpty {
                     controller.applyArtifactPopoverSmokeScenario(resultPath: path)

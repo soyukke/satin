@@ -19,6 +19,9 @@ enum NativeMainMenuAction: Equatable {
     case zoomIn
     case zoomOut
     case actualSize
+    case toggleWindowsSidebar
+    case toggleItemsSidebar
+    case toggleTabBar
     case checkForUpdates
     case showAcknowledgements
 
@@ -233,6 +236,16 @@ final class NativeMainMenuController: NSObject, NSMenuItemValidation {
             to: menu,
             settings: settings
         )
+        menu.addItem(NSMenuItem.separator())
+        addCommandItems(
+            [
+                (.toggleWindowsSidebar, .toggleWindowsSidebar),
+                (.toggleItemsSidebar, .toggleItemsSidebar),
+            ],
+            to: menu,
+            settings: settings
+        )
+        menu.addItem(targetedItem("Tab Bar Instead of Windows Sidebar", menuAction: .toggleTabBar))
         item.submenu = menu
         return item
     }

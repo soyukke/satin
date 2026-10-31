@@ -83,7 +83,8 @@ extension TerminalShellViewController {
     private func pagesChanged(arrived: [NativeArtifactListItem]) {
         artifactButton.setBadgeCount(pageInbox.unread.count)
         pageHandView.show(unread: pageInbox.unread)
-        attentionHandView.rightReserve = pageHandView.fanWidth
+        updatePageHandVisibility()
+        refreshItemsSidebar()
         if let binder = pageBinder {
             binder.show(pages: pageInbox.pages, unread: pageInbox.unread)
         }

@@ -78,6 +78,8 @@ extension TerminalShellViewController {
         tabControl.signalView.refreshLook()
         attentionHandView.applyLook()
         pageHandView.refreshLook()
+        windowsSidebar.refreshLook()
+        itemsSidebar.refreshLook()
         pageReaderChrome?.needsDisplay = true
         pageReaderDocument?.refreshLook()
         if let binder = pageBinder {

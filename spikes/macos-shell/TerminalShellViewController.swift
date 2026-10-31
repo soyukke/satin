@@ -342,6 +342,17 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
     let backdropView = NativeTerminalBackdropView(frame: .zero)
     let attentionHandView = NativeAttentionHandView(frame: .zero)
     let pageHandView = NativePageHandView(frame: .zero)
+    let windowsSidebar = NativeWindowsSidebarView(frame: .zero)
+    let itemsSidebar = NativeItemsSidebarView(frame: .zero)
+    var windowsSidebarWidth: NSLayoutConstraint?
+    var itemsSidebarWidth: NSLayoutConstraint?
+    let sidebarItems = NativeSidebarItemStore()
+    var sidebarScanTimer: Timer?
+    /// Each pane's last line on screen, as the scan last read it.
+    var sidebarScreenLines: [Int: String] = [:]
+    var sidebarItemsAllTabs = false
+    var smokeWindowsSidebar: NativeSidebarMode?
+    var smokeItemsSidebar: NativeSidebarMode?
     var attentionHandStripConstraint: NSLayoutConstraint?
     var attentionHandRun = NativeHandRun()
     /// The pane whose card ⌘J just played, until the hand shows it gone.
@@ -622,23 +633,39 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
         view.addSubview(attentionHandView)
         pageHandView.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(pageHandView)
+        windowsSidebar.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(windowsSidebar)
+        itemsSidebar.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(itemsSidebar)
         let handStrip = metalView.bottomAnchor.constraint(equalTo: view.bottomAnchor)
         attentionHandStripConstraint = handStrip
+        let windowsWidth = windowsSidebar.widthAnchor.constraint(equalToConstant: 0)
+        windowsSidebarWidth = windowsWidth
+        let itemsWidth = itemsSidebar.widthAnchor.constraint(equalToConstant: 0)
+        itemsSidebarWidth = itemsWidth
 
         NSLayoutConstraint.activate([
             backdropView.topAnchor.constraint(equalTo: view.topAnchor),
             backdropView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             backdropView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             backdropView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            windowsSidebar.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
+            windowsSidebar.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            windowsSidebar.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            windowsWidth,
+            itemsSidebar.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
+            itemsSidebar.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            itemsSidebar.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            itemsWidth,
             metalView.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
-            metalView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            metalView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            metalView.leadingAnchor.constraint(equalTo: windowsSidebar.trailingAnchor),
+            metalView.trailingAnchor.constraint(equalTo: itemsSidebar.leadingAnchor),
             handStrip,
-            attentionHandView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            attentionHandView.leadingAnchor.constraint(equalTo: metalView.leadingAnchor),
             attentionHandView.trailingAnchor.constraint(equalTo: metalView.trailingAnchor),
             attentionHandView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
             attentionHandView.topAnchor.constraint(equalTo: metalView.topAnchor),
-            pageHandView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            pageHandView.leadingAnchor.constraint(equalTo: metalView.leadingAnchor),
             pageHandView.trailingAnchor.constraint(equalTo: metalView.trailingAnchor),
             pageHandView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
             pageHandView.topAnchor.constraint(equalTo: metalView.topAnchor),
@@ -647,7 +674,8 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
             terminalTextView.trailingAnchor.constraint(equalTo: metalView.trailingAnchor),
             terminalTextView.bottomAnchor.constraint(equalTo: metalView.bottomAnchor),
         ])
-        setAttentionHandVisible(settings.attentionHand)
+        configureSidebars()
+        applySidebarModes()
         metalView.setBackdropEnabled(settings.animatedBackdrop)
         chillSound.ambient = settings.ambientSound
         chillSound.chimes = settings.agentChimes
@@ -778,7 +806,7 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
             applyAppearanceMode()
         }
         if previous.attentionHand != settings.attentionHand {
-            setAttentionHandVisible(settings.attentionHand)
+            updateAttentionHandVisibility()
         }
         if previous.defaultTheme != settings.defaultTheme {
             if core.applyThemePreference(settings.defaultTheme) {
