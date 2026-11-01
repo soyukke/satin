@@ -85,13 +85,8 @@ import Foundation
             itemsSidebarMode = right
             applySidebarModes()
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
-                guard let self, let content = self.view.window?.contentView else { return }
-                content.layoutSubtreeIfNeeded()
-                if let bitmap = content.bitmapImageRepForCachingDisplay(in: content.bounds) {
-                    content.cacheDisplay(in: content.bounds, to: bitmap)
-                    try? bitmap.representation(using: .png, properties: [:])?
-                        .write(to: URL(fileURLWithPath: "\(prefix)-\(name).png"))
-                }
+                guard let self else { return }
+                self.writeWindowSnapshotForSmoke("\(prefix)-\(name).png")
                 self.snapshotSidebarsForSmoke(prefix, steps: steps.dropFirst())
             }
         }

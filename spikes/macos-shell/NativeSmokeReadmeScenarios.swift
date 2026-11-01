@@ -58,9 +58,28 @@ import Foundation
                 ("enter", { [weak self] in self?.pressBinderKeyForSmoke(36) }),
                 ("tabnext", { [weak self] in self?.stepTabForSmoke(1) }),
                 ("tabprev", { [weak self] in self?.stepTabForSmoke(-1) }),
+                ("left", { [weak self] in self?.toggleWindowsSidebar(nil) }),
+                ("right", { [weak self] in self?.toggleItemsSidebar(nil) }),
+                ("scope", { [weak self] in self?.toggleSidebarScopeForSmoke() }),
+                (
+                    "copycommand",
+                    { [weak self] in self?.itemsSidebar.pressFirstRowForSmoke(.command, paste: true)
+                    }
+                ),
+                (
+                    "copylink",
+                    { [weak self] in self?.itemsSidebar.pressFirstRowForSmoke(.link, paste: false) }
+                ),
             ] where FileManager.default.fileExists(atPath: "\(resultPath).\(suffix)") {
                 try? FileManager.default.removeItem(atPath: "\(resultPath).\(suffix)")
                 action()
+            }
+            // A dry run of the recipe names each still it wants in `.snap`.
+            let snap = "\(resultPath).snap"
+            if let name = try? String(contentsOfFile: snap, encoding: .utf8) {
+                try? FileManager.default.removeItem(atPath: snap)
+                writeWindowSnapshotForSmoke(
+                    "\(resultPath)-\(name.trimmingCharacters(in: .whitespacesAndNewlines)).png")
             }
             guard retries > 0 else {
                 return
@@ -68,6 +87,11 @@ import Foundation
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
                 self?.pollReadmeHandPlay(resultPath, retries: retries - 1)
             }
+        }
+
+        func toggleSidebarScopeForSmoke() {
+            sidebarItemsAllTabs.toggle()
+            refreshItemsSidebar()
         }
 
         func toggleAppearanceModeForSmoke() {
@@ -164,6 +188,19 @@ import Foundation
             }
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
                 self?.waitForReadmeWorkSwitcherTrigger(resultPath, retries: retries - 1)
+            }
+        }
+
+        /// Draws the window's views, without the Metal panes, into a PNG.
+        func writeWindowSnapshotForSmoke(_ path: String) {
+            guard let content = view.window?.contentView else {
+                return
+            }
+            content.layoutSubtreeIfNeeded()
+            if let bitmap = content.bitmapImageRepForCachingDisplay(in: content.bounds) {
+                content.cacheDisplay(in: content.bounds, to: bitmap)
+                try? bitmap.representation(using: .png, properties: [:])?
+                    .write(to: URL(fileURLWithPath: path))
             }
         }
 

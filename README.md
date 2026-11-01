@@ -144,6 +144,20 @@ unread pages stay here instead of fanning out over the panes.
 counts and open it again. View › Tab Bar Instead of Windows Sidebar brings the
 tab strip back.
 
+<p align="center">
+  <a href="assets/satin-sidebars-demo.mp4">
+    <img src="assets/satin-sidebars-demo.gif" width="880"
+      alt="Satin's windows sidebar of agent cards beside an items sidebar of commands, quotes, links and files">
+  </a>
+</p>
+
+<p align="center">
+  <sub>Four agents change state on their cards while the items sidebar gathers
+  what one printed; an Option-click pastes its command, Command-J plays the
+  foil card, and the windows sidebar folds to gems, in both looks. Click for
+  the 26-second MP4.</sub>
+</p>
+
 ### Work Switcher
 
 The Work Switcher is experimental. Open it with `Command-P` to find tabs and
