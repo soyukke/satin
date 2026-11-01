@@ -218,7 +218,10 @@ extension TerminalShellViewController {
             }
             let screen = runtime.controlScreenText()
             lines[paneId] = nativeHandArtLines(screen, count: 1, width: 120).first
-            if itemsSidebarMode != .off, sidebarItems.scan(paneId: paneId, screen: screen) {
+            if itemsSidebarMode != .off,
+                sidebarItems.scan(
+                    paneId: paneId, screen: screen, columns: paneGridSize(paneId).cols)
+            {
                 found = true
             }
         }

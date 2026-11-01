@@ -59,6 +59,49 @@ enum NativeWindowState: Int, Equatable {
 }
 
 /// One tab as a card in the windows sidebar.
+/// The headings the windows sidebar sorts its cards under, most urgent
+/// first.
+enum NativeWindowGroup: Int, CaseIterable, Equatable {
+    case needsYou
+    case running
+    case done
+    case idle
+
+    init(_ state: NativeWindowState) {
+        switch state {
+        case .waiting, .failed: self = .needsYou
+        case .running: self = .running
+        case .clear: self = .done
+        case .idle: self = .idle
+        }
+    }
+
+    var title: String {
+        switch self {
+        case .needsYou: "NEEDS YOU"
+        case .running: "RUNNING"
+        case .done: "DONE"
+        case .idle: "IDLE"
+        }
+    }
+}
+
+/// The rows under their headings, leaving out empty ones. What needs you
+/// reads as the hand deals it: waiting before failed, the longest first;
+/// the rest keep their tabs' order.
+func nativeWindowGroups(_ rows: [NativeWindowRow]) -> [(NativeWindowGroup, [NativeWindowRow])] {
+    NativeWindowGroup.allCases.compactMap { group in
+        var members = rows.filter { NativeWindowGroup($0.state) == group }
+        if group == .needsYou {
+            members.sort {
+                ($0.state == .waiting ? 0 : 1, $0.since ?? .distantFuture, $0.index)
+                    < ($1.state == .waiting ? 0 : 1, $1.since ?? .distantFuture, $1.index)
+            }
+        }
+        return members.isEmpty ? nil : (group, members)
+    }
+}
+
 struct NativeWindowRow: Equatable {
     let tabId: Int
     let index: Int
@@ -207,8 +250,43 @@ func nativeSidebarCleanLine(_ raw: String) -> (text: String, boxed: Bool) {
     return (text, boxed)
 }
 
-/// Finds what a screen offers to copy, in the order it reads.
-func nativeSidebarItems(screen: String) -> [NativeSidebarItem] {
+/// How long a window has been in its state, to the minute: a card's age
+/// should not tick.
+func nativeSidebarAgeText(since: Date, now: Date) -> String {
+    let minutes = max(0, Int(now.timeIntervalSince(since))) / 60
+    switch minutes {
+    case 0: return "now"
+    case ..<60: return "\(minutes)m"
+    case ..<1_440: return "\(minutes / 60)h"
+    default: return "\(minutes / 1_440)d"
+    }
+}
+
+/// The screen's rows with each row the terminal wrapped joined to the next:
+/// a row as wide as the pane goes on below, unless a box edge or rule
+/// fills it. Wide characters keep a row short of the count, so such rows
+/// stay apart.
+func nativeSidebarUnwrap(_ screen: String, columns: Int) -> [String] {
+    func boxDrawing(_ character: Character?) -> Bool {
+        character?.unicodeScalars.first.map { (0x2500...0x257F).contains($0.value) } == true
+    }
+    var lines: [String] = []
+    var joining = false
+    for raw in screen.split(separator: "\n", omittingEmptySubsequences: false) {
+        let row = String(raw)
+        if joining, !boxDrawing(row.first), let last = lines.popLast() {
+            lines.append(last + row)
+        } else {
+            lines.append(row)
+        }
+        joining = columns > 0 && row.count >= columns && !boxDrawing(row.last)
+    }
+    return lines
+}
+
+/// Finds what a screen offers to copy, in the order it reads. With the
+/// pane's columns, a line the terminal wrapped reads whole.
+func nativeSidebarItems(screen: String, columns: Int = 0) -> [NativeSidebarItem] {
     var items: [NativeSidebarItem] = []
     var seen = Set<String>()
     func add(_ kind: NativeSidebarItemKind, _ text: String, _ detail: String) {
@@ -231,8 +309,8 @@ func nativeSidebarItems(screen: String) -> [NativeSidebarItem] {
         add(.quote, body, count == 1 ? "1 line" : "\(count) lines")
     }
 
-    for raw in screen.split(separator: "\n", omittingEmptySubsequences: false) {
-        let (line, boxed) = nativeSidebarCleanLine(String(raw))
+    for raw in nativeSidebarUnwrap(screen, columns: columns) {
+        let (line, boxed) = nativeSidebarCleanLine(raw)
         let body = line.drop { $0 == " " }
 
         if !boxed, body.first == ">", body.count == 1 || body.dropFirst().first == " " {
@@ -318,7 +396,7 @@ final class NativeSidebarItemStore {
 
     /// Reads a pane's screen; returns whether anything new turned up.
     @discardableResult
-    func scan(paneId: Int, screen: String) -> Bool {
+    func scan(paneId: Int, screen: String, columns: Int = 0) -> Bool {
         let hash = screen.hashValue
         guard screens[paneId] != hash else {
             return false
@@ -326,7 +404,7 @@ final class NativeSidebarItemStore {
         screens[paneId] = hash
         var known = entries[paneId] ?? []
         var changed = false
-        for item in nativeSidebarItems(screen: screen)
+        for item in nativeSidebarItems(screen: screen, columns: columns)
         where !known.contains(where: { $0.item == item }) {
             counter += 1
             known.append(Entry(item: item, paneId: paneId, order: counter))
@@ -427,6 +505,30 @@ func runNativeSidebarModelSelfTests() -> Bool {
     else {
         return false
     }
+    let wrapped = "> Count visits per\n user.\nsee https://a.dev/doc\ns/visits\n╭────╮\n│ hi │"
+    guard
+        nativeSidebarItems(screen: wrapped, columns: 18) == [
+            .init(kind: .quote, text: "Count visits per user.", detail: "1 line"),
+            .init(kind: .link, text: "https://a.dev/docs/visits", detail: "a.dev"),
+        ],
+        nativeSidebarUnwrap("──────\nnext\nabcdef\n│ x", columns: 6)
+            == ["──────", "next", "abcdef", "│ x"],
+        nativeSidebarUnwrap("abc\ndef", columns: 0) == ["abc", "def"],
+        nativeSidebarAgeText(
+            since: Date(timeIntervalSince1970: 0), now: Date(timeIntervalSince1970: 59))
+            == "now",
+        nativeSidebarAgeText(
+            since: Date(timeIntervalSince1970: 0), now: Date(timeIntervalSince1970: 245))
+            == "4m",
+        nativeSidebarAgeText(
+            since: Date(timeIntervalSince1970: 0), now: Date(timeIntervalSince1970: 7_300))
+            == "2h",
+        nativeSidebarAgeText(
+            since: Date(timeIntervalSince1970: 0), now: Date(timeIntervalSince1970: 90_000))
+            == "1d"
+    else {
+        return false
+    }
 
     let store = NativeSidebarItemStore()
     guard store.scan(paneId: 1, screen: "$ make\n"),
@@ -474,6 +576,16 @@ func runNativeSidebarModelSelfTests() -> Bool {
         screenLine: { "screen of \($0)" },
         nextPaneId: 11
     )
+    let earlier = NativeWindowRow(
+        tabId: 3, index: 3, title: "worker", state: .waiting, line: "",
+        since: base.addingTimeInterval(-10), isCurrent: false, isNext: false)
+    let groups = nativeWindowGroups(rows + [earlier])
+    guard groups.map(\.0) == [.needsYou, .running],
+        groups[0].1.map(\.title) == ["worker", "api", "web"],
+        groups[1].1.map(\.title) == ["logs"]
+    else {
+        return false
+    }
     return rows.map(\.title) == ["api", "web", "logs"]
         && rows.map(\.state) == [.waiting, .failed, .running]
         && rows[0].line == "Wants to edit a file"

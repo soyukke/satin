@@ -5,14 +5,37 @@ set -euo pipefail
 # server of that session.
 unset TMUX TMUX_PANE
 
-if [[ -n "${SATIN_SOCKET:-}" && -z "${SATIN_RECORDER_SIGNING_IDENTITY:-}" ]]; then
-  echo "readme-demo must run from a terminal outside Satin," >&2
-  echo "or with SATIN_RECORDER_SIGNING_IDENTITY set" >&2
-  exit 64
-fi
-if [[ "${SATIN_ALLOW_SCREEN_CAPTURE:-0}" != 1 ]]; then
-  echo "set SATIN_ALLOW_SCREEN_CAPTURE=1 to record the isolated demo window" >&2
-  exit 64
+# SATIN_README_DEMO_SCENES picks the scenes to record; the others keep
+# their assets. SATIN_README_DEMO_DRY_RUN names a directory to fill with
+# in-app stills every two seconds instead of recording anything, so it needs
+# no screen capture and may run inside Satin. The stills miss the panes'
+# Metal text but show every AppKit view around them.
+all_scenes="main work-switcher artifact hand sidebars"
+scenes=" ${SATIN_README_DEMO_SCENES:-$all_scenes} "
+dry_run="${SATIN_README_DEMO_DRY_RUN:-}"
+for scene in $scenes; do
+  if [[ " $all_scenes " != *" $scene "* ]]; then
+    echo "unknown README demo scene: $scene (choose from: $all_scenes)" >&2
+    exit 64
+  fi
+done
+wants() {
+  [[ "$scenes" == *" $1 "* ]]
+}
+
+if [[ -z "$dry_run" ]]; then
+  if [[ -n "${SATIN_SOCKET:-}" && -z "${SATIN_RECORDER_SIGNING_IDENTITY:-}" ]]; then
+    echo "readme-demo must run from a terminal outside Satin," >&2
+    echo "or with SATIN_RECORDER_SIGNING_IDENTITY set" >&2
+    exit 64
+  fi
+  if [[ "${SATIN_ALLOW_SCREEN_CAPTURE:-0}" != 1 ]]; then
+    echo "set SATIN_ALLOW_SCREEN_CAPTURE=1 to record the isolated demo window" >&2
+    exit 64
+  fi
+else
+  mkdir -p "$dry_run"
+  dry_run="$(cd "$dry_run" && pwd)"
 fi
 if [[ -z "${IN_NIX_SHELL:-}" ]]; then
   exec nix develop --command ./scripts/readme-demo "$@"
@@ -40,6 +63,8 @@ demo_root="$(mktemp -d "${TMPDIR:-/tmp}/satin-readme-demo.XXXXXX")"
 app_pid=""
 capture_pid=""
 tmux_socket=""
+current_result=""
+current_scene=""
 
 cleanup_processes() {
   if [[ -n "$capture_pid" ]] && kill -0 "$capture_pid" 2>/dev/null; then
@@ -100,22 +125,27 @@ wait_for_socket() {
   return 1
 }
 
-# The demo application starts with the attention hand off unless the scene
-# asks for it, whatever the developer's own Satin Dev preferences say.
+# The demo application starts with the attention hand off and both sidebars
+# away unless the scene asks for them, whatever the developer's own Satin Dev
+# preferences say.
 launch_demo_app() {
   local root=$1
   local scene=$2
   local hand=${3:-NO}
+  local sidebars=${4:-off,off}
   local socket="$root/control.sock"
   local result="$root/ready.result"
   local window_id="$root/window-id"
   local log="$root/app.log"
+  current_result=$result
+  current_scene=$scene
   (
     cd /tmp
     exec env -u SATIN_SOCKET -u SATIN_TAB_ID -u SATIN_PANE_ID -u SATIN_CLI \
       SATIN_CONTROL_SOCKET="$socket" \
       SATIN_NATIVE_SMOKE_SCENARIO=readme-demo \
       SATIN_README_DEMO_SCENE="$scene" \
+      SATIN_NATIVE_SMOKE_SIDEBARS="$sidebars" \
       SATIN_NATIVE_SMOKE_RESULT="$result" \
       SATIN_NATIVE_SMOKE_WINDOW_ID="$window_id" \
       "$app" -attentionHand "$hand"
@@ -191,6 +221,16 @@ record_window() {
   local output=$3
   local trailing_margin=${4:-0}
 
+  if [[ -n "$dry_run" ]]; then
+    (
+      for ((second = 0; second < duration; second += 2)); do
+        printf '%s-%02d' "$current_scene" "$second" >"$current_result.snap"
+        sleep 2
+      done
+    ) &
+    capture_pid=$!
+    return 0
+  fi
   /usr/bin/caffeinate -u -t 1
   ./scripts/native-window-record \
     "$window_id" "$duration" "$trailing_margin" "$output" &
@@ -199,6 +239,13 @@ record_window() {
 
 finish_recording() {
   local output=$1
+  if [[ -n "$dry_run" ]]; then
+    wait "$capture_pid"
+    capture_pid=""
+    sleep 0.5
+    cp "$current_result"-*.png "$dry_run"/
+    return 0
+  fi
   if ! wait "$capture_pid"; then
     capture_pid=""
     echo "README demo capture failed; allow Screen & System Audio Recording" >&2
@@ -211,13 +258,14 @@ finish_recording() {
   fi
 }
 
-main_root="$demo_root/main"
-mkdir -p "$main_root"
-chmod 700 "$main_root"
-main_workspace="$main_root/workspace"
-mkdir -p "$main_workspace"
+if wants main; then
+  main_root="$demo_root/main"
+  mkdir -p "$main_root"
+  chmod 700 "$main_root"
+  main_workspace="$main_root/workspace"
+  mkdir -p "$main_workspace"
 
-cat >"$main_root/prompt.zsh" <<'ZSH'
+  cat >"$main_root/prompt.zsh" <<'ZSH'
 precmd_functions=()
 chpwd_functions=()
 PROMPT=$'  \033[38;2;126;231;214msatin\033[0m \033[2m~/demo\033[0m ❯ '
@@ -236,7 +284,7 @@ printf '\033[48;2;86;180;255m  \033[0m '
 printf '\033[48;2;190;140;255m  \033[0m\n\n'
 ZSH
 
-cat >"$main_workspace/demo.lua" <<'LUA'
+  cat >"$main_workspace/demo.lua" <<'LUA'
 vim.opt.termguicolors = true
 vim.opt.number = true
 vim.opt.relativenumber = false
@@ -254,7 +302,7 @@ vim.cmd("syntax enable")
 vim.cmd("colorscheme habamax")
 LUA
 
-cat >"$main_workspace/renderer.ts" <<'TS'
+  cat >"$main_workspace/renderer.ts" <<'TS'
 export interface DrawCommand {
   row: number;
   text: string;
@@ -263,87 +311,88 @@ export interface DrawCommand {
 export function retainedFrame(): DrawCommand[] {
   return [
 TS
-for row in {1..140}; do
-  printf '    { row: %3d, text: "retained pane row %03d" },\n' \
-    "$row" "$row" >>"$main_workspace/renderer.ts"
-done
-cat >>"$main_workspace/renderer.ts" <<'TS'
+  for row in {1..140}; do
+    printf '    { row: %3d, text: "retained pane row %03d" },\n' \
+      "$row" "$row" >>"$main_workspace/renderer.ts"
+  done
+  cat >>"$main_workspace/renderer.ts" <<'TS'
   ];
 }
 TS
 
-git -C "$main_workspace" init -q -b main
-git -C "$main_workspace" config user.name "Satin Demo"
-git -C "$main_workspace" config user.email "demo@satin.invalid"
-git -C "$main_workspace" config commit.gpgsign false
-git -C "$main_workspace" add renderer.ts demo.lua
-GIT_AUTHOR_DATE=2026-08-01T10:00:00Z GIT_COMMITTER_DATE=2026-08-01T10:00:00Z \
-  git -C "$main_workspace" commit -qm "Add retained draw commands"
-printf '%s\n' 'cursor_animation = true' >"$main_workspace/renderer.toml"
-git -C "$main_workspace" add renderer.toml
-GIT_AUTHOR_DATE=2026-08-02T10:00:00Z GIT_COMMITTER_DATE=2026-08-02T10:00:00Z \
-  git -C "$main_workspace" commit -qm "Animate pane-local cursor state"
-printf '%s\n' 'ctrl-d' 'ctrl-u' >"$main_workspace/scroll-cases.txt"
-git -C "$main_workspace" add scroll-cases.txt
-GIT_AUTHOR_DATE=2026-08-03T10:00:00Z GIT_COMMITTER_DATE=2026-08-03T10:00:00Z \
-  git -C "$main_workspace" commit -qm "Keep smooth scroll on UI events"
-printf '%s\n' 'terminal cursor' 'native Neovim cursor' >"$main_workspace/smoke-cases.txt"
-git -C "$main_workspace" add smoke-cases.txt
-GIT_AUTHOR_DATE=2026-08-04T10:00:00Z GIT_COMMITTER_DATE=2026-08-04T10:00:00Z \
-  git -C "$main_workspace" commit -qm "Verify terminal and Neovim motion"
+  git -C "$main_workspace" init -q -b main
+  git -C "$main_workspace" config user.name "Satin Demo"
+  git -C "$main_workspace" config user.email "demo@satin.invalid"
+  git -C "$main_workspace" config commit.gpgsign false
+  git -C "$main_workspace" add renderer.ts demo.lua
+  GIT_AUTHOR_DATE=2026-08-01T10:00:00Z GIT_COMMITTER_DATE=2026-08-01T10:00:00Z \
+    git -C "$main_workspace" commit -qm "Add retained draw commands"
+  printf '%s\n' 'cursor_animation = true' >"$main_workspace/renderer.toml"
+  git -C "$main_workspace" add renderer.toml
+  GIT_AUTHOR_DATE=2026-08-02T10:00:00Z GIT_COMMITTER_DATE=2026-08-02T10:00:00Z \
+    git -C "$main_workspace" commit -qm "Animate pane-local cursor state"
+  printf '%s\n' 'ctrl-d' 'ctrl-u' >"$main_workspace/scroll-cases.txt"
+  git -C "$main_workspace" add scroll-cases.txt
+  GIT_AUTHOR_DATE=2026-08-03T10:00:00Z GIT_COMMITTER_DATE=2026-08-03T10:00:00Z \
+    git -C "$main_workspace" commit -qm "Keep smooth scroll on UI events"
+  printf '%s\n' 'terminal cursor' 'native Neovim cursor' >"$main_workspace/smoke-cases.txt"
+  git -C "$main_workspace" add smoke-cases.txt
+  GIT_AUTHOR_DATE=2026-08-04T10:00:00Z GIT_COMMITTER_DATE=2026-08-04T10:00:00Z \
+    git -C "$main_workspace" commit -qm "Verify terminal and Neovim motion"
 
-launch_demo_app "$main_root" main
-main_socket="$main_root/control.sock"
-main_pane="$("$cli" --socket "$main_socket" --json list | jq -r '.result.panes[0].id')"
-printf -v main_intro 'cd %q && source %q' "$main_workspace" "$main_root/prompt.zsh"
-"$cli" --socket "$main_socket" send --pane "$main_pane" "$main_intro" >/dev/null
-"$cli" --socket "$main_socket" key --pane "$main_pane" Enter >/dev/null
-sleep 0.8
+  launch_demo_app "$main_root" main
+  main_socket="$main_root/control.sock"
+  main_pane="$("$cli" --socket "$main_socket" --json list | jq -r '.result.panes[0].id')"
+  printf -v main_intro 'cd %q && source %q' "$main_workspace" "$main_root/prompt.zsh"
+  "$cli" --socket "$main_socket" send --pane "$main_pane" "$main_intro" >/dev/null
+  "$cli" --socket "$main_socket" key --pane "$main_pane" Enter >/dev/null
+  sleep 0.8
 
-main_window_id="$(tr -d '[:space:]' <"$main_root/window-id")"
-raw_main="$demo_root/satin-demo.mov"
-record_window "$main_window_id" 19 "$raw_main"
-sleep 0.8
-type_into_pane \
-  "$main_socket" "$main_pane" \
-  "git log --graph --decorate --oneline --color=always -4" 0.025
-"$cli" --socket "$main_socket" key --pane "$main_pane" Enter >/dev/null
-sleep 1.2
+  main_window_id="$(tr -d '[:space:]' <"$main_root/window-id")"
+  raw_main="$demo_root/satin-demo.mov"
+  record_window "$main_window_id" 19 "$raw_main"
+  sleep 0.8
+  type_into_pane \
+    "$main_socket" "$main_pane" \
+    "git log --graph --decorate --oneline --color=always -4" 0.025
+  "$cli" --socket "$main_socket" key --pane "$main_pane" Enter >/dev/null
+  sleep 1.2
 
-main_split="$("$cli" --socket "$main_socket" --json split \
-  --pane "$main_pane" --vertical --cwd "$main_workspace")"
-nvim_pane="$(jq -r '.result.pane' <<<"$main_split")"
-printf -v nvim_intro 'source %q' "$main_root/prompt.zsh"
-"$cli" --socket "$main_socket" send --pane "$nvim_pane" "$nvim_intro" >/dev/null
-"$cli" --socket "$main_socket" key --pane "$nvim_pane" Enter >/dev/null
-sleep 0.8
-type_into_pane "$main_socket" "$nvim_pane" "nvim -u demo.lua renderer.ts" 0.04
-"$cli" --socket "$main_socket" key --pane "$nvim_pane" Enter >/dev/null
-wait_for_pane_kind "$main_socket" "$nvim_pane" neovim
-sleep 0.7
-for key in l l l j j j l l; do
-  "$cli" --socket "$main_socket" send --pane "$nvim_pane" "$key" >/dev/null
-  sleep 0.24
-done
-"$cli" --socket "$main_socket" key --pane "$nvim_pane" Ctrl+D >/dev/null
-sleep 1.4
-for key in j j l l; do
-  "$cli" --socket "$main_socket" send --pane "$nvim_pane" "$key" >/dev/null
-  sleep 0.24
-done
-"$cli" --socket "$main_socket" key --pane "$nvim_pane" Ctrl+D >/dev/null
-sleep 1.4
-"$cli" --socket "$main_socket" key --pane "$nvim_pane" Ctrl+U >/dev/null
-sleep 1.5
-finish_recording "$raw_main"
-cleanup_processes
+  main_split="$("$cli" --socket "$main_socket" --json split \
+    --pane "$main_pane" --vertical --cwd "$main_workspace")"
+  nvim_pane="$(jq -r '.result.pane' <<<"$main_split")"
+  printf -v nvim_intro 'source %q' "$main_root/prompt.zsh"
+  "$cli" --socket "$main_socket" send --pane "$nvim_pane" "$nvim_intro" >/dev/null
+  "$cli" --socket "$main_socket" key --pane "$nvim_pane" Enter >/dev/null
+  sleep 0.8
+  type_into_pane "$main_socket" "$nvim_pane" "nvim -u demo.lua renderer.ts" 0.04
+  "$cli" --socket "$main_socket" key --pane "$nvim_pane" Enter >/dev/null
+  wait_for_pane_kind "$main_socket" "$nvim_pane" neovim
+  sleep 0.7
+  for key in l l l j j j l l; do
+    "$cli" --socket "$main_socket" send --pane "$nvim_pane" "$key" >/dev/null
+    sleep 0.24
+  done
+  "$cli" --socket "$main_socket" key --pane "$nvim_pane" Ctrl+D >/dev/null
+  sleep 1.4
+  for key in j j l l; do
+    "$cli" --socket "$main_socket" send --pane "$nvim_pane" "$key" >/dev/null
+    sleep 0.24
+  done
+  "$cli" --socket "$main_socket" key --pane "$nvim_pane" Ctrl+D >/dev/null
+  sleep 1.4
+  "$cli" --socket "$main_socket" key --pane "$nvim_pane" Ctrl+U >/dev/null
+  sleep 1.5
+  finish_recording "$raw_main"
+  cleanup_processes
+fi
 
 work_root="$demo_root/work-switcher"
 mkdir -p "$work_root"
 chmod 700 "$work_root"
-tmux_socket="$work_root/tmux.sock"
 tmux_session="satin-work-switcher"
 
+# The artifact scene starts its pane with the same review prompt.
 cat >"$work_root/review.zsh" <<'ZSH'
 printf '\033[2J\033[H'
 printf '\033[1;38;2;206;180;255m  SATIN\033[0m  '
@@ -360,7 +409,9 @@ printf '  \033[38;2;126;231;214msatin-demo\033[0m ❯ '
 IFS= read -r _
 ZSH
 
-cat >"$work_root/checks.zsh" <<'ZSH'
+if wants work-switcher; then
+  tmux_socket="$work_root/tmux.sock"
+  cat >"$work_root/checks.zsh" <<'ZSH'
 printf '\033[2J\033[H'
 printf '\033[1;38;2;206;180;255m  Release checks\033[0m\n'
 printf '\033[38;2;112;199;255m━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m\n\n'
@@ -372,57 +423,59 @@ printf '  \033[38;2;126;231;214msatin-demo\033[0m ❯ '
 IFS= read -r _
 ZSH
 
-tmux -f /dev/null -S "$tmux_socket" new-session -d \
-  -s "$tmux_session" -n "AI workspace" -c /tmp -x 120 -y 36
-tmux -S "$tmux_socket" split-window -h -t "$tmux_session:0" -c /tmp
-printf -v review_command 'source %q' "$work_root/review.zsh"
-printf -v checks_command 'source %q' "$work_root/checks.zsh"
-tmux -S "$tmux_socket" send-keys -l -t "$tmux_session:0.0" "$review_command"
-tmux -S "$tmux_socket" send-keys -t "$tmux_session:0.0" Enter
-tmux -S "$tmux_socket" send-keys -l -t "$tmux_session:0.1" "$checks_command"
-tmux -S "$tmux_socket" send-keys -t "$tmux_session:0.1" Enter
-tmux -S "$tmux_socket" select-pane -t "$tmux_session:0.0" -T "⠹ Codex renderer review"
-tmux -S "$tmux_socket" select-pane -t "$tmux_session:0.1" \
-  -T "[ ! ] Action Required | Claude Code"
+  tmux -f /dev/null -S "$tmux_socket" new-session -d \
+    -s "$tmux_session" -n "AI workspace" -c /tmp -x 120 -y 36
+  tmux -S "$tmux_socket" split-window -h -t "$tmux_session:0" -c /tmp
+  printf -v review_command 'source %q' "$work_root/review.zsh"
+  printf -v checks_command 'source %q' "$work_root/checks.zsh"
+  tmux -S "$tmux_socket" send-keys -l -t "$tmux_session:0.0" "$review_command"
+  tmux -S "$tmux_socket" send-keys -t "$tmux_session:0.0" Enter
+  tmux -S "$tmux_socket" send-keys -l -t "$tmux_session:0.1" "$checks_command"
+  tmux -S "$tmux_socket" send-keys -t "$tmux_session:0.1" Enter
+  tmux -S "$tmux_socket" select-pane -t "$tmux_session:0.0" -T "⠹ Codex renderer review"
+  tmux -S "$tmux_socket" select-pane -t "$tmux_session:0.1" \
+    -T "[ ! ] Action Required | Claude Code"
 
-launch_demo_app "$work_root" work-switcher
-work_socket="$work_root/control.sock"
-initial_pane="$("$cli" --socket "$work_socket" --json list | jq -r '.result.panes[0].id')"
-printf -v attach_command '%q -S %q -CC attach-session -t %q' \
-  "$(command -v tmux)" "$tmux_socket" "$tmux_session"
-"$cli" --socket "$work_socket" send --pane "$initial_pane" "$attach_command" >/dev/null
-"$cli" --socket "$work_socket" key --pane "$initial_pane" Enter >/dev/null
-work_state="$(wait_for_tmux_projection "$work_socket")"
-work_panes="$(jq -r '.result.panes[].id' <<<"$work_state" | sort -n)"
-mapfile -t work_pane_ids <<<"$work_panes"
-if [[ "${#work_pane_ids[@]}" -ne 2 ]]; then
-  echo "readme-demo expected two projected tmux panes" >&2
-  exit 1
+  launch_demo_app "$work_root" work-switcher
+  work_socket="$work_root/control.sock"
+  initial_pane="$("$cli" --socket "$work_socket" --json list | jq -r '.result.panes[0].id')"
+  printf -v attach_command '%q -S %q -CC attach-session -t %q' \
+    "$(command -v tmux)" "$tmux_socket" "$tmux_session"
+  "$cli" --socket "$work_socket" send --pane "$initial_pane" "$attach_command" >/dev/null
+  "$cli" --socket "$work_socket" key --pane "$initial_pane" Enter >/dev/null
+  work_state="$(wait_for_tmux_projection "$work_socket")"
+  work_panes="$(jq -r '.result.panes[].id' <<<"$work_state" | sort -n)"
+  mapfile -t work_pane_ids <<<"$work_panes"
+  if [[ "${#work_pane_ids[@]}" -ne 2 ]]; then
+    echo "readme-demo expected two projected tmux panes" >&2
+    exit 1
+  fi
+
+  sleep 0.8
+  work_window_id="$(tr -d '[:space:]' <"$work_root/window-id")"
+  raw_work="$demo_root/satin-work-switcher-demo.mov"
+  record_window "$work_window_id" 16 "$raw_work" 240
+  sleep 3
+  : >"$work_root/ready.result.work"
+  wait_for_file "$work_root/ready.result.work-open" "the README Work Switcher"
+  if [[ "$(<"$work_root/ready.result.work-open")" != ok\ readme-demo* ]]; then
+    echo "readme-demo Work Switcher did not open" >&2
+    exit 1
+  fi
+  sleep 6
+  tmux -S "$tmux_socket" select-pane -t "$tmux_session:0.0" -T "Codex review complete"
+  finish_recording "$raw_work"
+  cleanup_processes
 fi
 
-sleep 0.8
-work_window_id="$(tr -d '[:space:]' <"$work_root/window-id")"
-raw_work="$demo_root/satin-work-switcher-demo.mov"
-record_window "$work_window_id" 16 "$raw_work" 240
-sleep 3
-: >"$work_root/ready.result.work"
-wait_for_file "$work_root/ready.result.work-open" "the README Work Switcher"
-if [[ "$(<"$work_root/ready.result.work-open")" != ok\ readme-demo* ]]; then
-  echo "readme-demo Work Switcher did not open" >&2
-  exit 1
-fi
-sleep 6
-tmux -S "$tmux_socket" select-pane -t "$tmux_session:0.0" -T "Codex review complete"
-finish_recording "$raw_work"
-cleanup_processes
-
-artifact_root="$demo_root/artifact"
-mkdir -p "$artifact_root"
-chmod 700 "$artifact_root"
-artifact_socket="$artifact_root/control.sock"
-artifact_source="$artifact_root/release-readiness.md"
-cp assets/app-icon.png "$artifact_root/satin-icon.png"
-cat >"$artifact_source" <<'MARKDOWN'
+if wants artifact; then
+  artifact_root="$demo_root/artifact"
+  mkdir -p "$artifact_root"
+  chmod 700 "$artifact_root"
+  artifact_socket="$artifact_root/control.sock"
+  artifact_source="$artifact_root/release-readiness.md"
+  cp assets/app-icon.png "$artifact_root/satin-icon.png"
+  cat >"$artifact_source" <<'MARKDOWN'
 # Satin release readiness
 
 The current workspace keeps terminal, tmux, Neovim, and AI-produced reports
@@ -443,52 +496,54 @@ satin artifact show "$id"
 ![Current Satin icon](satin-icon.png)
 MARKDOWN
 
-"$cli" --socket "$artifact_socket" artifact policy set \
-  --max-columns 80 --max-rows 32 --language en-US --overflow compact >/dev/null
-artifact_registration="$("$cli" --socket "$artifact_socket" --json artifact add \
-  --kind markdown --title "Satin release readiness" --language en-US \
-  --file "$artifact_source")"
-artifact_id="$(jq -r '.result.id' <<<"$artifact_registration")"
+  "$cli" --socket "$artifact_socket" artifact policy set \
+    --max-columns 80 --max-rows 32 --language en-US --overflow compact >/dev/null
+  artifact_registration="$("$cli" --socket "$artifact_socket" --json artifact add \
+    --kind markdown --title "Satin release readiness" --language en-US \
+    --file "$artifact_source")"
+  artifact_id="$(jq -r '.result.id' <<<"$artifact_registration")"
 
-launch_demo_app "$artifact_root" artifact
-artifact_pane="$("$cli" --socket "$artifact_socket" --json list | jq -r '.result.panes[0].id')"
-printf -v artifact_intro 'source %q' "$work_root/review.zsh"
-"$cli" --socket "$artifact_socket" send --pane "$artifact_pane" "$artifact_intro" >/dev/null
-"$cli" --socket "$artifact_socket" key --pane "$artifact_pane" Enter >/dev/null
-sleep 0.8
-artifact_window_id="$(tr -d '[:space:]' <"$artifact_root/window-id")"
-raw_artifact="$demo_root/satin-artifact-demo.mov"
-record_window "$artifact_window_id" 16 "$raw_artifact"
-sleep 3
-"$cli" --socket "$artifact_socket" artifact show --pane "$artifact_pane" "$artifact_id" \
-  >/dev/null
-sleep 6
-printf '\nUpdated after the final native smoke passed.\n' >>"$artifact_source"
-"$cli" --socket "$artifact_socket" artifact add --id "$artifact_id" \
-  --kind markdown --title "Satin release readiness" --language en-US \
-  --file "$artifact_source" >/dev/null
-"$cli" --socket "$artifact_socket" artifact show --pane "$artifact_pane" "$artifact_id" \
-  >/dev/null
-finish_recording "$raw_artifact"
-cleanup_processes
+  launch_demo_app "$artifact_root" artifact
+  artifact_pane="$("$cli" --socket "$artifact_socket" --json list | jq -r '.result.panes[0].id')"
+  printf -v artifact_intro 'source %q' "$work_root/review.zsh"
+  "$cli" --socket "$artifact_socket" send --pane "$artifact_pane" "$artifact_intro" >/dev/null
+  "$cli" --socket "$artifact_socket" key --pane "$artifact_pane" Enter >/dev/null
+  sleep 0.8
+  artifact_window_id="$(tr -d '[:space:]' <"$artifact_root/window-id")"
+  raw_artifact="$demo_root/satin-artifact-demo.mov"
+  record_window "$artifact_window_id" 16 "$raw_artifact"
+  sleep 3
+  "$cli" --socket "$artifact_socket" artifact show --pane "$artifact_pane" "$artifact_id" \
+    >/dev/null
+  sleep 6
+  printf '\nUpdated after the final native smoke passed.\n' >>"$artifact_source"
+  "$cli" --socket "$artifact_socket" artifact add --id "$artifact_id" \
+    --kind markdown --title "Satin release readiness" --language en-US \
+    --file "$artifact_source" >/dev/null
+  "$cli" --socket "$artifact_socket" artifact show --pane "$artifact_pane" "$artifact_id" \
+    >/dev/null
+  finish_recording "$raw_artifact"
+  cleanup_processes
+fi
 
-hand_root="$demo_root/hand"
-mkdir -p "$hand_root"
-chmod 700 "$hand_root"
-hand_workspace="$hand_root/workspace"
-mkdir -p "$hand_workspace"
-git -C "$hand_workspace" init -q -b main
-git -C "$hand_workspace" config user.name "Satin Demo"
-git -C "$hand_workspace" config user.email "demo@satin.invalid"
-git -C "$hand_workspace" config commit.gpgsign false
-for subject in "Add the users table" "Count visits per user" "Render the visits chart"; do
-  printf '%s\n' "$subject" >>"$hand_workspace/notes.txt"
-  git -C "$hand_workspace" add notes.txt
-  GIT_AUTHOR_DATE=2026-08-01T10:00:00Z GIT_COMMITTER_DATE=2026-08-01T10:00:00Z \
-    git -C "$hand_workspace" commit -qm "$subject"
-done
+if wants hand; then
+  hand_root="$demo_root/hand"
+  mkdir -p "$hand_root"
+  chmod 700 "$hand_root"
+  hand_workspace="$hand_root/workspace"
+  mkdir -p "$hand_workspace"
+  git -C "$hand_workspace" init -q -b main
+  git -C "$hand_workspace" config user.name "Satin Demo"
+  git -C "$hand_workspace" config user.email "demo@satin.invalid"
+  git -C "$hand_workspace" config commit.gpgsign false
+  for subject in "Add the users table" "Count visits per user" "Render the visits chart"; do
+    printf '%s\n' "$subject" >>"$hand_workspace/notes.txt"
+    git -C "$hand_workspace" add notes.txt
+    GIT_AUTHOR_DATE=2026-08-01T10:00:00Z GIT_COMMITTER_DATE=2026-08-01T10:00:00Z \
+      git -C "$hand_workspace" commit -qm "$subject"
+  done
 
-cat >"$hand_root/prompt.zsh" <<'ZSH'
+  cat >"$hand_root/prompt.zsh" <<'ZSH'
 precmd_functions=()
 chpwd_functions=()
 PROMPT=$'  \033[38;2;126;231;214msatin\033[0m \033[2m~/demo\033[0m ❯ '
@@ -496,9 +551,9 @@ RPROMPT=''
 printf '\033[2J\033[H'
 ZSH
 
-# Each agent pane prints its question, then waits for the answer the recipe
-# types after it plays that pane's card.
-cat >"$hand_root/api.zsh" <<'ZSH'
+  # Each agent pane prints its question, then waits for the answer the recipe
+  # types after it plays that pane's card.
+  cat >"$hand_root/api.zsh" <<'ZSH'
 printf '\033[2J\033[H'
 printf '\033[1;38;2;206;180;255m  agent · api\033[0m\n\n'
 printf '  \033[1;36m●\033[0m  planning the schema change\n\n'
@@ -508,7 +563,7 @@ IFS= read -r _
 printf '\n  \033[1;36m●\033[0m  working…\n'
 IFS= read -r _
 ZSH
-cat >"$hand_root/web.zsh" <<'ZSH'
+  cat >"$hand_root/web.zsh" <<'ZSH'
 printf '\033[2J\033[H'
 printf '\033[1;38;2;206;180;255m  agent · web\033[0m\n\n'
 printf '  \033[1;36m●\033[0m  npm run build\n\n'
@@ -517,7 +572,7 @@ printf '     \033[1;31merror\033[0m  visits is possibly undefined\n\n'
 printf '  \033[1;31m×\033[0m  build failed · 1 error '
 IFS= read -r _
 ZSH
-cat >"$hand_root/docs.zsh" <<'ZSH'
+  cat >"$hand_root/docs.zsh" <<'ZSH'
 printf '\033[2J\033[H'
 printf '\033[1;38;2;206;180;255m  agent · docs\033[0m\n\n'
 printf '  \033[1;36m●\033[0m  rewriting the setup guide\n\n'
@@ -525,7 +580,7 @@ printf '     README.md   3 hunks\n     guide.md    1 hunk\n\n'
 printf '  \033[1;32m✓\033[0m  done in 41s '
 IFS= read -r _
 ZSH
-cat >"$hand_root/worker.zsh" <<'ZSH'
+  cat >"$hand_root/worker.zsh" <<'ZSH'
 printf '\033[2J\033[H'
 printf '\033[1;38;2;206;180;255m  agent · worker\033[0m\n\n'
 printf '  \033[1;36m●\033[0m  checking dependencies\n\n'
@@ -536,83 +591,221 @@ printf '\n  \033[1;36m●\033[0m  working…\n'
 IFS= read -r _
 ZSH
 
-launch_demo_app "$hand_root" hand YES
-hand_socket="$hand_root/control.sock"
-hand() {
-  "$cli" --socket "$hand_socket" "$@"
-}
-# A pane takes input once its shell has started.
-send_when_ready() {
-  local pane=$1
-  local text=$2
-  for _ in {1..80}; do
-    if hand send --pane "$pane" "$text" >/dev/null 2>&1; then
-      hand key --pane "$pane" Enter >/dev/null
-      return 0
-    fi
-    sleep 0.1
+  launch_demo_app "$hand_root" hand YES
+  hand_socket="$hand_root/control.sock"
+  hand() {
+    "$cli" --socket "$hand_socket" "$@"
+  }
+  # A pane takes input once its shell has started.
+  send_when_ready() {
+    local pane=$1
+    local text=$2
+    for _ in {1..80}; do
+      if hand send --pane "$pane" "$text" >/dev/null 2>&1; then
+        hand key --pane "$pane" Enter >/dev/null
+        return 0
+      fi
+      sleep 0.1
+    done
+    echo "readme-demo pane $pane never accepted input" >&2
+    return 1
+  }
+  hand_main="$(hand --json list | jq -r '.result.panes[0].id')"
+  printf -v hand_intro 'cd %q && source %q' "$hand_workspace" "$hand_root/prompt.zsh"
+  send_when_ready "$hand_main" "$hand_intro"
+  declare -A hand_pane
+  for name in api web docs worker; do
+    hand_pane[$name]="$(hand --json new-tab --cwd "$hand_workspace" --title "$name" \
+      --background | jq -r '.result.pane')"
   done
-  echo "readme-demo pane $pane never accepted input" >&2
-  return 1
-}
-hand_main="$(hand --json list | jq -r '.result.panes[0].id')"
-printf -v hand_intro 'cd %q && source %q' "$hand_workspace" "$hand_root/prompt.zsh"
-send_when_ready "$hand_main" "$hand_intro"
-declare -A hand_pane
-for name in api web docs worker; do
-  hand_pane[$name]="$(hand --json new-tab --cwd "$hand_workspace" --title "$name" \
-    --background | jq -r '.result.pane')"
-done
-for name in api web docs worker; do
-  printf -v agent_start 'source %q' "$hand_root/$name.zsh"
-  send_when_ready "${hand_pane[$name]}" "$agent_start"
-  hand status set --pane "${hand_pane[$name]}" running "Agent working" >/dev/null
-done
-sleep 1.5
+  for name in api web docs worker; do
+    printf -v agent_start 'source %q' "$hand_root/$name.zsh"
+    send_when_ready "${hand_pane[$name]}" "$agent_start"
+    hand status set --pane "${hand_pane[$name]}" running "Agent working" >/dev/null
+  done
+  sleep 1.5
 
-answer_card() {
-  local name=$1
-  local summary=$2
-  sleep 0.9
-  hand send --pane "${hand_pane[$name]}" y >/dev/null
-  hand key --pane "${hand_pane[$name]}" Enter >/dev/null
-  hand status set --pane "${hand_pane[$name]}" running "$summary" >/dev/null
-}
+  answer_card() {
+    local name=$1
+    local summary=$2
+    sleep 0.9
+    hand send --pane "${hand_pane[$name]}" y >/dev/null
+    hand key --pane "${hand_pane[$name]}" Enter >/dev/null
+    hand status set --pane "${hand_pane[$name]}" running "$summary" >/dev/null
+  }
 
-hand_window_id="$(tr -d '[:space:]' <"$hand_root/window-id")"
-raw_hand="$demo_root/satin-attention-hand-demo.mov"
-record_window "$hand_window_id" 24 "$raw_hand"
-sleep 0.8
-type_into_pane "$hand_socket" "$hand_main" "git log --graph --oneline --color=always" 0.02
-hand key --pane "$hand_main" Enter >/dev/null
-sleep 0.8
-hand status set --pane "${hand_pane[api]}" waiting "Apply the migration?" >/dev/null
-sleep 2.2
-hand status set --pane "${hand_pane[web]}" failed \
-  "Build failed: visits is possibly undefined" >/dev/null
-sleep 1.8
-hand status set --pane "${hand_pane[worker]}" waiting "Update zod and vitest?" >/dev/null
-sleep 1.6
-hand status set --pane "${hand_pane[docs]}" "done" "Setup guide rewritten" >/dev/null
-sleep 2.6
-# Command-J held: choose the first card, move to the next, then let go.
-: >"$hand_root/ready.result.select"
-sleep 1.6
-: >"$hand_root/ready.result.select"
-sleep 1.3
-: >"$hand_root/ready.result.commit"
-answer_card worker "Updating dependencies"
-sleep 1.3
-: >"$hand_root/ready.result.play"
-answer_card api "Applying the migration"
-sleep 1.3
-: >"$hand_root/ready.result.play"
-sleep 1.4
-hand status set --pane "${hand_pane[web]}" idle "" >/dev/null
-sleep 0.6
-: >"$hand_root/ready.result.play"
-finish_recording "$raw_hand"
-cleanup_processes
+  hand_window_id="$(tr -d '[:space:]' <"$hand_root/window-id")"
+  raw_hand="$demo_root/satin-attention-hand-demo.mov"
+  record_window "$hand_window_id" 24 "$raw_hand"
+  sleep 0.8
+  type_into_pane "$hand_socket" "$hand_main" "git log --graph --oneline --color=always" 0.02
+  hand key --pane "$hand_main" Enter >/dev/null
+  sleep 0.8
+  hand status set --pane "${hand_pane[api]}" waiting "Apply the migration?" >/dev/null
+  sleep 2.2
+  hand status set --pane "${hand_pane[web]}" failed \
+    "Build failed: visits is possibly undefined" >/dev/null
+  sleep 1.8
+  hand status set --pane "${hand_pane[worker]}" waiting "Update zod and vitest?" >/dev/null
+  sleep 1.6
+  hand status set --pane "${hand_pane[docs]}" "done" "Setup guide rewritten" >/dev/null
+  sleep 2.6
+  # Command-J held: choose the first card, move to the next, then let go.
+  : >"$hand_root/ready.result.select"
+  sleep 1.6
+  : >"$hand_root/ready.result.select"
+  sleep 1.3
+  : >"$hand_root/ready.result.commit"
+  answer_card worker "Updating dependencies"
+  sleep 1.3
+  : >"$hand_root/ready.result.play"
+  answer_card api "Applying the migration"
+  sleep 1.3
+  : >"$hand_root/ready.result.play"
+  sleep 1.4
+  hand status set --pane "${hand_pane[web]}" idle "" >/dev/null
+  sleep 0.6
+  : >"$hand_root/ready.result.play"
+  finish_recording "$raw_hand"
+  cleanup_processes
+fi
+
+if wants sidebars; then
+  side_root="$demo_root/sidebars"
+  mkdir -p "$side_root"
+  chmod 700 "$side_root"
+  side_workspace="$side_root/workspace"
+  mkdir -p "$side_workspace"
+  git -C "$side_workspace" init -q -b main
+  git -C "$side_workspace" config user.name "Satin Demo"
+  git -C "$side_workspace" config user.email "demo@satin.invalid"
+  git -C "$side_workspace" config commit.gpgsign false
+  for subject in "Add the users table" "Count visits per user" "Render the visits chart"; do
+    printf '%s\n' "$subject" >>"$side_workspace/notes.txt"
+    git -C "$side_workspace" add notes.txt
+    GIT_AUTHOR_DATE=2026-08-01T10:00:00Z GIT_COMMITTER_DATE=2026-08-01T10:00:00Z \
+      git -C "$side_workspace" commit -qm "$subject"
+  done
+
+  # The agent pane writes what the items sidebar picks up, one step each time
+  # the recipe presses Enter in it: files it touched, a command to run and a
+  # quote, then a link and a failing line. Then the pane is a shell again.
+  cat >"$side_root/agent.zsh" <<'ZSH'
+printf '\033[2J\033[H'
+printf '\033[1;38;2;206;180;255m  agent · api\033[0m\n\n'
+printf '\033[1;36m●\033[0m Read(src/routes/users.ts)\n'
+printf '\033[1;36m●\033[0m Update(src/db/visits.sql)\n'
+printf '  \033[2m⎿  Added an index on visits.user_id\033[0m\n\n'
+IFS= read -r _
+printf '\033[1;36m●\033[0m Check the history first:\n'
+printf '  \033[1;35m!\033[0m git log --oneline -3\n\n'
+printf '> Count visits per user, newest first.\n'
+printf '> Keep the chart query under 50 ms.\n\n'
+IFS= read -r _
+printf '\033[1;36m●\033[0m Query plan: https://example.com/docs/visits-index\n'
+printf '  \033[1;31merror\033[0m src/routes/users.ts:42 visits is possibly undefined\n\n'
+precmd_functions=()
+chpwd_functions=()
+zle_highlight=(paste:none)
+PROMPT=$'  %{\033[38;2;126;231;214m%}satin%{\033[0m%} %{\033[2m%}~/demo%{\033[0m%} ❯ '
+RPROMPT=''
+ZSH
+  cat >"$side_root/web.zsh" <<'ZSH'
+printf '\033[2J\033[H'
+printf '\033[1;38;2;206;180;255m  agent · web\033[0m\n\n'
+printf '  \033[1;36m●\033[0m  npm run build\n'
+IFS= read -r _
+ZSH
+  cat >"$side_root/docs.zsh" <<'ZSH'
+printf '\033[2J\033[H'
+printf '\033[1;38;2;206;180;255m  agent · docs\033[0m\n\n'
+printf '  \033[1;36m●\033[0m  rewriting the setup guide\n'
+IFS= read -r _
+ZSH
+  cat >"$side_root/worker.zsh" <<'ZSH'
+printf '\033[2J\033[H'
+printf '\033[1;38;2;206;180;255m  agent · worker\033[0m\n\n'
+printf '  \033[1;33m?\033[0m  Update zod and vitest? (y/n) '
+IFS= read -r _
+ZSH
+
+  launch_demo_app "$side_root" sidebars YES open,rail
+  side_socket="$side_root/control.sock"
+  side() {
+    "$cli" --socket "$side_socket" "$@"
+  }
+  side_send() {
+    local pane=$1
+    local text=$2
+    for _ in {1..80}; do
+      if side send --pane "$pane" "$text" >/dev/null 2>&1; then
+        side key --pane "$pane" Enter >/dev/null
+        return 0
+      fi
+      sleep 0.1
+    done
+    echo "readme-demo pane $pane never accepted input" >&2
+    return 1
+  }
+  side_agent="$(side --json list | jq -r '.result.panes[0].id')"
+  side rename-tab --tab "$(side --json list | jq -r '.result.tabs[0].id')" api >/dev/null
+  printf -v side_agent_start 'cd %q && source %q' "$side_workspace" "$side_root/agent.zsh"
+  side_send "$side_agent" "$side_agent_start"
+  side status set --pane "$side_agent" running "Adding the visits index" >/dev/null
+  declare -A side_pane
+  for name in web docs worker; do
+    side_pane[$name]="$(side --json new-tab --cwd "$side_workspace" --title "$name" \
+      --background | jq -r '.result.pane')"
+  done
+  for name in web docs worker; do
+    printf -v agent_start 'source %q' "$side_root/$name.zsh"
+    side_send "${side_pane[$name]}" "$agent_start"
+  done
+  side status set --pane "${side_pane[web]}" running "npm run build" >/dev/null
+  side status set --pane "${side_pane[docs]}" running "Rewriting the setup guide" >/dev/null
+  side status set --pane "${side_pane[worker]}" running "Checking dependencies" >/dev/null
+  sleep 1.5
+
+  side_window_id="$(tr -d '[:space:]' <"$side_root/window-id")"
+  raw_side="$demo_root/satin-sidebars-demo.mov"
+  record_window "$side_window_id" 26 "$raw_side"
+  sleep 1.4
+  : >"$side_root/ready.result.right"
+  sleep 1.2
+  side key --pane "$side_agent" Enter >/dev/null
+  sleep 1.4
+  side status set --pane "${side_pane[web]}" failed \
+    "Build failed: visits is possibly undefined" >/dev/null
+  sleep 1.0
+  side key --pane "$side_agent" Enter >/dev/null
+  sleep 1.0
+  side status set --pane "${side_pane[worker]}" waiting "Update zod and vitest?" >/dev/null
+  sleep 1.0
+  side status set --pane "${side_pane[docs]}" "done" "Setup guide rewritten" >/dev/null
+  sleep 1.6
+  # Option-click the command: Satin pastes it into the pane, which runs it.
+  : >"$side_root/ready.result.copycommand"
+  sleep 1.6
+  side key --pane "$side_agent" Enter >/dev/null
+  sleep 1.6
+  : >"$side_root/ready.result.copylink"
+  sleep 1.6
+  side status set --pane "$side_agent" waiting "Apply the migration?" >/dev/null
+  sleep 0.6
+  # Every tab's items, then Command-J plays the foil card: the agent that has
+  # waited longest.
+  : >"$side_root/ready.result.scope"
+  sleep 1.0
+  : >"$side_root/ready.result.play"
+  sleep 2.0
+  : >"$side_root/ready.result.left"
+  sleep 2.6
+  : >"$side_root/ready.result.mode"
+  sleep 1.6
+  : >"$side_root/ready.result.left"
+  finish_recording "$raw_side"
+  cleanup_processes
+fi
 
 render_demo() {
   local input=$1
@@ -647,49 +840,34 @@ render_demo() {
   fi
 }
 
-render_demo "$raw_main" satin-demo 12
-render_demo "$raw_work" satin-work-switcher-demo 8
-render_demo "$raw_artifact" satin-artifact-demo 8
-render_demo "$raw_hand" satin-attention-hand-demo 12
+if [[ -n "$dry_run" ]]; then
+  ls "$dry_run"
+  exit 0
+fi
 
-chmod 644 \
-  "$demo_root/satin-demo.mp4" \
-  "$demo_root/satin-demo.gif" \
-  "$demo_root/satin-demo-poster.png" \
-  "$demo_root/satin-work-switcher-demo.mp4" \
-  "$demo_root/satin-work-switcher-demo.gif" \
-  "$demo_root/satin-work-switcher-demo-poster.png" \
-  "$demo_root/satin-artifact-demo.mp4" \
-  "$demo_root/satin-artifact-demo.gif" \
-  "$demo_root/satin-artifact-demo-poster.png" \
-  "$demo_root/satin-attention-hand-demo.mp4" \
-  "$demo_root/satin-attention-hand-demo.gif" \
-  "$demo_root/satin-attention-hand-demo-poster.png"
-mv -f "$demo_root/satin-demo.mp4" assets/satin-demo.mp4
-mv -f "$demo_root/satin-demo.gif" assets/satin-demo.gif
-mv -f "$demo_root/satin-demo-poster.png" assets/satin-demo-poster.png
-mv -f "$demo_root/satin-work-switcher-demo.mp4" assets/satin-work-switcher-demo.mp4
-mv -f "$demo_root/satin-work-switcher-demo.gif" assets/satin-work-switcher-demo.gif
-mv -f "$demo_root/satin-work-switcher-demo-poster.png" \
-  assets/satin-work-switcher-demo-poster.png
-mv -f "$demo_root/satin-artifact-demo.mp4" assets/satin-artifact-demo.mp4
-mv -f "$demo_root/satin-artifact-demo.gif" assets/satin-artifact-demo.gif
-mv -f "$demo_root/satin-artifact-demo-poster.png" assets/satin-artifact-demo-poster.png
-mv -f "$demo_root/satin-attention-hand-demo.mp4" assets/satin-attention-hand-demo.mp4
-mv -f "$demo_root/satin-attention-hand-demo.gif" assets/satin-attention-hand-demo.gif
-mv -f "$demo_root/satin-attention-hand-demo-poster.png" \
-  assets/satin-attention-hand-demo-poster.png
+rendered=()
+render_scene() {
+  local scene=$1
+  local input=$2
+  local name=$3
+  local poster_second=$4
+  if wants "$scene"; then
+    render_demo "$input" "$name" "$poster_second"
+    rendered+=("$name")
+  fi
+}
+render_scene main "${raw_main:-}" satin-demo 12
+render_scene work-switcher "${raw_work:-}" satin-work-switcher-demo 8
+render_scene artifact "${raw_artifact:-}" satin-artifact-demo 8
+render_scene hand "${raw_hand:-}" satin-attention-hand-demo 12
+render_scene sidebars "${raw_side:-}" satin-sidebars-demo 14
 
-ls -lh \
-  assets/satin-demo.mp4 \
-  assets/satin-demo.gif \
-  assets/satin-demo-poster.png \
-  assets/satin-work-switcher-demo.mp4 \
-  assets/satin-work-switcher-demo.gif \
-  assets/satin-work-switcher-demo-poster.png \
-  assets/satin-artifact-demo.mp4 \
-  assets/satin-artifact-demo.gif \
-  assets/satin-artifact-demo-poster.png \
-  assets/satin-attention-hand-demo.mp4 \
-  assets/satin-attention-hand-demo.gif \
-  assets/satin-attention-hand-demo-poster.png
+for name in "${rendered[@]}"; do
+  for file in "$name.mp4" "$name.gif" "$name-poster.png"; do
+    chmod 644 "$demo_root/$file"
+    mv -f "$demo_root/$file" "assets/$file"
+  done
+done
+for name in "${rendered[@]}"; do
+  ls -lh "assets/$name.mp4" "assets/$name.gif" "assets/$name-poster.png"
+done

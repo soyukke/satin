@@ -124,9 +124,11 @@ saved. With the hand off, `Command-J` cycles through the waiting panes.
 ### Sidebars
 
 The sidebars are experimental. The windows sidebar on the left deals every
-tab as a card in the attention hand's style: a gem and an edge in the tab's
-state (waiting, failed, clear, running, or idle), the line the tab last
-printed or its agent last said, and a gauge for how long it has waited. The
+tab as a card in the attention hand's style, under a heading for its state:
+needs you (waiting or failed, the longest wait first), running, done, and
+idle. A card shows a gem and an edge in that state's color, the line the tab
+last printed or its agent last said, how long it has been so, and a gauge for
+how long it has waited. The
 card `Command-J` plays next carries a foil. Click a card to go to its tab,
 double-click to rename it, or right-click for its actions. While this sidebar
 is open its cards are the hand, so the hand along the lower edge only comes
@@ -143,6 +145,20 @@ unread pages stay here instead of fanning out over the panes.
 `Command-B` and `Option-Command-B` fold each sidebar to a rail of gems or of
 counts and open it again. View › Tab Bar Instead of Windows Sidebar brings the
 tab strip back.
+
+<p align="center">
+  <a href="assets/satin-sidebars-demo.mp4">
+    <img src="assets/satin-sidebars-demo.gif" width="880"
+      alt="Satin's windows sidebar of agent cards beside an items sidebar of commands, quotes, links and files">
+  </a>
+</p>
+
+<p align="center">
+  <sub>Four agents change state on their cards while the items sidebar gathers
+  what one printed; an Option-click pastes its command, Command-J plays the
+  foil card, and the windows sidebar folds to gems, in both looks. Click for
+  the 26-second MP4.</sub>
+</p>
 
 ### Work Switcher
 

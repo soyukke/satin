@@ -250,6 +250,13 @@ final class NativeItemsSidebarView: NSView {
     func rowsForSmoke() -> [NativeSidebarItem] {
         content.compactMap { ($0 as? NativeItemRowView)?.item }
     }
+
+    /// Presses the first row of a kind as a click would, pasting when asked.
+    func pressFirstRowForSmoke(_ kind: NativeSidebarItemKind, paste: Bool) {
+        content.lazy.compactMap { $0 as? NativeItemRowView }
+            .first { $0.item.kind == kind }?
+            .pressForSmoke(paste: paste)
+    }
 }
 
 /// The groups the items sidebar shows.
@@ -434,6 +441,16 @@ final class NativeItemRowView: NSView {
     override func accessibilityPerformPress() -> Bool {
         press(paste: false)
         return true
+    }
+
+    /// Shows the pointer over the row while it presses it.
+    func pressForSmoke(paste: Bool) {
+        hovering = true
+        press(paste: paste)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.4) { [weak self] in
+            self?.hovering = false
+            self?.needsDisplay = true
+        }
     }
 
     private func press(paste: Bool) {
