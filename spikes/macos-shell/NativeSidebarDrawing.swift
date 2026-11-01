@@ -140,8 +140,10 @@ final class NativeSidebarComet {
         track.frame = frame
         track.isHidden = !running
         let color = NativePageStyle.teal
-        comet.colors = [color.withAlphaComponent(0).cgColor, color.cgColor]
-        let width = frame.width * 0.45
+        comet.colors = [
+            color.withAlphaComponent(0).cgColor, color.withAlphaComponent(0.55).cgColor,
+        ]
+        let width = frame.width * 0.35
         comet.bounds = CGRect(x: 0, y: 0, width: width, height: frame.height)
         comet.position = CGPoint(x: frame.width * 0.62, y: frame.height / 2)
         CATransaction.commit()
@@ -152,13 +154,18 @@ final class NativeSidebarComet {
         guard comet.animation(forKey: Self.key) == nil else {
             return
         }
+        // A slow drift with a rest after each pass, so a column of running
+        // cards reads as calm.
         let sweep = CABasicAnimation(keyPath: "position.x")
         sweep.fromValue = -width / 2
         sweep.toValue = frame.width + width / 2
-        sweep.duration = 1.6
-        sweep.repeatCount = .infinity
-        sweep.preferredFrameRateRange = NativeHandEffects.ambientFrameRate
+        sweep.duration = 4.2
         sweep.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
-        comet.add(sweep, forKey: Self.key)
+        let pass = CAAnimationGroup()
+        pass.animations = [sweep]
+        pass.duration = 6
+        pass.repeatCount = .infinity
+        pass.preferredFrameRateRange = NativeHandEffects.ambientFrameRate
+        comet.add(pass, forKey: Self.key)
     }
 }

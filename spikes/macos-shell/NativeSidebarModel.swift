@@ -59,6 +59,49 @@ enum NativeWindowState: Int, Equatable {
 }
 
 /// One tab as a card in the windows sidebar.
+/// The headings the windows sidebar sorts its cards under, most urgent
+/// first.
+enum NativeWindowGroup: Int, CaseIterable, Equatable {
+    case needsYou
+    case running
+    case done
+    case idle
+
+    init(_ state: NativeWindowState) {
+        switch state {
+        case .waiting, .failed: self = .needsYou
+        case .running: self = .running
+        case .clear: self = .done
+        case .idle: self = .idle
+        }
+    }
+
+    var title: String {
+        switch self {
+        case .needsYou: "NEEDS YOU"
+        case .running: "RUNNING"
+        case .done: "DONE"
+        case .idle: "IDLE"
+        }
+    }
+}
+
+/// The rows under their headings, leaving out empty ones. What needs you
+/// reads as the hand deals it: waiting before failed, the longest first;
+/// the rest keep their tabs' order.
+func nativeWindowGroups(_ rows: [NativeWindowRow]) -> [(NativeWindowGroup, [NativeWindowRow])] {
+    NativeWindowGroup.allCases.compactMap { group in
+        var members = rows.filter { NativeWindowGroup($0.state) == group }
+        if group == .needsYou {
+            members.sort {
+                ($0.state == .waiting ? 0 : 1, $0.since ?? .distantFuture, $0.index)
+                    < ($1.state == .waiting ? 0 : 1, $1.since ?? .distantFuture, $1.index)
+            }
+        }
+        return members.isEmpty ? nil : (group, members)
+    }
+}
+
 struct NativeWindowRow: Equatable {
     let tabId: Int
     let index: Int
@@ -205,6 +248,18 @@ func nativeSidebarCleanLine(_ raw: String) -> (text: String, boxed: Bool) {
         text = String(trimmed)
     }
     return (text, boxed)
+}
+
+/// How long a window has been in its state, to the minute: a card's age
+/// should not tick.
+func nativeSidebarAgeText(since: Date, now: Date) -> String {
+    let minutes = max(0, Int(now.timeIntervalSince(since))) / 60
+    switch minutes {
+    case 0: return "now"
+    case ..<60: return "\(minutes)m"
+    case ..<1_440: return "\(minutes / 60)h"
+    default: return "\(minutes / 1_440)d"
+    }
 }
 
 /// The screen's rows with each row the terminal wrapped joined to the next:
@@ -458,7 +513,19 @@ func runNativeSidebarModelSelfTests() -> Bool {
         ],
         nativeSidebarUnwrap("──────\nnext\nabcdef\n│ x", columns: 6)
             == ["──────", "next", "abcdef", "│ x"],
-        nativeSidebarUnwrap("abc\ndef", columns: 0) == ["abc", "def"]
+        nativeSidebarUnwrap("abc\ndef", columns: 0) == ["abc", "def"],
+        nativeSidebarAgeText(
+            since: Date(timeIntervalSince1970: 0), now: Date(timeIntervalSince1970: 59))
+            == "now",
+        nativeSidebarAgeText(
+            since: Date(timeIntervalSince1970: 0), now: Date(timeIntervalSince1970: 245))
+            == "4m",
+        nativeSidebarAgeText(
+            since: Date(timeIntervalSince1970: 0), now: Date(timeIntervalSince1970: 7_300))
+            == "2h",
+        nativeSidebarAgeText(
+            since: Date(timeIntervalSince1970: 0), now: Date(timeIntervalSince1970: 90_000))
+            == "1d"
     else {
         return false
     }
@@ -509,6 +576,16 @@ func runNativeSidebarModelSelfTests() -> Bool {
         screenLine: { "screen of \($0)" },
         nextPaneId: 11
     )
+    let earlier = NativeWindowRow(
+        tabId: 3, index: 3, title: "worker", state: .waiting, line: "",
+        since: base.addingTimeInterval(-10), isCurrent: false, isNext: false)
+    let groups = nativeWindowGroups(rows + [earlier])
+    guard groups.map(\.0) == [.needsYou, .running],
+        groups[0].1.map(\.title) == ["worker", "api", "web"],
+        groups[1].1.map(\.title) == ["logs"]
+    else {
+        return false
+    }
     return rows.map(\.title) == ["api", "web", "logs"]
         && rows.map(\.state) == [.waiting, .failed, .running]
         && rows[0].line == "Wants to edit a file"

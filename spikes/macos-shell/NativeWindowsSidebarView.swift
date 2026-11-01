@@ -1,9 +1,9 @@
 import AppKit
 import QuartzCore
 
-/// The tabs as cards down the left side: the attention hand stood on end,
-/// with the tabs that need nothing at the table too. Folded, it is a rail of
-/// gems.
+/// The tabs as cards down the left side, under headings by state: the
+/// attention hand stood on end, with the tabs that need nothing at the
+/// table too. Folded, it is a rail of gems with a rule between the states.
 final class NativeWindowsSidebarView: NSView {
     static let openWidth: CGFloat = 264
     static let railWidth: CGFloat = 52
@@ -24,6 +24,9 @@ final class NativeWindowsSidebarView: NSView {
     private let newTabButton = NativeHoverIconButton(symbolName: "plus", title: "New Tab")
     private let foldButton = NativeHoverIconButton(
         symbolName: "sidebar.left", title: "Fold the Windows Sidebar (⌘B)")
+    private var groups: [(NativeWindowGroup, [NativeWindowRow])] = []
+    private var headings: [(String, CGFloat)] = []
+    private var rules: [CGFloat] = []
     private var cards: [NativeWindowCardView] = []
     private var gems: [NativeWindowGemView] = []
     private var clock: Timer?
@@ -38,6 +41,9 @@ final class NativeWindowsSidebarView: NSView {
         }
         newTabButton.action = #selector(newTab)
         foldButton.action = #selector(fold)
+        document.drawing = { [weak self] in
+            self?.drawGroups()
+        }
         setAccessibilityElement(true)
         setAccessibilityRole(.group)
         setAccessibilityLabel("Windows")
@@ -68,16 +74,19 @@ final class NativeWindowsSidebarView: NSView {
     }
 
     func update(rows: [NativeWindowRow], sessionName: String) {
-        let shapeChanged = rows.map(\.tabId) != self.rows.map(\.tabId)
+        let groups = nativeWindowGroups(rows)
+        let shapeChanged = Self.shape(groups) != Self.shape(self.groups)
         self.rows = rows
+        self.groups = groups
         self.sessionName = sessionName
         if shapeChanged {
             rebuild()
         } else {
-            for (card, row) in zip(cards, rows) {
+            let ordered = groups.flatMap(\.1)
+            for (card, row) in zip(cards, ordered) {
                 card.row = row
             }
-            for (gem, row) in zip(gems, rows) {
+            for (gem, row) in zip(gems, ordered) {
                 gem.row = row
             }
         }
@@ -96,14 +105,20 @@ final class NativeWindowsSidebarView: NSView {
         }
     }
 
+    /// Which tab sits under which heading, in order: a change moves cards.
+    private static func shape(_ groups: [(NativeWindowGroup, [NativeWindowRow])]) -> [[Int]] {
+        groups.map { group, rows in [group.rawValue] + rows.map(\.tabId) }
+    }
+
     private func rebuild() {
         for view in (cards as [NSView]) + (gems as [NSView]) {
             view.removeFromSuperview()
         }
         cards = []
         gems = []
+        let ordered = groups.flatMap(\.1)
         if mode == .open {
-            cards = rows.map { row in
+            cards = ordered.map { row in
                 let card = NativeWindowCardView(row: row)
                 card.onPress = { [weak self] in self?.onSelect?($0) }
                 card.onRename = { [weak self] in self?.onRename?($0) }
@@ -112,7 +127,7 @@ final class NativeWindowsSidebarView: NSView {
                 return card
             }
         } else {
-            gems = rows.map { row in
+            gems = ordered.map { row in
                 let gem = NativeWindowGemView(row: row)
                 gem.onPress = { [weak self] in self?.onSelect?($0) }
                 gem.tabMenu = { [weak self] in self?.tabMenu?($0) }
@@ -135,24 +150,42 @@ final class NativeWindowsSidebarView: NSView {
             scroll.frame = NSRect(
                 x: 0, y: Self.header, width: width,
                 height: max(0, bounds.height - Self.header - Self.footer))
-            var y: CGFloat = 4
-            for card in cards {
-                card.frame = NSRect(
-                    x: 10, y: y, width: width - 20, height: NativeWindowCardView.height)
-                y += NativeWindowCardView.height + 8
+            var y: CGFloat = 2
+            var next = cards.makeIterator()
+            headings = []
+            for (group, members) in groups {
+                headings.append(("\(group.title) · \(members.count)", y))
+                y += 22
+                for _ in members {
+                    next.next()?.frame = NSRect(
+                        x: 10, y: y, width: width - 20, height: NativeWindowCardView.height)
+                    y += NativeWindowCardView.height + 6
+                }
+                y += 8
             }
-            document.frame = NSRect(x: 0, y: 0, width: width, height: y + 8)
+            document.frame = NSRect(x: 0, y: 0, width: width, height: y)
+            document.needsDisplay = true
         } else {
             foldButton.frame = NSRect(x: (width - 24) / 2, y: 9, width: 24, height: 24)
             scroll.frame = NSRect(
                 x: 0, y: Self.header, width: width,
                 height: max(0, bounds.height - Self.header))
             var y: CGFloat = 4
-            for gem in gems {
-                gem.frame = NSRect(x: 0, y: y, width: width, height: NativeWindowGemView.height)
-                y += NativeWindowGemView.height
+            var next = gems.makeIterator()
+            rules = []
+            for (offset, (_, members)) in groups.enumerated() {
+                if offset > 0 {
+                    rules.append(y + 4)
+                    y += 9
+                }
+                for _ in members {
+                    next.next()?.frame = NSRect(
+                        x: 0, y: y, width: width, height: NativeWindowGemView.height)
+                    y += NativeWindowGemView.height
+                }
             }
             document.frame = NSRect(x: 0, y: 0, width: width, height: y + 8)
+            document.needsDisplay = true
         }
     }
 
@@ -184,6 +217,21 @@ final class NativeWindowsSidebarView: NSView {
         hint.draw(
             in: NSRect(
                 x: 40, y: bounds.height - Self.footer + 11, width: bounds.width - 54, height: 14))
+    }
+
+    /// The headings over the cards, or the rules between the rail's states.
+    private func drawGroups() {
+        if mode == .open {
+            for (title, y) in headings {
+                NativeSidebarLook.heading(title, color: NativePageStyle.muted)
+                    .draw(at: NSPoint(x: 14, y: y + 4))
+            }
+        } else {
+            NativePageStyle.line.setFill()
+            for y in rules {
+                NSRect(x: 14, y: y, width: bounds.width - 28, height: 1).fill()
+            }
+        }
     }
 
     /// Ticks once a second while a card shows how long it has waited.
@@ -229,7 +277,7 @@ final class NativeWindowsSidebarView: NSView {
 /// One tab as a card: its gem, title and state, the line it last printed,
 /// and a gauge for how long it has waited.
 final class NativeWindowCardView: NSView {
-    static let height: CGFloat = 64
+    static let height: CGFloat = 54
     private static let radius: CGFloat = 9
 
     var onPress: ((Int) -> Void)?
@@ -256,9 +304,9 @@ final class NativeWindowCardView: NSView {
         wantsLayer = true
         layerContentsRedrawPolicy = .onSetNeedsDisplay
         glow.cornerRadius = Self.radius
-        glow.borderWidth = 2
-        glow.shadowOpacity = 0.9
-        glow.shadowRadius = 8
+        glow.borderWidth = 1
+        glow.shadowOpacity = 0.55
+        glow.shadowRadius = 7
         glow.shadowOffset = .zero
         foil.cornerRadius = Self.radius
         foil.masksToBounds = true
@@ -266,9 +314,9 @@ final class NativeWindowCardView: NSView {
         foil.endPoint = CGPoint(x: 1, y: 1)
         foil.colors = [
             NSColor.clear.cgColor,
-            NSColor.white.withAlphaComponent(0.20).cgColor,
-            NSColor.systemTeal.withAlphaComponent(0.14).cgColor,
-            NSColor.systemPink.withAlphaComponent(0.12).cgColor,
+            NSColor.white.withAlphaComponent(0.12).cgColor,
+            NSColor.systemTeal.withAlphaComponent(0.08).cgColor,
+            NSColor.systemPink.withAlphaComponent(0.07).cgColor,
             NSColor.clear.cgColor,
         ]
         foil.locations = [0, 0.23, 0.35, 0.47, 1]
@@ -317,9 +365,10 @@ final class NativeWindowCardView: NSView {
         foil.frame = face
         foil.isHidden = paper || !row.isNext
         CATransaction.commit()
-        NativeHandEffects.setPulse(glow, active: hot && !paper, minimumOpacity: 0.2, duration: 0.65)
+        // A slow breath, not an alarm: the sidebar sits beside the work.
+        NativeHandEffects.setPulse(glow, active: hot && !paper, minimumOpacity: 0.25, duration: 2.4)
         comet.layout(
-            NSRect(x: face.minX + 10, y: face.maxY - 9, width: face.width - 20, height: 3),
+            NSRect(x: face.minX + 10, y: face.maxY - 7, width: face.width - 20, height: 2),
             running: row.state == .running)
         let elapsed = row.since.map { nativeElapsedText(since: $0, now: now) } ?? ""
         setAccessibilityLabel(
@@ -350,15 +399,17 @@ final class NativeWindowCardView: NSView {
             let tint =
                 row.state == .idle
                 ? NativeSidebarLook.cardPanel
-                : NativeSidebarLook.cardPanel.blended(withFraction: 0.38, of: color)
+                : NativeSidebarLook.cardPanel.blended(withFraction: 0.22, of: color)
                     ?? NativeSidebarLook.cardPanel
-            NSGradient(colors: [tint, NativeSidebarLook.cardPanel, NativeSidebarLook.stock])?
+            NSGradient(
+                colors: [tint, NativeSidebarLook.cardPanel, NativeSidebarLook.stock],
+                atLocations: [0, 0.45, 1], colorSpace: .sRGB)?
                 .draw(in: outline, angle: -65)
             if row.isCurrent {
                 NativePageStyle.violet.setStroke()
-                outline.lineWidth = 2
+                outline.lineWidth = 1.5
             } else {
-                color.withAlphaComponent(row.state == .idle ? 0.45 : 0.85).setStroke()
+                color.withAlphaComponent(row.state == .idle ? 0.3 : 0.55).setStroke()
                 outline.lineWidth = 1
             }
             outline.stroke()
@@ -369,55 +420,59 @@ final class NativeWindowCardView: NSView {
         }
 
         NativeSidebarLook.drawGem(
-            row.state, center: NSPoint(x: face.minX + 20, y: face.minY + 22), half: 9)
+            row.state, center: NSPoint(x: face.minX + 19, y: face.minY + 24), half: 8)
 
-        let elapsed = row.since.map { nativeElapsedText(since: $0, now: now) } ?? ""
+        // The name and its state on one line, the latest line under them.
+        let age = row.since.map { nativeSidebarAgeText(since: $0, now: now) } ?? ""
         let clock = NativeSidebarLook.text(
-            elapsed, font: .monospacedDigitSystemFont(ofSize: 10, weight: .semibold),
-            color: paper ? NativePageStyle.muted : color, alignment: .right)
-        clock.draw(in: NSRect(x: face.maxX - 52, y: face.minY + 9, width: 43, height: 14))
-        let titleRight = face.maxX - (elapsed.isEmpty ? 10 : 56)
-        NativeSidebarLook.text(
-            row.title, font: NativePageStyle.sans(13, .heavy), color: NativeSidebarLook.cardText
-        ).draw(
-            in: NSRect(
-                x: face.minX + 38, y: face.minY + 7, width: titleRight - face.minX - 38,
-                height: 18))
-
-        var lineX = face.minX + 38
-        let kindY = face.minY + 30
-        if paper {
-            let word = row.state.title as NSString
-            let font = NativePageStyle.sans(8, .heavy)
-            let width = word.size(withAttributes: [.font: font, .kern: 1.1]).width
-            NativePageStyle.drawStamp(
-                row.state.title, center: NSPoint(x: lineX + width / 2 + 8, y: kindY + 7),
-                color: color, angle: -5, size: 8)
-            lineX += width + 22
-        } else {
-            let kind = NativeSidebarLook.text(
-                row.state.title, font: NativePageStyle.sans(8, .bold), color: color, kern: 1.2)
-            kind.draw(at: NSPoint(x: lineX, y: kindY + 2))
-            lineX += ceil(kind.size().width) + 8
+            age, font: NativePageStyle.mono(10, .semibold),
+            color: paper ? NativePageStyle.muted : color.withAlphaComponent(0.85),
+            alignment: .right)
+        clock.draw(in: NSRect(x: face.maxX - 50, y: face.minY + 9, width: 41, height: 14))
+        let left = face.minX + 36
+        let right = face.maxX - (age.isEmpty ? 10 : 52)
+        let title = NativeSidebarLook.text(
+            row.title, font: NativePageStyle.sans(13, .heavy), color: NativeSidebarLook.cardText)
+        // Under NEEDS YOU the word tells waiting from failed; elsewhere the
+        // heading already says it.
+        let showsWord = NativeWindowGroup(row.state) == .needsYou
+        let wordFont = NativePageStyle.sans(8, paper ? .heavy : .bold)
+        let wordWidth =
+            showsWord
+            ? ceil(
+                (row.state.title as NSString).size(withAttributes: [.font: wordFont, .kern: 1.2])
+                    .width) + (paper ? 12 : 0) : 0
+        let titleWidth = min(ceil(title.size().width), max(0, right - left - wordWidth - 8))
+        title.draw(in: NSRect(x: left, y: face.minY + 7, width: titleWidth, height: 18))
+        let wordX = left + titleWidth + 8
+        if showsWord, wordX + wordWidth <= right {
+            if paper {
+                NativePageStyle.drawStamp(
+                    row.state.title, center: NSPoint(x: wordX + wordWidth / 2, y: face.minY + 16),
+                    color: color, angle: -5, size: 8)
+            } else {
+                NativeSidebarLook.text(
+                    row.state.title, font: wordFont, color: color.withAlphaComponent(0.9),
+                    kern: 1.2
+                ).draw(at: NSPoint(x: wordX, y: face.minY + 11))
+            }
         }
         let lineColor =
-            row.state == .idle || paper
-            ? NativePageStyle.muted : NSColor.white.withAlphaComponent(0.78)
+            paper ? NativePageStyle.muted : NSColor.white.withAlphaComponent(0.55)
         NativeSidebarLook.text(row.line, font: NativePageStyle.mono(10, .regular), color: lineColor)
-            .draw(
-                in: NSRect(x: lineX, y: kindY + 1, width: face.maxX - 10 - lineX, height: 14))
+            .draw(in: NSRect(x: left, y: face.minY + 27, width: face.maxX - 10 - left, height: 14))
 
         guard row.state != .idle, row.state != .running else {
             return
         }
-        let track = NSRect(x: face.minX + 10, y: face.maxY - 9, width: face.width - 20, height: 3)
-        (paper ? NativePageStyle.line : NSColor.white.withAlphaComponent(0.12)).setFill()
+        let track = NSRect(x: face.minX + 10, y: face.maxY - 7, width: face.width - 20, height: 2)
+        (paper ? NativePageStyle.line : NSColor.white.withAlphaComponent(0.08)).setFill()
         track.fill()
         var fill = track
         fill.size.width *=
             row.state == .clear
             ? 1 : CGFloat(row.since.map { NativeHandWait.fraction(since: $0, now: now) } ?? 0)
-        color.setFill()
+        color.withAlphaComponent(paper ? 1 : 0.75).setFill()
         fill.fill()
     }
 
@@ -485,8 +540,8 @@ final class NativeWindowGemView: NSView {
         self.row = row
         super.init(frame: .zero)
         wantsLayer = true
-        glow.shadowOpacity = 0.9
-        glow.shadowRadius = 7
+        glow.shadowOpacity = 0.6
+        glow.shadowRadius = 6
         glow.shadowOffset = .zero
         layer?.addSublayer(glow)
         setAccessibilityElement(true)
@@ -517,11 +572,11 @@ final class NativeWindowGemView: NSView {
         CATransaction.setDisableActions(true)
         glow.frame = NSRect(x: bounds.midX - 9, y: bounds.midY - 9, width: 18, height: 18)
         glow.cornerRadius = 9
-        glow.backgroundColor = color.withAlphaComponent(0.35).cgColor
+        glow.backgroundColor = color.withAlphaComponent(0.25).cgColor
         glow.shadowColor = color.cgColor
         glow.isHidden = !hot
         CATransaction.commit()
-        NativeHandEffects.setPulse(glow, active: hot, minimumOpacity: 0.2, duration: 0.65)
+        NativeHandEffects.setPulse(glow, active: hot, minimumOpacity: 0.25, duration: 2.4)
         toolTip = row.line.isEmpty ? row.title : "\(row.title) — \(row.state.title)\n\(row.line)"
         setAccessibilityLabel(
             "\(row.title), \(row.state.title.lowercased())" + (row.isCurrent ? ", current" : ""))

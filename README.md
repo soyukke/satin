@@ -124,9 +124,11 @@ saved. With the hand off, `Command-J` cycles through the waiting panes.
 ### Sidebars
 
 The sidebars are experimental. The windows sidebar on the left deals every
-tab as a card in the attention hand's style: a gem and an edge in the tab's
-state (waiting, failed, clear, running, or idle), the line the tab last
-printed or its agent last said, and a gauge for how long it has waited. The
+tab as a card in the attention hand's style, under a heading for its state:
+needs you (waiting or failed, the longest wait first), running, done, and
+idle. A card shows a gem and an edge in that state's color, the line the tab
+last printed or its agent last said, how long it has been so, and a gauge for
+how long it has waited. The
 card `Command-J` plays next carries a foil. Click a card to go to its tab,
 double-click to rename it, or right-click for its actions. While this sidebar
 is open its cards are the hand, so the hand along the lower edge only comes
