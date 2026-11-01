@@ -13,6 +13,7 @@ extension TerminalShellViewController {
     }
 
     func refreshAttentionHand() {
+        refreshSidebars()
         guard !attentionHandView.isHidden else {
             attentionHandPendingPlay = nil
             return
@@ -187,7 +188,7 @@ extension TerminalShellViewController {
         return attentionHandView.convert(tabControl.convert(frame, to: nil), from: nil).midX
     }
 
-    private func currentAttentionHand() -> NativeAttentionHand {
+    func currentAttentionHand() -> NativeAttentionHand {
         nativeAttentionHand(
             tabs: (lastSnapshot?.tabs ?? []).map(NativeAttentionTab.init),
             status: { [paneStatuses] in paneStatuses.status(for: $0) },

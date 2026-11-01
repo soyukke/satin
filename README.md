@@ -71,6 +71,11 @@ and changes across the workspace.
   text preview, and a compact toolbar attention badge. Codex and Claude Code
   lifecycle classification works in local and projected tmux panes without
   scraping terminal screen text.
+- A windows sidebar on the left that deals every tab as a card, with its
+  state, the line it last printed, and how long it has waited, and an items
+  sidebar on the right that keeps the pages and the commands, quotes, links,
+  and files the tabs showed, each a click from the pasteboard. Either folds
+  to a rail.
 - An optional attention hand (Settings › Appearance) that deals each agent
   waiting on you, failed, or finished unread as a card along the window's lower
   edge. A fuse runs round the tab, a spark carries the card from it, and a
@@ -115,6 +120,29 @@ jump there; Escape cancels. A quick `Command-J` jumps to the first card
 directly, and a card can also be clicked. The strip counts running panes, the
 cards played since launch, and the longest run of consecutive plays; nothing is
 saved. With the hand off, `Command-J` cycles through the waiting panes.
+
+### Sidebars
+
+The sidebars are experimental. The windows sidebar on the left deals every
+tab as a card in the attention hand's style: a gem and an edge in the tab's
+state (waiting, failed, clear, running, or idle), the line the tab last
+printed or its agent last said, and a gauge for how long it has waited. The
+card `Command-J` plays next carries a foil. Click a card to go to its tab,
+double-click to rename it, or right-click for its actions. While this sidebar
+is open its cards are the hand, so the hand along the lower edge only comes
+back when the sidebar is folded.
+
+The items sidebar on the right holds the pages as slips, then what the
+current tab's screens showed: commands after `!` or `$` (also inside
+backticks), `>` quotes joined into a paragraph, links, and files an agent
+read or edited or that appear as `path:line`. A click copies the cleaned text,
+`Option`-click pastes it into the focused pane, and `Command`-click opens a
+link. Switch between this tab and every tab at the top. While it is open the
+unread pages stay here instead of fanning out over the panes.
+
+`Command-B` and `Option-Command-B` fold each sidebar to a rail of gems or of
+counts and open it again. View › Tab Bar Instead of Windows Sidebar brings the
+tab strip back.
 
 ### Work Switcher
 
@@ -296,8 +324,10 @@ security boundary.
 
 - `Command-T`: new tab
 - `Command-P`: search and focus open tabs and panes with the Work Switcher
-- `Command-J`: jump to the agent that has waited longest, or look through the
-  attention hand while Command is held
+- `Command-J`: jump to the agent that has waited longest (the foil card while
+  the windows sidebar is open), or look through the attention hand while
+  Command is held
+- `Command-B` / `Option-Command-B`: open or fold the windows / items sidebar
 - `Command-D` / `Command-Shift-D`: vertical / horizontal split
 - `Command-W`: close the active pane
 - `Control-Command-H/J/K/L`: focus the pane to the left / down / up / right

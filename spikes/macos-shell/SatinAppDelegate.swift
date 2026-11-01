@@ -331,6 +331,12 @@ final class SatinAppDelegate: NSObject, NSApplicationDelegate {
             shellController?.zoomOut(nil)
         case .actualSize:
             shellController?.resetZoom(nil)
+        case .toggleWindowsSidebar:
+            shellController?.toggleWindowsSidebar(nil)
+        case .toggleItemsSidebar:
+            shellController?.toggleItemsSidebar(nil)
+        case .toggleTabBar:
+            shellController?.toggleTabBar(nil)
         case .checkForUpdates:
             requestInteractiveUpdateCheck()
         case .showAcknowledgements:

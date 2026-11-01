@@ -84,6 +84,7 @@ struct SatinApplication {
                 ("paper mode", runNativePaperModeSelfTests),
                 ("attention hand", runNativeAttentionHandSelfTests),
                 ("attention hand view", runNativeAttentionHandViewSelfTests),
+                ("sidebar model", runNativeSidebarModelSelfTests),
             ]
             for test in tests where !test.run() {
                 failDiagnostic("\(test.name) self-test failed")

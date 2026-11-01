@@ -61,6 +61,11 @@ native_swift_sources=(
   spikes/macos-shell/NativePaperTab.swift
   spikes/macos-shell/NativePageHandView.swift
   spikes/macos-shell/NativePageDocument.swift
+  spikes/macos-shell/NativeSidebarModel.swift
+  spikes/macos-shell/NativeSidebarDrawing.swift
+  spikes/macos-shell/NativeWindowsSidebarView.swift
+  spikes/macos-shell/NativeItemsSidebarView.swift
+  spikes/macos-shell/TerminalShellSidebars.swift
   spikes/macos-shell/NativeSettingsModel.swift
   spikes/macos-shell/TerminalShellArtifacts.swift
   spikes/macos-shell/TerminalShellCommands.swift
@@ -95,6 +100,7 @@ native_smoke_swift_sources=(
   spikes/macos-shell/NativeSmokeNvimScrollVisualScenario.swift
   spikes/macos-shell/NativeSmokeNvimVisualScenarios.swift
   spikes/macos-shell/NativeSmokeReadmeScenarios.swift
+  spikes/macos-shell/NativeSmokeSidebarScenarios.swift
   spikes/macos-shell/NativeSmokeState.swift
   spikes/macos-shell/NativeSmokeTabBarScenarios.swift
   spikes/macos-shell/NativeSmokeTabTitleCwdScenarios.swift
