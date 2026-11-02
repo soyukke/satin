@@ -144,9 +144,42 @@
     plot.append(message, code);
   }
 
+  // mermaid and Chart.js are most of what the renderer weighs, so each loads
+  // the first time a page needs it, or once the reader is idle.
+  const libraries = {};
+  function library(name, src) {
+    libraries[name] ??= new Promise((resolve, reject) => {
+      const script = document.createElement("script");
+      script.src = src;
+      script.onload = () => resolve(window[name]);
+      script.onerror = () => {
+        delete libraries[name];
+        reject(new Error(`${src} did not load`));
+      };
+      document.head.append(script);
+    });
+    return libraries[name];
+  }
+  const mermaidLibrary = () => library("mermaid", "lib/mermaid.min.js");
+  const chartLibrary = () => library("Chart", "lib/chart.umd.js");
+
   async function drawDiagrams(page, pass) {
+    const figures = page.querySelectorAll("figure.diagram");
+    if (figures.length === 0) {
+      return;
+    }
+    let mermaid;
+    try {
+      mermaid = await mermaidLibrary();
+    } catch (error) {
+      figures.forEach((figure) => showFailure(figure, error));
+      return;
+    }
+    if (pass !== drawn) {
+      return;
+    }
     const paper = root.dataset.look === "paper";
-    window.mermaid.initialize({
+    mermaid.initialize({
       startOnLoad: false,
       securityLevel: "strict",
       theme: "base",
@@ -189,10 +222,10 @@
       },
     });
     let index = 0;
-    for (const figure of page.querySelectorAll("figure.diagram")) {
+    for (const figure of figures) {
       index += 1;
       try {
-        const { svg } = await window.mermaid.render(`diagram-${pass}-${index}`, figure.dataset.source);
+        const { svg } = await mermaid.render(`diagram-${pass}-${index}`, figure.dataset.source);
         if (pass !== drawn) {
           return;
         }
@@ -214,14 +247,27 @@
     }
   }
 
-  function drawCharts(page) {
-    const Chart = window.Chart;
+  async function drawCharts(page, pass) {
+    const figures = page.querySelectorAll("figure.chart");
+    if (figures.length === 0) {
+      return;
+    }
+    let Chart;
+    try {
+      Chart = await chartLibrary();
+    } catch (error) {
+      figures.forEach((figure) => showFailure(figure, error));
+      return;
+    }
+    if (pass !== drawn) {
+      return;
+    }
     const colors = palette();
     Chart.defaults.color = token("--muted");
     Chart.defaults.borderColor = token("--line");
     Chart.defaults.font.family = token("--font-sans");
     Chart.defaults.font.size = 12;
-    for (const figure of page.querySelectorAll("figure.chart")) {
+    for (const figure of figures) {
       let config;
       try {
         config = JSON.parse(figure.dataset.source);
@@ -269,7 +315,7 @@
     setAlerts(page);
     setTasks(page);
     wrapTables(page);
-    drawCharts(page);
+    await drawCharts(page, pass);
     await drawDiagrams(page, pass);
   }
 
@@ -323,8 +369,13 @@
   async function start() {
     const params = new URLSearchParams(location.search);
     root.dataset.look = params.get("look") === "paper" ? "paper" : "datasheet";
-    // A host sets the look and opens each page itself.
+    // A host sets the look and opens each page itself, and keeps this
+    // document for page after page.
     if (params.has("host")) {
+      setTimeout(() => {
+        chartLibrary().catch(() => {});
+        mermaidLibrary().catch(() => {});
+      }, 2000);
       return;
     }
     if (params.has("preview")) {

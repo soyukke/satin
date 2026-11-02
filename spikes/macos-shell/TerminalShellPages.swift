@@ -52,6 +52,9 @@ extension TerminalShellViewController {
             guard let self else { return }
             self.loadRecentArtifacts(limit: 40, completion: completion)
         }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
+            self?.warmPageDocument()
+        }
     }
 
     /// Keeps pages read in the store with `satin page read`, where every
@@ -223,13 +226,25 @@ extension TerminalShellViewController {
         guard pageReaderPage?.kind == "markdown",
             let document = pageDocument(id: id, version: version)
         else {
-            pageReaderDocument?.removeFromSuperview()
+            if let view = pageReaderDocument {
+                view.isHidden = true
+                sparePageDocument = view
+            }
             pageReaderDocument = nil
             return
         }
-        let view = pageReaderDocument ?? NativePageDocumentView(frame: pane)
+        let view = pageReaderDocument ?? sparePageDocument ?? NativePageDocumentView(frame: pane)
         if pageReaderDocument == nil {
+            // A kept view starts blank rather than on its last page.
+            sparePageDocument = nil
+            view.clear()
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = 0
+                view.animator().alphaValue = 1
+            }
+            view.frame = pane
             terminalTextView.addSubview(view, positioned: .below, relativeTo: chrome)
+            view.isHidden = false
             pageReaderDocument = view
         }
         view.frame = pane
@@ -268,6 +283,19 @@ extension TerminalShellViewController {
             updatedAtMs: UInt64(metadata["updated_at_ms"] as? Int ?? 0),
             preview: ""
         )
+    }
+
+    /// Makes the page view ahead of the first page. It waits hidden in the
+    /// window, so its layers already exist and showing it does not flash.
+    func warmPageDocument() {
+        guard pageReaderDocument == nil, sparePageDocument == nil else {
+            return
+        }
+        let view = NativePageDocumentView(
+            frame: nativePageReaderFrames(in: terminalTextView.terminalContentRect()).pane)
+        view.isHidden = true
+        terminalTextView.addSubview(view, positioned: .below, relativeTo: nil)
+        sparePageDocument = view
     }
 
     /// One version of a page: the folder its files sit in, the Markdown
@@ -324,12 +352,33 @@ extension TerminalShellViewController {
 
     /// Takes the reader's frame away; fading, it and the page go out softly.
     func removePageReaderChrome(fading: Bool = false) {
-        for view in [pageReaderChrome, pageReaderDocument].compactMap({ $0 as NSView? }) {
+        if let chrome = pageReaderChrome {
             if fading {
-                NativePageFlight.fadeOut(view)
+                NativePageFlight.fadeOut(chrome)
             } else {
-                view.removeFromSuperview()
+                chrome.removeFromSuperview()
             }
+        }
+        if let document = pageReaderDocument {
+            // Kept for the next page, the view hides unless that page has
+            // already taken it back.
+            let leave = { [weak self, weak document] in
+                if let document, self?.pageReaderDocument !== document {
+                    document.isHidden = true
+                }
+            }
+            if fading, !NativeHandEffects.reducesMotion {
+                NSAnimationContext.runAnimationGroup { context in
+                    context.duration = 0.16
+                    context.timingFunction = CAMediaTimingFunction(name: .easeIn)
+                    document.animator().alphaValue = 0
+                } completionHandler: {
+                    leave()
+                }
+            } else {
+                document.isHidden = true
+            }
+            sparePageDocument = document
         }
         pageReaderChrome = nil
         pageReaderDocument = nil

@@ -382,6 +382,12 @@ extension TerminalShellViewController {
 
     @discardableResult
     func copySelection() -> Bool {
+        // ⌘C reaches the terminal view before WebKit, so the page's own
+        // selection is copied here.
+        if let document = readerDocumentInFocus() {
+            document.copySelection()
+            return true
+        }
         guard let paneId = activePaneId,
             let pane = paneStore.runtimes[paneId] as? TerminalPane
         else {
@@ -494,7 +500,21 @@ extension TerminalShellViewController {
     }
 
     @discardableResult
+    /// The page in the reader, while the reader is the pane at work.
+    private func readerDocumentInFocus() -> NativePageDocumentView? {
+        guard activePaneId == nativeArtifactSidebarPaneId, let document = pageReaderDocument,
+            !document.isHidden
+        else {
+            return nil
+        }
+        return document
+    }
+
     func selectAllTerminalText() -> Bool {
+        if let document = readerDocumentInFocus() {
+            document.selectAll()
+            return true
+        }
         guard let paneId = activePaneId,
             let pane = paneStore.runtimes[paneId] as? TerminalPane
         else {
