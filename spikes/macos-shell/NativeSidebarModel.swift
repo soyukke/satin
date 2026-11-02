@@ -206,6 +206,11 @@ private enum NativeSidebarPatterns {
     static let fileLine = regex(
         #"(?<![\w/.~-])((?:~|\.{1,2})?/?[\w.-]+(?:/[\w.-]+)*\.[A-Za-z][A-Za-z0-9]{0,7}):(\d+)(?::\d+)?(?![\w/])"#
     )
+    /// A path on its own, such as where a screenshot was saved: it needs a
+    /// slash, so a bare `design.md` in prose stays out.
+    static let path = regex(
+        #"(?<![\w/.~:-])(?:~|\.{1,2})?/?[\w.-]+(?:/[\w.-]+)*\.[A-Za-z][A-Za-z0-9]{0,7}(?!\.?[\w/:-])"#
+    )
 
     /// The patterns are constants; a typo in one fails the self-test.
     static func regex(_ pattern: String) -> NSRegularExpression? {
@@ -356,6 +361,12 @@ func nativeSidebarItems(screen: String, columns: Int = 0) -> [NativeSidebarItem]
             }
             add(.file, String(rest[whole]), "line \(rest[number])")
         }
+        for match in nativeSidebarMatches(NativeSidebarPatterns.path, in: rest) {
+            guard let whole = Range(match.range, in: rest), rest[whole].contains("/") else {
+                continue
+            }
+            add(.file, String(rest[whole]), "path")
+        }
     }
     if !quote.isEmpty {
         flushQuote()
@@ -438,6 +449,13 @@ final class NativeSidebarItemStore {
         return result
     }
 
+    /// The panes that showed an item, the latest first: a relative path
+    /// reads against one of their folders.
+    func panes(showing item: NativeSidebarItem) -> [Int] {
+        entries.values.flatMap { $0 }.filter { $0.item == item }
+            .sorted { $0.order > $1.order }.map(\.paneId)
+    }
+
     /// Lets go of panes that closed.
     func keep(panes: Set<Int>) {
         entries = entries.filter { panes.contains($0.key) }
@@ -464,6 +482,7 @@ func runNativeSidebarModelSelfTests() -> Bool {
           ⎿  Added 42 lines
         ● Read(core/src/tmux/control.kizu)
         error at TerminalShellTabs.swift:88:4 and ./scripts/build.sh:12
+        Saved the shot to ~/Desktop/shot.png. See design.md and 1.5/2.0 too.
         $ just fmt && just precommit
         ╭──────────────────────────────╮
         │ > what the user is typing     │
@@ -493,6 +512,7 @@ func runNativeSidebarModelSelfTests() -> Bool {
         .init(kind: .file, text: "core/src/tmux/control.kizu", detail: "read"),
         .init(kind: .file, text: "TerminalShellTabs.swift:88:4", detail: "line 88"),
         .init(kind: .file, text: "./scripts/build.sh:12", detail: "line 12"),
+        .init(kind: .file, text: "~/Desktop/shot.png", detail: "path"),
         .init(kind: .command, text: "just fmt && just precommit", detail: "command"),
         .init(kind: .command, text: "kizu test cli", detail: "run it"),
     ]
@@ -544,7 +564,17 @@ func runNativeSidebarModelSelfTests() -> Bool {
         all[.command]?.first?.paneId == 2,
         all[.link]?.map(\.item.text) == ["https://b.dev"],
         one[.command]?.map(\.item.text) == ["make test", "make"],
-        one[.link] == nil
+        one[.link] == nil,
+        store.panes(showing: .init(kind: .command, text: "make", detail: "command")) == [2, 1]
+    else {
+        return false
+    }
+    let press = { (kind: NativeSidebarItemKind, x: CGFloat, option: Bool) in
+        NativeItemRowView.action(kind: kind, x: x, width: 276, option: option)
+    }
+    guard press(.file, 40, false) == .open, press(.link, 200, false) == .open,
+        press(.file, 260, false) == .copy, press(.link, 40, true) == .paste,
+        press(.command, 40, false) == .copy, press(.quote, 260, true) == .paste
     else {
         return false
     }

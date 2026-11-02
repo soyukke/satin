@@ -138,9 +138,10 @@ comes back when the sidebar is folded.
 The items sidebar on the right holds the pages as slips, then what the
 current tab's screens showed: commands after `!` or `$` (also inside
 backticks), `>` quotes joined into a paragraph, links, and files an agent
-read or edited or that appear as `path:line`. A click copies the cleaned text,
-`Option`-click pastes it into the focused pane, and `Command`-click opens a
-link. Switch between this tab and every tab at the top. While it is open the
+read or edited or that appear as a path. A click opens a link in the browser
+or a file in its app, such as an image in Preview; the copy button at the end
+of the row copies it instead. On a command or a quote a click copies the
+cleaned text, and `Option`-click pastes any item into the focused pane. Switch between this tab and every tab at the top. While it is open the
 unread pages stay here instead of fanning out over the panes.
 
 `Command-B` and `Option-Command-B` fold each sidebar to a rail of gems or of

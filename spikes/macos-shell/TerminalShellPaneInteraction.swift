@@ -409,6 +409,12 @@ extension TerminalShellViewController {
         else {
             return false
         }
+        return openLinkOrFile(url, reveal: reveal)
+    }
+
+    /// Opens a link, or a file in the app that opens it; with reveal, shows
+    /// the file selected in Finder instead.
+    func openLinkOrFile(_ url: URL, reveal: Bool = false) -> Bool {
         guard url.isFileURL else {
             return !reveal && NSWorkspace.shared.open(url)
         }
