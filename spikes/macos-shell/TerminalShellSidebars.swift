@@ -81,12 +81,8 @@ extension TerminalShellViewController {
         itemsSidebar.onCopy = { [weak self] item, paste in
             self?.copySidebarItem(item, paste: paste)
         }
-        itemsSidebar.onOpenLink = { link in
-            guard let url = URL(string: link), ["http", "https"].contains(url.scheme ?? "")
-            else {
-                return
-            }
-            NSWorkspace.shared.open(url)
+        itemsSidebar.onOpen = { [weak self] item in
+            self?.openSidebarItem(item) ?? false
         }
         itemsSidebar.onScope = { [weak self] allTabs in
             self?.sidebarItemsAllTabs = allTabs
@@ -232,6 +228,36 @@ extension TerminalShellViewController {
         refreshWindowsSidebar()
         if found {
             refreshItemsSidebar()
+        }
+    }
+
+    /// Opens a link in the browser, or a file in its app.
+    func openSidebarItem(_ item: NativeSidebarItem) -> Bool {
+        sidebarItemURL(item).map { openLinkOrFile($0) } ?? false
+    }
+
+    /// Where an item leads: a web link, or a file that is there. A relative
+    /// path reads against the folder of a pane that showed it.
+    func sidebarItemURL(_ item: NativeSidebarItem) -> URL? {
+        switch item.kind {
+        case .link:
+            guard let url = URL(string: item.text), ["http", "https"].contains(url.scheme ?? "")
+            else {
+                return nil
+            }
+            return url
+        case .file:
+            let folders = sidebarItems.panes(showing: item).map {
+                paneWorkingDirectory(paneId: $0, logFailure: false, current: true)
+            }
+            for folder in folders + [nil] {
+                if let url = nativeTerminalFileURL(item.text, cwd: folder) {
+                    return url
+                }
+            }
+            return nil
+        case .command, .quote:
+            return nil
         }
     }
 

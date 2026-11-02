@@ -15,11 +15,21 @@ import Foundation
                 "> Windows sit on the left.",
                 "> What each tab made sits on the right.",
                 "error at TerminalShellTabs.swift:88:4",
+                "Saved the shot to ./shots/sidebar.png.",
             ]
+            // The shot is there, in a folder the pane goes to, so the row
+            // leads to it.
+            let folder = FileManager.default.temporaryDirectory
+                .appendingPathComponent("satin-sidebars-\(getpid())")
+            try? FileManager.default.createDirectory(
+                at: folder.appendingPathComponent("shots"), withIntermediateDirectories: true)
+            FileManager.default.createFile(
+                atPath: folder.appendingPathComponent("shots/sidebar.png").path, contents: Data())
             let quoted = lines.map { "'\($0)'" }.joined(separator: " ")
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
                 guard let self else { return }
-                self.writeTextToActivePane("clear; printf '%s\\n' \(quoted)\r")
+                self.writeTextToActivePane(
+                    "clear; cd '\(folder.path)'; printf '%s\\n' \(quoted)\r")
                 if let pane = self.activePaneId {
                     self.paneStatuses.update(
                         paneId: pane, status: "waiting",
@@ -48,6 +58,10 @@ import Foundation
                 "\(kind)=\(items.filter { $0.kind == kind }.count)"
             }.joined(separator: " ")
             let states = rows.map(\.state.title).joined(separator: ",")
+            let shot = items.first { $0.text == "./shots/sidebar.png" }
+            let leads =
+                shot.flatMap(sidebarItemURL)?.resolvingSymlinksInPath().path.hasSuffix(
+                    "satin-sidebars-\(getpid())/shots/sidebar.png") == true
             windowsSidebar.pressSessionsForSmoke()
             let sessions =
                 sessionPopover?.contentViewController is TmuxSessionPopoverController
@@ -57,7 +71,7 @@ import Foundation
                 "ok sidebars rows=\(rows.count) states=\(states) "
                 + "items=\(items.count) \(kinds) tabbar=\(tabStripView.isHidden ? "hidden" : "shown")"
                 + " hand=\(attentionHandView.isHidden ? "hidden" : "shown")"
-                + " sessions=\(sessions)\n"
+                + " sessions=\(sessions) opens=\(leads ? "file" : "missing")\n"
             try? result.write(toFile: resultPath, atomically: true, encoding: .utf8)
             guard
                 let prefix = ProcessInfo.processInfo.environment[

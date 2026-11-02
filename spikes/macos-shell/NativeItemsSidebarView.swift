@@ -1,8 +1,8 @@
 import AppKit
 
 /// What the tabs made, down the right side: pages as slips, and the
-/// commands, quotes, links and files their screens showed, each a click
-/// from the pasteboard. Folded, it is a rail of counts.
+/// commands, quotes, links and files their screens showed. A click opens a
+/// link or a file and copies the rest. Folded, it is a rail of counts.
 final class NativeItemsSidebarView: NSView {
     static let openWidth: CGFloat = 300
     static let railWidth: CGFloat = 48
@@ -15,7 +15,8 @@ final class NativeItemsSidebarView: NSView {
     var onOpenPage: ((NativeArtifactListItem) -> Void)?
     /// Copies an item, or pastes it into the focused pane when asked.
     var onCopy: ((NativeSidebarItem, Bool) -> Void)?
-    var onOpenLink: ((String) -> Void)?
+    /// Opens a link or a file; says whether it could.
+    var onOpen: ((NativeSidebarItem) -> Bool)?
     var onScope: ((Bool) -> Void)?
     var onFold: (() -> Void)?
 
@@ -129,7 +130,7 @@ final class NativeItemsSidebarView: NSView {
                 for item in (items[section] ?? []).prefix(Self.shown[section] ?? 0) {
                     let row = NativeItemRowView(item: item)
                     row.onCopy = { [weak self] item, paste in self?.onCopy?(item, paste) }
-                    row.onOpenLink = { [weak self] in self?.onOpenLink?($0) }
+                    row.onOpen = { [weak self] in self?.onOpen?($0) ?? false }
                     content.append(row)
                 }
             }
@@ -219,7 +220,7 @@ final class NativeItemsSidebarView: NSView {
         NSRect(x: ruleStart, y: 21, width: max(0, scopeChip.frame.minX - 8 - ruleStart), height: 1)
             .fill()
         let hint = NativeSidebarLook.text(
-            "click copies · ⌥ pastes · ⌘ opens", font: NativePageStyle.sans(10),
+            "click opens · ⧉ copies · ⌥ pastes", font: NativePageStyle.sans(10),
             color: NativePageStyle.muted)
         hint.draw(
             in: NSRect(
@@ -327,17 +328,46 @@ private func nativeDrawItemBadge(_ glyph: String, color: NSColor, in rect: NSRec
         in: NSRect(x: rect.minX, y: rect.midY - height / 2, width: rect.width, height: height))
 }
 
-/// One thing to copy: its badge, the text a click copies, and where it
-/// came from. It says so for a moment once copied.
+/// What a press on a row does.
+enum NativeItemRowAction: Equatable {
+    case open
+    case copy
+    case paste
+}
+
+/// One thing to open or copy: its badge, its text, and where it came from.
+/// A link or a file opens on a click and copies from the button at its
+/// end; the rest copy on a click. It says so for a moment after.
 final class NativeItemRowView: NSView {
     static let height: CGFloat = 40
+    /// The copy button's width at the row's end.
+    static let copyWidth: CGFloat = 32
 
     let item: NativeSidebarItem
     var onCopy: ((NativeSidebarItem, Bool) -> Void)?
-    var onOpenLink: ((String) -> Void)?
+    var onOpen: ((NativeSidebarItem) -> Bool)?
     private var hovering = false
-    private var copiedAt: Date?
+    private var overCopy = false
+    private var note: (text: String, color: NSColor, at: Date)?
     private var hoverArea: NSTrackingArea?
+
+    /// A click on a row `width` wide at `x`: ⌥ pastes, the copy button
+    /// copies, and the rest of a link or a file opens it.
+    static func action(
+        kind: NativeSidebarItemKind, x: CGFloat, width: CGFloat, option: Bool
+    ) -> NativeItemRowAction {
+        if option {
+            return .paste
+        }
+        guard kind == .link || kind == .file else {
+            return .copy
+        }
+        return x >= width - copyWidth ? .copy : .open
+    }
+
+    private var opens: Bool {
+        item.kind == .link || item.kind == .file
+    }
 
     init(item: NativeSidebarItem) {
         self.item = item
@@ -346,8 +376,16 @@ final class NativeItemRowView: NSView {
         toolTip = item.text
         setAccessibilityElement(true)
         setAccessibilityRole(.button)
-        setAccessibilityLabel("Copy \(item.text)")
+        setAccessibilityLabel((opens ? "Open " : "Copy ") + item.text)
         setAccessibilityHelp(item.detail)
+        if opens {
+            setAccessibilityCustomActions([
+                NSAccessibilityCustomAction(name: "Copy") { [weak self] in
+                    self?.press(.copy)
+                    return true
+                }
+            ])
+        }
     }
 
     required init?(coder: NSCoder) {
@@ -379,11 +417,11 @@ final class NativeItemRowView: NSView {
             font: NativePageStyle.mono(11, .regular), color: NativePageStyle.text,
             breaking: middle ? .byTruncatingMiddle : .byTruncatingTail
         ).draw(in: NSRect(x: 36, y: 5, width: textRight - 36, height: 15))
-        let copied = copiedAt.map { Date().timeIntervalSince($0) < 1.2 } == true
+        let noted = note.flatMap { Date().timeIntervalSince($0.at) < 1.2 ? $0 : nil }
         NativeSidebarLook.text(
-            copied ? "Copied" : item.detail,
-            font: NativePageStyle.sans(10, copied ? .bold : .regular),
-            color: copied ? NativePageStyle.teal : NativePageStyle.muted
+            noted?.text ?? item.detail,
+            font: NativePageStyle.sans(10, noted == nil ? .regular : .bold),
+            color: noted?.color ?? NativePageStyle.muted
         ).draw(in: NSRect(x: 36, y: 21, width: textRight - 36, height: 14))
 
         guard hovering,
@@ -392,9 +430,18 @@ final class NativeItemRowView: NSView {
         else {
             return
         }
+        if opens, overCopy {
+            NativePageStyle.line.setFill()
+            NSBezierPath(
+                roundedRect: NSRect(
+                    x: bounds.width - 31, y: (bounds.height - 24) / 2, width: 24, height: 24),
+                xRadius: 5, yRadius: 5
+            ).fill()
+        }
+        let tint = opens && overCopy ? NativePageStyle.text : NativePageStyle.muted
         let tinted = NSImage(size: icon.size, flipped: false) { rect in
             icon.draw(in: rect)
-            NativePageStyle.muted.set()
+            tint.set()
             rect.fill(using: .sourceAtop)
             return true
         }
@@ -410,7 +457,8 @@ final class NativeItemRowView: NSView {
             removeTrackingArea(hoverArea)
         }
         let area = NSTrackingArea(
-            rect: bounds, options: [.mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect],
+            rect: bounds,
+            options: [.mouseEnteredAndExited, .mouseMoved, .activeInKeyWindow, .inVisibleRect],
             owner: self, userInfo: nil)
         addTrackingArea(area)
         hoverArea = area
@@ -421,42 +469,62 @@ final class NativeItemRowView: NSView {
         needsDisplay = true
     }
 
+    override func mouseMoved(with event: NSEvent) {
+        let over = convert(event.locationInWindow, from: nil).x >= bounds.width - Self.copyWidth
+        if over != overCopy {
+            overCopy = over
+            needsDisplay = true
+        }
+    }
+
     override func mouseExited(with event: NSEvent) {
         hovering = false
+        overCopy = false
         needsDisplay = true
     }
 
     override func mouseUp(with event: NSEvent) {
-        guard bounds.contains(convert(event.locationInWindow, from: nil)) else {
+        let point = convert(event.locationInWindow, from: nil)
+        guard bounds.contains(point) else {
             return
         }
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-        if flags.contains(.command), item.kind == .link {
-            onOpenLink?(item.text)
-            return
-        }
-        press(paste: flags.contains(.option))
+        press(
+            Self.action(
+                kind: item.kind, x: point.x, width: bounds.width, option: flags.contains(.option)))
     }
 
     override func accessibilityPerformPress() -> Bool {
-        press(paste: false)
+        press(opens ? .open : .copy)
         return true
     }
 
     /// Shows the pointer over the row while it presses it.
     func pressForSmoke(paste: Bool) {
         hovering = true
-        press(paste: paste)
+        press(paste ? .paste : .copy)
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.4) { [weak self] in
             self?.hovering = false
             self?.needsDisplay = true
         }
     }
 
-    private func press(paste: Bool) {
-        onCopy?(item, paste)
-        copiedAt = Date()
-        NativeHandEffects.flash(layer, color: NativePageStyle.teal)
+    private func press(_ action: NativeItemRowAction) {
+        let color: NSColor
+        switch action {
+        case .open:
+            let opened = onOpen?(item) == true
+            color = opened ? NativeSidebarLook.color(item.kind) : NativePageStyle.muted
+            note = (opened ? "Opened" : "Not found", color, Date())
+            if !opened {
+                NSSound.beep()
+            }
+        case .copy, .paste:
+            onCopy?(item, action == .paste)
+            color = NativePageStyle.teal
+            note = ("Copied", color, Date())
+        }
+        NativeHandEffects.flash(layer, color: color)
         needsDisplay = true
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.3) { [weak self] in
             self?.needsDisplay = true
