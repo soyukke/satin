@@ -432,6 +432,9 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
     var pageReaderFromBinder = false
     /// The rendered Markdown laid over the reader's pane.
     var pageReaderDocument: NativePageDocumentView?
+    /// The page view kept loaded while no page is open, so the next page
+    /// draws without waiting for WebKit to start.
+    var sparePageDocument: NativePageDocumentView?
     var pageKeyMonitor: Any?
     let paneStatuses = NativePaneStatusStore()
     let shellCommands = NativeShellCommandStore()

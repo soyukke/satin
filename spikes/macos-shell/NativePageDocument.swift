@@ -264,6 +264,33 @@ final class NativePageDocumentView: NSView, WKNavigationDelegate {
         drawPending()
     }
 
+    /// Puts the text selected on the page on the clipboard.
+    func copySelection() {
+        webView?.evaluateJavaScript("window.getSelection().toString()") { result, _ in
+            guard let text = result as? String, !text.isEmpty else {
+                NSSound.beep()
+                return
+            }
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(text, forType: .string)
+        }
+    }
+
+    /// Selects the whole page.
+    func selectAll() {
+        webView?.evaluateJavaScript(
+            "window.getSelection().selectAllChildren(document.getElementById('page'))")
+    }
+
+    /// Forgets the version on show, so the view starts blank for the next
+    /// page, which it draws even when it is the same one.
+    func clear() {
+        shown = nil
+        drawnKey = nil
+        pending = nil
+        webView?.isHidden = true
+    }
+
     func refreshLook() {
         refreshSheet()
         webView?.underPageBackgroundColor = sheetColor
@@ -283,6 +310,17 @@ final class NativePageDocumentView: NSView, WKNavigationDelegate {
     }
 
     private func refreshSheet() {
+        layer?.backgroundColor = sheetColor.cgColor
+        needsDisplay = true
+    }
+
+    // AppKit can make the layer anew when a view kept aside joins a window,
+    // so the sheet's color is given again whenever the layer is drawn.
+    override var wantsUpdateLayer: Bool {
+        true
+    }
+
+    override func updateLayer() {
         layer?.backgroundColor = sheetColor.cgColor
     }
 
