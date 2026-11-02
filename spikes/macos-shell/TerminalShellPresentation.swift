@@ -519,7 +519,8 @@ extension TerminalShellViewController {
             return
         }
         let controller = TmuxSessionPopoverController(
-            currentSessionName: tmuxSession?.sessionName
+            currentSessionName: tmuxSession?.sessionName,
+            localTabCount: tmuxSession == nil ? lastSnapshot?.tabs.count ?? 0 : 0
         )
         controller.onSelectLocal = { [weak self] in
             self?.dismissSessionPopover()
@@ -529,9 +530,9 @@ extension TerminalShellViewController {
             self?.dismissSessionPopover()
             self?.attachTmuxSession(descriptor)
         }
-        controller.onCreateSession = { [weak self] name in
+        controller.onCreateSession = { [weak self] name, copyLocal in
             self?.dismissSessionPopover()
-            self?.createTmuxSession(named: name)
+            self?.createTmuxSession(named: name, copyingLocalTabs: copyLocal)
         }
         controller.onRequestEndSession = { [weak self] descriptor in
             self?.dismissSessionPopover()
@@ -543,9 +544,14 @@ extension TerminalShellViewController {
         popover.animates = true
         popover.contentViewController = controller
         sessionPopover = popover
+        let anchor =
+            (sender as? NSView).flatMap {
+                $0.window == nil || $0.isHiddenOrHasHiddenAncestor ? nil : $0
+            }
+            ?? sessionControlButton
         popover.show(
-            relativeTo: sessionControlButton.bounds,
-            of: sessionControlButton,
+            relativeTo: anchor.bounds,
+            of: anchor,
             preferredEdge: .maxY
         )
         loadTmuxSessions(into: controller)
@@ -793,7 +799,7 @@ extension TerminalShellViewController {
         }
     }
 
-    func createTmuxSession(named name: String) {
+    func createTmuxSession(named name: String, copyingLocalTabs: Bool = false) {
         if let session = tmuxSession {
             _ = beginTmuxConnectionAttempt(clearPendingReattach: false)
             let argument = tmuxCommandArgument(name)
@@ -813,6 +819,10 @@ extension TerminalShellViewController {
             presentTmuxSessionError("Satin could not resolve the tmux executable.")
             return
         }
+        if copyingLocalTabs, let local = currentSessionState(), !local.tabs.isEmpty {
+            copyLocalTabs(local, intoSessionNamed: name, executable: executable)
+            return
+        }
         let sequence = beginTmuxConnectionAttempt(clearPendingReattach: true)
         pendingTmuxExecutable = executable
         scheduleTmuxCommandInActiveShell(
@@ -820,6 +830,40 @@ extension TerminalShellViewController {
                 + "-s \(shellQuote(name))",
             sequence: sequence
         )
+    }
+
+    /// Makes the session `name` from the local tabs, then attaches to it as
+    /// to any session in the list.
+    private func copyLocalTabs(
+        _ local: NativeSessionState,
+        intoSessionNamed name: String,
+        executable: NativeTmuxExecutable
+    ) {
+        let socketPath = preferredTmuxSocketPath()
+        NativeTmuxLocalCopy.make(
+            executablePath: executable.path,
+            socketPath: socketPath,
+            commands: NativeTmuxLocalCopy.commands(
+                sessionName: name, tabs: local.tabs, activeTab: local.activeTab)
+        ) { [weak self] failure in
+            guard let self else { return }
+            if let failure {
+                self.presentTmuxSessionError(failure)
+                return
+            }
+            NativeTmuxSessionDiscovery.discover(executable: executable, socketPath: socketPath) {
+                [weak self] result in
+                guard let self else { return }
+                guard case .sessions(let sessions) = result,
+                    let made = sessions.first(where: { $0.name == name })
+                else {
+                    self.presentTmuxSessionError(
+                        "Satin made the tmux session “\(name)” but could not find it.")
+                    return
+                }
+                self.attachTmuxSession(made)
+            }
+        }
     }
 
     func confirmEndingTmuxSession(_ descriptor: NativeTmuxSessionDescriptor) {

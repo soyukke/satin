@@ -128,6 +128,7 @@ native-smoke-suite:
         ./scripts/native-nvim-layout-redraw-smoke; \
         ./scripts/native-tmux-zoom-resize-smoke; \
         ./scripts/native-tmux-smoke; \
+        ./scripts/native-tmux-copy-local-smoke; \
         ./scripts/native-session-smoke; \
         ./scripts/native-tab-bar-actions-smoke; \
         ./scripts/native-tab-title-cwd-smoke; \
@@ -232,6 +233,10 @@ native-session-smoke:
 # Verify tmux projection, history/modes/paste/zoom/CLI, reattach, detach, and recovery.
 native-tmux-smoke:
     @if [[ -z "${IN_NIX_SHELL:-}" ]]; then exec nix develop --command just native-tmux-smoke; else just native-build && ./scripts/native-tmux-smoke; fi
+
+# Verify a new tmux session can copy the local tabs, their splits and folders.
+native-tmux-copy-local-smoke:
+    @if [[ -z "${IN_NIX_SHELL:-}" ]]; then exec nix develop --command just native-tmux-copy-local-smoke; else just native-build && ./scripts/native-tmux-copy-local-smoke; fi
 
 # Verify picker attach is single-shot, session switching stays in control mode, and wheel scrollback works.
 native-tmux-session-switch-smoke:

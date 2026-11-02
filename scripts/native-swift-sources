@@ -108,6 +108,7 @@ native_smoke_swift_sources=(
   spikes/macos-shell/NativeSmokeTmuxAgentScenarios.swift
   spikes/macos-shell/NativeSmokeTmuxPaneDragScenarios.swift
   spikes/macos-shell/NativeSmokeTmuxScenarios.swift
+  spikes/macos-shell/NativeSmokeTmuxCopyLocalScenarios.swift
   spikes/macos-shell/NativeSmokeTmuxSessionSwitchScenarios.swift
   spikes/macos-shell/NativeSmokeTmuxZoomResizeScenarios.swift
   spikes/macos-shell/TerminalTextViewSmoke.swift
