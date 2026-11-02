@@ -48,10 +48,16 @@ import Foundation
                 "\(kind)=\(items.filter { $0.kind == kind }.count)"
             }.joined(separator: " ")
             let states = rows.map(\.state.title).joined(separator: ",")
+            windowsSidebar.pressSessionsForSmoke()
+            let sessions =
+                sessionPopover?.contentViewController is TmuxSessionPopoverController
+                ? "shown" : "missing"
+            dismissSessionPopover()
             let result =
                 "ok sidebars rows=\(rows.count) states=\(states) "
                 + "items=\(items.count) \(kinds) tabbar=\(tabStripView.isHidden ? "hidden" : "shown")"
-                + " hand=\(attentionHandView.isHidden ? "hidden" : "shown")\n"
+                + " hand=\(attentionHandView.isHidden ? "hidden" : "shown")"
+                + " sessions=\(sessions)\n"
             try? result.write(toFile: resultPath, atomically: true, encoding: .utf8)
             guard
                 let prefix = ProcessInfo.processInfo.environment[

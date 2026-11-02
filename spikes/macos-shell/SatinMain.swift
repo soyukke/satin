@@ -58,6 +58,7 @@ struct SatinApplication {
                 ("update installer", AppUpdateInstaller.runSelfTests),
                 ("application defaults", runNativeApplicationDefaultsSelfTests),
                 ("tmux executable", NativeTmuxExecutableResolver.runSelfTests),
+                ("tmux local copy", NativeTmuxLocalCopy.runSelfTests),
                 ("tmux session lease", NativeTmuxSessionLease.runSelfTests),
                 ("Finder editor launch", NativeFinderEditorLaunch.runSelfTests),
                 ("Core", NativeCore.runSelfTests),

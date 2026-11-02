@@ -15,15 +15,17 @@ final class NativeWindowsSidebarView: NSView {
     var tabMenu: ((Int) -> NSMenu?)?
     var onNewTab: (() -> Void)?
     var onFold: (() -> Void)?
+    /// Asked for the sessions, with the button to show them under.
+    var onSessions: ((NSView) -> Void)?
 
     private(set) var mode: NativeSidebarMode = .open
     private(set) var rows: [NativeWindowRow] = []
-    private var sessionName = ""
     private let document = NativeSidebarDocumentView(frame: .zero)
     private lazy var scroll = nativeSidebarScrollView(document: document)
     private let newTabButton = NativeHoverIconButton(symbolName: "plus", title: "New Tab")
     private let foldButton = NativeHoverIconButton(
         symbolName: "sidebar.left", title: "Fold the Windows Sidebar (⌘B)")
+    private let sessionButton = NativeSessionChip()
     private var groups: [(NativeWindowGroup, [NativeWindowRow])] = []
     private var headings: [(String, CGFloat)] = []
     private var rules: [CGFloat] = []
@@ -41,6 +43,11 @@ final class NativeWindowsSidebarView: NSView {
         }
         newTabButton.action = #selector(newTab)
         foldButton.action = #selector(fold)
+        sessionButton.onPress = { [weak self] in
+            guard let self else { return }
+            self.onSessions?(self.sessionButton)
+        }
+        addSubview(sessionButton)
         document.drawing = { [weak self] in
             self?.drawGroups()
         }
@@ -78,7 +85,7 @@ final class NativeWindowsSidebarView: NSView {
         let shapeChanged = Self.shape(groups) != Self.shape(self.groups)
         self.rows = rows
         self.groups = groups
-        self.sessionName = sessionName
+        sessionButton.sessionName = sessionName
         if shapeChanged {
             rebuild()
         } else {
@@ -103,6 +110,7 @@ final class NativeWindowsSidebarView: NSView {
         for gem in gems {
             gem.refresh()
         }
+        sessionButton.needsDisplay = true
     }
 
     /// Which tab sits under which heading, in order: a change moves cards.
@@ -136,6 +144,7 @@ final class NativeWindowsSidebarView: NSView {
             }
         }
         newTabButton.isHidden = mode != .open
+        sessionButton.isHidden = mode != .open
         needsLayout = true
         needsDisplay = true
     }
@@ -145,6 +154,9 @@ final class NativeWindowsSidebarView: NSView {
         let width = bounds.width
         if mode == .open {
             newTabButton.frame = NSRect(x: width - 36, y: 9, width: 24, height: 24)
+            let chipWidth = min(130, sessionButton.fittingWidth)
+            sessionButton.frame = NSRect(
+                x: width - 42 - chipWidth, y: 9, width: chipWidth, height: 24)
             foldButton.frame = NSRect(
                 x: 10, y: bounds.height - Self.footer + 6, width: 24, height: 24)
             scroll.frame = NSRect(
@@ -197,16 +209,8 @@ final class NativeWindowsSidebarView: NSView {
         let heading = NativeSidebarLook.heading("WINDOWS", color: NativePageStyle.violet)
         let size = heading.size()
         heading.draw(at: NSPoint(x: 14, y: 21 - size.height / 2))
-        let name = NativeSidebarLook.text(
-            sessionName, font: NativePageStyle.sans(11, .bold), color: NativePageStyle.muted,
-            alignment: .right)
-        let nameWidth = min(110, ceil(name.size().width))
-        name.draw(
-            in: NSRect(
-                x: bounds.width - 44 - nameWidth, y: 21 - size.height / 2 - 1,
-                width: nameWidth, height: size.height + 2))
         let ruleStart = 14 + ceil(size.width) + 8
-        let ruleEnd = bounds.width - 44 - nameWidth - 8
+        let ruleEnd = sessionButton.frame.minX - 6
         if ruleEnd > ruleStart {
             NativePageStyle.line.setFill()
             NSRect(x: ruleStart, y: 21, width: ruleEnd - ruleStart, height: 1).fill()
@@ -267,10 +271,143 @@ final class NativeWindowsSidebarView: NSView {
         onFold?()
     }
 
+    func pressSessionsForSmoke() {
+        sessionButton.onPress?()
+    }
+
     func cardFramesForSmoke() -> [NSRect] {
         (mode == .open ? cards as [NSView] : gems as [NSView]).map {
             $0.convert($0.bounds, to: self)
         }
+    }
+}
+
+/// The session the windows belong to, local or a tmux session's name, as a
+/// button that shows the sessions to switch to.
+final class NativeSessionChip: NSView {
+    var onPress: (() -> Void)?
+    var sessionName = "" {
+        didSet {
+            guard sessionName != oldValue else { return }
+            toolTip = "Switch Sessions (\(sessionName))"
+            setAccessibilityLabel("Session \(sessionName)")
+            superview?.needsLayout = true
+            needsDisplay = true
+        }
+    }
+
+    private var hovering = false
+    private var hoverArea: NSTrackingArea?
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        setAccessibilityElement(true)
+        setAccessibilityRole(.popUpButton)
+    }
+
+    required init?(coder: NSCoder) {
+        nil
+    }
+
+    override var isFlipped: Bool {
+        true
+    }
+
+    private var isLocal: Bool {
+        sessionName == "local"
+    }
+
+    private func label() -> NSAttributedString {
+        NativeSidebarLook.text(
+            sessionName, font: NativePageStyle.sans(11, .bold),
+            color: hovering ? NativePageStyle.text : NativePageStyle.muted)
+    }
+
+    /// The width that shows the whole name with its icon and chevron.
+    var fittingWidth: CGFloat {
+        ceil(label().size().width) + 40
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let hoverArea {
+            removeTrackingArea(hoverArea)
+        }
+        let area = NSTrackingArea(
+            rect: .zero, options: [.mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect],
+            owner: self, userInfo: nil)
+        addTrackingArea(area)
+        hoverArea = area
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        hovering = true
+        needsDisplay = true
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        hovering = false
+        needsDisplay = true
+    }
+
+    // Taking the press keeps the release here.
+    override func mouseDown(with event: NSEvent) {}
+
+    override func mouseUp(with event: NSEvent) {
+        if bounds.contains(convert(event.locationInWindow, from: nil)) {
+            onPress?()
+        }
+    }
+
+    override func accessibilityPerformPress() -> Bool {
+        onPress?()
+        return true
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        let box = bounds.insetBy(dx: 0.5, dy: 2.5)
+        let path = NSBezierPath(roundedRect: box, xRadius: 6, yRadius: 6)
+        let accent = isLocal ? NativePageStyle.muted : NativePageStyle.teal
+        accent.withAlphaComponent(hovering ? 0.22 : 0.1).setFill()
+        path.fill()
+        accent.withAlphaComponent(hovering ? 0.6 : 0.35).setStroke()
+        path.lineWidth = 1
+        path.stroke()
+        let tint = hovering ? NativePageStyle.text : accent
+        let iconConfig = NSImage.SymbolConfiguration(pointSize: 10, weight: .semibold)
+        if let icon = NSImage(
+            systemSymbolName: isLocal ? "terminal" : "rectangle.stack",
+            accessibilityDescription: nil)?.withSymbolConfiguration(iconConfig)
+        {
+            drawSymbol(icon, at: NSPoint(x: 8, y: bounds.midY), tint: tint)
+        }
+        let text = label()
+        let size = text.size()
+        text.draw(
+            in: NSRect(
+                x: 22, y: bounds.midY - size.height / 2, width: bounds.width - 40,
+                height: size.height))
+        let chevronConfig = NSImage.SymbolConfiguration(pointSize: 8, weight: .bold)
+        if let chevron = NSImage(
+            systemSymbolName: "chevron.down", accessibilityDescription: nil)?
+            .withSymbolConfiguration(chevronConfig)
+        {
+            drawSymbol(chevron, at: NSPoint(x: bounds.width - 15, y: bounds.midY), tint: tint)
+        }
+    }
+
+    /// Draws a symbol tinted, its left edge at x and centered on y.
+    private func drawSymbol(_ image: NSImage, at point: NSPoint, tint: NSColor) {
+        let tinted = NSImage(size: image.size, flipped: false) { rect in
+            image.draw(in: rect)
+            tint.set()
+            rect.fill(using: .sourceAtop)
+            return true
+        }
+        tinted.draw(
+            in: NSRect(
+                x: point.x, y: point.y - image.size.height / 2, width: image.size.width,
+                height: image.size.height))
     }
 }
 

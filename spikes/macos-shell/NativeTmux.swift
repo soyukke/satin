@@ -669,10 +669,165 @@ enum NativeTmuxSessionTermination {
     }
 }
 
+/// The tmux commands that make a new session a copy of the local tabs: a
+/// window per tab, split as the tab is split, each pane in its folder. tmux
+/// runs them before Satin attaches, since a control-mode client answers
+/// each command it was started with, and Satin expects only one answer.
+enum NativeTmuxLocalCopy {
+    /// Each command as its arguments. The first makes the session, detached.
+    static func commands(
+        sessionName: String,
+        tabs: [NativeSessionTab],
+        activeTab: Int
+    ) -> [[String]] {
+        let target = "=\(sessionName):"
+        var commands: [[String]] = []
+        for (index, tab) in tabs.enumerated() {
+            let folder = cwdArguments(firstLeaf(tab.layout).cwd)
+            if index == 0 {
+                commands.append(["new-session", "-d", "-s", sessionName] + folder)
+            } else {
+                commands.append(["new-window", "-t", target] + folder)
+            }
+            var marked = false
+            build(tab.layout, target: target, into: &commands, marked: &marked)
+            if marked {
+                commands.append(["select-pane", "-t", "{marked}"])
+                commands.append(["select-pane", "-M"])
+            }
+        }
+        if tabs.isEmpty {
+            commands.append(["new-session", "-d", "-s", sessionName])
+        } else if tabs.count > 1 {
+            commands.append(["select-window", "-t", "\(target)^"])
+            for _ in 0..<min(max(activeTab, 0), tabs.count - 1) {
+                commands.append(["next-window", "-t", target])
+            }
+        }
+        return commands
+    }
+
+    /// Splits the active pane, which fills `node`, into the panes under it.
+    /// The pane at the node's top left is active again afterward, so a
+    /// step left or up from the second side always lands on the first.
+    private static func build(
+        _ node: NativeSessionPane,
+        target: String,
+        into commands: inout [[String]],
+        marked: inout Bool
+    ) {
+        guard node.kind == "split", let first = node.first, let second = node.second else {
+            if node.active {
+                commands.append(["select-pane", "-m", "-t", target])
+                marked = true
+            }
+            return
+        }
+        let sideBySide = node.axis == "vertical"
+        let percent = Int((100 * (1 - (node.ratio ?? 0.5))).rounded())
+        commands.append(
+            [
+                "split-window", "-d", sideBySide ? "-h" : "-v", "-l",
+                "\(min(max(percent, 5), 95))%",
+                "-t", target,
+            ] + cwdArguments(firstLeaf(second).cwd))
+        commands.append(["select-pane", "-t", target, sideBySide ? "-R" : "-D"])
+        build(second, target: target, into: &commands, marked: &marked)
+        commands.append(["select-pane", "-t", target, sideBySide ? "-L" : "-U"])
+        build(first, target: target, into: &commands, marked: &marked)
+    }
+
+    /// tmux's arguments for running `commands` in turn on the server at
+    /// `socketPath`, or on the default server.
+    static func arguments(socketPath: String?, commands: [[String]]) -> [String] {
+        ["-u"] + (socketPath.map { ["-S", $0] } ?? [])
+            + commands.enumerated().flatMap { index, command in
+                (index == 0 ? [] : [";"]) + command
+            }
+    }
+
+    /// Makes the session, then hands back on the main queue what went
+    /// wrong, or nil.
+    static func make(
+        executablePath: String,
+        socketPath: String?,
+        commands: [[String]],
+        completion: @escaping (String?) -> Void
+    ) {
+        DispatchQueue.global(qos: .userInitiated).async {
+            let output = NativeTmuxProcessRunner.run(
+                executable: executablePath,
+                arguments: arguments(socketPath: socketPath, commands: commands),
+                timeout: 5)
+            let failure: String?
+            if let output, !output.timedOut, output.status == 0 {
+                failure = nil
+            } else if let output, !output.timedOut {
+                let message = String(decoding: output.standardError, as: UTF8.self)
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                failure = message.isEmpty ? "tmux could not make the session." : message
+            } else {
+                failure = "Satin could not run tmux to make the session."
+            }
+            DispatchQueue.main.async {
+                completion(failure)
+            }
+        }
+    }
+
+    private static func firstLeaf(_ node: NativeSessionPane) -> NativeSessionPane {
+        node.first.map(firstLeaf) ?? node
+    }
+
+    private static func cwdArguments(_ cwd: String) -> [String] {
+        cwd.isEmpty ? [] : ["-c", cwd]
+    }
+
+    static func runSelfTests() -> Bool {
+        let tab = NativeSessionTab(
+            title: "api", theme: "Graphite",
+            layout: NativeSessionPane(
+                kind: "split", axis: "vertical", ratio: 0.4,
+                first: NativeSessionPane(kind: "leaf", cwd: "/tmp"),
+                second: NativeSessionPane(
+                    kind: "split", axis: "horizontal", ratio: 0.5,
+                    first: NativeSessionPane(kind: "leaf", cwd: "/usr"),
+                    second: NativeSessionPane(kind: "leaf", cwd: "/etc", active: true))))
+        let plain = NativeSessionTab(
+            title: "web", theme: "Graphite", layout: NativeSessionPane(kind: "leaf", cwd: "/var"))
+        let t = "=co py:"
+        return commands(sessionName: "co py", tabs: [tab, plain], activeTab: 1)
+            == [
+                ["new-session", "-d", "-s", "co py", "-c", "/tmp"],
+                ["split-window", "-d", "-h", "-l", "60%", "-t", t, "-c", "/usr"],
+                ["select-pane", "-t", t, "-R"],
+                ["split-window", "-d", "-v", "-l", "50%", "-t", t, "-c", "/etc"],
+                ["select-pane", "-t", t, "-D"],
+                ["select-pane", "-m", "-t", t],
+                ["select-pane", "-t", t, "-U"],
+                ["select-pane", "-t", t, "-L"],
+                ["select-pane", "-t", "{marked}"],
+                ["select-pane", "-M"],
+                ["new-window", "-t", t, "-c", "/var"],
+                ["select-window", "-t", "=co py:^"],
+                ["next-window", "-t", t],
+            ]
+            && commands(sessionName: "x", tabs: [plain], activeTab: 0)
+                == [["new-session", "-d", "-s", "x", "-c", "/var"]]
+            && commands(sessionName: "x", tabs: [], activeTab: 0)
+                == [["new-session", "-d", "-s", "x"]]
+            && arguments(
+                socketPath: "/tmp/s", commands: [["new-session", "-d"], ["new-window"]])
+                == ["-u", "-S", "/tmp/s", "new-session", "-d", ";", "new-window"]
+            && arguments(socketPath: nil, commands: [["kill-server"]]) == ["-u", "kill-server"]
+    }
+}
+
 final class TmuxSessionPopoverController: NSViewController, NSSearchFieldDelegate {
     var onSelectLocal: (() -> Void)?
     var onSelectSession: ((NativeTmuxSessionDescriptor) -> Void)?
-    var onCreateSession: ((String) -> Void)?
+    /// The new session's name, and whether it copies the local tabs.
+    var onCreateSession: ((String, Bool) -> Void)?
     var onRequestEndSession: ((NativeTmuxSessionDescriptor) -> Void)?
 
     private var sessions: [NativeTmuxSessionDescriptor] = []
@@ -684,10 +839,15 @@ final class TmuxSessionPopoverController: NSViewController, NSSearchFieldDelegat
     private let nameField = NSTextField(frame: .zero)
     private let createButton = NSButton(frame: .zero)
     private let creationRow = NSStackView()
+    private let copyLocalBox = NSButton(
+        checkboxWithTitle: "Copy the local tabs", target: nil, action: nil)
     private let validationLabel = NSTextField(labelWithString: "")
+    private let localTabCount: Int
 
-    init(currentSessionName: String?) {
+    /// `localTabCount` is how many local tabs a new session could copy.
+    init(currentSessionName: String?, localTabCount: Int = 0) {
         self.currentSessionName = currentSessionName
+        self.localTabCount = localTabCount
         super.init(nibName: nil, bundle: nil)
         preferredContentSize = NSSize(width: 320, height: Self.preferredHeight(rowCount: 0))
     }
@@ -729,6 +889,15 @@ final class TmuxSessionPopoverController: NSViewController, NSSearchFieldDelegat
         creationRow.addArrangedSubview(nameField)
         creationRow.addArrangedSubview(createButton)
         creationRow.isHidden = true
+        copyLocalBox.title =
+            localTabCount == 1 ? "Copy the local tab" : "Copy the \(localTabCount) local tabs"
+        copyLocalBox.font = .systemFont(ofSize: 12)
+        copyLocalBox.state = .on
+        copyLocalBox.toolTip =
+            "Open a window for each local tab, split the same way, in the same folders."
+        copyLocalBox.identifier = NSUserInterfaceItemIdentifier(
+            "dev.soyukke.satin.tmux-session-copy-local")
+        copyLocalBox.isHidden = true
         validationLabel.textColor = .systemRed
         validationLabel.font = .systemFont(ofSize: 11)
         validationLabel.maximumNumberOfLines = 2
@@ -737,7 +906,7 @@ final class TmuxSessionPopoverController: NSViewController, NSSearchFieldDelegat
         separator.boxType = .separator
         let stack = NSStackView(views: [
             heading, searchField, rows, statusLabel, separator, newSessionButton,
-            creationRow, validationLabel,
+            creationRow, copyLocalBox, validationLabel,
         ])
         stack.orientation = .vertical
         stack.alignment = .leading
@@ -897,6 +1066,10 @@ final class TmuxSessionPopoverController: NSViewController, NSSearchFieldDelegat
         creationRow.isHidden = false
         validationLabel.isHidden = true
         preferredContentSize.height += 38
+        if localTabCount > 0 {
+            copyLocalBox.isHidden = false
+            preferredContentSize.height += 26
+        }
         view.window?.makeFirstResponder(nameField)
     }
 
@@ -907,7 +1080,7 @@ final class TmuxSessionPopoverController: NSViewController, NSSearchFieldDelegat
             validationLabel.isHidden = false
             return
         }
-        onCreateSession?(name)
+        onCreateSession?(name, localTabCount > 0 && copyLocalBox.state == .on)
     }
 
     private func validationError(for name: String) -> String? {

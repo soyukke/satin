@@ -148,6 +148,17 @@ import Foundation
                 if let path = environment["SATIN_NATIVE_SMOKE_RESULT"], !path.isEmpty {
                     controller.applyFrameLivenessSmokeScenario(resultPath: path)
                 }
+            case "tmux-copy-local":
+                if let path = environment["SATIN_NATIVE_SMOKE_RESULT"], !path.isEmpty,
+                    let session = environment["SATIN_NATIVE_SMOKE_TMUX_SESSION"],
+                    let folder = environment["SATIN_NATIVE_SMOKE_FOLDER"],
+                    let socket = environment["SATIN_NATIVE_SMOKE_TMUX_SOCKET"],
+                    let executable = environment["SATIN_NATIVE_SMOKE_TMUX_EXECUTABLE"]
+                {
+                    controller.applyTmuxCopyLocalSmokeScenario(
+                        resultPath: path, sessionName: session, folder: folder,
+                        socketPath: socket, executablePath: executable)
+                }
             case "sidebars":
                 if let path = environment["SATIN_NATIVE_SMOKE_RESULT"], !path.isEmpty {
                     controller.applySidebarsSmokeScenario(resultPath: path)

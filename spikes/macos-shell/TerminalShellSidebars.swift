@@ -69,6 +69,9 @@ extension TerminalShellViewController {
         windowsSidebar.onNewTab = { [weak self] in
             self?.newTab(nil)
         }
+        windowsSidebar.onSessions = { [weak self] button in
+            self?.showSessionSwitcher(button)
+        }
         windowsSidebar.onFold = { [weak self] in
             self?.toggleWindowsSidebar(nil)
         }

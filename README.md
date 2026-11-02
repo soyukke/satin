@@ -130,9 +130,10 @@ idle. A card shows a gem and an edge in that state's color, the line the tab
 last printed or its agent last said, how long it has been so, and a gauge for
 how long it has waited. The
 card `Command-J` plays next carries a foil. Click a card to go to its tab,
-double-click to rename it, or right-click for its actions. While this sidebar
-is open its cards are the hand, so the hand along the lower edge only comes
-back when the sidebar is folded.
+double-click to rename it, or right-click for its actions. The session name at
+the top, `local` or the tmux session's, opens the session picker. While this
+sidebar is open its cards are the hand, so the hand along the lower edge only
+comes back when the sidebar is folded.
 
 The items sidebar on the right holds the pages as slips, then what the
 current tab's screens showed: commands after `!` or `$` (also inside
@@ -223,7 +224,8 @@ Help → Check for Updates… → Update and Restart.
 Install tmux 3.2 or newer, then run `tmux -CC attach` or `tmux -CC new-session`
 inside Satin to project tmux windows and panes as native tabs and splits. The
 session picker in the toolbar can create, switch, attach, detach, and end local
-sessions. Ending a session from its `x` action requires confirmation because it
+sessions. A session created from local terminals can copy the local tabs: a
+window for each tab, split the same way, each pane in the same folder. Ending a session from its `x` action requires confirmation because it
 terminates every program in that session. Satin detects the user-owned tmux from the configured login shell and
 uses its absolute path consistently; override it under Satin → Settings… →
 Terminal when needed. A clean Satin restart reattaches the last projected
