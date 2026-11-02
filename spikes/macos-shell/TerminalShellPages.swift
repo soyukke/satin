@@ -85,6 +85,9 @@ extension TerminalShellViewController {
         pageHandView.show(unread: pageInbox.unread)
         updatePageHandVisibility()
         refreshItemsSidebar()
+        if pageReaderChrome != nil {
+            syncPageReaderChrome(refresh: true)
+        }
         if let binder = pageBinder {
             binder.show(pages: pageInbox.pages, unread: pageInbox.unread)
         }
@@ -178,7 +181,8 @@ extension TerminalShellViewController {
     }
 
     /// Frames the reader's pane, adding the frame when the reader opened.
-    func syncPageReaderChrome() {
+    /// `refresh` reads the page again, as when the store changed.
+    func syncPageReaderChrome(refresh: Bool = false) {
         guard paneStore.runtimes[nativeArtifactSidebarPaneId] != nil else {
             removePageReaderChrome()
             return
@@ -190,10 +194,15 @@ extension TerminalShellViewController {
         chrome.pane = frames.pane
         let selector = paneStore.artifactSelectors[nativeArtifactSidebarPaneId] ?? ""
         let id = String(selector.split(separator: "@").first ?? "")
-        if pageReaderPage?.id != id {
-            pageReaderPage = pageInbox.pages.first { $0.id == id }
-            pageReaderVersion = pageReaderPage?.version ?? 1
-            if let page = pageReaderPage {
+        if pageReaderPage?.id != id || refresh {
+            // A page shown from the command line can be newer than the
+            // binder's list, which catches up a moment later.
+            let listed = pageInbox.pages.first { $0.id == id }
+            let stored = storedPage(id: id)
+            pageReaderPage =
+                (stored?.version ?? 0) > (listed?.version ?? 0) ? stored : listed ?? stored
+            pageReaderVersion = selectorVersion(selector) ?? pageReaderPage?.version ?? 1
+            if let page = pageReaderPage, page.version == listed?.version {
                 pageInbox.markRead(page)
             }
         }
@@ -210,10 +219,7 @@ extension TerminalShellViewController {
     private func syncPageReaderDocument(
         id: String, selector: String, pane: NSRect, above chrome: NSView
     ) {
-        let version =
-            selector.split(separator: "@").dropFirst().first
-            .flatMap { UInt32($0.trimmingCharacters(in: CharacterSet(charactersIn: "v"))) }
-            ?? pageReaderPage?.version ?? 1
+        let version = selectorVersion(selector) ?? pageReaderPage?.version ?? 1
         guard pageReaderPage?.kind == "markdown",
             let document = pageDocument(id: id, version: version)
         else {
@@ -230,6 +236,38 @@ extension TerminalShellViewController {
         view.show(
             folder: document.folder, document: document.name, language: document.language,
             key: "\(id)@\(version)")
+    }
+
+    /// The version a selector such as `id@v2` names; nil for the latest.
+    private func selectorVersion(_ selector: String) -> UInt32? {
+        selector.split(separator: "@").dropFirst().first
+            .flatMap { UInt32($0.trimmingCharacters(in: CharacterSet(charactersIn: "v"))) }
+    }
+
+    /// A page as the store keeps it, read from its metadata.
+    func storedPage(id: String) -> NativeArtifactListItem? {
+        guard !id.isEmpty, let root = pageStoreRoot(),
+            let name = try? FileManager.default.contentsOfDirectory(atPath: root.path)
+                .first(where: { $0.hasSuffix("--\(id)") }),
+            let data = try? Data(
+                contentsOf: root.appendingPathComponent(name).appendingPathComponent(
+                    "metadata.json")),
+            let metadata = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+            let kind = metadata["kind"] as? String,
+            let latest = (metadata["versions"] as? [[String: Any]])?
+                .compactMap({ $0["version"] as? Int }).max(),
+            latest > 0
+        else {
+            return nil
+        }
+        return NativeArtifactListItem(
+            id: id,
+            title: metadata["title"] as? String ?? id,
+            kind: kind,
+            version: UInt32(latest),
+            updatedAtMs: UInt64(metadata["updated_at_ms"] as? Int ?? 0),
+            preview: ""
+        )
     }
 
     /// One version of a page: the folder its files sit in, the Markdown
