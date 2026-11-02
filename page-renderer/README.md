@@ -16,9 +16,11 @@ lie below `page-renderer`, because the server serves only that directory.
 
 ## Files
 
-- `index.html` loads the libraries, the stylesheet, and the script under a
+- `index.html` loads markdown-it, the stylesheet, and the script under a
   Content-Security-Policy that allows only the page's own origin and
   `satin-page:`. A page's `<script>` elements and `on*` attributes do not run.
+  The script loads Mermaid and Chart.js the first time a page needs them;
+  with `?host` it also loads them once the host has been idle a moment.
 - `satin-page.css` holds both looks as CSS custom properties, with the values
   of `NativePageStyle` in the app.
 - `satin-page.js` reads `?page=` (default `artifact.md`), `?look=`
