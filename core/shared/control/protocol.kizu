@@ -177,6 +177,10 @@ fn write_command_fields(
     command: []u8
 ) -> ProtocolFailure!void {
     if mem::equal_bytes(command, "list") {
+        // The tmux pane the command runs in, which the answer names as the
+        // tab and pane this window shows for it.
+        try write_field(encoder, entries, "tmux_pane", Kind::OptionalIndex);
+        try write_field(encoder, entries, "tmux_socket", Kind::OmittedText);
         return;
     }
     if mem::equal_bytes(command, "read-screen") or mem::equal_bytes(command, "select-pane") or

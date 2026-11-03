@@ -1,6 +1,7 @@
 // The command line as a list of words commands take their flags out of,
 // and the one message a failed command leaves for main to print.
 import std::array;
+import std::fmt;
 import std::mem;
 import std::process;
 import std::string;
@@ -16,11 +17,18 @@ struct Cli {
     args: array::Array<string::String>,
     message: string::String,
     json_output: bool,
+    /// The control socket, once the command knows it.
+    socket: string::String,
+    /// The tab and pane the app shows for the tmux pane the command runs
+    /// in: -1 until asked, -2 when it shows none.
+    origin_tab: i64,
+    origin_pane: i64,
 }
 
 fn (self: Cli) deinit(allocator: Allocator) -> void {
     self.args.deinit(allocator);
     self.message.deinit(allocator);
+    self.socket.deinit(allocator);
 }
 
 /// Sets the message main prints, from parts written one after another.
@@ -142,6 +150,9 @@ fn (self: &var Cli) flag_or_environment(
     if try self.extract_value(allocator, flag, out) {
         return true;
     }
+    if try self.tmux_origin(allocator, environment, out) {
+        return true;
+    }
     if process::env(environment) |value| {
         try out.append_bytes(allocator, value);
         return true;
@@ -151,6 +162,28 @@ fn (self: &var Cli) flag_or_environment(
         return true;
     }
     return false;
+}
+
+/// In tmux every pane holds the environment of the pane tmux was started
+/// from, so the pane and the tab come from the app instead: the ones it
+/// shows for TMUX_PANE. False when it shows none, or for another variable.
+fn (self: &var Cli) tmux_origin(allocator: Allocator, environment: []u8, out: &var string::String) -> mem::Error!bool {
+    let pane = mem::equal_bytes(environment, "SATIN_PANE_ID");
+    if !pane and !mem::equal_bytes(environment, "SATIN_TAB_ID") {
+        return false;
+    }
+    if self.origin_pane == -1 {
+        try resolve_origin(self, allocator);
+    }
+    var value = self.origin_tab;
+    if pane {
+        value = self.origin_pane;
+    }
+    if value < 0 {
+        return false;
+    }
+    try fmt::append_i64(allocator, out, value);
+    return true;
 }
 
 /// The pane or tab a command acts on: from its flag, or the environment a
