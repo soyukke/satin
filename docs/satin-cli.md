@@ -34,6 +34,12 @@ satin identify --json
 `identify` requires the pane environment, connects to the current socket, and
 verifies that both identifiers still belong to the same live context.
 
+Inside tmux every pane holds the environment of the pane the tmux server was
+started from. There `identify`, and every command that takes its tab or pane
+from the environment, asks the application which tab and pane it shows for
+`TMUX_PANE` and uses those. When the application does not show that tmux
+server's session, the environment's identifiers stand.
+
 Outside the application, pass `--socket PATH`. If it is omitted, the CLI checks
 `SATIN_SOCKET` and then the default path under
 `~/Library/Application Support/Satin/run/control.sock`.

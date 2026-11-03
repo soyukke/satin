@@ -17,7 +17,7 @@ extension TerminalShellViewController {
         }
         switch request.command {
         case "list":
-            reply(.success(controlListResult()))
+            reply(.success(controlListResult(origin: request)))
         case "read-screen":
             handleControlReadScreen(request, reply: reply)
         case "send":
@@ -53,6 +53,19 @@ extension TerminalShellViewController {
         default:
             reply(controlFailure("unknown_command", "Unknown control command."))
         }
+    }
+
+    /// The tabs and panes. Asked from inside tmux, it also names as `origin`
+    /// the tab and pane this window shows for the asking tmux pane: there the
+    /// environment holds the pane tmux was started from.
+    func controlListResult(origin request: NativeControlRequest) -> [String: Any] {
+        var result = controlListResult()
+        if let pane = projectedTmuxPane(for: request),
+            let tab = lastSnapshot?.tabs.first(where: { $0.panes.contains(pane) })
+        {
+            result["origin"] = ["tab": tab.id, "pane": pane]
+        }
+        return result
     }
 
     func controlListResult() -> [String: Any] {

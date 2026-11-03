@@ -249,6 +249,82 @@ fn append_identified(
     return false;
 }
 
+/// Appends a list request to out. From inside tmux it names the tmux pane,
+/// so the answer says which tab and pane the app shows for it.
+fn append_list_request(allocator: Allocator, out: &var string::String) -> mem::Error!void {
+    var encoder = json::encoder(allocator);
+    defer encoder.deinit(allocator);
+    try begin_request(&var encoder, "list");
+    try write_tmux_origin(&var encoder, false);
+    try encoder.end_object();
+    try encoder.finish_into(allocator, out);
+    return;
+}
+
+/// Writes the tab and pane a list answer names as `origin` into tab and
+/// pane; leaves them when it names none.
+fn read_origin(result: &json::Value, tab: &var i64, pane: &var i64) -> void {
+    match result {
+        Obj(entries) => {
+            if entries.at("origin") |origin| {
+                let tab_id = member_number(origin, "tab");
+                let pane_id = member_number(origin, "pane");
+                if tab_id >= 0 and pane_id >= 0 {
+                    tab = tab_id;
+                    pane = pane_id;
+                }
+            }
+        },
+        _ => {},
+    }
+    return;
+}
+
+/// Asks the app, once, which tab and pane it shows for the tmux pane this
+/// command runs in. Outside tmux, or when the app cannot say, they stay
+/// unknown and the environment names them.
+fn resolve_origin(cli: &var Cli, allocator: Allocator) -> mem::Error!void {
+    cli.origin_tab = -2;
+    cli.origin_pane = -2;
+    if tmux_pane_number() < 0 or mem::len(tmux_socket()) == 0 or cli.socket.len() == 0 {
+        return;
+    }
+    var request = string::new(allocator);
+    defer request.deinit(allocator);
+    try append_list_request(allocator, &var request);
+    var socket = string::new(allocator);
+    defer socket.deinit(allocator);
+    try socket.append_string(allocator, &cli.socket);
+    let line = request.as_bytes();
+    let path = socket.as_bytes();
+    var answer = string::new(allocator);
+    defer answer.deinit(allocator);
+    if exchange(cli, allocator, path, line, &var answer) {} else |err| {
+        if err == mem::Error::OutOfMemory {
+            return mem::Error::OutOfMemory;
+        }
+        cli.message.clear();
+        return;
+    }
+    let bytes = answer.as_bytes();
+    var tab: i64 = -2;
+    var pane: i64 = -2;
+    if json::decode<json::Value>(allocator, bytes) |document| {
+        defer document.deinit(allocator);
+        match &document {
+            Obj(entries) => {
+                if entries.at("result") |result| {
+                    read_origin(result, &var tab, &var pane);
+                }
+            },
+            _ => {},
+        }
+    } else |_| {}
+    cli.origin_tab = tab;
+    cli.origin_pane = pane;
+    return;
+}
+
 /// Appends the answer `identify` gives to out: the socket, and the tab and
 /// pane of the list answer this pane's environment names.
 fn append_identity(
@@ -258,8 +334,13 @@ fn append_identity(
     listed: &json::Value,
     out: &var string::String
 ) -> CliFailure!void {
-    let tab_id = try environment_identifier(cli, allocator, "SATIN_TAB_ID", "tab");
-    let pane_id = try environment_identifier(cli, allocator, "SATIN_PANE_ID", "pane");
+    var tab_id: i64 = -1;
+    var pane_id: i64 = -1;
+    read_origin(listed, &var tab_id, &var pane_id);
+    if tab_id < 0 {
+        tab_id = try environment_identifier(cli, allocator, "SATIN_TAB_ID", "tab");
+        pane_id = try environment_identifier(cli, allocator, "SATIN_PANE_ID", "pane");
+    }
     var tab = string::new(allocator);
     defer tab.deinit(allocator);
     var pane = string::new(allocator);
@@ -307,11 +388,13 @@ fn append_identity(
 }
 
 fn identify(cli: &var Cli, allocator: Allocator, socket: []u8) -> CliFailure!void {
+    var request = string::new(allocator);
+    defer request.deinit(allocator);
+    try append_list_request(allocator, &var request);
+    let line = request.as_bytes();
     var answer = string::new(allocator);
     defer answer.deinit(allocator);
-    try exchange(cli, allocator, socket,
-        \\{"version":1,"command":"list"}
-    , &var answer);
+    try exchange(cli, allocator, socket, line, &var answer);
     let listed = answer.as_bytes();
     var identity = string::new(allocator);
     defer identity.deinit(allocator);
@@ -378,6 +461,7 @@ fn run(cli: &var Cli, allocator: Allocator) -> CliFailure!void {
         try resolve_socket(cli, allocator, &var socket);
     }
     let path = socket.as_bytes();
+    try cli.socket.append_bytes(allocator, path);
     // `artifact` is the older name of `page`, kept for agents and skills
     // that still use it.
     if cli.first_is("page") or cli.first_is("artifact") {
@@ -411,7 +495,14 @@ fn run(cli: &var Cli, allocator: Allocator) -> CliFailure!void {
 /// Runs the command line this process was started with.
 pub fn run_main() -> !process::ExitStatus {
     let allocator = mem::page_allocator();
-    var cli = Cli { args: array::new<string::String>(allocator), message: string::new(allocator), json_output: false };
+    var cli = Cli {
+        args: array::new<string::String>(allocator),
+        message: string::new(allocator),
+        json_output: false,
+        socket: string::new(allocator),
+        origin_tab: -1,
+        origin_pane: -1,
+    };
     defer cli.deinit(allocator);
     for 0..process::arg_count() |index| {
         let word = try process::arg(index);

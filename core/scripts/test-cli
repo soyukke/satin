@@ -117,6 +117,21 @@ check "identify" "{\"ok\":true,\"result\":{\"socket\":\"$socket\",\"tab\":{\"id\
 out="$(SATIN_TAB_ID=3 SATIN_PANE_ID=5 "$satin" --socket "$socket" identify 2>&1 || true)"
 check "identify refuses a tab that is not live" "satin: SATIN_TAB_ID does not identify a live tab" "$out"
 
+# In tmux every pane holds the environment of the pane tmux was started
+# from, so the tab and the pane come from what the app shows for TMUX_PANE.
+answer '{"ok":true,"result":{"tabs":[{"id":7,"title":"t"}],"panes":[{"id":8,"tab":7}],"origin":{"tab":7,"pane":8}}}'
+in_tmux() { TMUX="/tmp/t.sock,1,0" TMUX_PANE=%3 SATIN_TAB_ID=2 SATIN_PANE_ID=5 "$@"; }
+out="$(in_tmux "$satin" --socket "$socket" --json identify | tr -d ' \n')"
+check "identify in tmux" "{\"ok\":true,\"result\":{\"socket\":\"$socket\",\"tab\":{\"id\":7,\"title\":\"t\"},\"pane\":{\"id\":8,\"tab\":7}}}" "$out"
+check "identify in tmux names its tmux pane" '{"version":1,"command":"list","tmux_pane":3,"tmux_socket":"/tmp/t.sock"}' "$(request)"
+in_tmux "$satin" --socket "$socket" read-screen > /dev/null
+check "a command in tmux acts on the pane the app shows" '{"version":1,"command":"read-screen","pane":8}' "$(request)"
+in_tmux "$satin" --socket "$socket" read-screen --pane 4 > /dev/null
+check "a named pane in tmux stays" '{"version":1,"command":"read-screen","pane":4}' "$(request)"
+answer '{"ok":true,"result":{"tabs":[{"id":2,"title":"t"}],"panes":[{"id":5,"tab":2}]}}'
+in_tmux "$satin" --socket "$socket" read-screen > /dev/null
+check "a tmux pane the app does not show keeps the environment" '{"version":1,"command":"read-screen","pane":5}' "$(request)"
+
 answer '{"ok":false,"error":{"code":"no_pane","message":"pane 3 is gone"}}'
 status=0
 out="$("$satin" --socket "$socket" read-screen --pane 3 2>&1)" || status=$?

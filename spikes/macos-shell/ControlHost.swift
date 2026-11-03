@@ -38,8 +38,8 @@ struct NativeControlRequest: Decodable {
     let status: String?
     let summary: String?
     let agent_session_start: Bool?
-    /// The tmux pane a status comes from, and its server's socket, when the
-    /// command ran in tmux with no pane named.
+    /// The tmux pane a status or a list comes from, and its server's socket,
+    /// when the command ran in tmux with no pane named.
     let tmux_pane: Int?
     let tmux_socket: String?
     let timeout_ms: UInt64?
