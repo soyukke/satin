@@ -32,6 +32,21 @@ final class NativeWindowsSidebarView: NSView {
     private var cards: [NativeWindowCardView] = []
     private var gems: [NativeWindowGemView] = []
     private var clock: Timer?
+    /// Whether each tab shows its ⌘ digit. The cards keep their order by
+    /// state, so the digits, which go by tab, are not their places.
+    var showsShortcuts = false {
+        didSet {
+            guard showsShortcuts != oldValue else {
+                return
+            }
+            for card in cards {
+                card.showsShortcut = showsShortcuts
+            }
+            for gem in gems {
+                gem.showsShortcut = showsShortcuts
+            }
+        }
+    }
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -131,6 +146,7 @@ final class NativeWindowsSidebarView: NSView {
                 card.onPress = { [weak self] in self?.onSelect?($0) }
                 card.onRename = { [weak self] in self?.onRename?($0) }
                 card.tabMenu = { [weak self] in self?.tabMenu?($0) }
+                card.showsShortcut = showsShortcuts
                 document.addSubview(card)
                 return card
             }
@@ -139,6 +155,7 @@ final class NativeWindowsSidebarView: NSView {
                 let gem = NativeWindowGemView(row: row)
                 gem.onPress = { [weak self] in self?.onSelect?($0) }
                 gem.tabMenu = { [weak self] in self?.tabMenu?($0) }
+                gem.showsShortcut = showsShortcuts
                 document.addSubview(gem)
                 return gem
             }
@@ -428,6 +445,9 @@ final class NativeWindowCardView: NSView {
         }
     }
 
+    var showsShortcut = false {
+        didSet { needsDisplay = true }
+    }
     private var now = Date()
     private var hovering = false
     private var hoverArea: NSTrackingArea?
@@ -560,14 +580,21 @@ final class NativeWindowCardView: NSView {
             row.state, center: NSPoint(x: face.minX + 19, y: face.minY + 24), half: 8)
 
         // The name and its state on one line, the latest line under them.
-        let age = row.since.map { nativeSidebarAgeText(since: $0, now: now) } ?? ""
+        // While ⌘ is held, the tab's digit takes the place of its age.
+        let digit = showsShortcut ? row.shortcut : nil
+        let age =
+            digit != nil ? "" : row.since.map { nativeSidebarAgeText(since: $0, now: now) } ?? ""
         let clock = NativeSidebarLook.text(
             age, font: NativePageStyle.mono(10, .semibold),
             color: paper ? NativePageStyle.muted : color.withAlphaComponent(0.85),
             alignment: .right)
         clock.draw(in: NSRect(x: face.maxX - 50, y: face.minY + 9, width: 41, height: 14))
+        if let digit {
+            NativeSidebarLook.drawShortcut(
+                digit, center: NSPoint(x: face.maxX - 21, y: face.minY + 16))
+        }
         let left = face.minX + 36
-        let right = face.maxX - (age.isEmpty ? 10 : 52)
+        let right = face.maxX - (digit != nil ? 42 : age.isEmpty ? 10 : 52)
         let title = NativeSidebarLook.text(
             row.title, font: NativePageStyle.sans(13, .heavy), color: NativeSidebarLook.cardText)
         // Under NEEDS YOU the word tells waiting from failed; elsewhere the
@@ -671,6 +698,9 @@ final class NativeWindowGemView: NSView {
         }
     }
 
+    var showsShortcut = false {
+        didSet { needsDisplay = true }
+    }
     private let glow = CALayer()
 
     init(row: NativeWindowRow) {
@@ -737,6 +767,10 @@ final class NativeWindowGemView: NSView {
             dot.lineWidth = 2
             NativePageStyle.text.setStroke()
             dot.stroke()
+        }
+        if showsShortcut, let digit = row.shortcut {
+            NativeSidebarLook.drawShortcut(
+                digit, center: NSPoint(x: bounds.maxX - 14, y: bounds.minY + 10))
         }
     }
 

@@ -1,4 +1,4 @@
-import Foundation
+import AppKit
 
 /// How a sidebar sits beside the panes: open with its cards, folded to a
 /// rail, or gone.
@@ -115,6 +115,17 @@ struct NativeWindowRow: Equatable {
     let isCurrent: Bool
     /// Whether ⌘J plays this tab's card next.
     let isNext: Bool
+    /// The digit that goes with ⌘ to select this tab, if one does.
+    var shortcut: Int? = nil
+}
+
+/// The digit that goes with ⌘ to select a tab, as the menu has them: ⌘1 to
+/// ⌘8 by the tab's place, and ⌘9 for the last tab however many there are.
+func nativeTabShortcut(index: Int, count: Int) -> Int? {
+    if index < 8 {
+        return index + 1
+    }
+    return index == count - 1 ? 9 : nil
 }
 
 /// Deals one card per tab. A tab's state is the most urgent of its panes',
@@ -167,7 +178,8 @@ func nativeWindowRows(
             line: line,
             since: state == .idle ? nil : best?.since,
             isCurrent: tab.index == activeTabIndex,
-            isNext: nextPaneId.map { tab.panes.contains($0) } ?? false
+            isNext: nextPaneId.map { tab.panes.contains($0) } ?? false,
+            shortcut: nativeTabShortcut(index: tab.index, count: tabs.count)
         )
     }
 }
@@ -463,6 +475,11 @@ final class NativeSidebarItemStore {
     }
 }
 
+/// Whether ⌘ is held with no other modifier, as a tab's shortcut is pressed.
+func nativeHoldsOnlyCommand(_ flags: NSEvent.ModifierFlags) -> Bool {
+    flags.intersection([.command, .shift, .option, .control]) == .command
+}
+
 func runNativeSidebarModelSelfTests() -> Bool {
     let screen = """
         ● I added the sidebar. To see it with a page, run:
@@ -613,6 +630,18 @@ func runNativeSidebarModelSelfTests() -> Bool {
     guard groups.map(\.0) == [.needsYou, .running],
         groups[0].1.map(\.title) == ["worker", "api", "web"],
         groups[1].1.map(\.title) == ["logs"]
+    else {
+        return false
+    }
+    guard nativeTabShortcut(index: 0, count: 3) == 1,
+        nativeTabShortcut(index: 7, count: 12) == 8,
+        nativeTabShortcut(index: 8, count: 9) == 9,
+        nativeTabShortcut(index: 8, count: 12) == nil,
+        nativeTabShortcut(index: 11, count: 12) == 9,
+        rows.map(\.shortcut) == [1, 2, 3],
+        nativeHoldsOnlyCommand([.command, .capsLock]),
+        !nativeHoldsOnlyCommand([.command, .shift]),
+        !nativeHoldsOnlyCommand([])
     else {
         return false
     }

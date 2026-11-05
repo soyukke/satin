@@ -57,6 +57,7 @@ extension TerminalShellViewController {
     }
 
     func configureSidebars() {
+        installShortcutHints()
         windowsSidebar.onSelect = { [weak self] index in
             self?.selectTab(index)
         }

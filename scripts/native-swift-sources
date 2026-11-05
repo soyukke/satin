@@ -66,6 +66,7 @@ native_swift_sources=(
   spikes/macos-shell/NativeWindowsSidebarView.swift
   spikes/macos-shell/NativeItemsSidebarView.swift
   spikes/macos-shell/TerminalShellSidebars.swift
+  spikes/macos-shell/TerminalShellShortcutHints.swift
   spikes/macos-shell/NativeSettingsModel.swift
   spikes/macos-shell/TerminalShellArtifacts.swift
   spikes/macos-shell/TerminalShellCommands.swift
