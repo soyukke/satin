@@ -361,6 +361,8 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
     var attentionHandInFlight = Set<Int>()
     /// Watches the keyboard while ⌘J holds the hand open.
     var attentionSelectionMonitor: Any?
+    var shortcutHintMonitor: Any?
+    var shortcutHintTimer: Timer?
     var attentionHandArt: [Int: (revision: UInt64, lines: [String])] = [:]
     let metalView: TerminalMetalView
     let terminalTextView = TerminalTextView(frame: .zero)
@@ -613,6 +615,10 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
 
     deinit {
         pendingGeometryResizeWorkItem?.cancel()
+        shortcutHintTimer?.invalidate()
+        if let shortcutHintMonitor {
+            NSEvent.removeMonitor(shortcutHintMonitor)
+        }
         for source in paneStore.wakeupSources.values {
             source.cancel()
         }

@@ -85,6 +85,9 @@ import Foundation
                 ("rail-datasheet", .rail, .rail, false),
                 ("open-paper", .open, .open, true),
                 ("rail-paper", .rail, .rail, true),
+                ("open-shortcuts", .open, .open, false),
+                ("rail-shortcuts", .rail, .rail, false),
+                ("open-paper-shortcuts", .open, .open, true),
             ]
             snapshotSidebarsForSmoke(prefix, steps: steps[...])
         }
@@ -104,6 +107,7 @@ import Foundation
             windowsSidebarMode = left
             itemsSidebarMode = right
             applySidebarModes()
+            windowsSidebar.showsShortcuts = name.hasSuffix("shortcuts")
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
                 guard let self else { return }
                 self.writeWindowSnapshotForSmoke("\(prefix)-\(name).png")
