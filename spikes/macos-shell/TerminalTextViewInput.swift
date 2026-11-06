@@ -210,6 +210,65 @@ func runTerminalTextInputSelfTests() -> Bool {
     return mouseInputs == 6 && localScrollRows == [-6]
 }
 
+/// A left drag over a pane whose program takes the mouse: it goes to the
+/// program, or with Shift held to the pane's own selection, and Neovim keeps
+/// it either way.
+func runTerminalShiftSelectionSelfTests() -> Bool {
+    let view = TerminalTextView(frame: NSRect(x: 0, y: 0, width: 200, height: 100))
+    var programHeard: [String] = []
+    var selection: [String] = []
+    var terminalPane = true
+    view.onMouseInput = { input in
+        programHeard.append(input.action)
+        return .handled
+    }
+    view.onSelectionEvent = { event in
+        switch event {
+        case .press: selection.append("press")
+        case .drag: selection.append("drag")
+        case .release: selection.append("release")
+        case .cancel: selection.append("cancel")
+        case .autoscroll: selection.append("autoscroll")
+        }
+        return true
+    }
+    view.onSelectionOverMouseRequested = { terminalPane }
+    func drag(_ flags: NSEvent.ModifierFlags) {
+        for (type, x) in [
+            (NSEvent.EventType.leftMouseDown, 10.0), (.leftMouseDragged, 40.0),
+            (.leftMouseUp, 40.0),
+        ] {
+            guard
+                let event = NSEvent.mouseEvent(
+                    with: type, location: NSPoint(x: x, y: 50), modifierFlags: flags, timestamp: 0,
+                    windowNumber: 0, context: nil, eventNumber: 0, clickCount: 1, pressure: 1)
+            else {
+                continue
+            }
+            switch type {
+            case .leftMouseDown: view.mouseDown(with: event)
+            case .leftMouseDragged: view.mouseDragged(with: event)
+            default: view.mouseUp(with: event)
+            }
+        }
+    }
+    drag([])
+    guard programHeard == ["press", "drag", "release"], selection.isEmpty else {
+        return false
+    }
+    programHeard = []
+    drag(.shift)
+    guard programHeard.isEmpty, selection == ["press", "drag", "release"],
+        !view.selectingOverMouse
+    else {
+        return false
+    }
+    selection = []
+    terminalPane = false
+    drag(.shift)
+    return programHeard == ["press", "drag", "release"] && selection.isEmpty
+}
+
 private func terminalScrollWheelEvent(deltaY: Int32) -> NSEvent? {
     guard
         let event = CGEvent(
@@ -521,12 +580,14 @@ extension TerminalTextView {
     func finishTerminalSelectionGesture() {
         stopSelectionAutoscroll()
         selectionInProgress = false
+        selectingOverMouse = false
         selectionAutoscrollRectangular = false
     }
 
     func cancelTerminalSelectionGesture() {
         stopSelectionAutoscroll()
         selectionAutoscrollRectangular = false
+        selectingOverMouse = false
         guard selectionInProgress else {
             return
         }

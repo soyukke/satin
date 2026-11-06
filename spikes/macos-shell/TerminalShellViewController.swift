@@ -566,6 +566,12 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
         self.terminalTextView.onMouseTrackingRequested = { [weak self] in
             self?.activePaneUsesMouseTracking() ?? false
         }
+        self.terminalTextView.onSelectionOverMouseRequested = { [weak self] in
+            guard let self, let paneId = self.activePaneId else {
+                return false
+            }
+            return self.paneStore.runtimes[paneId] is TerminalPane
+        }
         self.terminalTextView.onSelectionEvent = { [weak self] event in
             self?.handleTerminalSelection(event) ?? false
         }

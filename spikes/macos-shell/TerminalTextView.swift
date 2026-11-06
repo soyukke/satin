@@ -7,6 +7,9 @@ final class TerminalTextView: NSView, NSTextInputClient {
     var onTextInput: ((String) -> Void)?
     var onMouseInput: ((NativeMouseInput) -> NativeMouseHandling)?
     var onMouseTrackingRequested: (() -> Bool)?
+    /// Whether the active pane can be selected over a program that takes
+    /// the mouse: true for a terminal pane, not for Neovim.
+    var onSelectionOverMouseRequested: (() -> Bool)?
     var onSelectionEvent: ((NativeTerminalSelectionEvent) -> Bool)?
     var onHyperlinkRequested: (((row: Int, col: Int), _ reveal: Bool) -> Bool)?
     /// The columns, on the hovered row, of what ⌘-click would open there.
@@ -62,6 +65,9 @@ final class TerminalTextView: NSView, NSTextInputClient {
     var markedSelection = NSRange(location: 0, length: 0)
     var interpretingKeyEvent: NSEvent?
     var selectionInProgress = false
+    /// Whether this press is a Shift-drag selection, which the program in
+    /// the pane does not hear from press to release.
+    var selectingOverMouse = false
     var selectionAutoscrollInput: NativeMouseInput?
     var selectionAutoscrollRectangular = false
     var selectionAutoscrollTimer: Timer?
@@ -315,7 +321,11 @@ final class TerminalTextView: NSView, NSTextInputClient {
         else {
             return
         }
-        if handleMouseInput(input) {
+        // Shift selects text even where the program takes the mouse, as in
+        // Ghostty and xterm.
+        selectingOverMouse =
+            event.modifierFlags.contains(.shift) && onSelectionOverMouseRequested?() == true
+        if !selectingOverMouse, handleMouseInput(input) {
             return
         }
         selectionInProgress = onSelectionEvent?(.press(input)) ?? false
@@ -343,7 +353,7 @@ final class TerminalTextView: NSView, NSTextInputClient {
             cancelTerminalSelectionGesture()
             return
         }
-        if handleMouseInput(input) {
+        if !selectingOverMouse, handleMouseInput(input) {
             cancelTerminalSelectionGesture()
             return
         }
@@ -395,7 +405,7 @@ final class TerminalTextView: NSView, NSTextInputClient {
         else {
             return
         }
-        if handleMouseInput(input) {
+        if !selectingOverMouse, handleMouseInput(input) {
             cancelTerminalSelectionGesture()
             return
         }
