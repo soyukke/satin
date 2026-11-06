@@ -81,8 +81,9 @@ and changes across the workspace.
   edge. A fuse runs round the tab, a spark carries the card from it, and a
   thread ties each card back to its tab. Hold Command-J to look through the
   hand with a preview of each pane, and let go to jump there.
-- Native copy/paste, IME, terminal rectangular selection, Neovim message-area
-  drag selection, scrollback search, clickable links, and a scroll indicator.
+- Native copy/paste, IME, terminal rectangular selection, Shift-drag selection
+  over a program that takes the mouse, Neovim message-area drag selection,
+  scrollback search, clickable links, and a scroll indicator.
 - A native Settings window for appearance, shell, startup directory,
   keybindings, session behavior, and signed updates.
 - Finder Open With, Dock drops, and a macOS Service for opening files or folders
