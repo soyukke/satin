@@ -214,7 +214,10 @@ struct NativeSidebarItem: Equatable {
 private enum NativeSidebarPatterns {
     static let url = regex(#"https?://[^\s<>"'`│┃]+"#)
     static let codeCommand = regex(#"`[!$] ([^`]+)`"#)
-    static let tool = regex(#"\b(Update|Edit|MultiEdit|Write|Create|Read)\(([^()\s]+)\)"#)
+    /// A tool call's header, `● Update(path)`, with the tool's name and
+    /// what it was given.
+    static let toolHeader = regex(#"^\s*[●⏺] ([A-Z][A-Za-z]*)\(([^)]*)"#)
+    static let editingTools: Set<String> = ["Update", "Edit", "MultiEdit", "Write", "Create"]
     static let fileLine = regex(
         #"(?<![\w/.~-])((?:~|\.{1,2})?/?[\w.-]+(?:/[\w.-]+)*\.[A-Za-z][A-Za-z0-9]{0,7}):(\d+)(?::\d+)?(?![\w/])"#
     )
@@ -326,9 +329,41 @@ func nativeSidebarItems(screen: String, columns: Int = 0) -> [NativeSidebarItem]
         add(.quote, body, count == 1 ? "1 line" : "\(count) lines")
     }
 
+    // An agent's tool calls are not offered: what it ran and read sits
+    // under a `⎿` and the lines indented below it, and a call's header
+    // reads `● Name(…)`. Only the files a call edited come from those.
+    var inToolOutput = false
     for raw in nativeSidebarUnwrap(screen, columns: columns) {
         let (line, boxed) = nativeSidebarCleanLine(raw)
         let body = line.drop { $0 == " " }
+        let indent = raw.prefix { $0 == " " }.count
+        if raw.dropFirst(indent).first == "⎿" {
+            inToolOutput = true
+        } else if !body.isEmpty, indent < 4 {
+            inToolOutput = false
+        }
+        let header = nativeSidebarMatches(NativeSidebarPatterns.toolHeader, in: line).first
+        if inToolOutput || header != nil, !quote.isEmpty {
+            flushQuote()
+        }
+        if inToolOutput {
+            for match in nativeSidebarMatches(NativeSidebarPatterns.url, in: line) {
+                if let found = Range(match.range, in: line) {
+                    let url = nativeSidebarTrimURL(String(line[found]))
+                    add(.link, url, URL(string: url)?.host ?? "link")
+                }
+            }
+            continue
+        }
+        if let header {
+            if let action = Range(header.range(at: 1), in: line),
+                let path = Range(header.range(at: 2), in: line),
+                NativeSidebarPatterns.editingTools.contains(String(line[action]))
+            {
+                add(.file, String(line[path]), "edited")
+            }
+            continue
+        }
 
         if !boxed, body.first == ">", body.count == 1 || body.dropFirst().first == " " {
             let content = body.dropFirst().trimmingCharacters(in: .whitespaces)
@@ -356,14 +391,6 @@ func nativeSidebarItems(screen: String, columns: Int = 0) -> [NativeSidebarItem]
             let url = nativeSidebarTrimURL(String(line[found]))
             add(.link, url, URL(string: url)?.host ?? "link")
             rest.replaceSubrange(found, with: " ")
-        }
-        for match in nativeSidebarMatches(NativeSidebarPatterns.tool, in: rest) {
-            guard let action = Range(match.range(at: 1), in: rest),
-                let path = Range(match.range(at: 2), in: rest)
-            else {
-                continue
-            }
-            add(.file, String(rest[path]), rest[action] == "Read" ? "read" : "edited")
         }
         for match in nativeSidebarMatches(NativeSidebarPatterns.fileLine, in: rest) {
             guard let whole = Range(match.range, in: rest),
@@ -498,6 +525,11 @@ func runNativeSidebarModelSelfTests() -> Bool {
         ● Update(spikes/macos-shell/TerminalShellTabs.swift)
           ⎿  Added 42 lines
         ● Read(core/src/tmux/control.kizu)
+        ● Bash(cat ./scripts/run.sh | grep users)
+          ⎿  $ cp notes/a.txt ./out/visits.txt
+             ! not a command for the user
+             see ./out/visits.txt:3 and https://github.com/example/satin/pull/9
+        ● Bash(git log --oneline -- ./scripts/run.s…
         error at TerminalShellTabs.swift:88:4 and ./scripts/build.sh:12
         Saved the shot to ~/Desktop/shot.png. See design.md and 1.5/2.0 too.
         $ just fmt && just precommit
@@ -526,7 +558,8 @@ func runNativeSidebarModelSelfTests() -> Bool {
             detail: "3 lines"),
         .init(
             kind: .file, text: "spikes/macos-shell/TerminalShellTabs.swift", detail: "edited"),
-        .init(kind: .file, text: "core/src/tmux/control.kizu", detail: "read"),
+        .init(
+            kind: .link, text: "https://github.com/example/satin/pull/9", detail: "github.com"),
         .init(kind: .file, text: "TerminalShellTabs.swift:88:4", detail: "line 88"),
         .init(kind: .file, text: "./scripts/build.sh:12", detail: "line 12"),
         .init(kind: .file, text: "~/Desktop/shot.png", detail: "path"),
