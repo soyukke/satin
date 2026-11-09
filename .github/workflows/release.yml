@@ -14,7 +14,7 @@ concurrency:
 
 jobs:
   release:
-    runs-on: macos-15
+    runs-on: macos-26
     timeout-minutes: 60
     # The code-signing certificate lives in this environment, which only
     # release tags may use.
