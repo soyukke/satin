@@ -188,9 +188,9 @@ final class NativeWindowsSidebarView: NSView {
                 for _ in members {
                     next.next()?.frame = NSRect(
                         x: 10, y: y, width: width - 20, height: NativeWindowCardView.height)
-                    y += NativeWindowCardView.height + 6
+                    y += NativeWindowCardView.height + NativeWindowCardView.gap
                 }
-                y += 8
+                y += 6
             }
             document.frame = NSRect(x: 0, y: 0, width: width, height: y)
             document.needsDisplay = true
@@ -428,11 +428,14 @@ final class NativeSessionChip: NSView {
     }
 }
 
-/// One tab as a card: its gem, title and state, the line it last printed,
-/// and a gauge for how long it has waited.
+/// One tab as a row: its gem, title and age, and under them a hairline
+/// gauge for how long it has waited. The line it last printed is in its
+/// tooltip.
 final class NativeWindowCardView: NSView {
-    static let height: CGFloat = 54
-    private static let radius: CGFloat = 9
+    static let height: CGFloat = 26
+    /// The room between two rows.
+    static let gap: CGFloat = 2
+    private static let radius: CGFloat = 6
 
     var onPress: ((Int) -> Void)?
     var onRename: ((Int) -> Void)?
@@ -463,7 +466,7 @@ final class NativeWindowCardView: NSView {
         glow.cornerRadius = Self.radius
         glow.borderWidth = 1
         glow.shadowOpacity = 0.55
-        glow.shadowRadius = 7
+        glow.shadowRadius = 4
         glow.shadowOffset = .zero
         foil.cornerRadius = Self.radius
         foil.masksToBounds = true
@@ -493,11 +496,8 @@ final class NativeWindowCardView: NSView {
         true
     }
 
-    /// The card's face without the room its paper print takes.
     private var face: NSRect {
-        NativePageStyle.paper
-            ? NSRect(x: 1, y: 1, width: bounds.width - 6, height: bounds.height - 6)
-            : bounds.insetBy(dx: 1, dy: 1)
+        bounds.insetBy(dx: 1, dy: 0.5)
     }
 
     override func layout() {
@@ -525,7 +525,7 @@ final class NativeWindowCardView: NSView {
         // A slow breath, not an alarm: the sidebar sits beside the work.
         NativeHandEffects.setPulse(glow, active: hot && !paper, minimumOpacity: 0.25, duration: 2.4)
         comet.layout(
-            NSRect(x: face.minX + 10, y: face.maxY - 7, width: face.width - 20, height: 2),
+            NSRect(x: face.minX + 26, y: face.maxY - 3, width: face.width - 34, height: 1.5),
             running: row.state == .running)
         let elapsed = row.since.map { nativeElapsedText(since: $0, now: now) } ?? ""
         setAccessibilityLabel(
@@ -541,45 +541,23 @@ final class NativeWindowCardView: NSView {
         let color = NativeSidebarLook.color(row.state)
         let face = self.face
         let outline = NSBezierPath(
-            roundedRect: face, xRadius: paper ? 4 : Self.radius, yRadius: paper ? 4 : Self.radius)
-        if paper {
-            let print = (row.isCurrent ? NativePageStyle.violet : NativePageStyle.teal)
-                .withAlphaComponent(0.8)
-            print.setFill()
-            NSBezierPath(roundedRect: face.offsetBy(dx: 4, dy: 4), xRadius: 4, yRadius: 4).fill()
-            NativePageStyle.surface.setFill()
+            roundedRect: face, xRadius: paper ? 3 : Self.radius, yRadius: paper ? 3 : Self.radius)
+        // A plain row; only the current tab and the one under the pointer
+        // are filled.
+        if row.isCurrent {
+            NativePageStyle.violet.withAlphaComponent(paper ? 0.16 : 0.22).setFill()
             outline.fill()
-            NativePageStyle.text.setStroke()
-            outline.lineWidth = 2
+            NativePageStyle.violet.withAlphaComponent(paper ? 0.9 : 0.7).setStroke()
+            outline.lineWidth = 1
             outline.stroke()
-        } else {
-            let tint =
-                row.state == .idle
-                ? NativeSidebarLook.cardPanel
-                : NativeSidebarLook.cardPanel.blended(withFraction: 0.22, of: color)
-                    ?? NativeSidebarLook.cardPanel
-            NSGradient(
-                colors: [tint, NativeSidebarLook.cardPanel, NativeSidebarLook.stock],
-                atLocations: [0, 0.45, 1], colorSpace: .sRGB)?
-                .draw(in: outline, angle: -65)
-            if row.isCurrent {
-                NativePageStyle.violet.setStroke()
-                outline.lineWidth = 1.5
-            } else {
-                color.withAlphaComponent(row.state == .idle ? 0.3 : 0.55).setStroke()
-                outline.lineWidth = 1
-            }
-            outline.stroke()
-        }
-        if hovering {
-            (paper ? NativePageStyle.text : NSColor.white).withAlphaComponent(0.06).setFill()
+        } else if hovering {
+            (paper ? NativePageStyle.text : NSColor.white).withAlphaComponent(0.07).setFill()
             outline.fill()
         }
 
         NativeSidebarLook.drawGem(
-            row.state, center: NSPoint(x: face.minX + 19, y: face.minY + 24), half: 8)
+            row.state, center: NSPoint(x: face.minX + 13, y: face.midY), half: 6)
 
-        // The name and its state on one line, the latest line under them.
         // While ⌘ is held, the tab's digit takes the place of its age.
         let digit = showsShortcut ? row.shortcut : nil
         let age =
@@ -588,48 +566,38 @@ final class NativeWindowCardView: NSView {
             age, font: NativePageStyle.mono(10, .semibold),
             color: paper ? NativePageStyle.muted : color.withAlphaComponent(0.85),
             alignment: .right)
-        clock.draw(in: NSRect(x: face.maxX - 50, y: face.minY + 9, width: 41, height: 14))
+        clock.draw(in: NSRect(x: face.maxX - 46, y: face.midY - 7, width: 40, height: 14))
         if let digit {
             NativeSidebarLook.drawShortcut(
-                digit, center: NSPoint(x: face.maxX - 21, y: face.minY + 16))
+                digit, center: NSPoint(x: face.maxX - 18, y: face.midY))
         }
-        let left = face.minX + 36
-        let right = face.maxX - (digit != nil ? 42 : age.isEmpty ? 10 : 52)
+        let left = face.minX + 26
+        let right = face.maxX - (digit != nil ? 36 : age.isEmpty ? 8 : 48)
         let title = NativeSidebarLook.text(
-            row.title, font: NativePageStyle.sans(13, .heavy), color: NativeSidebarLook.cardText)
+            row.title, font: NativePageStyle.sans(12, .semibold),
+            color: NativeSidebarLook.cardText)
         // Under NEEDS YOU the word tells waiting from failed; elsewhere the
         // heading already says it.
         let showsWord = NativeWindowGroup(row.state) == .needsYou
-        let wordFont = NativePageStyle.sans(8, paper ? .heavy : .bold)
+        let wordFont = NativePageStyle.sans(8, .bold)
         let wordWidth =
             showsWord
             ? ceil(
                 (row.state.title as NSString).size(withAttributes: [.font: wordFont, .kern: 1.2])
-                    .width) + (paper ? 12 : 0) : 0
-        let titleWidth = min(ceil(title.size().width), max(0, right - left - wordWidth - 8))
-        title.draw(in: NSRect(x: left, y: face.minY + 7, width: titleWidth, height: 18))
-        let wordX = left + titleWidth + 8
+                    .width) : 0
+        let titleWidth = min(ceil(title.size().width), max(0, right - left - wordWidth - 6))
+        title.draw(in: NSRect(x: left, y: face.midY - 8, width: titleWidth, height: 16))
+        let wordX = left + titleWidth + 6
         if showsWord, wordX + wordWidth <= right {
-            if paper {
-                NativePageStyle.drawStamp(
-                    row.state.title, center: NSPoint(x: wordX + wordWidth / 2, y: face.minY + 16),
-                    color: color, angle: -5, size: 8)
-            } else {
-                NativeSidebarLook.text(
-                    row.state.title, font: wordFont, color: color.withAlphaComponent(0.9),
-                    kern: 1.2
-                ).draw(at: NSPoint(x: wordX, y: face.minY + 11))
-            }
+            NativeSidebarLook.text(
+                row.state.title, font: wordFont, color: color.withAlphaComponent(0.9), kern: 1.2
+            ).draw(at: NSPoint(x: wordX, y: face.midY - 5))
         }
-        let lineColor =
-            paper ? NativePageStyle.muted : NSColor.white.withAlphaComponent(0.55)
-        NativeSidebarLook.text(row.line, font: NativePageStyle.mono(10, .regular), color: lineColor)
-            .draw(in: NSRect(x: left, y: face.minY + 27, width: face.maxX - 10 - left, height: 14))
 
         guard row.state != .idle, row.state != .running else {
             return
         }
-        let track = NSRect(x: face.minX + 10, y: face.maxY - 7, width: face.width - 20, height: 2)
+        let track = NSRect(x: left, y: face.maxY - 3, width: face.maxX - 8 - left, height: 1.5)
         (paper ? NativePageStyle.line : NSColor.white.withAlphaComponent(0.08)).setFill()
         track.fill()
         var fill = track

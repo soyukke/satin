@@ -198,7 +198,7 @@ final class NativeItemsSidebarView: NSView {
             y += 20
             for row in sectionRows {
                 row.frame = NSRect(x: 12, y: y, width: inner, height: NativeItemRowView.height)
-                y += NativeItemRowView.height + 4
+                y += NativeItemRowView.height + 3
             }
             y += 10
         }
@@ -339,7 +339,7 @@ enum NativeItemRowAction: Equatable {
 /// A link or a file opens on a click and copies from the button at its
 /// end; the rest copy on a click. It says so for a moment after.
 final class NativeItemRowView: NSView {
-    static let height: CGFloat = 40
+    static let height: CGFloat = 26
     /// The copy button's width at the row's end.
     static let copyWidth: CGFloat = 32
 
@@ -373,7 +373,7 @@ final class NativeItemRowView: NSView {
         self.item = item
         super.init(frame: .zero)
         wantsLayer = true
-        toolTip = item.text
+        toolTip = "\(item.text)\n\(item.detail)"
         setAccessibilityElement(true)
         setAccessibilityRole(.button)
         setAccessibilityLabel((opens ? "Open " : "Copy ") + item.text)
@@ -408,21 +408,29 @@ final class NativeItemRowView: NSView {
 
         nativeDrawItemBadge(
             item.kind.glyph, color: NativeSidebarLook.color(item.kind),
-            in: NSRect(x: 9, y: (bounds.height - 18) / 2, width: 18, height: 18))
+            in: NSRect(x: 7, y: (bounds.height - 16) / 2, width: 16, height: 16))
 
-        let textRight = bounds.width - (hovering ? 34 : 10)
+        // One line: the item, and for a moment after a click what the
+        // click did. Where it came from is in the tooltip.
+        var textRight = bounds.width - (hovering ? 34 : 8)
+        if let noted = note.flatMap({ Date().timeIntervalSince($0.at) < 1.2 ? $0 : nil }) {
+            let word = NativeSidebarLook.text(
+                noted.text, font: NativePageStyle.sans(10, .bold), color: noted.color,
+                alignment: .right)
+            let width = ceil(word.size().width)
+            word.draw(
+                in: NSRect(
+                    x: textRight - width, y: (bounds.height - 14) / 2, width: width, height: 14))
+            textRight -= width + 6
+        }
         let middle = item.kind == .link || item.kind == .file
         NativeSidebarLook.text(
             item.text.replacingOccurrences(of: "\n", with: " "),
             font: NativePageStyle.mono(11, .regular), color: NativePageStyle.text,
             breaking: middle ? .byTruncatingMiddle : .byTruncatingTail
-        ).draw(in: NSRect(x: 36, y: 5, width: textRight - 36, height: 15))
-        let noted = note.flatMap { Date().timeIntervalSince($0.at) < 1.2 ? $0 : nil }
-        NativeSidebarLook.text(
-            noted?.text ?? item.detail,
-            font: NativePageStyle.sans(10, noted == nil ? .regular : .bold),
-            color: noted?.color ?? NativePageStyle.muted
-        ).draw(in: NSRect(x: 36, y: 21, width: textRight - 36, height: 14))
+        ).draw(
+            in: NSRect(
+                x: 30, y: (bounds.height - 15) / 2, width: max(0, textRight - 30), height: 15))
 
         guard hovering,
             let icon = NSImage(systemSymbolName: "doc.on.doc", accessibilityDescription: nil)?
