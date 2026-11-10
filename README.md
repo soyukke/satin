@@ -71,8 +71,8 @@ and changes across the workspace.
   text preview, and a compact toolbar attention badge. Codex and Claude Code
   lifecycle classification works in local and projected tmux panes without
   scraping terminal screen text.
-- A windows sidebar on the left that deals every tab as a card, with its
-  state, the line it last printed, and how long it has waited, and an items
+- A windows sidebar on the left that lists every tab on one line, with its
+  state, how long it has been so, and how long it has waited, and an items
   sidebar on the right that keeps the pages and the commands, quotes, links,
   and files the tabs showed, each a click from the pasteboard. Either folds
   to a rail.
@@ -124,16 +124,16 @@ saved. With the hand off, `Command-J` cycles through the waiting panes.
 
 ### Sidebars
 
-The sidebars are experimental. The windows sidebar on the left deals every
-tab as a card in the attention hand's style, under a heading for its state:
+The sidebars are experimental. The windows sidebar on the left lists every
+tab as a one-line row, under a heading for its state:
 needs you (waiting or failed, the longest wait first), running, done, and
-idle. A card shows a gem and an edge in that state's color, the line the tab
-last printed or its agent last said, how long it has been so, and a gauge for
-how long it has waited. The
-card `Command-J` plays next carries a foil. Click a card to go to its tab,
+idle. A row shows a gem in that state's color, how long it has been so, and a
+hairline gauge for how long it has waited; the line the tab last printed or
+its agent last said is in its tooltip. The
+row `Command-J` plays next carries a foil. Click a row to go to its tab,
 double-click to rename it, or right-click for its actions. The session name at
 the top, `local` or the tmux session's, opens the session picker. While this
-sidebar is open its cards are the hand, so the hand along the lower edge only
+sidebar is open its rows are the hand, so the hand along the lower edge only
 comes back when the sidebar is folded.
 
 The items sidebar on the right holds the pages as slips, then what the
