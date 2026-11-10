@@ -25,11 +25,11 @@
         "nixpkgs-llvm": "nixpkgs-llvm"
       },
       "locked": {
-        "lastModified": 1791872972,
-        "narHash": "sha256-WDQgwQjcfWY9DCRBRmFxJAuxAxEyOhOZPB2JG14OuLQ=",
+        "lastModified": 1794286009,
+        "narHash": "sha256-2JHtHckjzsAUko6kcUYpn4lNEYa1J2SUOBJe0KnmRW8=",
         "owner": "kizu-lang",
         "repo": "kizu",
-        "rev": "6708d2fb29f19c5a4fd246393c3ef44ae45be065",
+        "rev": "4c0859611f36fc82e802587016b2a532a0651681",
         "type": "github"
       },
       "original": {

@@ -131,7 +131,8 @@ pub fn (self: &var Screen) feed(allocator: Allocator, bytes: []u8) -> mem::Error
     // The callbacks this runs write only the sink, which self does not hold.
     // SAFETY: the terminal is live.
     unsafe write_terminal(self.terminal, bytes);
-    try self.prompt.feed(allocator, bytes);
+    // SAFETY: the tracker is plain data; the struct's invariant is about its pointers.
+    try unsafe self.prompt.feed(allocator, bytes);
     return;
 }
 
@@ -192,5 +193,6 @@ pub fn (self: &Screen) last_exit() -> i64 {
 }
 
 pub fn (self: &var Screen) reset_prompt() -> void {
-    self.prompt.reset();
+    // SAFETY: the tracker is plain data; the struct's invariant is about its pointers.
+    unsafe self.prompt.reset();
 }
