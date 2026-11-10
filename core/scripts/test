@@ -16,6 +16,8 @@ for package in . host cli nvim; do
     echo "== kizu test $package"
     "$kizu" test "$package"
 done
+# The Quint machines in spec/ still say what the code does.
+KIZU="$kizu" scripts/spec-table --check
 scripts/test-cli target/bin/satin
 scripts/test-nvim-launcher target/bin/satin-nvim
 scripts/test-drawable

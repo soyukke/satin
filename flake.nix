@@ -23,6 +23,12 @@
           pkgs = import nixpkgs { inherit system; };
           font = pkgs.nerd-fonts.caskaydia-cove;
           kizuCompiler = kizu.packages.${system}.default;
+          # The compiler's own tool that writes a std::machine table as a Quint
+          # module, for core/scripts/spec-table.
+          kizuMachineQuint = kizuCompiler.overrideAttrs (_: {
+            pname = "kizu-machine-quint";
+            subPackages = [ "scripts/machine-quint" ];
+          });
           nativeShellHook = ''
             export SATIN_FONT="${font}/share/fonts/truetype/NerdFonts/CaskaydiaCove/CaskaydiaCoveNerdFontMono-Regular.ttf"
             echo "zig: $(zig version)"
@@ -38,6 +44,7 @@
               pkgs.git
               pkgs.gitleaks
               kizuCompiler
+              kizuMachineQuint
               pkgs.just
               pkgs.jq
               pkgs.markdownlint-cli2
@@ -45,6 +52,7 @@
               pkgs.neovim
               pkgs.nixfmt
               pkgs.python3
+              pkgs.quint
               pkgs.ripgrep
               pkgs.shellcheck
               pkgs.shfmt
@@ -62,6 +70,7 @@
           ci-native = pkgs.mkShell {
             packages = [
               kizuCompiler
+              kizuMachineQuint
               pkgs.git
               pkgs.just
               pkgs.jq
@@ -99,6 +108,7 @@
               pkgs.just
               pkgs.markdownlint-cli2
               pkgs.nixfmt
+              pkgs.quint
               pkgs.ripgrep
               pkgs.shellcheck
               pkgs.shfmt

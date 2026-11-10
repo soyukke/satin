@@ -1,0 +1,43 @@
+import std::machine;
+import std::mem;
+import std::string;
+
+// Writes what each state machine of the core does with every state and
+// event, one JSON document a machine. scripts/spec-table turns them into
+// the Quint modules beside this package, in the order written here.
+
+fn prompt_next(state: PromptState, byte: PromptByte) -> PromptState {
+    return prompt_advance(state, byte).state;
+}
+
+fn prompt_outcome(state: PromptState, byte: PromptByte) -> PromptOutcome {
+    return prompt_advance(state, byte).outcome;
+}
+
+// The tracker reads output for as long as the pane lives.
+fn prompt_never_ends(state: PromptState) -> bool {
+    return false;
+}
+
+fn write_table(allocator: Allocator, table: &machine::Table) -> mem::Error!void {
+    var out = string::new(allocator);
+    defer out.deinit(allocator);
+    try table.to_json(allocator, &var out);
+    let text = out.as_bytes();
+    print(text);
+    return;
+}
+
+fn main() -> mem::Error!void {
+    let allocator = mem::page_allocator();
+    let prompt = try machine::answers<PromptState, PromptByte, PromptOutcome>(
+        allocator,
+        prompt_next,
+        prompt_outcome,
+        PromptState::Ground,
+        prompt_never_ends
+    );
+    defer prompt.deinit(allocator);
+    try write_table(allocator, &prompt);
+    return;
+}

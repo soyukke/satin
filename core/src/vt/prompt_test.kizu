@@ -1,3 +1,4 @@
+import std::machine;
 import std::mem;
 import std::string;
 import std::testing;
@@ -97,4 +98,47 @@ test "counts the commands a shell runs and how they ended" {
     tracker.reset();
     testing::expect_equal<u64>(0, tracker.commands_started);
     testing::expect_equal<i64>(-1, tracker.last_exit);
+}
+
+fn machine_next(state: PromptState, byte: PromptByte) -> PromptState {
+    return prompt_advance(state, byte).state;
+}
+
+fn machine_outcome(state: PromptState, byte: PromptByte) -> PromptOutcome {
+    return prompt_advance(state, byte).outcome;
+}
+
+// The tracker reads output for as long as the pane lives.
+fn machine_never_ends(state: PromptState) -> bool {
+    return false;
+}
+
+test "every state of the byte machine is reached" {
+    let allocator = mem::page_allocator();
+    let table = try machine::answers<PromptState, PromptByte, PromptOutcome>(
+        allocator,
+        machine_next,
+        machine_outcome,
+        PromptState::Ground,
+        machine_never_ends
+    );
+    defer table.deinit(allocator);
+    var problems = try table.problems(allocator);
+    defer problems.deinit(allocator);
+    if problems.at(0) |line| {
+        let bytes = line.as_bytes();
+        testing::fail(bytes);
+    }
+}
+
+test "an escape held in a payload is kept unless a backslash follows" {
+    let allocator = mem::page_allocator();
+    var tracker = new_prompt_tracker(allocator);
+    defer tracker.deinit(allocator);
+    // BEL after the held ESC does not end the payload: both are kept, and
+    // the mark is read when the terminator comes.
+    try feed(allocator, &var tracker, "\e]133;B\e\a");
+    testing::expect_equal<u64>(0, tracker.ready_generation);
+    try feed(allocator, &var tracker, "\e\\\\");
+    testing::expect_equal<u64>(1, tracker.ready_generation);
 }
