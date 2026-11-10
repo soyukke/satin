@@ -5,6 +5,8 @@ import AppKit
 /// link or a file and copies the rest. Folded, it is a rail of counts.
 final class NativeItemsSidebarView: NSView {
     static let openWidth: CGFloat = 300
+    /// The narrowest a drag leaves it.
+    static let minWidth: CGFloat = 220
     static let railWidth: CGFloat = 48
     private static let header: CGFloat = 40
     private static let footer: CGFloat = 36
@@ -19,6 +21,12 @@ final class NativeItemsSidebarView: NSView {
     var onOpen: ((NativeSidebarItem) -> Bool)?
     var onScope: ((Bool) -> Void)?
     var onFold: (() -> Void)?
+    /// Hands the file on show to its app.
+    var onOpenFileInApp: ((URL) -> Void)?
+    /// A drag on the inner edge: the width asked for, and whether the drag
+    /// has ended.
+    var onResize: ((CGFloat, Bool) -> Void)?
+    var onResetWidth: (() -> Void)?
 
     private(set) var mode: NativeSidebarMode = .open
     private var pages: [NativeArtifactListItem] = []
@@ -32,6 +40,14 @@ final class NativeItemsSidebarView: NSView {
         symbolName: "sidebar.right", title: "Fold the Items Sidebar (⌥⌘B)")
     private var content: [NSView] = []
     private var headings: [(NativeItemsSection, CGFloat)] = []
+    /// The Markdown or text file shown in place of the lists.
+    private(set) var file: NativeSidebarFile?
+    private var fileView: NativePageDocumentView?
+    private let backButton = NativeHoverIconButton(
+        symbolName: "chevron.left", title: "Back to the Items")
+    private let appButton = NativeHoverIconButton(
+        symbolName: "arrow.up.forward.square", title: "Open in Its App")
+    private let grip = NativeSidebarResizeGrip(frame: .zero)
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -45,6 +61,17 @@ final class NativeItemsSidebarView: NSView {
             guard let self else { return }
             self.onScope?(!self.allTabs)
         }
+        backButton.target = self
+        backButton.action = #selector(closeFile)
+        backButton.isHidden = true
+        addSubview(backButton)
+        appButton.target = self
+        appButton.action = #selector(openFileInApp)
+        appButton.isHidden = true
+        addSubview(appButton)
+        grip.onDrag = { [weak self] width, ended in self?.onResize?(width, ended) }
+        grip.onReset = { [weak self] in self?.onResetWidth?() }
+        addSubview(grip)
         document.drawing = { [weak self] in
             self?.drawHeadings()
         }
@@ -99,8 +126,62 @@ final class NativeItemsSidebarView: NSView {
         }
     }
 
+    /// Shows a Markdown or text file where the lists are, until the back
+    /// button brings them back.
+    func showFile(_ file: NativeSidebarFile) {
+        let again = self.file?.url == file.url
+        self.file = file
+        let view = fileView ?? NativePageDocumentView(frame: .zero)
+        if fileView == nil {
+            addSubview(view, positioned: .below, relativeTo: grip)
+            fileView = view
+        }
+        view.show(
+            folder: file.url.deletingLastPathComponent(), document: file.url.lastPathComponent,
+            language: "", key: file.key, plain: file.plain, keepsScroll: again)
+        syncFileChrome()
+    }
+
+    /// Draws the file on show again once it has been written since.
+    func refreshFile() {
+        guard let file, let now = NativeSidebarFile(file.url), now != file else {
+            return
+        }
+        showFile(now)
+    }
+
+    @objc func closeFile() {
+        guard file != nil else {
+            return
+        }
+        file = nil
+        fileView?.clear()
+        syncFileChrome()
+    }
+
+    @objc private func openFileInApp() {
+        if let file {
+            onOpenFileInApp?(file.url)
+        }
+    }
+
+    /// Puts the lists or the file's page in the sidebar's body.
+    private func syncFileChrome() {
+        let reading = file != nil && mode == .open
+        fileView?.isHidden = !reading
+        backButton.isHidden = !reading
+        appButton.isHidden = !reading
+        scroll.isHidden = reading
+        scopeChip.isHidden = reading || mode != .open
+        grip.isHidden = mode != .open
+        setAccessibilityLabel(file.map { "Items, showing \($0.url.lastPathComponent)" } ?? "Items")
+        needsLayout = true
+        needsDisplay = true
+    }
+
     func refreshLook() {
         needsDisplay = true
+        fileView?.refreshLook()
         scopeChip.needsDisplay = true
         for view in content {
             view.needsDisplay = true
@@ -144,15 +225,14 @@ final class NativeItemsSidebarView: NSView {
         for view in content {
             document.addSubview(view)
         }
-        scopeChip.isHidden = mode != .open
-        needsLayout = true
-        needsDisplay = true
+        syncFileChrome()
     }
 
     override func layout() {
         super.layout()
         let width = bounds.width
         headings = []
+        grip.frame = NSRect(x: 0, y: 0, width: NativeSidebarResizeGrip.width, height: bounds.height)
         guard mode == .open else {
             foldButton.frame = NSRect(x: (width - 24) / 2, y: 9, width: 24, height: 24)
             scroll.frame = NSRect(
@@ -170,6 +250,12 @@ final class NativeItemsSidebarView: NSView {
             x: width - 34, y: bounds.height - Self.footer + 6, width: 24, height: 24)
         scroll.frame = NSRect(
             x: 0, y: Self.header, width: width,
+            height: max(0, bounds.height - Self.header - Self.footer))
+        backButton.frame = NSRect(x: 8, y: 9, width: 24, height: 24)
+        appButton.frame = NSRect(x: width - 34, y: 9, width: 24, height: 24)
+        // The page starts past the rule along the sidebar's inner edge.
+        fileView?.frame = NSRect(
+            x: 1, y: Self.header, width: max(0, width - 1),
             height: max(0, bounds.height - Self.header - Self.footer))
 
         let inner = width - 24
@@ -212,6 +298,10 @@ final class NativeItemsSidebarView: NSView {
         guard mode == .open else {
             return
         }
+        if let file {
+            drawFileChrome(file)
+            return
+        }
         let heading = NativeSidebarLook.heading("ITEMS", color: NativePageStyle.violet)
         let size = heading.size()
         heading.draw(at: NSPoint(x: 14, y: 21 - size.height / 2))
@@ -234,6 +324,24 @@ final class NativeItemsSidebarView: NSView {
                 with: NSRect(x: 14, y: Self.header + 8, width: bounds.width - 28, height: 60),
                 options: [.usesLineFragmentOrigin])
         }
+    }
+
+    /// The file's name between its two buttons, a rule under them, and
+    /// where the file is along the foot.
+    private func drawFileChrome(_ file: NativeSidebarFile) {
+        NativeSidebarLook.text(
+            file.url.lastPathComponent, font: NativePageStyle.sans(12, .semibold),
+            color: NativePageStyle.text, breaking: .byTruncatingMiddle
+        ).draw(in: NSRect(x: 38, y: 13, width: max(0, bounds.width - 38 - 40), height: 16))
+        NativePageStyle.line.setFill()
+        NSRect(x: 0, y: Self.header - 1, width: bounds.width, height: 1).fill()
+        NSRect(x: 0, y: bounds.height - Self.footer, width: bounds.width, height: 1).fill()
+        NativeSidebarLook.text(
+            file.shortPath, font: NativePageStyle.mono(10, .regular), color: NativePageStyle.muted,
+            breaking: .byTruncatingHead
+        ).draw(
+            in: NSRect(
+                x: 14, y: bounds.height - Self.footer + 11, width: bounds.width - 54, height: 14))
     }
 
     private func drawHeadings() {

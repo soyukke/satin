@@ -15,6 +15,7 @@
 
   const root = document.documentElement;
   let source = "";
+  let plain = false;
   let pageURL = null;
   let charts = [];
   let drawn = 0;
@@ -311,6 +312,14 @@
       chart.destroy();
     }
     charts = [];
+    if (plain) {
+      // A text file is shown as it is, wrapped at the page's width.
+      const text = document.createElement("pre");
+      text.className = "plain";
+      text.textContent = source;
+      page.replaceChildren(text);
+      return;
+    }
     page.innerHTML = md.render(source);
     setAlerts(page);
     setTasks(page);
@@ -329,8 +338,11 @@
     return draw();
   }
 
-  function render(markdown, url) {
+  // `asText` shows the source as plain text instead of drawing it as
+  // Markdown.
+  function render(markdown, url, asText) {
     source = markdown;
+    plain = Boolean(asText);
     pageURL = new URL(url || location.href);
     return draw();
   }
@@ -354,7 +366,7 @@
 
   // Fetches a version's Markdown, relative to this document, and draws it in
   // the page's language.
-  async function open(path, lang) {
+  async function open(path, lang, asText) {
     if (lang) {
       root.lang = lang;
     }
@@ -363,7 +375,7 @@
     if (!response.ok) {
       throw new Error(`${url.pathname}: ${response.status}`);
     }
-    await render(await response.text(), url);
+    await render(await response.text(), url, asText);
   }
 
   async function start() {

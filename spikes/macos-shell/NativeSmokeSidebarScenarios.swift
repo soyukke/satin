@@ -25,6 +25,29 @@ import Foundation
                 at: folder.appendingPathComponent("shots"), withIntermediateDirectories: true)
             FileManager.default.createFile(
                 atPath: folder.appendingPathComponent("shots/sidebar.png").path, contents: Data())
+            // A page and a text file for the sidebar to show in place.
+            let plan = """
+                # Visits plan
+
+                Count **visits** per user, then chart them.
+
+                - [x] Add the `users` table
+                - [ ] Count visits per user
+
+                | user  | visits |
+                | ----- | -----: |
+                | alice | 12     |
+
+                ```sql
+                select user_id, count(*) from visits group by 1;
+                ```
+                """
+            try? plan.write(
+                to: folder.appendingPathComponent("plan.md"), atomically: true, encoding: .utf8)
+            try? "alice 12\nbob 7\n\nA long line that wraps at the sidebar's width, as text does."
+                .write(
+                    to: folder.appendingPathComponent("notes.txt"), atomically: true,
+                    encoding: .utf8)
             let quoted = lines.map { "'\($0)'" }.joined(separator: " ")
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
                 guard let self else { return }
@@ -88,6 +111,9 @@ import Foundation
                 ("open-shortcuts", .open, .open, false),
                 ("rail-shortcuts", .rail, .rail, false),
                 ("open-paper-shortcuts", .open, .open, true),
+                ("open-file-plan.md", .open, .open, false),
+                ("open-file-notes.txt", .open, .open, false),
+                ("open-paper-file-plan.md", .open, .open, true),
             ]
             snapshotSidebarsForSmoke(prefix, steps: steps[...])
         }
@@ -108,6 +134,19 @@ import Foundation
             itemsSidebarMode = right
             applySidebarModes()
             windowsSidebar.showsShortcuts = name.hasSuffix("shortcuts")
+            // A step named for a file shows it, in a sidebar dragged wider.
+            let shown = name.range(of: "file-").map { String(name[$0.upperBound...]) }
+            let file = shown.flatMap {
+                NativeSidebarFile(
+                    FileManager.default.temporaryDirectory
+                        .appendingPathComponent("satin-sidebars-\(getpid())/\($0)"))
+            }
+            if let file {
+                itemsSidebar.showFile(file)
+            } else {
+                itemsSidebar.closeFile()
+            }
+            resizeItemsSidebar(to: file == nil ? nil : 460, ended: true)
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
                 guard let self else { return }
                 self.writeWindowSnapshotForSmoke("\(prefix)-\(name).png")

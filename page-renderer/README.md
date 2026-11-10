@@ -25,7 +25,7 @@ lie below `page-renderer`, because the server serves only that directory.
   of `NativePageStyle` in the app.
 - `satin-page.js` reads `?page=` (default `artifact.md`), `?look=`
   (`datasheet` or `paper`), and `?lang=`, and exposes
-  `satinPage.open(path, lang)`, `satinPage.render(markdown, url)`, and
+  `satinPage.open(path, lang, asText)`, `satinPage.render(markdown, url, asText)`, and
   `satinPage.setLook(look, colors)` for a host. `colors` overrides tokens, as
   `{"--surface": "#fff"}`; `--sheet` sets the page's background. With `?host`
   the script opens nothing itself and waits for the host.
