@@ -86,6 +86,7 @@ struct SatinApplication {
                 ("attention hand", runNativeAttentionHandSelfTests),
                 ("attention hand view", runNativeAttentionHandViewSelfTests),
                 ("sidebar model", runNativeSidebarModelSelfTests),
+                ("sidebar file", runNativeSidebarFileSelfTests),
                 ("terminal shift selection", runTerminalShiftSelectionSelfTests),
             ]
             for test in tests where !test.run() {

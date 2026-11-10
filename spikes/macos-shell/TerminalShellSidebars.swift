@@ -6,6 +6,7 @@ import AppKit
 extension TerminalShellViewController {
     private static let windowsSidebarKey = "SatinWindowsSidebar"
     private static let itemsSidebarKey = "SatinItemsSidebar"
+    private static let itemsSidebarWidthKey = "SatinItemsSidebarWidth"
     private static let scanInterval: TimeInterval = 1.5
 
     /// A smoke run sets both sidebars from its environment and saves
@@ -92,6 +93,64 @@ extension TerminalShellViewController {
         itemsSidebar.onFold = { [weak self] in
             self?.toggleItemsSidebar(nil)
         }
+        itemsSidebar.onOpenFileInApp = { [weak self] url in
+            _ = self?.openLinkOrFile(url)
+        }
+        itemsSidebar.onResize = { [weak self] width, ended in
+            self?.resizeItemsSidebar(to: width, ended: ended)
+        }
+        itemsSidebar.onResetWidth = { [weak self] in
+            self?.resizeItemsSidebar(to: nil, ended: true)
+        }
+    }
+
+    /// The width the items sidebar takes, open: the one a drag is asking
+    /// for or last left, kept within the window.
+    var itemsSidebarOpenWidth: CGFloat {
+        let saved =
+            Self.smokeSidebars == nil
+            ? UserDefaults.standard.object(forKey: Self.itemsSidebarWidthKey) as? Double : nil
+        let wanted =
+            itemsSidebarDragWidth ?? saved.map { CGFloat($0) }
+            ?? NativeItemsSidebarView.openWidth
+        // Before the window has a size there is nothing to keep within.
+        guard view.bounds.width > 0 else {
+            return max(NativeItemsSidebarView.minWidth, wanted)
+        }
+        return nativeItemsSidebarWidth(
+            wanted: wanted, room: view.bounds.width - (windowsSidebarWidth?.constant ?? 0))
+    }
+
+    /// Follows a drag on the sidebar's inner edge, and keeps the width the
+    /// drag ends at. No width gives the sidebar its own back.
+    func resizeItemsSidebar(to width: CGFloat?, ended: Bool) {
+        guard itemsSidebarMode == .open else {
+            return
+        }
+        itemsSidebarDragWidth = width
+        let shown = itemsSidebarOpenWidth
+        if ended, Self.smokeSidebars == nil {
+            if width == nil {
+                UserDefaults.standard.removeObject(forKey: Self.itemsSidebarWidthKey)
+            } else {
+                UserDefaults.standard.set(Double(shown), forKey: Self.itemsSidebarWidthKey)
+            }
+            itemsSidebarDragWidth = nil
+        }
+        itemsSidebarWidth?.constant = shown
+        view.needsLayout = true
+    }
+
+    /// Narrows the open items sidebar when the window no longer has room
+    /// for the width it was left at, and widens it back when it does.
+    func fitItemsSidebarWidth() {
+        guard itemsSidebarMode == .open, let constraint = itemsSidebarWidth else {
+            return
+        }
+        let width = itemsSidebarOpenWidth
+        if abs(constraint.constant - width) > 0.5 {
+            constraint.constant = width
+        }
     }
 
     /// Puts both sidebars in their modes, and the tab bar and the two
@@ -107,7 +166,7 @@ extension TerminalShellViewController {
             left, open: NativeWindowsSidebarView.openWidth,
             rail: NativeWindowsSidebarView.railWidth)
         itemsSidebarWidth?.constant = Self.width(
-            right, open: NativeItemsSidebarView.openWidth, rail: NativeItemsSidebarView.railWidth)
+            right, open: itemsSidebarOpenWidth, rail: NativeItemsSidebarView.railWidth)
         tabStripView.isHidden = left != .off
         updateAttentionHandVisibility()
         updatePageHandVisibility()
@@ -226,15 +285,24 @@ extension TerminalShellViewController {
             }
         }
         sidebarScreenLines = lines
+        itemsSidebar.refreshFile()
         refreshWindowsSidebar()
         if found {
             refreshItemsSidebar()
         }
     }
 
-    /// Opens a link in the browser, or a file in its app.
+    /// Opens a link in the browser, or a file in its app. A Markdown or
+    /// text file is shown in the sidebar itself.
     func openSidebarItem(_ item: NativeSidebarItem) -> Bool {
-        sidebarItemURL(item).map { openLinkOrFile($0) } ?? false
+        guard let url = sidebarItemURL(item) else {
+            return false
+        }
+        if item.kind == .file, let file = NativeSidebarFile(url) {
+            itemsSidebar.showFile(file)
+            return true
+        }
+        return openLinkOrFile(url)
     }
 
     /// Where an item leads: a web link, or a file that is there. A relative

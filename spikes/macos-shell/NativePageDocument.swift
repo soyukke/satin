@@ -64,6 +64,7 @@ enum NativePageRenderer {
         case "css": return "text/css; charset=utf-8"
         case "js": return "text/javascript; charset=utf-8"
         case "md", "markdown": return "text/markdown; charset=utf-8"
+        case "txt", "text", "log": return "text/plain; charset=utf-8"
         case "json": return "application/json"
         case "png": return "image/png"
         case "jpg", "jpeg": return "image/jpeg"
@@ -172,6 +173,15 @@ final class NativePageSchemeHandler: NSObject, WKURLSchemeHandler {
     func webView(_ webView: WKWebView, stop task: WKURLSchemeTask) {}
 }
 
+/// What the renderer is asked to draw: a document's served path, its
+/// language, and how.
+struct NativePageDrawing {
+    let path: String
+    let language: String
+    let plain: Bool
+    let keepsScroll: Bool
+}
+
 /// The reader's page: one version drawn by the page renderer in a WebKit
 /// view laid over the reader's pane, which stays behind it for the control
 /// API. The view loads only `satin-page:`, keeps nothing on disk, and has no
@@ -182,8 +192,8 @@ final class NativePageDocumentView: NSView, WKNavigationDelegate {
     private var handler: NativePageSchemeHandler?
     private var loaded = false
     /// The version to draw once the renderer has loaded, and the one drawn.
-    private var pending: (path: String, language: String)?
-    private var drawn: (path: String, language: String)?
+    private var pending: NativePageDrawing?
+    private var drawn: NativePageDrawing?
     private(set) var shown: String?
     /// The version last drawn to the end, diagrams and charts included.
     private(set) var drawnKey: String?
@@ -246,7 +256,13 @@ final class NativePageDocumentView: NSView, WKNavigationDelegate {
 
     /// Shows one version: its folder, the document's name in it, and its
     /// language. `key` names the version, so the same one is not drawn again.
-    func show(folder: URL, document: String, language: String, key: String) {
+    /// `plain` shows the document as text rather than as Markdown, and
+    /// `keepsScroll` leaves the page where the reader had scrolled it, for
+    /// a document drawn again after it changed.
+    func show(
+        folder: URL, document: String, language: String, key: String, plain: Bool = false,
+        keepsScroll: Bool = false
+    ) {
         guard key != shown else {
             return
         }
@@ -260,7 +276,9 @@ final class NativePageDocumentView: NSView, WKNavigationDelegate {
         handler?.page = (served, folder)
         let name =
             document.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? document
-        pending = ("page/\(served)/\(name)", language)
+        pending = NativePageDrawing(
+            path: "page/\(served)/\(name)", language: language, plain: plain,
+            keepsScroll: keepsScroll)
         drawPending()
     }
 
@@ -337,8 +355,12 @@ final class NativePageDocumentView: NSView, WKNavigationDelegate {
         drawn = pending
         let key = shown
         call(
-            "await satinPage.open(path, language); window.scrollTo(0, 0)",
-            arguments: ["path": pending.path, "language": pending.language]
+            "const y = window.scrollY; await satinPage.open(path, language, plain); "
+                + "window.scrollTo(0, keeps ? y : 0)",
+            arguments: [
+                "path": pending.path, "language": pending.language, "plain": pending.plain,
+                "keeps": pending.keepsScroll,
+            ]
         ) { [weak self] in
             self?.webView?.isHidden = false
             self?.drawnKey = key
