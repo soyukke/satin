@@ -108,8 +108,6 @@ pub enum PromptPhase {
     Ready,
     /// A command is running.
     Running,
-    /// A prompt was counted ready while a command had not reported its end.
-    ReadyRunning,
 }
 
 /// An OSC 133 mark, as far as the tracker tells marks apart.
@@ -136,6 +134,11 @@ pub enum PromptCount {
     CommandStarted,
     /// One more started command finished, and its exit status is read.
     CommandFinished,
+    /// A prompt starts while a command runs: the command is over though no
+    /// end was marked, and finishes with no exit status.
+    CommandDropped,
+    /// The same, at an input start: the prompt is counted ready too.
+    ReadyCountedDropped,
 }
 
 /// The phase a mark leaves the tracker in, and what it counted.
@@ -173,32 +176,30 @@ fn mark_step(state: PromptPhase, outcome: PromptCount) -> PromptMarkStep {
 }
 
 /// The tracker's mark machine, whole: a prompt is counted ready once, at its
-/// first `B` after an `A`, `C` or `D`, and a command finishes only if it
-/// started. `finish_payload` does what this says and nothing else decides a
-/// phase. spec/ reads its table out of this function.
+/// first `B` after an `A`, `C` or `D`, a command finishes only if it started,
+/// and no command runs once a prompt is back. `finish_payload` does what this
+/// says and nothing else decides a phase. spec/ reads its table out of this
+/// function.
 pub fn prompt_mark_advance(phase: PromptPhase, mark: PromptMark) -> PromptMarkStep {
     match mark {
         // A new command starts whatever came before, and its prompt is over.
         CommandStart => return mark_step(PromptPhase::Running, PromptCount::CommandStarted),
         CommandEnd => match phase {
             Running => return mark_step(PromptPhase::Drawing, PromptCount::CommandFinished),
-            ReadyRunning => return mark_step(PromptPhase::Drawing, PromptCount::CommandFinished),
             // An end with no command started counts nothing.
             _ => return mark_step(PromptPhase::Drawing, PromptCount::Noted),
         },
         PromptStart => match phase {
-            // A prompt drawn while a command has not ended leaves it running.
-            Running => return mark_step(PromptPhase::Running, PromptCount::Noted),
-            ReadyRunning => return mark_step(PromptPhase::Running, PromptCount::Noted),
+            // A shell that marks no end is still back at its prompt.
+            Running => return mark_step(PromptPhase::Drawing, PromptCount::CommandDropped),
             _ => return mark_step(PromptPhase::Drawing, PromptCount::Noted),
         },
         InputStart => match phase {
             Unseen => return mark_step(PromptPhase::Ready, PromptCount::ReadyCounted),
             Drawing => return mark_step(PromptPhase::Ready, PromptCount::ReadyCounted),
-            Running => return mark_step(PromptPhase::ReadyRunning, PromptCount::ReadyCounted),
+            Running => return mark_step(PromptPhase::Ready, PromptCount::ReadyCountedDropped),
             // The same prompt's second `B` is not another prompt.
             Ready => return mark_step(PromptPhase::Ready, PromptCount::Noted),
-            ReadyRunning => return mark_step(PromptPhase::ReadyRunning, PromptCount::Noted),
         },
         OtherMark => match phase {
             Unseen => return mark_step(PromptPhase::Drawing, PromptCount::Noted),
@@ -216,10 +217,11 @@ pub struct PromptTracker {
     pub ready_generation: u64,
     /// Counts the commands the shell started running (`133;C`).
     pub commands_started: u64,
-    /// Counts the started commands that finished (`133;D`).
+    /// Counts the started commands that finished: at their `133;D`, or at the
+    /// next prompt when the shell marked no end.
     pub commands_finished: u64,
     /// The exit status the last finished command reported, or -1 when its
-    /// mark carried none.
+    /// mark carried none or no end was marked.
     pub last_exit: i64,
     phase: PromptPhase,
 }
@@ -303,6 +305,15 @@ fn (self: &var PromptTracker) finish_payload() -> void {
         CommandFinished => {
             self.commands_finished = self.commands_finished + 1;
             self.last_exit = exit_status(bytes);
+        },
+        CommandDropped => {
+            self.commands_finished = self.commands_finished + 1;
+            self.last_exit = -1;
+        },
+        ReadyCountedDropped => {
+            self.ready_generation = self.ready_generation + 1;
+            self.commands_finished = self.commands_finished + 1;
+            self.last_exit = -1;
         },
     }
     self.phase = step.state;

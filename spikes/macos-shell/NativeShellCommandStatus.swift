@@ -2,8 +2,8 @@ import Foundation
 
 /// What a pane's shell is doing, as its prompt marks tell: a command running,
 /// or one that finished while nobody watched. A command that is over at once,
-/// one that took the whole screen, as an editor does, or one interrupted is
-/// left unmarked.
+/// one that took the whole screen, as an editor does, one interrupted, or one
+/// that ended without telling its exit status is left unmarked.
 struct NativeShellCommandStatus: Equatable {
     enum Phase: Equatable {
         case running
@@ -80,8 +80,10 @@ final class NativeShellCommandStore {
             let startedAt = before?.phase == .running ? before?.startedAt ?? now : now
             let lingered = now.timeIntervalSince(startedAt) >= Self.lingerThreshold
             let tookScreen = fullScreen.remove(paneId) != nil
-            // Interrupting a command is the user's own doing, not news.
-            if lingered, !tookScreen, lastExit != 130 {
+            // Interrupting a command is the user's own doing, not news; and
+            // an end that tells no exit status, as one the shell never
+            // marked, says only that the command is over.
+            if lingered, !tookScreen, lastExit >= 0, lastExit != 130 {
                 let status = NativeShellCommandStatus(
                     phase: .finished(exitStatus: lastExit), startedAt: startedAt, seen: visible)
                 statuses[paneId] = status
@@ -194,13 +196,19 @@ func runNativeShellCommandStatusSelfTests() -> Bool {
     _ = observe(9, 8, 80)
     guard observe(9, 9, exit: 130, 90) == nil, store.status(for: 1) == nil else { return false }
 
+    // An end with no exit status clears the pane and claims nothing.
+    _ = observe(10, 9, 91)
+    guard store.badge(for: 1, now: at(95)) == .running,
+        observe(10, 10, exit: -1, 96) == nil, store.status(for: 1) == nil
+    else { return false }
+
     // A start whose finish went unmarked does not keep the pane running.
-    _ = observe(11, 9, 92)
-    guard observe(11, 10, 95) != nil, store.badge(for: 1, now: at(96)) == .done else {
+    _ = observe(12, 10, 100)
+    guard observe(12, 11, 105) != nil, store.badge(for: 1, now: at(106)) == .done else {
         return false
     }
 
     // A new shell counts from zero.
-    _ = observe(1, 0, 100)
+    _ = observe(1, 0, 110)
     return store.status(for: 1) == nil
 }

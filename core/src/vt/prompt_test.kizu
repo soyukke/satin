@@ -100,6 +100,30 @@ test "counts the commands a shell runs and how they ended" {
     testing::expect_equal<i64>(-1, tracker.last_exit);
 }
 
+test "a prompt that comes back ends the command that marked no end" {
+    let allocator = mem::page_allocator();
+    var tracker = new_prompt_tracker(allocator);
+    defer tracker.deinit(allocator);
+    // The prompt start is enough, and the input start after it counts no
+    // second finish.
+    try feed(allocator, &var tracker, "\e]133;C\a\e]133;D;3\a\e]133;C\a\e]133;A\a");
+    testing::expect_equal<u64>(2, tracker.commands_started);
+    testing::expect_equal<u64>(2, tracker.commands_finished);
+    testing::expect_equal<i64>(-1, tracker.last_exit);
+    try feed(allocator, &var tracker, "\e]133;B\a");
+    testing::expect_equal<u64>(2, tracker.commands_finished);
+    testing::expect_equal<u64>(1, tracker.ready_generation);
+
+    // So is an input start alone, which still counts its prompt.
+    try feed(allocator, &var tracker, "\e]133;C\a\e]133;B\a");
+    testing::expect_equal<u64>(3, tracker.commands_finished);
+    testing::expect_equal<u64>(2, tracker.ready_generation);
+    // The end that comes late has no command left to end.
+    try feed(allocator, &var tracker, "\e]133;D;0\a");
+    testing::expect_equal<u64>(3, tracker.commands_finished);
+    testing::expect_equal<i64>(-1, tracker.last_exit);
+}
+
 fn machine_next(state: PromptState, byte: PromptByte) -> PromptState {
     return prompt_advance(state, byte).state;
 }
