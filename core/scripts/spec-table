@@ -9,7 +9,7 @@ set -eu
 root="$(cd "$(dirname "$0")/.." && pwd)"
 kizu="${KIZU:-kizu}"
 # One module a table, in the order spec/src/main.kizu writes them.
-modules="prompt_tracker"
+modules="prompt_tracker prompt_marks"
 
 work="$(mktemp -d "${TMPDIR:-/tmp}/satin-spec-table.XXXXXX")"
 trap 'rm -rf "$work"' EXIT

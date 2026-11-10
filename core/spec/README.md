@@ -8,6 +8,8 @@ everything here is read out of that function.
 | `src/main.kizu` | Calls each transition function for every state and event with `std::machine` and prints the tables as JSON |
 | `prompt_tracker.qnt` | The Quint machine generated from `prompt_advance` in `../src/vt/prompt.kizu`. Do not edit |
 | `prompt_properties.qnt` | The properties that machine has to keep, written by hand |
+| `prompt_marks.qnt` | The Quint machine generated from `prompt_mark_advance` in the same file: what each OSC 133 mark does to the counts. Do not edit |
+| `prompt_marks_properties.qnt` | Its properties, and the counts kept sound over every order of marks |
 
 ```sh
 just spec-table   # write the generated machines again after changing a transition function
