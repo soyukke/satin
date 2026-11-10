@@ -529,7 +529,15 @@ lint:
 
 # Run platform-independent formatting and repository policy checks.
 ci-static:
-    @if [[ -z "${IN_NIX_SHELL:-}" ]]; then exec nix develop .#ci-static --command just ci-static; else just fmt-check && just repo-lint && just ops-lint; fi
+    @if [[ -z "${IN_NIX_SHELL:-}" ]]; then exec nix develop .#ci-static --command just ci-static; else just fmt-check && just repo-lint && just ops-lint && just spec-quint; fi
+
+# Write the Quint machines in core/spec again from the core's transition functions.
+spec-table:
+    @if [[ -z "${IN_NIX_SHELL:-}" ]]; then exec nix develop --command just spec-table; else ./core/scripts/spec-table; fi
+
+# Check the properties in core/spec against the generated Quint machines.
+spec-quint:
+    @if [[ -z "${IN_NIX_SHELL:-}" ]]; then exec nix develop --command just spec-quint; else ./core/scripts/spec-quint; fi
 
 # Classify whether a commit range requires the full macOS production gate.
 ci-scope base head:

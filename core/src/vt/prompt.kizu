@@ -8,11 +8,94 @@ fn max_payload_bytes() -> i64 {
     return 64;
 }
 
-enum PromptState {
+/// Where the tracker is in the bytes of an OSC sequence.
+pub enum PromptState {
+    /// Outside any sequence.
     Ground,
+    /// After an ESC that may open a sequence.
     Escape,
+    /// Inside an OSC payload.
     Payload,
+    /// After an ESC inside a payload, which a backslash makes its end.
     PayloadEscape,
+}
+
+/// A byte, as far as the tracker tells bytes apart.
+pub enum PromptByte {
+    Esc,
+    /// `]`, which after an ESC opens an OSC payload.
+    Bracket,
+    /// BEL, which ends a payload.
+    Bell,
+    /// `\`, which after an ESC ends a payload.
+    Backslash,
+    Other,
+}
+
+/// What a byte does to the payload being collected.
+pub enum PromptOutcome {
+    /// The byte is outside any payload and is dropped.
+    Skipped,
+    /// A payload starts, empty.
+    Opened,
+    /// The byte joins the payload.
+    Kept,
+    /// An ESC inside a payload waits for the byte after it.
+    Held,
+    /// The held ESC joins the payload and this ESC is held in its place.
+    KeptHeld,
+    /// The held ESC and the byte join the payload.
+    KeptBoth,
+    /// The payload ends and is read.
+    Finished,
+}
+
+/// The state a byte leaves the tracker in, and what it did to the payload.
+pub struct PromptStep {
+    pub state: PromptState,
+    pub outcome: PromptOutcome,
+}
+
+pub fn prompt_byte(byte: u8) -> PromptByte {
+    if byte == cast<u8>(27) {
+        return PromptByte::Esc;
+    }
+    if byte == cast<u8>(93) {
+        return PromptByte::Bracket;
+    }
+    if byte == cast<u8>(7) {
+        return PromptByte::Bell;
+    }
+    if byte == cast<u8>(92) {
+        return PromptByte::Backslash;
+    }
+    return PromptByte::Other;
+}
+
+/// The tracker's byte machine, whole: `feed` does what this says and nothing
+/// else decides a state. spec/ reads its table out of this function.
+pub fn prompt_advance(state: PromptState, byte: PromptByte) -> PromptStep {
+    match state {
+        Ground => match byte {
+            Esc => return PromptStep { state: PromptState::Escape, outcome: PromptOutcome::Skipped },
+            _ => return PromptStep { state: PromptState::Ground, outcome: PromptOutcome::Skipped },
+        },
+        Escape => match byte {
+            Bracket => return PromptStep { state: PromptState::Payload, outcome: PromptOutcome::Opened },
+            Esc => return PromptStep { state: PromptState::Escape, outcome: PromptOutcome::Skipped },
+            _ => return PromptStep { state: PromptState::Ground, outcome: PromptOutcome::Skipped },
+        },
+        Payload => match byte {
+            Bell => return PromptStep { state: PromptState::Ground, outcome: PromptOutcome::Finished },
+            Esc => return PromptStep { state: PromptState::PayloadEscape, outcome: PromptOutcome::Held },
+            _ => return PromptStep { state: PromptState::Payload, outcome: PromptOutcome::Kept },
+        },
+        PayloadEscape => match byte {
+            Backslash => return PromptStep { state: PromptState::Ground, outcome: PromptOutcome::Finished },
+            Esc => return PromptStep { state: PromptState::PayloadEscape, outcome: PromptOutcome::KeptHeld },
+            _ => return PromptStep { state: PromptState::Payload, outcome: PromptOutcome::KeptBoth },
+        },
+    }
 }
 
 pub struct PromptTracker {
@@ -75,42 +158,20 @@ pub fn (self: &var PromptTracker) feed(allocator: Allocator, bytes: []u8) -> mem
 
 fn (self: &var PromptTracker) feed_byte(allocator: Allocator, byte: u8) -> mem::Error!void {
     let escape = cast<u8>(27);
-    if self.state == PromptState::Ground {
-        if byte == escape {
-            self.state = PromptState::Escape;
-        }
-        return;
-    }
-    if self.state == PromptState::Escape {
-        if byte == cast<u8>(93) {
-            self.payload.clear();
-            self.state = PromptState::Payload;
-        } else if byte != escape {
-            self.state = PromptState::Ground;
-        }
-        return;
-    }
-    if self.state == PromptState::Payload {
-        if byte == cast<u8>(7) {
-            self.finish_payload();
-            self.state = PromptState::Ground;
-        } else if byte == escape {
-            self.state = PromptState::PayloadEscape;
-        } else {
+    let step = prompt_advance(self.state, prompt_byte(byte));
+    match step.outcome {
+        Skipped => {},
+        Held => {},
+        Opened => self.payload.clear(),
+        Kept => try self.push_payload_byte(allocator, byte),
+        KeptHeld => try self.push_payload_byte(allocator, escape),
+        KeptBoth => {
+            try self.push_payload_byte(allocator, escape);
             try self.push_payload_byte(allocator, byte);
-        }
-        return;
+        },
+        Finished => self.finish_payload(),
     }
-    if byte == cast<u8>(92) {
-        self.finish_payload();
-        self.state = PromptState::Ground;
-    } else if byte == escape {
-        try self.push_payload_byte(allocator, escape);
-    } else {
-        try self.push_payload_byte(allocator, escape);
-        try self.push_payload_byte(allocator, byte);
-        self.state = PromptState::Payload;
-    }
+    self.state = step.state;
     return;
 }
 

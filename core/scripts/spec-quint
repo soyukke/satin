@@ -1,0 +1,44 @@
+#!/bin/sh
+# Checks the hand-written properties in spec/ against the Quint machines
+# generated from the core (scripts/spec-table). Each property is checked over
+# random runs, and a check fails too when no run reaches the state its
+# properties are about, since a search that stops short of it says nothing.
+# This is a search, not a proof: 2000 runs of 40 steps each, from a fixed seed.
+#
+#   scripts/spec-quint
+set -eu
+root="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$root/spec"
+
+# file:module:init:step:witness, then the module's invariants.
+checks="
+prompt_properties.qnt:prompt_properties:init:step:reachedFinished finishedOnlyAtTerminator finishedReturnsToGround leavesOnlyByFinishing opensOnlyAfterEscape keptOnlyWhileCollecting heldExactlyInPayloadEscape
+prompt_properties.qnt:prompt_payload:begin:advance:reachedFinished stateTellsThePayload effectsNeedAnOpenPayload
+"
+
+for file in *_properties.qnt; do
+    quint typecheck "$file" >/dev/null
+done
+
+echo "$checks" | while read -r target invariants; do
+    [ -n "$target" ] || continue
+    IFS=: read -r file module init step witness <<TARGET
+$target
+TARGET
+    for invariant in $invariants; do
+        if ! output="$(quint run "$file" --main="$module" --init="$init" --step="$step" \
+            --backend typescript --seed 0x1 --max-samples 2000 --max-steps 40 \
+            --invariant="$invariant" --witnesses="$witness" 2>&1)"; then
+            echo "$output"
+            echo "spec-quint: $module:$invariant is broken" >&2
+            exit 1
+        fi
+        if echo "$output" | grep -q "$witness was witnessed in 0 trace"; then
+            echo "$output"
+            echo "spec-quint: $module:$invariant: no run reached $witness" >&2
+            exit 1
+        fi
+        echo "$module:$invariant: $(echo "$output" | grep "$witness was witnessed")"
+    done
+done
+echo "spec quint: ok"

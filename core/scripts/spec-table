@@ -1,0 +1,35 @@
+#!/bin/sh
+# Writes the Quint module of each state machine of the core, read out of its
+# transition function by spec/src/main.kizu, so a module cannot say anything
+# the code does not do. With --check it writes nothing and fails when a
+# module is out of step with the code.
+#
+#   KIZU=path/to/kizu scripts/spec-table [--check]
+set -eu
+root="$(cd "$(dirname "$0")/.." && pwd)"
+kizu="${KIZU:-kizu}"
+# One module a table, in the order spec/src/main.kizu writes them.
+modules="prompt_tracker"
+
+work="$(mktemp -d "${TMPDIR:-/tmp}/satin-spec-table.XXXXXX")"
+trap 'rm -rf "$work"' EXIT
+
+(cd "$root/spec" && "$kizu" run .) >"$work/tables.json"
+written=""
+for module in $modules; do
+    written="$written $work/$module.qnt"
+done
+# shellcheck disable=SC2086
+machine-quint $written <"$work/tables.json"
+
+for module in $modules; do
+    if [ "${1:-}" = --check ]; then
+        if ! cmp -s "$work/$module.qnt" "$root/spec/$module.qnt"; then
+            echo "spec/$module.qnt is out of step with the core; run \`just spec-table\`" >&2
+            exit 1
+        fi
+    else
+        cp "$work/$module.qnt" "$root/spec/$module.qnt"
+    fi
+done
+echo "spec tables: ok"

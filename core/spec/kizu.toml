@@ -1,0 +1,9 @@
+[package]
+name = "satin"
+version = "0.1.0"
+
+# Prints the tables of the core's state machines for the Quint modules here
+# (scripts/spec-table). It takes only the folders of ../src whose transition
+# functions it reads, so it links no terminal.
+[modules]
+paths = ["../src/vt", "src"]
