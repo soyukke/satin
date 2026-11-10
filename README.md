@@ -142,9 +142,12 @@ backticks), `>` quotes joined into a paragraph, links, and files an agent
 edited or that appear as a path. What an agent ran or read for itself, and
 what those tools printed, stays out; links they printed stay in. A click opens a link in the browser
 or a file in its app, such as an image in Preview; the copy button at the end
-of the row copies it instead. A Markdown or text file (`.md`, `.markdown`,
-`.txt`) opens in the sidebar itself, drawn as a page and drawn again when the
-file changes; the arrow at its top hands it to its app. Drag the sidebar's
+of the row copies it instead. A file opens in the sidebar itself when it is
+Markdown (`.md`, `.markdown`), drawn as a page; an image (`.png`, `.jpg`,
+`.gif`, `.webp`, `.svg`); or any other file that reads as text, such as source
+code, shown as it is. It is drawn again when the file changes, and the arrow at
+its top hands it to its app. A long path an agent broke across two rows is read
+as one. Drag the sidebar's
 inner edge to make it wider or narrower, and double-click the edge for its own
 width. On a command or a quote a click copies the
 cleaned text, and `Option`-click pastes any item into the focused pane. Switch between this tab and every tab at the top. While it is open the

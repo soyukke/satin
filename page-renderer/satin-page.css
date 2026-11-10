@@ -198,6 +198,11 @@ pre.plain {
   overflow-wrap: anywhere;
 }
 
+img.plain {
+  display: block;
+  margin: 0 auto;
+}
+
 pre.code code {
   font: inherit;
   background: none;

@@ -173,12 +173,20 @@ final class NativePageSchemeHandler: NSObject, WKURLSchemeHandler {
     func webView(_ webView: WKWebView, stop task: WKURLSchemeTask) {}
 }
 
+/// How the renderer shows a document: drawn as Markdown, as the text it
+/// is, or as the image it is.
+enum NativePageForm: String {
+    case markdown
+    case text
+    case image
+}
+
 /// What the renderer is asked to draw: a document's served path, its
 /// language, and how.
 struct NativePageDrawing {
     let path: String
     let language: String
-    let plain: Bool
+    let form: NativePageForm
     let keepsScroll: Bool
 }
 
@@ -256,12 +264,11 @@ final class NativePageDocumentView: NSView, WKNavigationDelegate {
 
     /// Shows one version: its folder, the document's name in it, and its
     /// language. `key` names the version, so the same one is not drawn again.
-    /// `plain` shows the document as text rather than as Markdown, and
-    /// `keepsScroll` leaves the page where the reader had scrolled it, for
+    /// `form` says how the document is shown, and `keepsScroll` leaves the page where the reader had scrolled it, for
     /// a document drawn again after it changed.
     func show(
-        folder: URL, document: String, language: String, key: String, plain: Bool = false,
-        keepsScroll: Bool = false
+        folder: URL, document: String, language: String, key: String,
+        form: NativePageForm = .markdown, keepsScroll: Bool = false
     ) {
         guard key != shown else {
             return
@@ -277,7 +284,7 @@ final class NativePageDocumentView: NSView, WKNavigationDelegate {
         let name =
             document.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? document
         pending = NativePageDrawing(
-            path: "page/\(served)/\(name)", language: language, plain: plain,
+            path: "page/\(served)/\(name)", language: language, form: form,
             keepsScroll: keepsScroll)
         drawPending()
     }
@@ -355,10 +362,11 @@ final class NativePageDocumentView: NSView, WKNavigationDelegate {
         drawn = pending
         let key = shown
         call(
-            "const y = window.scrollY; await satinPage.open(path, language, plain); "
+            "const y = window.scrollY; await satinPage.open(path, language, form); "
                 + "window.scrollTo(0, keeps ? y : 0)",
             arguments: [
-                "path": pending.path, "language": pending.language, "plain": pending.plain,
+                "path": pending.path, "language": pending.language,
+                "form": pending.form.rawValue,
                 "keeps": pending.keepsScroll,
             ]
         ) { [weak self] in

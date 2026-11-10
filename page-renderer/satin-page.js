@@ -15,7 +15,8 @@
 
   const root = document.documentElement;
   let source = "";
-  let plain = false;
+  // How the source is shown: "markdown", "text" or "image".
+  let form = "markdown";
   let pageURL = null;
   let charts = [];
   let drawn = 0;
@@ -312,7 +313,16 @@
       chart.destroy();
     }
     charts = [];
-    if (plain) {
+    if (form === "image") {
+      // An image file is shown as it is, no wider than the page.
+      const image = document.createElement("img");
+      image.className = "plain";
+      image.src = pageURL.href;
+      image.alt = decodeURIComponent(pageURL.pathname.split("/").pop());
+      page.replaceChildren(image);
+      return;
+    }
+    if (form === "text") {
       // A text file is shown as it is, wrapped at the page's width.
       const text = document.createElement("pre");
       text.className = "plain";
@@ -338,11 +348,11 @@
     return draw();
   }
 
-  // `asText` shows the source as plain text instead of drawing it as
-  // Markdown.
-  function render(markdown, url, asText) {
+  // `how` is "text" (or true) to show the source as plain text, or "image"
+  // to show the image at `url`, instead of drawing the source as Markdown.
+  function render(markdown, url, how) {
     source = markdown;
-    plain = Boolean(asText);
+    form = how === "image" ? "image" : how === true || how === "text" ? "text" : "markdown";
     pageURL = new URL(url || location.href);
     return draw();
   }
@@ -366,16 +376,21 @@
 
   // Fetches a version's Markdown, relative to this document, and draws it in
   // the page's language.
-  async function open(path, lang, asText) {
+  async function open(path, lang, how) {
     if (lang) {
       root.lang = lang;
     }
     const url = new URL(path, location.href);
+    if (how === "image") {
+      // The image loads itself; there is no source to fetch.
+      await render("", url, how);
+      return;
+    }
     const response = await fetch(url);
     if (!response.ok) {
       throw new Error(`${url.pathname}: ${response.status}`);
     }
-    await render(await response.text(), url, asText);
+    await render(await response.text(), url, how);
   }
 
   async function start() {
