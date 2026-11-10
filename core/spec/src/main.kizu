@@ -19,6 +19,19 @@ fn prompt_never_ends(state: PromptState) -> bool {
     return false;
 }
 
+fn mark_next(phase: PromptPhase, mark: PromptMark) -> PromptPhase {
+    return prompt_mark_advance(phase, mark).state;
+}
+
+fn mark_outcome(phase: PromptPhase, mark: PromptMark) -> PromptCount {
+    return prompt_mark_advance(phase, mark).outcome;
+}
+
+// The shell goes on printing marks for as long as the pane lives.
+fn marks_never_end(phase: PromptPhase) -> bool {
+    return false;
+}
+
 fn write_table(allocator: Allocator, table: &machine::Table) -> mem::Error!void {
     var out = string::new(allocator);
     defer out.deinit(allocator);
@@ -39,5 +52,14 @@ fn main() -> mem::Error!void {
     );
     defer prompt.deinit(allocator);
     try write_table(allocator, &prompt);
+    let marks = try machine::answers<PromptPhase, PromptMark, PromptCount>(
+        allocator,
+        mark_next,
+        mark_outcome,
+        PromptPhase::Unseen,
+        marks_never_end
+    );
+    defer marks.deinit(allocator);
+    try write_table(allocator, &marks);
     return;
 }

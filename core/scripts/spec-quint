@@ -14,6 +14,8 @@ cd "$root/spec"
 checks="
 prompt_properties.qnt:prompt_properties:init:step:reachedFinished finishedOnlyAtTerminator finishedReturnsToGround leavesOnlyByFinishing opensOnlyAfterEscape keptOnlyWhileCollecting heldExactlyInPayloadEscape
 prompt_properties.qnt:prompt_payload:begin:advance:reachedFinished stateTellsThePayload effectsNeedAnOpenPayload
+prompt_marks_properties.qnt:prompt_marks_properties:init:step:reachedFinished readyCountedOnlyAtInputStart inputStartCountsOnce startedExactlyAtCommandStart finishedExactlyAtAnOpenEnd seenStaysSeen
+prompt_marks_properties.qnt:prompt_counts:begin:advance:reachedFinishedAndReady neverMoreFinishedThanStarted readyOncePerPrompt phaseTellsTheCounts endClosesTheCommand
 "
 
 for file in *_properties.qnt; do

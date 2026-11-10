@@ -142,3 +142,59 @@ test "an escape held in a payload is kept unless a backslash follows" {
     try feed(allocator, &var tracker, "\e\\\\");
     testing::expect_equal<u64>(1, tracker.ready_generation);
 }
+
+fn mark_machine_next(phase: PromptPhase, mark: PromptMark) -> PromptPhase {
+    return prompt_mark_advance(phase, mark).state;
+}
+
+fn mark_machine_outcome(phase: PromptPhase, mark: PromptMark) -> PromptCount {
+    return prompt_mark_advance(phase, mark).outcome;
+}
+
+// The shell goes on printing marks for as long as the pane lives.
+fn mark_machine_never_ends(phase: PromptPhase) -> bool {
+    return false;
+}
+
+test "every phase of the mark machine is reached" {
+    let allocator = mem::page_allocator();
+    let table = try machine::answers<PromptPhase, PromptMark, PromptCount>(
+        allocator,
+        mark_machine_next,
+        mark_machine_outcome,
+        PromptPhase::Unseen,
+        mark_machine_never_ends
+    );
+    defer table.deinit(allocator);
+    var problems = try table.problems(allocator);
+    defer problems.deinit(allocator);
+    if problems.at(0) |line| {
+        let bytes = line.as_bytes();
+        testing::fail(bytes);
+    }
+}
+
+fn mark_is(payload: []u8, expected: PromptMark) -> bool {
+    if prompt_mark(payload) |mark| {
+        return mark == expected;
+    }
+    return false;
+}
+
+fn no_mark(payload: []u8) -> bool {
+    if prompt_mark(payload) |_| {
+        return false;
+    }
+    return true;
+}
+
+test "only an OSC 133 payload is a mark" {
+    testing::expect(no_mark("0;133;B"));
+    testing::expect(no_mark("133"));
+    testing::expect(mark_is("133;", PromptMark::OtherMark));
+    testing::expect(mark_is("133;A", PromptMark::PromptStart));
+    testing::expect(mark_is("133;B;fresh", PromptMark::InputStart));
+    testing::expect(mark_is("133;C", PromptMark::CommandStart));
+    testing::expect(mark_is("133;D;0", PromptMark::CommandEnd));
+    testing::expect(mark_is("133;P;k=i", PromptMark::OtherMark));
+}
