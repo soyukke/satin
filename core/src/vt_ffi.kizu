@@ -215,7 +215,8 @@ export "c" fn satin_vt_feed(handle: ?ptr<Vt>, bytes: ?ptr<const u8>, length: usi
     // The callbacks this runs write only the sink, which value does not hold.
     // SAFETY: the terminal is live and data holds length bytes.
     unsafe ghostty_terminal_vt_write(value.terminal, data, length);
-    if value.prompt.feed(mem::page_allocator(), input) {} else |_| {}
+    // SAFETY: the tracker keeps its own state and reads nothing else of value.
+    if unsafe value.prompt.feed(mem::page_allocator(), input) {} else |_| {}
     return;
 }
 
@@ -267,6 +268,7 @@ export "c" fn satin_vt_reset_prompt(handle: ?ptr<Vt>) -> void {
     let live = handle orelse return;
     // SAFETY: the runtime holds live from satin_vt_create and calls from one thread.
     let value = unsafe &var live.*;
-    value.prompt.reset();
+    // SAFETY: the tracker is plain data; the struct's invariant is about its pointers.
+    unsafe value.prompt.reset();
     return;
 }
