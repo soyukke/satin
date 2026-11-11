@@ -283,10 +283,17 @@ class TerminalPane: NativePane {
         }
     }
 
-    func paste(_ text: String) {
+    /// Sends text as a paste; false when the terminal did not take it.
+    @discardableResult
+    func paste(_ text: String) -> Bool {
         withUtf8(text) { bytes, count in
-            _ = satinRuntimePaste(handle, bytes, count)
+            satinRuntimePaste(handle, bytes, count) != 0
         }
+    }
+
+    /// Why a paste this pane did not take failed, for the log.
+    var pasteRefusal: String {
+        "terminal_refused"
     }
 
     func mouse(_ input: NativeMouseInput) -> Bool {
@@ -633,8 +640,15 @@ final class TmuxPane: TerminalPane {
         return sent
     }
 
-    override func paste(_ text: String) {
-        _ = pasteThroughTmux(text)
+    @discardableResult
+    override func paste(_ text: String) -> Bool {
+        pasteThroughTmux(text)
+    }
+
+    /// tmux takes no paste for a pane it does not list yet or whose input
+    /// is off, nor while its control client is closing.
+    override var pasteRefusal: String {
+        gateway == nil ? "tmux_gateway_gone" : "tmux_refused"
     }
 
     @discardableResult

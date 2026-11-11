@@ -85,6 +85,7 @@ struct SatinApplication {
                 ("paper mode", runNativePaperModeSelfTests),
                 ("attention hand", runNativeAttentionHandSelfTests),
                 ("attention hand view", runNativeAttentionHandViewSelfTests),
+                ("paste failure", runNativePasteFailureSelfTests),
                 ("sidebar model", runNativeSidebarModelSelfTests),
                 ("sidebar file", runNativeSidebarFileSelfTests),
                 ("terminal shift selection", runTerminalShiftSelectionSelfTests),

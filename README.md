@@ -366,7 +366,8 @@ security boundary.
 - right-side toolbar actions for the page binder and Work Switcher
 - `Command-N`: open the unified native Neovim UI while retaining the current shell
 - `Command-C`, `Command-V`, `Command-A`, `Command-F`: copy, paste, select all,
-  and scrollback search
+  and scrollback search. A paste that cannot be sent beeps, and its reason is
+  logged: `log show --last 1h --predicate 'subsystem == "dev.soyukke.satin"'`
 - `Command-+`, `Command--`, `Command-0`: shared terminal/Neovim font size for
   every pane in the current Satin window; reset uses the configured Appearance size
 - `Command-U`: check for signed updates in release builds

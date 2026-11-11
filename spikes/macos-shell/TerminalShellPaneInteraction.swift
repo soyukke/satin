@@ -488,18 +488,26 @@ extension TerminalShellViewController {
         return nil
     }
 
+    /// Pastes the clipboard's text into the active pane. A paste that
+    /// cannot be sent beeps and is logged with its reason, so it does not
+    /// pass for a key that did nothing.
     @discardableResult
     func pasteClipboard() -> Bool {
-        guard let paneId = activePaneId,
-            let text = NSPasteboard.general.string(forType: .string),
-            !text.isEmpty
-        else {
-            return false
+        let text = NSPasteboard.general.string(forType: .string) ?? ""
+        let runtime = activePaneId.flatMap { paneStore.runtimes[$0] }
+        var refusal = nativePasteRefusal(hasPane: runtime != nil, text: text)
+        if refusal == nil {
+            if let pane = runtime as? TerminalPane {
+                refusal = pane.paste(text) ? nil : pane.pasteRefusal
+            } else {
+                runtime?.write(Data(text.utf8))
+            }
         }
-        if let pane = paneStore.runtimes[paneId] as? TerminalPane {
-            pane.paste(text)
-        } else {
-            paneStore.runtimes[paneId]?.write(Data(text.utf8))
+        if let refusal {
+            NSSound.beep()
+            NativeLog.runtimeError(
+                nativePasteFailureLine(refusal, paneId: activePaneId, bytes: text.utf8.count))
+            return true
         }
         drainTerminalPanes()
         return true
@@ -637,6 +645,31 @@ extension TerminalShellViewController {
         return path.isEmpty ? nil : path
     }
 
+}
+
+/// Why a paste cannot be sent before any pane is asked: there is no pane to
+/// take it, or the clipboard holds no text. Nil when it can go on.
+func nativePasteRefusal(hasPane: Bool, text: String) -> String? {
+    if !hasPane {
+        return "no_active_pane"
+    }
+    return text.isEmpty ? "clipboard_has_no_text" : nil
+}
+
+/// The log line of a paste that was not sent: its reason, the pane, and how
+/// much text there was. The text itself stays out of the log.
+func nativePasteFailureLine(_ reason: String, paneId: Int?, bytes: Int) -> String {
+    "paste_failed reason=\(reason) pane=\(paneId.map(String.init) ?? "none") bytes=\(bytes)"
+}
+
+func runNativePasteFailureSelfTests() -> Bool {
+    nativePasteRefusal(hasPane: false, text: "visits") == "no_active_pane"
+        && nativePasteRefusal(hasPane: true, text: "") == "clipboard_has_no_text"
+        && nativePasteRefusal(hasPane: true, text: "visits") == nil
+        && nativePasteFailureLine("tmux_refused", paneId: 7, bytes: 6)
+            == "paste_failed reason=tmux_refused pane=7 bytes=6"
+        && nativePasteFailureLine("no_active_pane", paneId: nil, bytes: 0)
+            == "paste_failed reason=no_active_pane pane=none bytes=0"
 }
 
 /// The file a word on screen names, when it names one that exists: an
