@@ -292,8 +292,8 @@ extension TerminalShellViewController {
         }
     }
 
-    /// Opens a link in the browser, or a file in its app. A Markdown or
-    /// text file is shown in the sidebar itself.
+    /// Opens a link in the browser, or a file in its app. A file the
+    /// sidebar can show, as text and images are, is shown in it instead.
     func openSidebarItem(_ item: NativeSidebarItem) -> Bool {
         guard let url = sidebarItemURL(item) else {
             return false

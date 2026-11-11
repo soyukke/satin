@@ -227,6 +227,9 @@ private enum NativeSidebarPatterns {
         #"(?<![\w/.~:-])(?:~|\.{1,2})?/?[\w.-]+(?:/[\w.-]+)*\.[A-Za-z][A-Za-z0-9]{0,7}(?!\.?[\w/:-])"#
     )
 
+    /// A path's end once its extension is there.
+    static let extensionEnd = regex(#"\.[A-Za-z][A-Za-z0-9]{0,7}$"#)
+
     /// The patterns are constants; a typo in one fails the self-test.
     static func regex(_ pattern: String) -> NSRegularExpression? {
         try? NSRegularExpression(pattern: pattern)
@@ -282,24 +285,68 @@ func nativeSidebarAgeText(since: Date, now: Date) -> String {
     }
 }
 
-/// The screen's rows with each row the terminal wrapped joined to the next:
-/// a row as wide as the pane goes on below, unless a box edge or rule
-/// fills it. Wide characters keep a row short of the count, so such rows
-/// stay apart.
+/// How many cells a row takes: CJK text and emoji take two each.
+func nativeSidebarCells(_ text: some StringProtocol) -> Int {
+    let wide: [ClosedRange<UInt32>] = [
+        0x1100...0x115F, 0x2E80...0x303E, 0x3041...0x33FF, 0x3400...0x4DBF, 0x4E00...0x9FFF,
+        0xA000...0xA4CF, 0xAC00...0xD7A3, 0xF900...0xFAFF, 0xFE30...0xFE4F, 0xFF00...0xFF60,
+        0xFFE0...0xFFE6, 0x1F300...0x1FAFF, 0x20000...0x3FFFD,
+    ]
+    return text.reduce(0) { cells, character in
+        let value = character.unicodeScalars.first?.value ?? 0
+        return cells + (wide.contains { $0.contains(value) } ? 2 : 1)
+    }
+}
+
+/// Whether `row` ends inside a path that goes on in `next`. An agent wraps
+/// its own lines a few cells short of the pane's width, and breaks a path
+/// too long for one row wherever the row ends. So the row has to reach
+/// that far, end in a piece of a path that has no extension yet, and be
+/// followed by more of one. A link is left alone: the words after it
+/// would join it as easily as its own end.
+func nativeSidebarBreaksPath(_ row: String, next: String, columns: Int) -> Bool {
+    func inPath(_ character: Character) -> Bool {
+        character.isLetter || character.isNumber || "/._~-".contains(character)
+    }
+    let cells = nativeSidebarCells(row)
+    guard columns > 0, cells < columns, cells >= columns - 8 else {
+        return false
+    }
+    let content = row.drop { $0 == " " }
+    let piece = String(content.reversed().prefix(while: inPath).reversed())
+    guard piece.contains("/"), content.dropLast(piece.count).last != ":",
+        let head = next.first(where: { $0 != " " }), inPath(head)
+    else {
+        return false
+    }
+    return nativeSidebarMatches(NativeSidebarPatterns.extensionEnd, in: piece).isEmpty
+}
+
+/// The screen's rows with each wrapped row joined to the next. A row the
+/// terminal wrapped is as wide as the pane and goes on below, unless a
+/// box edge or rule fills it; wide characters keep such a row short of the
+/// count, so those stay apart. A path an agent broke where its own, shorter
+/// line ended is joined too, without the next row's indent.
 func nativeSidebarUnwrap(_ screen: String, columns: Int) -> [String] {
     func boxDrawing(_ character: Character?) -> Bool {
         character?.unicodeScalars.first.map { (0x2500...0x257F).contains($0.value) } == true
     }
     var lines: [String] = []
-    var joining = false
+    var previous: String?
     for raw in screen.split(separator: "\n", omittingEmptySubsequences: false) {
         let row = String(raw)
-        if joining, !boxDrawing(row.first), let last = lines.popLast() {
+        let wrapped =
+            previous.map { columns > 0 && $0.count >= columns && !boxDrawing($0.last) } == true
+        if wrapped, !boxDrawing(row.first), let last = lines.popLast() {
             lines.append(last + row)
+        } else if let previous, let last = lines.last,
+            nativeSidebarBreaksPath(previous, next: row, columns: columns)
+        {
+            lines[lines.count - 1] = last + row.drop { $0 == " " }
         } else {
             lines.append(row)
         }
-        joining = columns > 0 && row.count >= columns && !boxDrawing(row.last)
+        previous = row
     }
     return lines
 }
@@ -584,6 +631,25 @@ func runNativeSidebarModelSelfTests() -> Bool {
         nativeSidebarUnwrap("──────\nnext\nabcdef\n│ x", columns: 6)
             == ["──────", "next", "abcdef", "│ x"],
         nativeSidebarUnwrap("abc\ndef", columns: 0) == ["abc", "def"],
+        // An agent's own wrap, short of the pane's 40 columns: a path alone
+        // on its rows, one after a bullet, and one with wide characters.
+        nativeSidebarUnwrap("/tmp/visits/2026-11/users/alice-0\n1/report.png\nnext", columns: 40)
+            == ["/tmp/visits/2026-11/users/alice-01/report.png", "next"],
+        nativeSidebarItems(
+            screen: "  - saved to ~/visits/2026-11/users/al\n    ice/report.png now", columns: 40)
+            == [
+                .init(kind: .file, text: "~/visits/2026-11/users/alice/report.png", detail: "path")
+            ],
+        nativeSidebarUnwrap("/tmp/訪問記録/2026-11/users/alice-0\n1/集計.png", columns: 40)
+            == ["/tmp/訪問記録/2026-11/users/alice-01/集計.png"],
+        // A whole path, a link, a short row and prose are not joined on.
+        nativeSidebarUnwrap("/tmp/visits/2026-11/users/alice.png\n/tmp/b.png", columns: 40)
+            == ["/tmp/visits/2026-11/users/alice.png", "/tmp/b.png"],
+        nativeSidebarUnwrap("see https://a.dev/docs/visits/users\nfor more", columns: 40)
+            == ["see https://a.dev/docs/visits/users", "for more"],
+        nativeSidebarUnwrap("in /tmp/visits\nalice", columns: 40) == ["in /tmp/visits", "alice"],
+        nativeSidebarUnwrap("alice counted the visits and slept\nwell", columns: 40)
+            == ["alice counted the visits and slept", "well"],
         nativeSidebarAgeText(
             since: Date(timeIntervalSince1970: 0), now: Date(timeIntervalSince1970: 59))
             == "now",

@@ -126,8 +126,8 @@ final class NativeItemsSidebarView: NSView {
         }
     }
 
-    /// Shows a Markdown or text file where the lists are, until the back
-    /// button brings them back.
+    /// Shows a file where the lists are, until the back button brings them
+    /// back.
     func showFile(_ file: NativeSidebarFile) {
         let again = self.file?.url == file.url
         self.file = file
@@ -138,13 +138,13 @@ final class NativeItemsSidebarView: NSView {
         }
         view.show(
             folder: file.url.deletingLastPathComponent(), document: file.url.lastPathComponent,
-            language: "", key: file.key, plain: file.plain, keepsScroll: again)
+            language: "", key: file.key, form: file.form, keepsScroll: again)
         syncFileChrome()
     }
 
     /// Draws the file on show again once it has been written since.
     func refreshFile() {
-        guard let file, let now = NativeSidebarFile(file.url), now != file else {
+        guard let file, file.changed, let now = NativeSidebarFile(file.url), now != file else {
             return
         }
         showFile(now)
