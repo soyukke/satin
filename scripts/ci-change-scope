@@ -47,7 +47,7 @@ for path in "${changed_paths[@]}"; do
       break
       ;;
     .github/* | README.md | docs/* | assets/satin-demo.* | \
-      assets/satin-work-switcher-demo.* | assets/satin-artifact-demo.*) ;;
+      assets/satin-artifact-demo.*) ;;
     *)
       full=true
       reason=runtime-or-build-change

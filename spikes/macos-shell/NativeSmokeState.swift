@@ -11,6 +11,5 @@
         var tmuxReattachRenderedPeakScrollPosition = 0.0
         var artifactPopoverResultPath: String?
         var artifactPopoverOpenPath: String?
-        var readmeWorkSwitcherOpened = false
     }
 #endif

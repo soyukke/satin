@@ -28,7 +28,6 @@ import Foundation
                 return
             }
             writeReadmeDemoResult(resultPath, result: "ok readme-demo ready=yes\n")
-            waitForReadmeWorkSwitcherTrigger(resultPath, retries: 1_200)
             pollReadmeHandPlay(resultPath, retries: 2_400)
         }
 
@@ -61,6 +60,7 @@ import Foundation
                 ("left", { [weak self] in self?.toggleWindowsSidebar(nil) }),
                 ("right", { [weak self] in self?.toggleItemsSidebar(nil) }),
                 ("scope", { [weak self] in self?.toggleSidebarScopeForSmoke() }),
+                ("closefile", { [weak self] in self?.itemsSidebar.closeFile() }),
                 (
                     "copycommand",
                     { [weak self] in self?.itemsSidebar.pressFirstRowForSmoke(.command, paste: true)
@@ -73,6 +73,13 @@ import Foundation
             ] where FileManager.default.fileExists(atPath: "\(resultPath).\(suffix)") {
                 try? FileManager.default.removeItem(atPath: "\(resultPath).\(suffix)")
                 action()
+            }
+            // The recipe names the file whose row it wants opened in `.openfile`.
+            let named = "\(resultPath).openfile"
+            if let name = try? String(contentsOfFile: named, encoding: .utf8) {
+                try? FileManager.default.removeItem(atPath: named)
+                itemsSidebar.pressFileRowForSmoke(
+                    named: name.trimmingCharacters(in: .whitespacesAndNewlines), .open)
             }
             // A dry run of the recipe names each still it wants in `.snap`.
             let snap = "\(resultPath).snap"
@@ -164,30 +171,6 @@ import Foundation
         func openFirstUnreadPageForSmoke() {
             if let page = pageInbox.unread.first ?? pageInbox.pages.first {
                 openPage(page, fromBinder: pageBinder != nil)
-            }
-        }
-
-        func waitForReadmeWorkSwitcherTrigger(_ resultPath: String, retries: Int) {
-            guard !smokeState.readmeWorkSwitcherOpened else {
-                return
-            }
-            if FileManager.default.fileExists(atPath: "\(resultPath).work") {
-                smokeState.readmeWorkSwitcherOpened = true
-                showWorkSwitcher(nil)
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
-                    let status = self?.workSwitcherPopover?.isShown == true ? "ok" : "failed"
-                    self?.writeReadmeDemoResult(
-                        "\(resultPath).work-open",
-                        result: "\(status) readme-demo work-switcher=yes\n"
-                    )
-                }
-                return
-            }
-            guard retries > 0 else {
-                return
-            }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
-                self?.waitForReadmeWorkSwitcherTrigger(resultPath, retries: retries - 1)
             }
         }
 

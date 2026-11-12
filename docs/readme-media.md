@@ -1,20 +1,19 @@
 # README demo media
 
-The README embeds five short GIF previews and links each one to an H.264 MP4:
+The README embeds four short GIF previews and links each one to an H.264 MP4:
 
 - `assets/satin-demo.*` shows terminal cursor input, a native pane split, and
   native Neovim cursor and Ctrl-D/Ctrl-U scroll animation.
-- `assets/satin-work-switcher-demo.*` shows projected tmux panes reporting live
-  agent status in the experimental Work Switcher.
-- `assets/satin-artifact-demo.*` shows a versioned Markdown artifact opening and
+- `assets/satin-artifact-demo.*` shows a versioned Markdown page opening and
   refreshing in the window-scoped sidebar.
 - `assets/satin-attention-hand-demo.*` shows four agents asking for attention,
   their cards being dealt, Command-J choosing a card, and each played card
   switching to its pane.
 - `assets/satin-sidebars-demo.*` shows four agent tabs as cards in the windows
   sidebar and the items sidebar gathering one agent's commands, quotes, links
-  and files; an Option-click pastes a command, Command-J plays the foil card,
-  and the windows sidebar folds to its rail in the terminal and paper looks.
+  and files; an Option-click pastes a command, a click opens a Markdown file in
+  the sidebar, Command-J plays the foil card, and the windows sidebar folds to
+  its rail in the terminal and paper looks.
 
 The tracked poster PNGs are review aids and should be refreshed with the videos
 even though the README currently embeds the GIFs.
@@ -44,14 +43,13 @@ signature. Allow it once under System Settings → Privacy & Security → Screen
 System Audio Recording; the grant survives rebuilds. The identity stays on your
 machine and is not recorded anywhere in the repository.
 
-The recipe builds an isolated `Satin Dev.app`, creates temporary tmux and
-artifact stores, and records
+The recipe builds an isolated `Satin Dev.app`, creates temporary page
+stores, and records
 only that app's windows through ScreenCaptureKit at the display's native frame
 rate without audio. Other applications remain excluded even if they move in
-front during recording. The Work Switcher scene extends its black capture canvas
-to keep the real toolbar-anchored popover visible. The attention hand and
-sidebars scenes turn the hand on for their own windows only, and only the
-sidebars scene shows the sidebars; the other scenes record with both off
+front during recording. The attention hand and
+sidebars scenes turn the hand on for their own windows only. The sidebars
+scene opens the sidebars and the other scenes fold both to their rails,
 whatever your Satin Dev preferences say. The recipe replaces the chosen scenes'
 MP4, GIF, and poster only after every capture decodes successfully and does
 not open macOS's interactive screenshot/recording mode. The terminal and Git
@@ -69,7 +67,7 @@ To record only some scenes, name them; the other assets stay as they are:
 SATIN_ALLOW_SCREEN_CAPTURE=1 SATIN_README_DEMO_SCENES=sidebars just readme-demo
 ```
 
-The scenes are `main`, `work-switcher`, `artifact`, `hand`, and `sidebars`. The
+The scenes are `main`, `artifact`, `hand`, and `sidebars`. The
 sidebars scene copies a command and a link, so it replaces the clipboard.
 
 ## Rehearse

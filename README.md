@@ -171,9 +171,9 @@ tab strip back.
 
 <p align="center">
   <sub>Four agents change state on their cards while the items sidebar gathers
-  what one printed; an Option-click pastes its command, Command-J plays the
-  foil card, and the windows sidebar folds to gems, in both looks. Click for
-  the 26-second MP4.</sub>
+  what one printed; an Option-click pastes its command, a click opens a
+  Markdown file in the sidebar, Command-J plays the foil card, and the windows
+  sidebar folds to gems, in both looks. Click for the 30-second MP4.</sub>
 </p>
 
 ### Work Switcher
@@ -181,18 +181,6 @@ tab strip back.
 The Work Switcher is experimental. Open it with `Command-P` to find tabs and
 panes by title, directory, tmux session, or agent status while previewing the
 selected pane's current screen.
-
-<p align="center">
-  <a href="assets/satin-work-switcher-demo.mp4">
-    <img src="assets/satin-work-switcher-demo.gif" width="880"
-      alt="Satin Work Switcher showing live status for projected tmux panes">
-  </a>
-</p>
-
-<p align="center">
-  <sub>Projected tmux panes report waiting, running, and done states without
-  scraping terminal text. Click for the 16-second MP4.</sub>
-</p>
 
 ### AI pages
 
