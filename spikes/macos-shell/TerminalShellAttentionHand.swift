@@ -177,15 +177,27 @@ extension TerminalShellViewController {
         }
     }
 
-    /// Where a tab sits in the tab strip, as the hand's own x coordinate.
-    func attentionTabMidX(tabId: Int) -> CGFloat? {
+    /// Where a tab is for the hand, in the hand's own coordinates. With the
+    /// windows sidebar folded to its rail that is beside the tab's gem, on
+    /// the hand's edge next to the rail; with the tab bar it is under the
+    /// middle of the tab, on the hand's upper edge.
+    func attentionTabPoint(tabId: Int) -> CGPoint? {
+        let hand = attentionHandView.bounds
+        if windowsSidebarMode == .rail {
+            return windowsSidebar.gemFrame(tabId: tabId).map {
+                nativeHandRailPoint(
+                    gem: attentionHandView.convert($0, from: windowsSidebar), hand: hand)
+            }
+        }
         guard let index = lastSnapshot?.tabs.first(where: { $0.id == tabId })?.index,
             tabControl.window != nil,
             let frame = tabControl.segmentFrameForNavigation(index)
         else {
             return nil
         }
-        return attentionHandView.convert(tabControl.convert(frame, to: nil), from: nil).midX
+        return CGPoint(
+            x: attentionHandView.convert(tabControl.convert(frame, to: nil), from: nil).midX,
+            y: hand.maxY)
     }
 
     func currentAttentionHand() -> NativeAttentionHand {

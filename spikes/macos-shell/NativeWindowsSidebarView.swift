@@ -143,6 +143,13 @@ final class NativeWindowsSidebarView: NSView {
         groups.map { group, rows in [group.rawValue] + rows.map(\.tabId) }
     }
 
+    /// A tab's gem on the rail, in this view's coordinates; nil while the
+    /// cards show instead, or when the tab has no gem.
+    func gemFrame(tabId: Int) -> NSRect? {
+        layoutSubtreeIfNeeded()
+        return gems.first { $0.row.tabId == tabId }.map { convert($0.bounds, from: $0) }
+    }
+
     private func rebuild() {
         for view in (cards as [NSView]) + (gems as [NSView]) {
             view.removeFromSuperview()

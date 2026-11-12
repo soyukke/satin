@@ -489,8 +489,8 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
         self.attentionHandView.onSelect = { [weak self] card in
             self?.playAttentionCard(card)
         }
-        self.attentionHandView.tabMidX = { [weak self] tabId in
-            self?.attentionTabMidX(tabId: tabId)
+        self.attentionHandView.tabPoint = { [weak self] tabId in
+            self?.attentionTabPoint(tabId: tabId)
         }
         self.attentionHandView.previewText = { [weak self] paneId in
             self?.attentionPreviewText(paneId: paneId)

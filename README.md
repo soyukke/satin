@@ -102,7 +102,8 @@ Satin → Settings… → Appearance. Each pane whose agent is waiting on you, h
 failed, or has finished unread is dealt as a card along the window's lower
 edge, most urgent first. A fuse runs round a tab that is waiting or has failed,
 a spark carries each new card down from its tab, and a thread ties every raised
-card back to the tab it came from.
+card back to the tab it came from. With the windows sidebar folded to its rail,
+the sparks and threads start beside the tab's gem instead.
 
 <p align="center">
   <a href="assets/satin-attention-hand-demo.mp4">
