@@ -363,7 +363,7 @@ extension TerminalShellViewController {
             let grid = tmuxPaneGrid(pane)
             if let runtime = projectedTmuxPane(nativePaneId) {
                 runtime.setCurrentCommand(pane.current_command)
-                runtime.resize(grid: grid)
+                runtime.resize(grid: grid, originMode: pane.origin_mode)
                 runtime.syncCursor(pane)
                 continue
             }

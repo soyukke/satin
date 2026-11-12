@@ -502,18 +502,56 @@ class TerminalPane: NativePane {
 
 }
 
+/// Whether a tmux pane going from `rows` to `next` rows has its cursor sent
+/// to the last row first, so the new rows fill from the history as tmux's
+/// do. The alternate screen has no history and grows the same either way.
+/// With origin mode on the cursor cannot be sent there, so the screen is
+/// left to grow as it does.
+func nativeTmuxGrowthFillsFromHistory(rows: Int, next: Int, originMode: Bool) -> Bool {
+    next > rows && !originMode
+}
+
+/// A tmux pane whose cursor is two rows above the last grows by two rows:
+/// the two lines above come back from the history, and the last line stays
+/// on the last row.
+func runNativeTmuxPaneGrowthSelfTests() -> Bool {
+    let small = (rows: 10, cols: 40, widthPixels: 400, heightPixels: 200)
+    let tall = (rows: 12, cols: 40, widthPixels: 400, heightPixels: 240)
+    guard let handle = satinRuntimeCreateExternal(10, 40, 400, 200) else {
+        return false
+    }
+    let gateway = TerminalPane(externalHandle: handle)
+    guard let pane = TmuxPane(grid: small, paneId: 1, gateway: gateway) else {
+        return false
+    }
+    let lines = (1...30).map { "line \($0)" }.joined(separator: "\r\n")
+    guard pane.feed(Data((lines + "\u{1b}[2A").utf8)) else {
+        return false
+    }
+    pane.resize(grid: tall, originMode: false)
+    let shown = pane.controlScreenText().split(separator: "\n", omittingEmptySubsequences: false)
+        .map { $0.trimmingCharacters(in: .whitespaces) }
+    return shown.count == 12 && shown.first == "line 19" && shown.last == "line 30"
+        && nativeTmuxGrowthFillsFromHistory(rows: 10, next: 12, originMode: false)
+        && !nativeTmuxGrowthFillsFromHistory(rows: 12, next: 12, originMode: false)
+        && !nativeTmuxGrowthFillsFromHistory(rows: 12, next: 10, originMode: false)
+        && !nativeTmuxGrowthFillsFromHistory(rows: 10, next: 12, originMode: true)
+}
+
 final class TmuxPane: TerminalPane {
     let tmuxPaneId: UInt32
     private weak var gateway: TerminalPane?
     private var currentShellCommand: String?
     private var shellOwnsPane = false
     private var semanticPromptOwnsPane = false
+    private var rows: Int
 
     init?(
         grid: (rows: Int, cols: Int, widthPixels: Int, heightPixels: Int),
         paneId: UInt32,
         gateway: TerminalPane
     ) {
+        rows = grid.rows
         guard
             let handle = satinRuntimeCreateExternal(
                 clampedUInt16(grid.rows),
@@ -527,6 +565,26 @@ final class TmuxPane: TerminalPane {
         self.tmuxPaneId = paneId
         self.gateway = gateway
         super.init(externalHandle: handle)
+    }
+
+    override func resize(grid: (rows: Int, cols: Int, widthPixels: Int, heightPixels: Int)) {
+        rows = grid.rows
+        super.resize(grid: grid)
+    }
+
+    /// Resizes the screen as tmux resized its own. tmux fills a taller pane
+    /// from its history whatever row the cursor is on; the terminal here
+    /// does so only with the cursor on its last row, and otherwise leaves
+    /// the new rows empty under what it showed, rows above where tmux has
+    /// it. So the cursor goes to the last row first; the caller puts it
+    /// where tmux has it afterwards.
+    func resize(
+        grid: (rows: Int, cols: Int, widthPixels: Int, heightPixels: Int), originMode: Bool
+    ) {
+        if nativeTmuxGrowthFillsFromHistory(rows: rows, next: grid.rows, originMode: originMode) {
+            _ = feed(Data("\u{1b}[\(rows);1H".utf8))
+        }
+        resize(grid: grid)
     }
 
     override func write(_ data: Data) {
