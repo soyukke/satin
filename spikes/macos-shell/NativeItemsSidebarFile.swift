@@ -83,10 +83,15 @@ func nativeSidebarIsText(_ head: Data) -> Bool {
     }
 }
 
-/// The strip along the items sidebar's inner edge that drags it wider or
-/// narrower. A double-click gives the sidebar its own width back.
+/// The strip along a sidebar's inner edge that drags it wider or narrower,
+/// down to its rail and back out of it. A double-click gives the sidebar
+/// its own width back.
 final class NativeSidebarResizeGrip: NSView {
     static let width: CGFloat = 7
+
+    /// Whether the sidebar is the one on the left, whose inner edge is its
+    /// right one.
+    private let onLeft: Bool
 
     /// The width the drag asks for, and whether the drag has ended.
     var onDrag: ((CGFloat, Bool) -> Void)?
@@ -95,22 +100,25 @@ final class NativeSidebarResizeGrip: NSView {
     private var hovering = false
     private var hoverArea: NSTrackingArea?
 
-    override init(frame: NSRect) {
-        super.init(frame: frame)
+    init(onLeft: Bool, label: String) {
+        self.onLeft = onLeft
+        super.init(frame: .zero)
         setAccessibilityElement(true)
         setAccessibilityRole(.splitter)
-        setAccessibilityLabel("Resize the Items Sidebar")
-        toolTip = "Drag to resize · double-click to reset"
+        setAccessibilityLabel(label)
+        toolTip = "Drag to resize or fold · double-click to reset"
     }
 
     required init?(coder: NSCoder) {
         nil
     }
 
-    /// The width a drag from `start` to the pointer at `x` asks for: the
-    /// sidebar is on the right, so a drag to the left widens it.
-    static func width(start: (x: CGFloat, width: CGFloat), x: CGFloat) -> CGFloat {
-        start.width + start.x - x
+    /// The width a drag from `start` to the pointer at `x` asks for: a drag
+    /// away from the window's edge the sidebar is on widens it.
+    static func width(
+        start: (x: CGFloat, width: CGFloat), x: CGFloat, onLeft: Bool = false
+    ) -> CGFloat {
+        start.width + (onLeft ? x - start.x : start.x - x)
     }
 
     override func resetCursorRects() {
@@ -144,7 +152,7 @@ final class NativeSidebarResizeGrip: NSView {
             return
         }
         NativePageStyle.violet.withAlphaComponent(0.7).setFill()
-        NSRect(x: 0, y: 0, width: 2, height: bounds.height).fill()
+        NSRect(x: onLeft ? bounds.width - 2 : 0, y: 0, width: 2, height: bounds.height).fill()
     }
 
     override func mouseDown(with event: NSEvent) {
@@ -161,7 +169,7 @@ final class NativeSidebarResizeGrip: NSView {
         guard let start else {
             return
         }
-        onDrag?(Self.width(start: start, x: event.locationInWindow.x), false)
+        onDrag?(Self.width(start: start, x: event.locationInWindow.x, onLeft: onLeft), false)
     }
 
     override func mouseUp(with event: NSEvent) {
@@ -170,7 +178,7 @@ final class NativeSidebarResizeGrip: NSView {
         }
         self.start = nil
         needsDisplay = true
-        onDrag?(Self.width(start: start, x: event.locationInWindow.x), true)
+        onDrag?(Self.width(start: start, x: event.locationInWindow.x, onLeft: onLeft), true)
     }
 }
 
@@ -178,8 +186,8 @@ final class NativeSidebarResizeGrip: NSView {
 /// than its rows read at and no wider than leaves the panes `panes` of
 /// `room`.
 func nativeItemsSidebarWidth(wanted: CGFloat, room: CGFloat, panes: CGFloat = 320) -> CGFloat {
-    let least = NativeItemsSidebarView.minWidth
-    return max(least, min(wanted, max(least, room - panes)))
+    nativeSidebarWidth(
+        wanted: wanted, least: NativeItemsSidebarView.minWidth, room: room, panes: panes)
 }
 
 func runNativeSidebarFileSelfTests() -> Bool {
@@ -243,8 +251,27 @@ func runNativeSidebarFileSelfTests() -> Bool {
     guard asked.map(\.0) == [330, 360], asked.map(\.1) == [false, true], reset == 1 else {
         return false
     }
+    // The windows sidebar is on the left: a drag to the right widens it, and
+    // one most of the way to the left edge asks for less than its rail.
+    let windows = NativeWindowsSidebarView(frame: NSRect(x: 0, y: 0, width: 264, height: 400))
+    var wanted: [CGFloat] = []
+    windows.onResize = { width, _ in wanted.append(width) }
+    guard let edge = windows.subviews.compactMap({ $0 as? NativeSidebarResizeGrip }).first,
+        let press = mouse(.leftMouseDown, x: 262), let wider = mouse(.leftMouseDragged, x: 300),
+        let narrower = mouse(.leftMouseUp, x: 40)
+    else {
+        return false
+    }
+    edge.mouseDown(with: press)
+    edge.mouseDragged(with: wider)
+    edge.mouseUp(with: narrower)
+    guard wanted == [302, 42] else {
+        return false
+    }
     return NativeSidebarResizeGrip.width(start: (x: 900, width: 300), x: 840) == 360
         && NativeSidebarResizeGrip.width(start: (x: 900, width: 300), x: 960) == 240
+        && NativeSidebarResizeGrip.width(start: (x: 264, width: 264), x: 300, onLeft: true) == 300
+        && NativeSidebarResizeGrip.width(start: (x: 264, width: 264), x: 90, onLeft: true) == 90
         && nativeItemsSidebarWidth(wanted: 420, room: 1200) == 420
         && nativeItemsSidebarWidth(wanted: 900, room: 1200) == 880
         && nativeItemsSidebarWidth(wanted: 100, room: 1200) == NativeItemsSidebarView.minWidth

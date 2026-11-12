@@ -87,8 +87,9 @@ enum NativeWindowGroup: Int, CaseIterable, Equatable {
 }
 
 /// The rows under their headings, leaving out empty ones. What needs you
-/// reads as the hand deals it: waiting before failed, the longest first;
-/// the rest keep their tabs' order.
+/// reads as the hand deals it: waiting before failed, the longest first.
+/// The idle tabs start with the one that went idle last; the rest keep
+/// their tabs' order.
 func nativeWindowGroups(_ rows: [NativeWindowRow]) -> [(NativeWindowGroup, [NativeWindowRow])] {
     NativeWindowGroup.allCases.compactMap { group in
         var members = rows.filter { NativeWindowGroup($0.state) == group }
@@ -97,9 +98,53 @@ func nativeWindowGroups(_ rows: [NativeWindowRow]) -> [(NativeWindowGroup, [Nati
                 ($0.state == .waiting ? 0 : 1, $0.since ?? .distantFuture, $0.index)
                     < ($1.state == .waiting ? 0 : 1, $1.since ?? .distantFuture, $1.index)
             }
+        } else if group == .idle {
+            members.sort { (-$0.settled, $0.index) < (-$1.settled, $1.index) }
         }
         return members.isEmpty ? nil : (group, members)
     }
+}
+
+/// Which tabs went idle, and in what order, since the application started.
+/// Nothing is saved.
+struct NativeWindowIdleOrder {
+    private var states: [Int: NativeWindowState] = [:]
+    private var settled: [Int: Int] = [:]
+    private var count = 0
+
+    /// Marks each row with when its tab last went idle. A tab that has been
+    /// idle all along, or is new, has no mark.
+    mutating func mark(_ rows: [NativeWindowRow]) -> [NativeWindowRow] {
+        var seen: [Int: NativeWindowState] = [:]
+        for row in rows {
+            if row.state == .idle, let before = states[row.tabId], before != .idle {
+                count += 1
+                settled[row.tabId] = count
+            }
+            seen[row.tabId] = row.state
+        }
+        states = seen
+        settled = settled.filter { seen[$0.key] != nil }
+        return rows.map { row in
+            var marked = row
+            marked.settled = settled[row.tabId] ?? 0
+            return marked
+        }
+    }
+}
+
+/// What a drag on a sidebar's inner edge leaves it as: folded once the
+/// width asked for is nearer the rail's than the narrowest it opens to.
+func nativeSidebarDragMode(wanted: CGFloat, rail: CGFloat, least: CGFloat) -> NativeSidebarMode {
+    wanted < (rail + least) / 2 ? .rail : .open
+}
+
+/// The width a sidebar takes, open: what was asked for, no narrower than
+/// `least` and no wider than leaves the panes `panes` of `room`.
+func nativeSidebarWidth(
+    wanted: CGFloat, least: CGFloat, room: CGFloat, panes: CGFloat = 320
+) -> CGFloat {
+    max(least, min(wanted, max(least, room - panes)))
 }
 
 struct NativeWindowRow: Equatable {
@@ -117,6 +162,9 @@ struct NativeWindowRow: Equatable {
     let isNext: Bool
     /// The digit that goes with ⌘ to select this tab, if one does.
     var shortcut: Int? = nil
+    /// When the tab last went idle, counted up from one; zero if it has
+    /// not since the application started.
+    var settled = 0
 }
 
 /// The digit that goes with ⌘ to select a tab, as the menu has them: ⌘1 to
@@ -729,6 +777,36 @@ func runNativeSidebarModelSelfTests() -> Bool {
     guard groups.map(\.0) == [.needsYou, .running],
         groups[0].1.map(\.title) == ["worker", "api", "web"],
         groups[1].1.map(\.title) == ["logs"]
+    else {
+        return false
+    }
+    // Three idle tabs keep their tabs' order until one of them has been
+    // at work: the tab that went idle last comes first, then the one before.
+    func idle(_ tabId: Int, _ state: NativeWindowState = .idle) -> NativeWindowRow {
+        NativeWindowRow(
+            tabId: tabId, index: tabId, title: "tab \(tabId)", state: state, line: "",
+            since: nil, isCurrent: false, isNext: false)
+    }
+    var idleOrder = NativeWindowIdleOrder()
+    func idleTabs(_ rows: [NativeWindowRow]) -> [Int] {
+        nativeWindowGroups(idleOrder.mark(rows)).first { $0.0 == .idle }?.1.map(\.tabId) ?? []
+    }
+    guard idleTabs([idle(0), idle(1), idle(2)]) == [0, 1, 2],
+        idleTabs([idle(0), idle(1), idle(2, .clear)]) == [0, 1],
+        idleTabs([idle(0), idle(1), idle(2)]) == [2, 0, 1],
+        idleTabs([idle(0), idle(1, .running), idle(2)]) == [2, 0],
+        idleTabs([idle(0), idle(1), idle(2)]) == [1, 2, 0],
+        // A closed tab is forgotten: one that takes its number starts unmarked.
+        idleTabs([idle(0), idle(2)]) == [2, 0],
+        idleTabs([idle(0), idle(1), idle(2)]) == [2, 0, 1],
+        nativeSidebarDragMode(wanted: 200, rail: 52, least: 220) == .open,
+        nativeSidebarDragMode(wanted: 136, rail: 52, least: 220) == .open,
+        nativeSidebarDragMode(wanted: 135, rail: 52, least: 220) == .rail,
+        nativeSidebarDragMode(wanted: -40, rail: 52, least: 220) == .rail,
+        nativeSidebarWidth(wanted: 264, least: 220, room: 1200) == 264,
+        nativeSidebarWidth(wanted: 150, least: 220, room: 1200) == 220,
+        nativeSidebarWidth(wanted: 900, least: 220, room: 1000) == 680,
+        nativeSidebarWidth(wanted: 400, least: 220, room: 300) == 220
     else {
         return false
     }

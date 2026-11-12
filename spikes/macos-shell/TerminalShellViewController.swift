@@ -346,8 +346,10 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
     let itemsSidebar = NativeItemsSidebarView(frame: .zero)
     var windowsSidebarWidth: NSLayoutConstraint?
     var itemsSidebarWidth: NSLayoutConstraint?
-    /// The width a drag on the items sidebar's edge is asking for.
+    /// The width a drag on each sidebar's edge is asking for.
+    var windowsSidebarDragWidth: CGFloat?
     var itemsSidebarDragWidth: CGFloat?
+    var windowIdleOrder = NativeWindowIdleOrder()
     let sidebarItems = NativeSidebarItemStore()
     var sidebarScanTimer: Timer?
     /// Each pane's last line on screen, as the scan last read it.
@@ -702,7 +704,7 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
 
     override func viewDidLayout() {
         super.viewDidLayout()
-        fitItemsSidebarWidth()
+        fitSidebarWidths()
         updateTabStripToolbarWidth()
         startPaneRuntimeIfReady()
     }
