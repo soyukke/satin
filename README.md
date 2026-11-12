@@ -170,9 +170,9 @@ tab strip back.
 
 <p align="center">
   <sub>Four agents change state on their cards while the items sidebar gathers
-  what one printed; an Option-click pastes its command, Command-J plays the
-  foil card, and the windows sidebar folds to gems, in both looks. Click for
-  the 26-second MP4.</sub>
+  what one printed; an Option-click pastes its command, a click opens a
+  Markdown file in the sidebar, Command-J plays the foil card, and the windows
+  sidebar folds to gems, in both looks. Click for the 30-second MP4.</sub>
 </p>
 
 ### Work Switcher

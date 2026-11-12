@@ -61,6 +61,7 @@ import Foundation
                 ("left", { [weak self] in self?.toggleWindowsSidebar(nil) }),
                 ("right", { [weak self] in self?.toggleItemsSidebar(nil) }),
                 ("scope", { [weak self] in self?.toggleSidebarScopeForSmoke() }),
+                ("closefile", { [weak self] in self?.itemsSidebar.closeFile() }),
                 (
                     "copycommand",
                     { [weak self] in self?.itemsSidebar.pressFirstRowForSmoke(.command, paste: true)
@@ -73,6 +74,13 @@ import Foundation
             ] where FileManager.default.fileExists(atPath: "\(resultPath).\(suffix)") {
                 try? FileManager.default.removeItem(atPath: "\(resultPath).\(suffix)")
                 action()
+            }
+            // The recipe names the file whose row it wants opened in `.openfile`.
+            let named = "\(resultPath).openfile"
+            if let name = try? String(contentsOfFile: named, encoding: .utf8) {
+                try? FileManager.default.removeItem(atPath: named)
+                itemsSidebar.pressFileRowForSmoke(
+                    named: name.trimmingCharacters(in: .whitespacesAndNewlines), .open)
             }
             // A dry run of the recipe names each still it wants in `.snap`.
             let snap = "\(resultPath).snap"

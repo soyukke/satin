@@ -366,6 +366,15 @@ final class NativeItemsSidebarView: NSView {
             .first { $0.item.kind == kind }?
             .pressForSmoke(paste: paste)
     }
+
+    /// Presses the row of the file whose path ends in `name`, or of the
+    /// first file when none does.
+    func pressFileRowForSmoke(named name: String, _ action: NativeItemRowAction) {
+        let files = content.compactMap { $0 as? NativeItemRowView }.filter {
+            $0.item.kind == .file
+        }
+        (files.first { $0.item.text.hasSuffix(name) } ?? files.first)?.pressForSmoke(action)
+    }
 }
 
 /// The groups the items sidebar shows.
@@ -617,8 +626,12 @@ final class NativeItemRowView: NSView {
 
     /// Shows the pointer over the row while it presses it.
     func pressForSmoke(paste: Bool) {
+        pressForSmoke(paste ? .paste : .copy)
+    }
+
+    func pressForSmoke(_ action: NativeItemRowAction) {
         hovering = true
-        press(paste ? .paste : .copy)
+        press(action)
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.4) { [weak self] in
             self?.hovering = false
             self?.needsDisplay = true

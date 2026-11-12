@@ -6,15 +6,16 @@ The README embeds five short GIF previews and links each one to an H.264 MP4:
   native Neovim cursor and Ctrl-D/Ctrl-U scroll animation.
 - `assets/satin-work-switcher-demo.*` shows projected tmux panes reporting live
   agent status in the experimental Work Switcher.
-- `assets/satin-artifact-demo.*` shows a versioned Markdown artifact opening and
+- `assets/satin-artifact-demo.*` shows a versioned Markdown page opening and
   refreshing in the window-scoped sidebar.
 - `assets/satin-attention-hand-demo.*` shows four agents asking for attention,
   their cards being dealt, Command-J choosing a card, and each played card
   switching to its pane.
 - `assets/satin-sidebars-demo.*` shows four agent tabs as cards in the windows
   sidebar and the items sidebar gathering one agent's commands, quotes, links
-  and files; an Option-click pastes a command, Command-J plays the foil card,
-  and the windows sidebar folds to its rail in the terminal and paper looks.
+  and files; an Option-click pastes a command, a click opens a Markdown file in
+  the sidebar, Command-J plays the foil card, and the windows sidebar folds to
+  its rail in the terminal and paper looks.
 
 The tracked poster PNGs are review aids and should be refreshed with the videos
 even though the README currently embeds the GIFs.
@@ -50,9 +51,10 @@ only that app's windows through ScreenCaptureKit at the display's native frame
 rate without audio. Other applications remain excluded even if they move in
 front during recording. The Work Switcher scene extends its black capture canvas
 to keep the real toolbar-anchored popover visible. The attention hand and
-sidebars scenes turn the hand on for their own windows only, and only the
-sidebars scene shows the sidebars; the other scenes record with both off
-whatever your Satin Dev preferences say. The recipe replaces the chosen scenes'
+sidebars scenes turn the hand on for their own windows only. The sidebars
+scene opens the sidebars, the attention hand scene records with the tab bar
+in their place, and the other scenes fold both to their rails, whatever your
+Satin Dev preferences say. The recipe replaces the chosen scenes'
 MP4, GIF, and poster only after every capture decodes successfully and does
 not open macOS's interactive screenshot/recording mode. The terminal and Git
 fixtures are generated under a private temporary directory; they contain no

@@ -297,7 +297,7 @@ vim.opt.sidescrolloff = 4
 vim.opt.cursorline = true
 vim.opt.wrap = false
 vim.opt.smoothscroll = false
-vim.opt.statusline = "  Satin native Neovim  %=  retained cursor + scroll  %l:%c "
+vim.opt.statusline = "  native Neovim  %=  %l:%c "
 vim.cmd("syntax enable")
 vim.cmd("colorscheme habamax")
 LUA
@@ -338,9 +338,9 @@ TS
   printf '%s\n' 'terminal cursor' 'native Neovim cursor' >"$main_workspace/smoke-cases.txt"
   git -C "$main_workspace" add smoke-cases.txt
   GIT_AUTHOR_DATE=2026-08-04T10:00:00Z GIT_COMMITTER_DATE=2026-08-04T10:00:00Z \
-    git -C "$main_workspace" commit -qm "Verify terminal and Neovim motion"
+    git -C "$main_workspace" commit -qm "Verify the motion"
 
-  launch_demo_app "$main_root" main
+  launch_demo_app "$main_root" main NO rail,rail
   main_socket="$main_root/control.sock"
   main_pane="$("$cli" --socket "$main_socket" --json list | jq -r '.result.panes[0].id')"
   printf -v main_intro 'cd %q && source %q' "$main_workspace" "$main_root/prompt.zsh"
@@ -354,7 +354,7 @@ TS
   sleep 0.8
   type_into_pane \
     "$main_socket" "$main_pane" \
-    "git log --graph --decorate --oneline --color=always -4" 0.025
+    "git log --graph --oneline -4" 0.03
   "$cli" --socket "$main_socket" key --pane "$main_pane" Enter >/dev/null
   sleep 1.2
 
@@ -436,7 +436,7 @@ ZSH
   tmux -S "$tmux_socket" select-pane -t "$tmux_session:0.1" \
     -T "[ ! ] Action Required | Claude Code"
 
-  launch_demo_app "$work_root" work-switcher
+  launch_demo_app "$work_root" work-switcher NO rail,rail
   work_socket="$work_root/control.sock"
   initial_pane="$("$cli" --socket "$work_socket" --json list | jq -r '.result.panes[0].id')"
   printf -v attach_command '%q -S %q -CC attach-session -t %q' \
@@ -474,7 +474,8 @@ if wants artifact; then
   chmod 700 "$artifact_root"
   artifact_socket="$artifact_root/control.sock"
   artifact_source="$artifact_root/release-readiness.md"
-  cp assets/app-icon.png "$artifact_root/satin-icon.png"
+  # The page shows an image at its own size.
+  /usr/bin/sips -z 176 176 assets/app-icon.png --out "$artifact_root/satin-icon.png" >/dev/null
   cat >"$artifact_source" <<'MARKDOWN'
 # Satin release readiness
 
@@ -488,22 +489,22 @@ together without embedding a browser.
 | Terminal | Pass | libghostty-vt |
 
 ```sh
-satin artifact add --kind markdown --title "Release readiness" \
+satin page add --kind markdown --title "Release readiness" \
   --file release-readiness.md
-satin artifact show "$id"
+satin page show "$id"
 ```
 
 ![Current Satin icon](satin-icon.png)
 MARKDOWN
 
-  "$cli" --socket "$artifact_socket" artifact policy set \
+  "$cli" --socket "$artifact_socket" page policy set \
     --max-columns 80 --max-rows 32 --language en-US --overflow compact >/dev/null
-  artifact_registration="$("$cli" --socket "$artifact_socket" --json artifact add \
+  artifact_registration="$("$cli" --socket "$artifact_socket" --json page add \
     --kind markdown --title "Satin release readiness" --language en-US \
     --file "$artifact_source")"
   artifact_id="$(jq -r '.result.id' <<<"$artifact_registration")"
 
-  launch_demo_app "$artifact_root" artifact
+  launch_demo_app "$artifact_root" artifact NO rail,rail
   artifact_pane="$("$cli" --socket "$artifact_socket" --json list | jq -r '.result.panes[0].id')"
   printf -v artifact_intro 'source %q' "$work_root/review.zsh"
   "$cli" --socket "$artifact_socket" send --pane "$artifact_pane" "$artifact_intro" >/dev/null
@@ -513,14 +514,14 @@ MARKDOWN
   raw_artifact="$demo_root/satin-artifact-demo.mov"
   record_window "$artifact_window_id" 16 "$raw_artifact"
   sleep 3
-  "$cli" --socket "$artifact_socket" artifact show --pane "$artifact_pane" "$artifact_id" \
+  "$cli" --socket "$artifact_socket" page show --pane "$artifact_pane" "$artifact_id" \
     >/dev/null
   sleep 6
   printf '\nUpdated after the final native smoke passed.\n' >>"$artifact_source"
-  "$cli" --socket "$artifact_socket" artifact add --id "$artifact_id" \
+  "$cli" --socket "$artifact_socket" page add --id "$artifact_id" \
     --kind markdown --title "Satin release readiness" --language en-US \
     --file "$artifact_source" >/dev/null
-  "$cli" --socket "$artifact_socket" artifact show --pane "$artifact_pane" "$artifact_id" \
+  "$cli" --socket "$artifact_socket" page show --pane "$artifact_pane" "$artifact_id" \
     >/dev/null
   finish_recording "$raw_artifact"
   cleanup_processes
@@ -687,6 +688,24 @@ if wants sidebars; then
       git -C "$side_workspace" commit -qm "$subject"
   done
 
+  # What the agent says it wrote is there to be opened from the sidebar.
+  mkdir -p "$side_workspace/src/db" "$side_workspace/docs"
+  printf '%s\n' 'create index visits_user_id on visits (user_id);' \
+    >"$side_workspace/src/db/visits.sql"
+  cat >"$side_workspace/docs/visits-plan.md" <<'MARKDOWN'
+# Visits per user
+
+Count visits per user, newest first, and keep the chart query fast.
+
+| Step | State |
+| --- | --- |
+| Index `visits.user_id` | done |
+| Chart query under 50 ms | next |
+
+- The index makes the per-user count a range scan.
+- The chart reads one row per day.
+MARKDOWN
+
   # The agent pane writes what the items sidebar picks up, one step each time
   # the recipe presses Enter in it: files it touched, a command to run and a
   # quote, then a link and a failing line. Then the pane is a shell again.
@@ -695,7 +714,8 @@ printf '\033[2J\033[H'
 printf '\033[1;38;2;206;180;255m  agent · api\033[0m\n\n'
 printf '\033[1;36m●\033[0m Read(src/routes/users.ts)\n'
 printf '\033[1;36m●\033[0m Update(src/db/visits.sql)\n'
-printf '  \033[2m⎿  Added an index on visits.user_id\033[0m\n\n'
+printf '  \033[2m⎿  Added an index on visits.user_id\033[0m\n'
+printf '\033[1;36m●\033[0m Write(docs/visits-plan.md)\n\n'
 IFS= read -r _
 printf '\033[1;36m●\033[0m Check the history first:\n'
 printf '  \033[1;35m!\033[0m git log --oneline -3\n\n'
@@ -768,7 +788,7 @@ ZSH
 
   side_window_id="$(tr -d '[:space:]' <"$side_root/window-id")"
   raw_side="$demo_root/satin-sidebars-demo.mov"
-  record_window "$side_window_id" 26 "$raw_side"
+  record_window "$side_window_id" 30 "$raw_side"
   sleep 1.4
   : >"$side_root/ready.result.right"
   sleep 1.2
@@ -790,6 +810,12 @@ ZSH
   sleep 1.6
   : >"$side_root/ready.result.copylink"
   sleep 1.6
+  # A click on a file shows it in the sidebar: Markdown as a page.
+  printf '%s\n' docs/visits-plan.md >"$side_root/ready.result.openfile.tmp"
+  mv -f "$side_root/ready.result.openfile.tmp" "$side_root/ready.result.openfile"
+  sleep 2.8
+  : >"$side_root/ready.result.closefile"
+  sleep 0.8
   side status set --pane "$side_agent" waiting "Apply the migration?" >/dev/null
   sleep 0.6
   # Every tab's items, then Command-J plays the foil card: the agent that has
