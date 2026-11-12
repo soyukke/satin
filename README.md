@@ -48,7 +48,9 @@ and changes across the workspace.
 - A real PTY and `libghostty-vt`-backed terminal core, with AppKit owning the
   macOS window, menus, tabs, pane layout, settings, and input translation.
 - Neovide-style animated cursor movement and retained smooth scrolling,
-  designed to feel good, look good, and make movement easier to follow.
+  designed to feel good, look good, and make movement easier to follow. The
+  animation and the native Neovim renderer adapt code from
+  [Neovide](https://github.com/neovide/neovide).
 - A unified native Neovim UI backed by `nvim --embed`, `ext_multigrid`, and the
   same CoreText/CoreGraphics renderer, presented through Metal, whether it is
   opened from the shell or Command-N.
@@ -215,6 +217,8 @@ plugin to install.
 
 - Apple Silicon Mac
 - macOS 14 or newer
+- [Neovim](https://neovim.io) on your `PATH`, for the native Neovim panes.
+  Satin draws Neovim's UI itself and does not bundle Neovim.
 
 Intel Macs are not supported.
 
@@ -429,7 +433,12 @@ checks. Community participation is governed by the
 ## License
 
 The Satin source is available under the [MIT License](LICENSE),
-copyright © 2026 soyukke. Adapted code, bundled fonts, and other third-party
+copyright © 2026 soyukke. Satin builds on other people's work: the native
+Neovim rendering model, its scroll and cursor animation, and its font shaping
+and cache are adapted from [Neovide](https://github.com/neovide/neovide), and
+terminal emulation is `libghostty-vt` from
+[Ghostty](https://github.com/ghostty-org/ghostty); both are MIT licensed.
+Adapted code, bundled fonts, and other third-party
 components remain under their respective licenses as documented in
 [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md). Release bundles include
 these notices and the full font license under `Contents/Resources/Legal/`;
