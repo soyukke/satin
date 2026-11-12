@@ -122,7 +122,9 @@ pub fn (self: &Frame) row_end(row: i64) -> i64 {
 }
 
 /// Appends the frame's text to out, one line a row, each without its
-/// trailing blanks.
+/// trailing blanks. A cell nothing was written in reads as a blank, as it
+/// shows: a program that moves the cursor over the gaps between its words
+/// still has them apart here. The right half of a wide character is no gap.
 pub fn (self: &Frame) screen_text(allocator: Allocator, out: &var string::String) -> mem::Error!void {
     let cells = self.cells.as_slice();
     let text = self.text.as_bytes();
@@ -130,21 +132,57 @@ pub fn (self: &Frame) screen_text(allocator: Allocator, out: &var string::String
         if row > 0 {
             try out.append_byte(allocator, 10);
         }
-        let start = self.row_start(row);
-        let end = self.row_end(row);
-        if end <= start {
-            continue;
+        var blanks: i64 = 0;
+        var after_wide = false;
+        for self.row_start(row)..self.row_end(row) |index| {
+            let cell = cells[index];
+            if cell.text_len == 0 {
+                if !after_wide {
+                    blanks = blanks + 1;
+                }
+                after_wide = false;
+                continue;
+            }
+            let piece = text[cell.text_start..cell.text_start + cell.text_len];
+            after_wide = false;
+            if cell.text_len == 1 and cast<i64>(piece[0]) <= 32 {
+                blanks = blanks + 1;
+                continue;
+            }
+            for 0..blanks |_| {
+                try out.append_byte(allocator, 32);
+            }
+            blanks = 0;
+            try out.append_bytes(allocator, piece);
+            after_wide = is_wide_scalar(decode_scalar(piece, 0).value);
         }
-        let first = cells[start];
-        let last = cells[end - 1];
-        let line = text[first.text_start..last.text_start + last.text_len];
-        var length = mem::len(line);
-        while length > 0 and cast<i64>(line[length - 1]) <= 32 {
-            length = length - 1;
-        }
-        try out.append_bytes(allocator, line[0..length]);
     }
     return;
+}
+
+fn in_span(scalar: i64, first: i64, last: i64) -> bool {
+    return scalar >= first and scalar <= last;
+}
+
+/// East Asian Wide and Fullwidth scalars, and the emoji that present as
+/// emoji: the ones a terminal gives two cells.
+pub fn is_wide_scalar(scalar: i64) -> bool {
+    if scalar < 4352 {
+        return false;
+    }
+    return in_span(scalar, 4352, 4447) or in_span(scalar, 11904, 12350) or in_span(scalar, 12353, 13311) or
+        in_span(scalar, 13312, 19903) or
+        in_span(scalar, 19968, 42191) or
+        in_span(scalar, 43360, 43388) or
+        in_span(scalar, 44032, 55203) or
+        in_span(scalar, 63744, 64255) or
+        in_span(scalar, 65072, 65103) or
+        in_span(scalar, 65281, 65376) or
+        in_span(scalar, 65504, 65510) or
+        in_span(scalar, 127744, 128591) or
+        in_span(scalar, 128640, 128767) or
+        in_span(scalar, 129280, 129791) or
+        in_span(scalar, 131072, 262141);
 }
 
 fn render_data_color_background() -> i32 {
