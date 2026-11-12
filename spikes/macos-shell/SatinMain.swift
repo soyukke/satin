@@ -88,6 +88,7 @@ struct SatinApplication {
                 ("paste failure", runNativePasteFailureSelfTests),
                 ("sidebar model", runNativeSidebarModelSelfTests),
                 ("sidebar file", runNativeSidebarFileSelfTests),
+                ("tmux pane growth", runNativeTmuxPaneGrowthSelfTests),
                 ("terminal shift selection", runTerminalShiftSelectionSelfTests),
             ]
             for test in tests where !test.run() {
