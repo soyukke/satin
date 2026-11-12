@@ -25,10 +25,14 @@ extension TerminalShellViewController {
     }
 
     /// The strongest badge the shells of a tab's panes earn. A pane an agent
-    /// reported from during its command shows the agent's status instead.
+    /// reported from during its command shows the agent's status instead,
+    /// and a pane showing the native Neovim earns none.
     func shellCommandBadge(_ panes: [Int]) -> NativeTabStatusBadge? {
         panes.compactMap { paneId in
-            agentReported(paneId: paneId) ? nil : shellCommands.badge(for: paneId)
+            nativeShellCommandMarksTab(
+                agentReported: agentReported(paneId: paneId),
+                mode: paneStore.runtimes[paneId]?.kind)
+                ? shellCommands.badge(for: paneId) : nil
         }.max { $0.rawValue < $1.rawValue }
     }
 

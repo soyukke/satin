@@ -147,7 +147,21 @@ final class NativeShellCommandStore {
     }
 }
 
+/// Whether a pane's shell command may mark its tab. It may not when an agent
+/// spoke for the pane, whose status says more, nor when the pane shows the
+/// native Neovim: like a full-screen program, an editor that is open is not
+/// work that will finish.
+func nativeShellCommandMarksTab(agentReported: Bool, mode: NativePaneMode?) -> Bool {
+    !agentReported && mode != .neovim
+}
+
 func runNativeShellCommandStatusSelfTests() -> Bool {
+    guard nativeShellCommandMarksTab(agentReported: false, mode: .terminal),
+        nativeShellCommandMarksTab(agentReported: false, mode: nil),
+        !nativeShellCommandMarksTab(agentReported: true, mode: .terminal),
+        !nativeShellCommandMarksTab(agentReported: false, mode: .neovim)
+    else { return false }
+
     let store = NativeShellCommandStore()
     let start = Date(timeIntervalSince1970: 1000)
     func at(_ seconds: TimeInterval) -> Date { start.addingTimeInterval(seconds) }
