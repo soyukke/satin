@@ -5,6 +5,7 @@ import AppKit
 /// gives its place back to the tab bar.
 extension TerminalShellViewController {
     private static let windowsSidebarKey = "SatinWindowsSidebar"
+    private static let windowsSidebarWidthKey = "SatinWindowsSidebarWidth"
     private static let itemsSidebarKey = "SatinItemsSidebar"
     private static let itemsSidebarWidthKey = "SatinItemsSidebarWidth"
     private static let scanInterval: TimeInterval = 1.5
@@ -77,6 +78,12 @@ extension TerminalShellViewController {
         windowsSidebar.onFold = { [weak self] in
             self?.toggleWindowsSidebar(nil)
         }
+        windowsSidebar.onResize = { [weak self] width, ended in
+            self?.resizeWindowsSidebar(to: width, ended: ended)
+        }
+        windowsSidebar.onResetWidth = { [weak self] in
+            self?.resizeWindowsSidebar(to: nil, ended: true)
+        }
         itemsSidebar.onOpenPage = { [weak self] page in
             self?.openPage(page)
         }
@@ -104,14 +111,46 @@ extension TerminalShellViewController {
         }
     }
 
+    /// The width a sidebar was left at, if a drag left it at one.
+    private static func savedWidth(_ key: String) -> CGFloat? {
+        guard smokeSidebars == nil else {
+            return nil
+        }
+        return (UserDefaults.standard.object(forKey: key) as? Double).map { CGFloat($0) }
+    }
+
+    /// Keeps the width a drag ended at, or forgets it for the sidebar's own.
+    private static func saveWidth(_ width: CGFloat?, key: String) {
+        guard smokeSidebars == nil else {
+            return
+        }
+        if let width {
+            UserDefaults.standard.set(Double(width), forKey: key)
+        } else {
+            UserDefaults.standard.removeObject(forKey: key)
+        }
+    }
+
+    /// The width the windows sidebar takes, open: the one a drag is asking
+    /// for or last left, kept within the window.
+    var windowsSidebarOpenWidth: CGFloat {
+        let least = NativeWindowsSidebarView.minWidth
+        let wanted =
+            windowsSidebarDragWidth ?? Self.savedWidth(Self.windowsSidebarWidthKey)
+            ?? NativeWindowsSidebarView.openWidth
+        // Before the window has a size there is nothing to keep within.
+        guard view.bounds.width > 0 else {
+            return max(least, wanted)
+        }
+        let items = itemsSidebarMode == .off ? 0 : itemsSidebarWidth?.constant ?? 0
+        return nativeSidebarWidth(wanted: wanted, least: least, room: view.bounds.width - items)
+    }
+
     /// The width the items sidebar takes, open: the one a drag is asking
     /// for or last left, kept within the window.
     var itemsSidebarOpenWidth: CGFloat {
-        let saved =
-            Self.smokeSidebars == nil
-            ? UserDefaults.standard.object(forKey: Self.itemsSidebarWidthKey) as? Double : nil
         let wanted =
-            itemsSidebarDragWidth ?? saved.map { CGFloat($0) }
+            itemsSidebarDragWidth ?? Self.savedWidth(Self.itemsSidebarWidthKey)
             ?? NativeItemsSidebarView.openWidth
         // Before the window has a size there is nothing to keep within.
         guard view.bounds.width > 0 else {
@@ -121,35 +160,79 @@ extension TerminalShellViewController {
             wanted: wanted, room: view.bounds.width - (windowsSidebarWidth?.constant ?? 0))
     }
 
-    /// Follows a drag on the sidebar's inner edge, and keeps the width the
-    /// drag ends at. No width gives the sidebar its own back.
-    func resizeItemsSidebar(to width: CGFloat?, ended: Bool) {
-        guard itemsSidebarMode == .open else {
+    /// Follows a drag on the windows sidebar's inner edge: it folds to its
+    /// rail once dragged nearly that narrow, opens when dragged back out,
+    /// and keeps the width the drag ends at. No width gives the sidebar its
+    /// own back.
+    func resizeWindowsSidebar(to width: CGFloat?, ended: Bool) {
+        guard windowsSidebarMode != .off else {
             return
         }
-        itemsSidebarDragWidth = width
-        let shown = itemsSidebarOpenWidth
-        if ended, Self.smokeSidebars == nil {
-            if width == nil {
-                UserDefaults.standard.removeObject(forKey: Self.itemsSidebarWidthKey)
-            } else {
-                UserDefaults.standard.set(Double(shown), forKey: Self.itemsSidebarWidthKey)
-            }
-            itemsSidebarDragWidth = nil
+        let mode =
+            width.map {
+                nativeSidebarDragMode(
+                    wanted: $0, rail: NativeWindowsSidebarView.railWidth,
+                    least: NativeWindowsSidebarView.minWidth)
+            } ?? windowsSidebarMode
+        windowsSidebarDragWidth = mode == .open ? width : nil
+        if mode == .open, ended {
+            Self.saveWidth(
+                width == nil ? nil : windowsSidebarOpenWidth, key: Self.windowsSidebarWidthKey)
         }
-        itemsSidebarWidth?.constant = shown
-        view.needsLayout = true
+        if ended {
+            windowsSidebarDragWidth = nil
+        }
+        if mode != windowsSidebarMode {
+            windowsSidebarMode = mode
+            applySidebarModes()
+        } else if mode == .open {
+            windowsSidebarWidth?.constant = windowsSidebarOpenWidth
+            view.needsLayout = true
+        }
     }
 
-    /// Narrows the open items sidebar when the window no longer has room
-    /// for the width it was left at, and widens it back when it does.
-    func fitItemsSidebarWidth() {
-        guard itemsSidebarMode == .open, let constraint = itemsSidebarWidth else {
+    /// The same for a drag on the items sidebar's inner edge.
+    func resizeItemsSidebar(to width: CGFloat?, ended: Bool) {
+        guard itemsSidebarMode != .off else {
             return
         }
-        let width = itemsSidebarOpenWidth
-        if abs(constraint.constant - width) > 0.5 {
-            constraint.constant = width
+        let mode =
+            width.map {
+                nativeSidebarDragMode(
+                    wanted: $0, rail: NativeItemsSidebarView.railWidth,
+                    least: NativeItemsSidebarView.minWidth)
+            } ?? itemsSidebarMode
+        itemsSidebarDragWidth = mode == .open ? width : nil
+        if mode == .open, ended {
+            Self.saveWidth(
+                width == nil ? nil : itemsSidebarOpenWidth, key: Self.itemsSidebarWidthKey)
+        }
+        if ended {
+            itemsSidebarDragWidth = nil
+        }
+        if mode != itemsSidebarMode {
+            itemsSidebarMode = mode
+            applySidebarModes()
+        } else if mode == .open {
+            itemsSidebarWidth?.constant = itemsSidebarOpenWidth
+            view.needsLayout = true
+        }
+    }
+
+    /// Narrows an open sidebar when the window no longer has room for the
+    /// width it was left at, and widens it back when it does.
+    func fitSidebarWidths() {
+        if windowsSidebarMode == .open, let constraint = windowsSidebarWidth {
+            let width = windowsSidebarOpenWidth
+            if abs(constraint.constant - width) > 0.5 {
+                constraint.constant = width
+            }
+        }
+        if itemsSidebarMode == .open, let constraint = itemsSidebarWidth {
+            let width = itemsSidebarOpenWidth
+            if abs(constraint.constant - width) > 0.5 {
+                constraint.constant = width
+            }
         }
     }
 
@@ -163,8 +246,7 @@ extension TerminalShellViewController {
         windowsSidebar.isHidden = left == .off
         itemsSidebar.isHidden = right == .off
         windowsSidebarWidth?.constant = Self.width(
-            left, open: NativeWindowsSidebarView.openWidth,
-            rail: NativeWindowsSidebarView.railWidth)
+            left, open: windowsSidebarOpenWidth, rail: NativeWindowsSidebarView.railWidth)
         itemsSidebarWidth?.constant = Self.width(
             right, open: itemsSidebarOpenWidth, rail: NativeItemsSidebarView.railWidth)
         tabStripView.isHidden = left != .off
@@ -231,7 +313,8 @@ extension TerminalShellViewController {
             screenLine: { [sidebarScreenLines] in sidebarScreenLines[$0] },
             nextPaneId: currentAttentionHand().cards.first?.paneId
         )
-        windowsSidebar.update(rows: rows, sessionName: tmuxSession?.sessionName ?? "local")
+        windowsSidebar.update(
+            rows: windowIdleOrder.mark(rows), sessionName: tmuxSession?.sessionName ?? "local")
     }
 
     func refreshItemsSidebar() {

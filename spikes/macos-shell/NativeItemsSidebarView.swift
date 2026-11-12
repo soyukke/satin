@@ -47,7 +47,7 @@ final class NativeItemsSidebarView: NSView {
         symbolName: "chevron.left", title: "Back to the Items")
     private let appButton = NativeHoverIconButton(
         symbolName: "arrow.up.forward.square", title: "Open in Its App")
-    private let grip = NativeSidebarResizeGrip(frame: .zero)
+    private let grip = NativeSidebarResizeGrip(onLeft: false, label: "Resize the Items Sidebar")
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -173,7 +173,6 @@ final class NativeItemsSidebarView: NSView {
         appButton.isHidden = !reading
         scroll.isHidden = reading
         scopeChip.isHidden = reading || mode != .open
-        grip.isHidden = mode != .open
         setAccessibilityLabel(file.map { "Items, showing \($0.url.lastPathComponent)" } ?? "Items")
         needsLayout = true
         needsDisplay = true
@@ -233,10 +232,13 @@ final class NativeItemsSidebarView: NSView {
         let width = bounds.width
         headings = []
         grip.frame = NSRect(x: 0, y: 0, width: NativeSidebarResizeGrip.width, height: bounds.height)
+        // Open or folded, the button stays where the pointer left it.
+        foldButton.frame = NSRect(
+            x: width - (Self.railWidth + 24) / 2, y: bounds.height - Self.footer + 6,
+            width: 24, height: 24)
         guard mode == .open else {
-            foldButton.frame = NSRect(x: (width - 24) / 2, y: 9, width: 24, height: 24)
             scroll.frame = NSRect(
-                x: 0, y: Self.header, width: width, height: max(0, bounds.height - Self.header))
+                x: 0, y: 0, width: width, height: max(0, bounds.height - Self.footer))
             var y: CGFloat = 8
             for view in content {
                 view.frame = NSRect(x: 0, y: y, width: width, height: NativeItemsRailButton.height)
@@ -246,8 +248,6 @@ final class NativeItemsSidebarView: NSView {
             return
         }
         scopeChip.frame = NSRect(x: width - 12 - 74, y: 11, width: 74, height: 20)
-        foldButton.frame = NSRect(
-            x: width - 34, y: bounds.height - Self.footer + 6, width: 24, height: 24)
         scroll.frame = NSRect(
             x: 0, y: Self.header, width: width,
             height: max(0, bounds.height - Self.header - Self.footer))

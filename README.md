@@ -127,7 +127,7 @@ saved. With the hand off, `Command-J` cycles through the waiting panes.
 The sidebars are experimental. The windows sidebar on the left lists every
 tab as a one-line row, under a heading for its state:
 needs you (waiting or failed, the longest wait first), running, done, and
-idle. A row shows a gem in that state's color, how long it has been so, and a
+idle (the tab that went idle last first). A row shows a gem in that state's color, how long it has been so, and a
 hairline gauge for how long it has waited; the line the tab last printed or
 its agent last said is in its tooltip. The
 row `Command-J` plays next carries a foil. Click a row to go to its tab,
@@ -147,14 +147,16 @@ Markdown (`.md`, `.markdown`), drawn as a page; an image (`.png`, `.jpg`,
 `.gif`, `.webp`, `.svg`); or any other file that reads as text, such as source
 code, shown as it is. It is drawn again when the file changes, and the arrow at
 its top hands it to its app. A long path an agent broke across two rows is read
-as one. Drag the sidebar's
-inner edge to make it wider or narrower, and double-click the edge for its own
-width. On a command or a quote a click copies the
+as one. On a command or a quote a click copies the
 cleaned text, and `Option`-click pastes any item into the focused pane. Switch between this tab and every tab at the top. While it is open the
 unread pages stay here instead of fanning out over the panes.
 
 `Command-B` and `Option-Command-B` fold each sidebar to a rail of gems or of
-counts and open it again. View › Tab Bar Instead of Windows Sidebar brings the
+counts and open it again; so does the button at each sidebar's foot, which
+stays in one place open or folded. Drag a sidebar's inner edge to make it
+wider or narrower: dragged nearly as narrow as its rail it folds, dragged back
+out of the rail it opens, and a double-click on the edge gives it its own
+width back. View › Tab Bar Instead of Windows Sidebar brings the
 tab strip back.
 
 <p align="center">

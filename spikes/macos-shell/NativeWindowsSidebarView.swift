@@ -6,6 +6,8 @@ import QuartzCore
 /// table too. Folded, it is a rail of gems with a rule between the states.
 final class NativeWindowsSidebarView: NSView {
     static let openWidth: CGFloat = 264
+    /// The narrowest a drag leaves it.
+    static let minWidth: CGFloat = 200
     static let railWidth: CGFloat = 52
     private static let header: CGFloat = 40
     private static let footer: CGFloat = 36
@@ -15,6 +17,10 @@ final class NativeWindowsSidebarView: NSView {
     var tabMenu: ((Int) -> NSMenu?)?
     var onNewTab: (() -> Void)?
     var onFold: (() -> Void)?
+    /// A drag on the inner edge: the width asked for, and whether the drag
+    /// has ended.
+    var onResize: ((CGFloat, Bool) -> Void)?
+    var onResetWidth: (() -> Void)?
     /// Asked for the sessions, with the button to show them under.
     var onSessions: ((NSView) -> Void)?
 
@@ -32,6 +38,7 @@ final class NativeWindowsSidebarView: NSView {
     private var cards: [NativeWindowCardView] = []
     private var gems: [NativeWindowGemView] = []
     private var clock: Timer?
+    private let grip = NativeSidebarResizeGrip(onLeft: true, label: "Resize the Windows Sidebar")
     /// Whether each tab shows its ⌘ digit. The cards keep their order by
     /// state, so the digits, which go by tab, are not their places.
     var showsShortcuts = false {
@@ -63,6 +70,9 @@ final class NativeWindowsSidebarView: NSView {
             self.onSessions?(self.sessionButton)
         }
         addSubview(sessionButton)
+        grip.onDrag = { [weak self] width, ended in self?.onResize?(width, ended) }
+        grip.onReset = { [weak self] in self?.onResetWidth?() }
+        addSubview(grip)
         document.drawing = { [weak self] in
             self?.drawGroups()
         }
@@ -169,13 +179,20 @@ final class NativeWindowsSidebarView: NSView {
     override func layout() {
         super.layout()
         let width = bounds.width
+        grip.frame = NSRect(
+            x: width - NativeSidebarResizeGrip.width, y: 0, width: NativeSidebarResizeGrip.width,
+            height: bounds.height)
+        // Open or folded, the button stays where the pointer left it.
+        foldButton.frame = NSRect(
+            x: (Self.railWidth - 24) / 2, y: bounds.height - Self.footer + 6, width: 24,
+            height: 24)
         if mode == .open {
             newTabButton.frame = NSRect(x: width - 36, y: 9, width: 24, height: 24)
-            let chipWidth = min(130, sessionButton.fittingWidth)
+            // Narrower than its own width, the sidebar keeps the chip off
+            // the heading.
+            let chipWidth = min(130, sessionButton.fittingWidth, max(48, width - 134))
             sessionButton.frame = NSRect(
                 x: width - 42 - chipWidth, y: 9, width: chipWidth, height: 24)
-            foldButton.frame = NSRect(
-                x: 10, y: bounds.height - Self.footer + 6, width: 24, height: 24)
             scroll.frame = NSRect(
                 x: 0, y: Self.header, width: width,
                 height: max(0, bounds.height - Self.header - Self.footer))
@@ -195,10 +212,8 @@ final class NativeWindowsSidebarView: NSView {
             document.frame = NSRect(x: 0, y: 0, width: width, height: y)
             document.needsDisplay = true
         } else {
-            foldButton.frame = NSRect(x: (width - 24) / 2, y: 9, width: 24, height: 24)
             scroll.frame = NSRect(
-                x: 0, y: Self.header, width: width,
-                height: max(0, bounds.height - Self.header))
+                x: 0, y: 0, width: width, height: max(0, bounds.height - Self.footer))
             var y: CGFloat = 4
             var next = gems.makeIterator()
             rules = []
