@@ -133,6 +133,15 @@ struct NativeWindowIdleOrder {
     }
 }
 
+/// Where the attention hand reaches a tab's gem on the rail: on the hand's
+/// edge nearer the gem, at the gem's height, and no further than the hand
+/// goes. Both rectangles are in the hand's coordinates.
+func nativeHandRailPoint(gem: CGRect, hand: CGRect) -> CGPoint {
+    CGPoint(
+        x: gem.midX < hand.midX ? hand.minX : hand.maxX,
+        y: min(max(gem.midY, hand.minY), hand.maxY))
+}
+
 /// What a drag on a sidebar's inner edge leaves it as: folded once the
 /// width asked for is nearer the rail's than the narrowest it opens to.
 func nativeSidebarDragMode(wanted: CGFloat, rail: CGFloat, least: CGFloat) -> NativeSidebarMode {
@@ -603,6 +612,19 @@ func nativeHoldsOnlyCommand(_ flags: NSEvent.ModifierFlags) -> Bool {
 }
 
 func runNativeSidebarModelSelfTests() -> Bool {
+    // The hand reaches a gem left of it on its left edge, at the gem's
+    // height; a gem scrolled above the hand is reached at the hand's top.
+    let hand = CGRect(x: 0, y: 0, width: 900, height: 600)
+    guard
+        nativeHandRailPoint(gem: CGRect(x: -42, y: 500, width: 42, height: 40), hand: hand)
+            == CGPoint(x: 0, y: 520),
+        nativeHandRailPoint(gem: CGRect(x: -42, y: 640, width: 42, height: 40), hand: hand)
+            == CGPoint(x: 0, y: 600),
+        nativeHandRailPoint(gem: CGRect(x: 900, y: 100, width: 42, height: 40), hand: hand)
+            == CGPoint(x: 900, y: 120)
+    else {
+        return false
+    }
     let screen = """
         ● I added the sidebar. To see it with a page, run:
 
