@@ -181,18 +181,6 @@ The Work Switcher is experimental. Open it with `Command-P` to find tabs and
 panes by title, directory, tmux session, or agent status while previewing the
 selected pane's current screen.
 
-<p align="center">
-  <a href="assets/satin-work-switcher-demo.mp4">
-    <img src="assets/satin-work-switcher-demo.gif" width="880"
-      alt="Satin Work Switcher showing live status for projected tmux panes">
-  </a>
-</p>
-
-<p align="center">
-  <sub>Projected tmux panes report waiting, running, and done states without
-  scraping terminal text. Click for the 16-second MP4.</sub>
-</p>
-
 ### AI pages
 
 Pages are experimental. Ask a terminal AI to use Satin's embedded skill and

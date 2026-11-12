@@ -1,11 +1,9 @@
 # README demo media
 
-The README embeds five short GIF previews and links each one to an H.264 MP4:
+The README embeds four short GIF previews and links each one to an H.264 MP4:
 
 - `assets/satin-demo.*` shows terminal cursor input, a native pane split, and
   native Neovim cursor and Ctrl-D/Ctrl-U scroll animation.
-- `assets/satin-work-switcher-demo.*` shows projected tmux panes reporting live
-  agent status in the experimental Work Switcher.
 - `assets/satin-artifact-demo.*` shows a versioned Markdown page opening and
   refreshing in the window-scoped sidebar.
 - `assets/satin-attention-hand-demo.*` shows four agents asking for attention,
@@ -45,16 +43,14 @@ signature. Allow it once under System Settings → Privacy & Security → Screen
 System Audio Recording; the grant survives rebuilds. The identity stays on your
 machine and is not recorded anywhere in the repository.
 
-The recipe builds an isolated `Satin Dev.app`, creates temporary tmux and
-artifact stores, and records
+The recipe builds an isolated `Satin Dev.app`, creates temporary page
+stores, and records
 only that app's windows through ScreenCaptureKit at the display's native frame
 rate without audio. Other applications remain excluded even if they move in
-front during recording. The Work Switcher scene extends its black capture canvas
-to keep the real toolbar-anchored popover visible. The attention hand and
+front during recording. The attention hand and
 sidebars scenes turn the hand on for their own windows only. The sidebars
-scene opens the sidebars, the attention hand scene records with the tab bar
-in their place, and the other scenes fold both to their rails, whatever your
-Satin Dev preferences say. The recipe replaces the chosen scenes'
+scene opens the sidebars and the other scenes fold both to their rails,
+whatever your Satin Dev preferences say. The recipe replaces the chosen scenes'
 MP4, GIF, and poster only after every capture decodes successfully and does
 not open macOS's interactive screenshot/recording mode. The terminal and Git
 fixtures are generated under a private temporary directory; they contain no
@@ -71,7 +67,7 @@ To record only some scenes, name them; the other assets stay as they are:
 SATIN_ALLOW_SCREEN_CAPTURE=1 SATIN_README_DEMO_SCENES=sidebars just readme-demo
 ```
 
-The scenes are `main`, `work-switcher`, `artifact`, `hand`, and `sidebars`. The
+The scenes are `main`, `artifact`, `hand`, and `sidebars`. The
 sidebars scene copies a command and a link, so it replaces the clipboard.
 
 ## Rehearse

@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Run inside tmux, the tmux command and the application would reach the
-# server of that session.
+# Run inside tmux, the application would reach the server of that session.
 unset TMUX TMUX_PANE
 
 # SATIN_README_DEMO_SCENES picks the scenes to record; the others keep
@@ -10,7 +9,7 @@ unset TMUX TMUX_PANE
 # in-app stills every two seconds instead of recording anything, so it needs
 # no screen capture and may run inside Satin. The stills miss the panes'
 # Metal text but show every AppKit view around them.
-all_scenes="main work-switcher artifact hand sidebars"
+all_scenes="main artifact hand sidebars"
 scenes=" ${SATIN_README_DEMO_SCENES:-$all_scenes} "
 dry_run="${SATIN_README_DEMO_DRY_RUN:-}"
 for scene in $scenes; do
@@ -41,7 +40,7 @@ if [[ -z "${IN_NIX_SHELL:-}" ]]; then
   exec nix develop --command ./scripts/readme-demo "$@"
 fi
 
-for executable in ffmpeg ffprobe git jq tmux; do
+for executable in ffmpeg ffprobe git jq; do
   if ! command -v "$executable" >/dev/null; then
     echo "readme-demo requires $executable from the Nix shell" >&2
     exit 69
@@ -62,7 +61,6 @@ fi
 demo_root="$(mktemp -d "${TMPDIR:-/tmp}/satin-readme-demo.XXXXXX")"
 app_pid=""
 capture_pid=""
-tmux_socket=""
 current_result=""
 current_scene=""
 
@@ -77,10 +75,6 @@ cleanup_processes() {
     wait "$app_pid" 2>/dev/null || true
   fi
   app_pid=""
-  if [[ -n "$tmux_socket" ]]; then
-    tmux -S "$tmux_socket" kill-server 2>/dev/null || true
-  fi
-  tmux_socket=""
 }
 
 cleanup() {
@@ -193,26 +187,6 @@ type_into_pane() {
       "$cli" --socket "$socket" send --pane "$pane" - >/dev/null
     sleep "$delay"
   done
-}
-
-wait_for_tmux_projection() {
-  local socket=$1
-  local state
-  for _ in {1..200}; do
-    state="$("$cli" --socket "$socket" --json list 2>/dev/null || true)"
-    if jq -e '
-      .ok == true
-        and (.result.panes | length) == 2
-        and any(.result.panes[]; .status.status == "running")
-        and any(.result.panes[]; .status.status == "waiting")
-    ' <<<"$state" >/dev/null 2>&1; then
-      printf '%s' "$state"
-      return 0
-    fi
-    sleep 0.05
-  done
-  echo "readme-demo tmux projection or agent status did not settle" >&2
-  return 1
 }
 
 record_window() {
@@ -387,10 +361,9 @@ TS
   cleanup_processes
 fi
 
-work_root="$demo_root/work-switcher"
+work_root="$demo_root/review"
 mkdir -p "$work_root"
 chmod 700 "$work_root"
-tmux_session="satin-work-switcher"
 
 # The artifact scene starts its pane with the same review prompt.
 cat >"$work_root/review.zsh" <<'ZSH'
@@ -399,7 +372,7 @@ printf '\033[1;38;2;206;180;255m  SATIN\033[0m  '
 printf '\033[38;2;126;231;214mnative AI workspace\033[0m\n'
 printf '\033[38;2;112;199;255m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m\n\n'
 printf '  \033[1;36m●\033[0m  reviewing retained renderer changes\n'
-printf '  \033[2mstatus is routed from the tmux pane title\033[0m\n\n'
+printf '  \033[2mthe report opens as a page beside the work\033[0m\n\n'
 printf '  \033[48;2;255;95;135m  \033[0m '
 printf '\033[48;2;255;189;89m  \033[0m '
 printf '\033[48;2;110;220;170m  \033[0m '
@@ -408,65 +381,6 @@ printf '\033[48;2;190;140;255m  \033[0m\n\n'
 printf '  \033[38;2;126;231;214msatin-demo\033[0m ❯ '
 IFS= read -r _
 ZSH
-
-if wants work-switcher; then
-  tmux_socket="$work_root/tmux.sock"
-  cat >"$work_root/checks.zsh" <<'ZSH'
-printf '\033[2J\033[H'
-printf '\033[1;38;2;206;180;255m  Release checks\033[0m\n'
-printf '\033[38;2;112;199;255m━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m\n\n'
-printf '  \033[1;32m✓\033[0m  core tests          214 passed\n'
-printf '  \033[1;32m✓\033[0m  native smoke       Metal\n'
-printf '  \033[1;33m●\033[0m  approval           requested\n\n'
-printf '  \033[2mprojected tmux window · shared-grid zoom\033[0m\n\n'
-printf '  \033[38;2;126;231;214msatin-demo\033[0m ❯ '
-IFS= read -r _
-ZSH
-
-  tmux -f /dev/null -S "$tmux_socket" new-session -d \
-    -s "$tmux_session" -n "AI workspace" -c /tmp -x 120 -y 36
-  tmux -S "$tmux_socket" split-window -h -t "$tmux_session:0" -c /tmp
-  printf -v review_command 'source %q' "$work_root/review.zsh"
-  printf -v checks_command 'source %q' "$work_root/checks.zsh"
-  tmux -S "$tmux_socket" send-keys -l -t "$tmux_session:0.0" "$review_command"
-  tmux -S "$tmux_socket" send-keys -t "$tmux_session:0.0" Enter
-  tmux -S "$tmux_socket" send-keys -l -t "$tmux_session:0.1" "$checks_command"
-  tmux -S "$tmux_socket" send-keys -t "$tmux_session:0.1" Enter
-  tmux -S "$tmux_socket" select-pane -t "$tmux_session:0.0" -T "⠹ Codex renderer review"
-  tmux -S "$tmux_socket" select-pane -t "$tmux_session:0.1" \
-    -T "[ ! ] Action Required | Claude Code"
-
-  launch_demo_app "$work_root" work-switcher NO rail,rail
-  work_socket="$work_root/control.sock"
-  initial_pane="$("$cli" --socket "$work_socket" --json list | jq -r '.result.panes[0].id')"
-  printf -v attach_command '%q -S %q -CC attach-session -t %q' \
-    "$(command -v tmux)" "$tmux_socket" "$tmux_session"
-  "$cli" --socket "$work_socket" send --pane "$initial_pane" "$attach_command" >/dev/null
-  "$cli" --socket "$work_socket" key --pane "$initial_pane" Enter >/dev/null
-  work_state="$(wait_for_tmux_projection "$work_socket")"
-  work_panes="$(jq -r '.result.panes[].id' <<<"$work_state" | sort -n)"
-  mapfile -t work_pane_ids <<<"$work_panes"
-  if [[ "${#work_pane_ids[@]}" -ne 2 ]]; then
-    echo "readme-demo expected two projected tmux panes" >&2
-    exit 1
-  fi
-
-  sleep 0.8
-  work_window_id="$(tr -d '[:space:]' <"$work_root/window-id")"
-  raw_work="$demo_root/satin-work-switcher-demo.mov"
-  record_window "$work_window_id" 16 "$raw_work" 240
-  sleep 3
-  : >"$work_root/ready.result.work"
-  wait_for_file "$work_root/ready.result.work-open" "the README Work Switcher"
-  if [[ "$(<"$work_root/ready.result.work-open")" != ok\ readme-demo* ]]; then
-    echo "readme-demo Work Switcher did not open" >&2
-    exit 1
-  fi
-  sleep 6
-  tmux -S "$tmux_socket" select-pane -t "$tmux_session:0.0" -T "Codex review complete"
-  finish_recording "$raw_work"
-  cleanup_processes
-fi
 
 if wants artifact; then
   artifact_root="$demo_root/artifact"
@@ -592,7 +506,7 @@ printf '\n  \033[1;36m●\033[0m  working…\n'
 IFS= read -r _
 ZSH
 
-  launch_demo_app "$hand_root" hand YES
+  launch_demo_app "$hand_root" hand YES rail,rail
   hand_socket="$hand_root/control.sock"
   hand() {
     "$cli" --socket "$hand_socket" "$@"
@@ -883,7 +797,6 @@ render_scene() {
   fi
 }
 render_scene main "${raw_main:-}" satin-demo 12
-render_scene work-switcher "${raw_work:-}" satin-work-switcher-demo 8
 render_scene artifact "${raw_artifact:-}" satin-artifact-demo 8
 render_scene hand "${raw_hand:-}" satin-attention-hand-demo 12
 render_scene sidebars "${raw_side:-}" satin-sidebars-demo 14
