@@ -101,6 +101,23 @@ test "reads the screen as lines without trailing blanks" {
     testing::expect(mem::equal_bytes(bytes[3..6], "c d"));
 }
 
+test "cells nothing was written in read as blanks between words" {
+    let allocator = mem::page_allocator();
+    // Words set apart by moving the cursor, a wide character before a
+    // narrow one, and a line that starts indented.
+    let frame = try collected(allocator, 12, 3, "ab^[1;5Hcd^[2;1Hあx^[2;6Hy^[3;3Hz");
+    defer frame.deinit(allocator);
+    var out = string::new(allocator);
+    defer out.deinit(allocator);
+    try frame.screen_text(allocator, &var out);
+    let bytes = out.as_bytes();
+    testing::expect(mem::len(bytes) == 18);
+    testing::expect(mem::starts_with(bytes, "ab  cd"));
+    testing::expect(mem::equal_bytes(bytes[7..14], "あx  y"));
+    testing::expect(mem::equal_bytes(bytes[15..18], "  z"));
+    testing::expect(bytes[6] == cast<u8>(10) and bytes[14] == cast<u8>(10));
+}
+
 test "text too close to what is under it is moved until it reads" {
     let cream = Color { r: 241, g: 234, b: 216 };
     let night = Color { r: 11, g: 9, b: 20 };

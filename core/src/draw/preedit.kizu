@@ -71,27 +71,6 @@ fn joins_previous(scalar: i64) -> bool {
         in_span(scalar, 917760, 917999);
 }
 
-/// East Asian Wide and Fullwidth scalars, and the emoji that present as
-/// emoji: the ones a terminal gives two cells.
-fn is_wide_scalar(scalar: i64) -> bool {
-    if scalar < 4352 {
-        return false;
-    }
-    return in_span(scalar, 4352, 4447) or in_span(scalar, 11904, 12350) or in_span(scalar, 12353, 13311) or
-        in_span(scalar, 13312, 19903) or
-        in_span(scalar, 19968, 42191) or
-        in_span(scalar, 43360, 43388) or
-        in_span(scalar, 44032, 55203) or
-        in_span(scalar, 63744, 64255) or
-        in_span(scalar, 65072, 65103) or
-        in_span(scalar, 65281, 65376) or
-        in_span(scalar, 65504, 65510) or
-        in_span(scalar, 127744, 128591) or
-        in_span(scalar, 128640, 128767) or
-        in_span(scalar, 129280, 129791) or
-        in_span(scalar, 131072, 262141);
-}
-
 /// Where the cluster that starts at index of text ends: after its first
 /// scalar, the scalars that join it, and whatever a zero width joiner ties
 /// on. cells is how many cells it takes, one at least.
@@ -99,7 +78,7 @@ fn cluster_end(text: []u8, index: i64, cells: &var i64) -> i64 {
     var scalar: i64 = 0;
     var end = index + read_scalar(text, index, &var scalar);
     cells = 1;
-    if is_wide_scalar(scalar) {
+    if term::is_wide_scalar(scalar) {
         cells = 2;
     }
     while end < mem::len(text) {
