@@ -22,9 +22,11 @@ final class NativeAttentionHandView: NSView {
     private static let allClearDuration: TimeInterval = 1.6
 
     var onSelect: ((NativeHandCard) -> Void)?
-    /// The middle of a tab in the tab strip, in this view's x coordinates.
-    /// Cards are dealt from under their tab and return there when played.
-    var tabMidX: ((Int) -> CGFloat?)?
+    /// Where a tab is, in this view's coordinates: under the middle of its
+    /// tab on the upper edge, or beside its gem on the edge the windows
+    /// sidebar's rail is at. Cards are dealt from their tab and return there
+    /// when played.
+    var tabPoint: ((Int) -> CGPoint?)?
     /// The screen of a pane, shown beside its card while the card is chosen.
     var previewText: ((Int) -> String?)?
     var onSelectionChange: ((NativeHandCard?) -> Void)?
@@ -258,7 +260,7 @@ final class NativeAttentionHandView: NSView {
     private func dealFromTab(_ slot: NativeHandSlotView) {
         guard !NativeHandEffects.reducesMotion, window != nil,
             let host = effectsHost.layer,
-            let x = tabMidX?(slot.cardView.card.tabId)
+            let tab = tabPoint?(slot.cardView.card.tabId)
         else {
             return
         }
@@ -268,7 +270,7 @@ final class NativeAttentionHandView: NSView {
         slot.cardView.frameCenterRotation = slot.restRotation
         NativeHandComet.fly(
             in: host,
-            from: CGPoint(x: x, y: bounds.maxY),
+            from: tab,
             to: CGPoint(
                 x: slot.restOrigin.x + size.width / 2,
                 y: slot.restOrigin.y + size.height * 0.72),
@@ -292,7 +294,7 @@ final class NativeAttentionHandView: NSView {
             return
         }
         let color = slot.cardView.color
-        let tabX = tabMidX?(slot.cardView.card.tabId)
+        let tab = tabPoint?(slot.cardView.card.tabId)
         let flyer = NativeHandFlyerView(
             frame: slot.frame, color: color, face: slot.cardView.snapshot())
         addSubview(flyer)
@@ -309,9 +311,13 @@ final class NativeAttentionHandView: NSView {
             },
             completionHandler: { [weak self] in
                 let target = arrive() ?? cover
-                if let self, let tabX, let host = self.effectsHost.layer {
+                if let self, let tab, let host = self.effectsHost.layer {
                     NativeHandComet.burst(
-                        in: host, at: CGPoint(x: tabX, y: self.bounds.maxY - 2), color: color)
+                        in: host,
+                        at: CGPoint(
+                            x: max(tab.x, self.bounds.minX + 2),
+                            y: min(tab.y, self.bounds.maxY - 2)),
+                        color: color)
                 }
                 let outline = flyer.takeOutline()
                 flyer.superview?.addSubview(outline, positioned: .above, relativeTo: flyer)
@@ -594,7 +600,7 @@ final class NativeAttentionHandView: NSView {
         let size = NativeHandCardView.size
         for slot in slots {
             let card = slot.cardView.card
-            guard raised, !sunk, slot.alphaValue > 0, let x = tabMidX?(card.tabId) else {
+            guard raised, !sunk, slot.alphaValue > 0, let tab = tabPoint?(card.tabId) else {
                 continue
             }
             live.insert(card.paneId)
@@ -610,7 +616,7 @@ final class NativeAttentionHandView: NSView {
                 from: CGPoint(
                     x: slot.restOrigin.x + size.width / 2,
                     y: slot.restOrigin.y + size.height - 6),
-                to: CGPoint(x: x, y: bounds.maxY))
+                to: tab)
             thread.strokeColor =
                 slot.cardView.color.withAlphaComponent(chosen ? 0.95 : 0.32).cgColor
             thread.lineWidth = chosen ? 2 : 1
