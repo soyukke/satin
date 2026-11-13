@@ -118,6 +118,22 @@ test "cells nothing was written in read as blanks between words" {
     testing::expect(bytes[6] == cast<u8>(10) and bytes[14] == cast<u8>(10));
 }
 
+test "a wide character is found from either of its cells" {
+    let allocator = mem::page_allocator();
+    let frame = try collected(allocator, 12, 2, "aあb");
+    defer frame.deinit(allocator);
+    testing::expect((frame.wide_start(1, 0) orelse -1) == 1);
+    testing::expect((frame.wide_start(2, 0) orelse -1) == 1);
+    // A narrow character, a cell nothing was written in, and cells off the
+    // screen hold none.
+    testing::expect((frame.wide_start(0, 0) orelse -1) == -1);
+    testing::expect((frame.wide_start(3, 0) orelse -1) == -1);
+    testing::expect((frame.wide_start(4, 0) orelse -1) == -1);
+    testing::expect((frame.wide_start(1, 1) orelse -1) == -1);
+    testing::expect((frame.wide_start(12, 0) orelse -1) == -1);
+    testing::expect((frame.wide_start(1, 2) orelse -1) == -1);
+}
+
 test "text too close to what is under it is moved until it reads" {
     let cream = Color { r: 241, g: 234, b: 216 };
     let night = Color { r: 11, g: 9, b: 20 };

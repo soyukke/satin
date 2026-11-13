@@ -64,12 +64,14 @@ pub struct ScrollHint {
     pub rows: i64,
 }
 
-/// The cursor in screen cells. grid is the grid it is in, whose window it
-/// scrolls with; cell_percentage is how much of the cell a bar or an
-/// underline covers, and the blink times are zero for a steady cursor.
+/// The cursor in screen cells. wide is set on a character two cells wide.
+/// grid is the grid it is in, whose window it scrolls with; cell_percentage
+/// is how much of the cell a bar or an underline covers, and the blink
+/// times are zero for a steady cursor.
 pub struct EditorCursor {
     pub x: i64,
     pub y: i64,
+    pub wide: bool,
     pub grid: i64,
     pub shape: term::CursorShape,
     pub cell_percentage: u8,
@@ -689,6 +691,7 @@ pub fn (self: &Editor) cursor() -> ?EditorCursor {
     return EditorCursor {
         x: math::min<i64>(left + self.cursor_col, 65535),
         y: math::min<i64>(top + self.cursor_row, 65535),
+        wide: self.cursor_on_wide(),
         grid: self.cursor_grid,
         shape: mode.shape,
         cell_percentage: mode.cell_percentage,
@@ -696,6 +699,19 @@ pub fn (self: &Editor) cursor() -> ?EditorCursor {
         blinkon_ms: mode.blinkon_ms,
         blinkoff_ms: mode.blinkoff_ms
     };
+}
+
+/// Whether the cursor is on a character two cells wide: Neovim sends the
+/// cell after one with no text, which it does for nothing else.
+fn (self: &Editor) cursor_on_wide() -> bool {
+    if self.grids.at(self.cursor_grid) |grid| {
+        if grid.rows.at(self.cursor_row) |row| {
+            if row.cells.get(self.cursor_col + 1) |next| {
+                return next.text_len == 0;
+            }
+        }
+    }
+    return false;
 }
 
 /// The grid the cursor is in, whether or not its window is shown.
