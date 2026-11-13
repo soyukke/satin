@@ -150,7 +150,9 @@ Markdown (`.md`, `.markdown`), drawn as a page; an image (`.png`, `.jpg`,
 `.gif`, `.webp`, `.svg`); or any other file that reads as text, such as source
 code, shown as it is. It is drawn again when the file changes, and the arrow at
 its top hands it to its app. A long path an agent broke across two rows is read
-as one. On a command or a quote a click copies the
+as one. A relative path is looked for in its pane's folder first, then under
+the folders of the paths from `/` or `~` that pane has shown, so a file an
+agent names from another checkout still opens. On a command or a quote a click copies the
 cleaned text, and `Option`-click pastes any item into the focused pane. Switch between this tab and every tab at the top. While it is open the
 unread pages stay here instead of fanning out over the panes.
 
