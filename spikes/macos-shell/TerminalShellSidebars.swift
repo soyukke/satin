@@ -389,7 +389,8 @@ extension TerminalShellViewController {
     }
 
     /// Where an item leads: a web link, or a file that is there. A relative
-    /// path reads against the folder of a pane that showed it.
+    /// path reads against the folder of a pane that showed it, then against
+    /// the rooted paths that pane showed.
     func sidebarItemURL(_ item: NativeSidebarItem) -> URL? {
         switch item.kind {
         case .link:
@@ -399,15 +400,13 @@ extension TerminalShellViewController {
             }
             return url
         case .file:
-            let folders = sidebarItems.panes(showing: item).map {
-                paneWorkingDirectory(paneId: $0, logFailure: false, current: true)
-            }
-            for folder in folders + [nil] {
-                if let url = nativeTerminalFileURL(item.text, cwd: folder) {
-                    return url
-                }
-            }
-            return nil
+            let panes = sidebarItems.panes(showing: item)
+            return nativeSidebarFileURL(
+                item.text,
+                folders: panes.map {
+                    paneWorkingDirectory(paneId: $0, logFailure: false, current: true)
+                },
+                shown: sidebarItems.rootedPaths(panes: panes))
         case .command, .quote:
             return nil
         }

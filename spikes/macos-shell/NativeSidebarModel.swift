@@ -284,6 +284,10 @@ private enum NativeSidebarPatterns {
         #"(?<![\w/.~:-])(?:~|\.{1,2})?/?[\w.-]+(?:/[\w.-]+)*\.[A-Za-z][A-Za-z0-9]{0,7}(?!\.?[\w/:-])"#
     )
 
+    /// A path from the root or from home, which says where on the disk the
+    /// pane's work is: a path inside another, and a link's, are left out.
+    static let rootedPath = regex(#"(?<![\w/.~:-])~?(?:/[\w.-]+)+"#)
+
     /// A path's end once its extension is there.
     static let extensionEnd = regex(#"\.[A-Za-z][A-Za-z0-9]{0,7}$"#)
 
@@ -534,6 +538,64 @@ func nativeSidebarTrimURL(_ url: String) -> String {
 
 /// The items every pane has shown, kept after they scroll away. Each pane
 /// keeps its newest, a few dozen of each kind.
+/// The paths from the root or from home a screen shows, in the order it
+/// reads, each once.
+func nativeSidebarRootedPaths(screen: String, columns: Int = 0) -> [String] {
+    var paths: [String] = []
+    for raw in nativeSidebarUnwrap(screen, columns: columns) {
+        let line = nativeSidebarCleanLine(raw).text
+        for match in nativeSidebarMatches(NativeSidebarPatterns.rootedPath, in: line) {
+            if let found = Range(match.range, in: line), !paths.contains(String(line[found])) {
+                paths.append(String(line[found]))
+            }
+        }
+    }
+    return paths
+}
+
+/// The folders a path a pane showed stands for: itself, then each folder
+/// above it, short of home and of the root, which hold too much to mean
+/// one piece of work.
+func nativeSidebarFoldersAbove(_ path: String, home: String = NSHomeDirectory()) -> [String] {
+    let expanded = path == "~" || path.hasPrefix("~/") ? home + path.dropFirst() : path
+    var folder = URL(fileURLWithPath: expanded).standardizedFileURL.path
+    var folders: [String] = []
+    while folder != "/", folder != home, !home.hasPrefix(folder + "/") {
+        folders.append(folder)
+        folder = (folder as NSString).deletingLastPathComponent
+    }
+    return folders
+}
+
+/// The file a sidebar item names, when it is there. A relative path reads
+/// against the folders of the panes that showed it. One that is not under
+/// them reads against the rooted paths those panes showed, the nearest
+/// folder first: an agent at work in a second checkout names its files
+/// from that checkout, not from the folder its pane is in.
+func nativeSidebarFileURL(
+    _ text: String,
+    folders: [String?],
+    shown: [String],
+    home: String = NSHomeDirectory(),
+    exists: (String) -> Bool = { FileManager.default.fileExists(atPath: $0) }
+) -> URL? {
+    for folder in folders + [nil] {
+        if let url = nativeTerminalFileURL(text, cwd: folder, home: home, exists: exists) {
+            return url
+        }
+    }
+    var tried = Set(folders.compactMap { $0 })
+    for path in shown {
+        for folder in nativeSidebarFoldersAbove(path, home: home)
+        where tried.insert(folder).inserted {
+            if let url = nativeTerminalFileURL(text, cwd: folder, home: home, exists: exists) {
+                return url
+            }
+        }
+    }
+    return nil
+}
+
 final class NativeSidebarItemStore {
     struct Entry: Equatable {
         let item: NativeSidebarItem
@@ -543,8 +605,11 @@ final class NativeSidebarItemStore {
     }
 
     static let perKind = 30
+    static let rootedPathsKept = 20
 
     private var entries: [Int: [Entry]] = [:]
+    /// The rooted paths each pane showed, the latest last.
+    private var rooted: [Int: [String]] = [:]
     private var screens: [Int: Int] = [:]
     private var counter = 0
 
@@ -556,6 +621,11 @@ final class NativeSidebarItemStore {
             return false
         }
         screens[paneId] = hash
+        let shown = nativeSidebarRootedPaths(screen: screen, columns: columns)
+        if !shown.isEmpty {
+            let earlier = (rooted[paneId] ?? []).filter { !shown.contains($0) }
+            rooted[paneId] = Array((earlier + shown).suffix(Self.rootedPathsKept))
+        }
         var known = entries[paneId] ?? []
         var changed = false
         for item in nativeSidebarItems(screen: screen, columns: columns)
@@ -599,9 +669,16 @@ final class NativeSidebarItemStore {
             .sorted { $0.order > $1.order }.map(\.paneId)
     }
 
+    /// The rooted paths the given panes showed, the latest first: where a
+    /// relative path may lead when it is not under a pane's own folder.
+    func rootedPaths(panes: [Int]) -> [String] {
+        panes.flatMap { (rooted[$0] ?? []).reversed() }
+    }
+
     /// Lets go of panes that closed.
     func keep(panes: Set<Int>) {
         entries = entries.filter { panes.contains($0.key) }
+        rooted = rooted.filter { panes.contains($0.key) }
         screens = screens.filter { panes.contains($0.key) }
     }
 }
@@ -766,6 +843,56 @@ func runNativeSidebarModelSelfTests() -> Bool {
     }
     store.keep(panes: [2])
     guard store.items(panes: nil)[.command]?.map(\.item.text) == ["make"] else {
+        return false
+    }
+    // A pane in /work/api whose agent works in the checkout at
+    // /home/a/dev/web: a path that is not under the pane's folder is found
+    // from a rooted path the pane showed, at the nearest folder that has it.
+    let rootedScreen = """
+        ● Bash(cd ~/dev/web && git status)
+          ⎿  see /home/a/dev/web/src/db/visits.sql and https://a.dev/docs/users
+        ● Update(src/app.ts)
+        compare ./out/b.png with a/b.png
+        """
+    let files: Set = [
+        "/work/api/README.md", "/home/a/dev/web/README.md", "/home/a/dev/web/src/app.ts",
+        "/home/a/dev/web/NOTES.md", "/home/a/dev/web/src/db/NOTES.md", "/home/a/notes.md",
+    ]
+    func open(_ text: String, shown: [String]) -> String? {
+        nativeSidebarFileURL(
+            text, folders: ["/work/api"], shown: shown, home: "/home/a", exists: files.contains)?
+            .path
+    }
+    let shown = ["/home/a/dev/web/src/db/visits.sql", "~/dev/web"]
+    guard nativeSidebarRootedPaths(screen: rootedScreen) == shown.reversed(),
+        nativeSidebarFoldersAbove("~/dev/web", home: "/home/a")
+            == ["/home/a/dev/web", "/home/a/dev"],
+        nativeSidebarFoldersAbove("/home/a", home: "/home/a").isEmpty,
+        nativeSidebarFoldersAbove("/home", home: "/home/a").isEmpty,
+        nativeSidebarFoldersAbove("/srv/visits/a.png", home: "/home/a")
+            == ["/srv/visits/a.png", "/srv/visits", "/srv"],
+        open("src/app.ts", shown: shown) == "/home/a/dev/web/src/app.ts",
+        open("src/app.ts", shown: []) == nil,
+        open("README.md", shown: shown) == "/work/api/README.md",
+        open("NOTES.md:3", shown: ["~/dev/web/src/db/visits.sql"])
+            == "/home/a/dev/web/src/db/NOTES.md",
+        open("NOTES.md", shown: ["~/dev/web"]) == "/home/a/dev/web/NOTES.md",
+        open("notes.md", shown: shown) == nil,
+        open("src/missing.ts", shown: shown) == nil
+    else {
+        return false
+    }
+    let rootedStore = NativeSidebarItemStore()
+    rootedStore.scan(paneId: 1, screen: "cd /tmp/visits\nls ~/dev/web\n")
+    rootedStore.scan(paneId: 1, screen: "cat /tmp/visits\n")
+    rootedStore.scan(paneId: 2, screen: "cd /work/api\n")
+    guard rootedStore.rootedPaths(panes: [2, 1]) == ["/work/api", "/tmp/visits", "~/dev/web"],
+        rootedStore.rootedPaths(panes: [3]).isEmpty
+    else {
+        return false
+    }
+    rootedStore.keep(panes: [2])
+    guard rootedStore.rootedPaths(panes: [1, 2]) == ["/work/api"] else {
         return false
     }
 
