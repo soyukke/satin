@@ -160,6 +160,35 @@ pub fn (self: &Frame) screen_text(allocator: Allocator, out: &var string::String
     return;
 }
 
+fn holds_wide(cell: Cell, text: []u8) -> bool {
+    if cell.text_len == 0 {
+        return false;
+    }
+    return is_wide_scalar(decode_scalar(text[cell.text_start..cell.text_start + cell.text_len], 0).value);
+}
+
+/// The column the character two cells wide over column x of row y starts
+/// at, null when that cell holds none. A program may leave the cursor on
+/// such a character's right half, so x - 1 is an answer too.
+pub fn (self: &Frame) wide_start(x: i64, y: i64) -> ?i64 {
+    if x < 0 or y < 0 or y >= self.row_count() {
+        return null;
+    }
+    let start = self.row_start(y);
+    if x >= self.row_end(y) - start {
+        return null;
+    }
+    let cells = self.cells.as_slice();
+    let text = self.text.as_bytes();
+    if holds_wide(cells[start + x], text) {
+        return x;
+    }
+    if x > 0 and cells[start + x].text_len == 0 and holds_wide(cells[start + x - 1], text) {
+        return x - 1;
+    }
+    return null;
+}
+
 fn in_span(scalar: i64, first: i64, last: i64) -> bool {
     return scalar >= first and scalar <= last;
 }

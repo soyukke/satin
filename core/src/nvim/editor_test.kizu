@@ -687,6 +687,13 @@ test "grid_line draws into the grid's retained window" {
     testing::expect(!try send(allocator, &var editor, "no_such_event", "[1]"));
 }
 
+fn cursor_is_wide(editor: &Editor) -> bool {
+    if editor.cursor() |cursor| {
+        return cursor.wide;
+    }
+    return false;
+}
+
 test "grid_line keeps the highlight for the cells after it and reads wide text" {
     let allocator = mem::page_allocator();
     var editor = try new_editor(allocator, 6, 1);
@@ -695,6 +702,16 @@ test "grid_line keeps the highlight for the cells after it and reads wide text" 
     testing::expect(try send(allocator, &var editor, "grid_line", "[1, 0, 1, [['a', 4], ['日'], [''], ['b', 0]]]"));
 
     testing::expect(line_starts(&editor, 1, 0, " a日b "));
+    // The cursor is wide on the wide character, not on its neighbors or
+    // at the row's end.
+    testing::expect(try send(allocator, &var editor, "grid_cursor_goto", "[1, 0, 2]"));
+    testing::expect(cursor_is_wide(&editor));
+    testing::expect(try send(allocator, &var editor, "grid_cursor_goto", "[1, 0, 1]"));
+    testing::expect(!cursor_is_wide(&editor));
+    testing::expect(try send(allocator, &var editor, "grid_cursor_goto", "[1, 0, 4]"));
+    testing::expect(!cursor_is_wide(&editor));
+    testing::expect(try send(allocator, &var editor, "grid_cursor_goto", "[1, 0, 5]"));
+    testing::expect(!cursor_is_wide(&editor));
     testing::expect(!drawn_cell(&editor, 1, 0, 0).has_bg);
     testing::expect(drawn_cell(&editor, 1, 0, 1).has_bg);
     testing::expect(drawn_cell(&editor, 1, 0, 2).has_bg and drawn_cell(&editor, 1, 0, 2).style.bold);

@@ -104,9 +104,17 @@ fn terminal_scene(allocator: Allocator, scene: &var Scene, runtime: &term::Runti
     scene.background = runtime.frame.background;
     scene.cursor_color = runtime.frame.cursor_color;
     scene.has_cursor = runtime.frame.has_cursor;
+    // On either cell of a wide character the cursor is drawn over both.
+    var cursor_x = runtime.frame.cursor.x;
+    var cursor_wide = false;
+    if runtime.frame.wide_start(cursor_x, runtime.frame.cursor.y) |start| {
+        cursor_x = start;
+        cursor_wide = true;
+    }
     scene.cursor = SceneCursor {
-        x: runtime.frame.cursor.x,
+        x: cursor_x,
         y: runtime.frame.cursor.y,
+        wide: cursor_wide,
         shape: runtime.frame.cursor.shape,
         cell_percentage: 100,
         blinkwait_ms: 0,
@@ -144,6 +152,7 @@ fn editor_scene(allocator: Allocator, scene: &var Scene, editor: &nvim::Editor) 
         scene.cursor = SceneCursor {
             x: cursor.x,
             y: cursor.y,
+            wide: cursor.wide,
             shape: cursor.shape,
             cell_percentage: cursor.cell_percentage,
             blinkwait_ms: cursor.blinkwait_ms,

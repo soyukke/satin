@@ -26,12 +26,14 @@ fn f32_epsilon() -> f32 {
     return lit(0.00000011920929);
 }
 
-/// The cursor as a scene has it, in screen cells. cell_percentage is how
-/// much of the cell a bar or an underline covers, and the blink times are
-/// zero for a steady cursor.
+/// The cursor as a scene has it, in screen cells. wide is set on a
+/// character two cells wide, which a block and an underline then cover.
+/// cell_percentage is how much of the cell a bar or an underline covers,
+/// and the blink times are zero for a steady cursor.
 pub struct SceneCursor {
     pub x: i64,
     pub y: i64,
+    pub wide: bool,
     pub shape: term::CursorShape,
     pub cell_percentage: u8,
     pub blinkwait_ms: u64,
@@ -40,7 +42,8 @@ pub struct SceneCursor {
 }
 
 fn same_cursor(first: SceneCursor, second: SceneCursor) -> bool {
-    return first.x == second.x and first.y == second.y and first.shape == second.shape and
+    return first.x == second.x and first.y == second.y and first.wide == second.wide and
+        first.shape == second.shape and
         first.cell_percentage == second.cell_percentage and
         first.blinkwait_ms == second.blinkwait_ms and
         first.blinkon_ms == second.blinkon_ms and
@@ -84,6 +87,7 @@ fn no_cursor() -> SceneCursor {
     return SceneCursor {
         x: 0,
         y: 0,
+        wide: false,
         shape: term::CursorShape::Block,
         cell_percentage: 100,
         blinkwait_ms: 0,
@@ -384,9 +388,14 @@ pub fn (self: &var CursorAnimation) update(scene: &Scene, geometry: Geometry, dt
         self.cell_percentage = cursor.cell_percentage;
     }
     let at = scene.cursor_render_point();
-    let size = point(geometry.cell_width, geometry.cell_height);
+    // A bar stays the edge of one cell: it marks where text goes in.
+    var cells = lit(1.0);
+    if cursor.wide and cursor.shape != term::CursorShape::Bar {
+        cells = lit(2.0);
+    }
+    let size = point(cells * geometry.cell_width, geometry.cell_height);
     let center = point(
-        geometry.origin_x + (at.x + lit(0.5)) * geometry.cell_width,
+        geometry.origin_x + (at.x + lit(0.5) * cells) * geometry.cell_width,
         geometry.origin_y + (at.y + lit(0.5)) * geometry.cell_height
     );
     var parent: i64 = 0;
