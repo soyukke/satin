@@ -425,6 +425,27 @@ func nativeSidebarUnwrap(_ screen: String, columns: Int) -> [String] {
     return lines
 }
 
+/// The lines without an agent's prompt: the rows between the last two
+/// rules, the first of them starting with `❯` or `>`. What is typed there
+/// changes with every key, and each state of it would be kept as an item.
+func nativeSidebarDroppingPrompt(_ lines: [String]) -> [String] {
+    func isRule(_ line: String) -> Bool {
+        let body = line.trimmingCharacters(in: .whitespaces)
+        return body.count >= 8 && body.allSatisfy { $0 == "─" || $0 == "━" }
+    }
+    guard let closing = lines.lastIndex(where: isRule),
+        let opening = lines[..<closing].lastIndex(where: isRule),
+        closing - opening > 1
+    else {
+        return lines
+    }
+    let first = lines[opening + 1].drop { $0 == " " }
+    guard first.hasPrefix("❯") || first.hasPrefix(">") else {
+        return lines
+    }
+    return Array(lines[..<opening] + lines[(closing + 1)...])
+}
+
 /// Finds what a screen offers to copy, in the order it reads. With the
 /// pane's columns, a line the terminal wrapped reads whole.
 func nativeSidebarItems(screen: String, columns: Int = 0) -> [NativeSidebarItem] {
@@ -454,7 +475,7 @@ func nativeSidebarItems(screen: String, columns: Int = 0) -> [NativeSidebarItem]
     // under a `⎿` and the lines indented below it, and a call's header
     // reads `● Name(…)`. Only the files a call edited come from those.
     var inToolOutput = false
-    for raw in nativeSidebarUnwrap(screen, columns: columns) {
+    for raw in nativeSidebarDroppingPrompt(nativeSidebarUnwrap(screen, columns: columns)) {
         let (line, boxed) = nativeSidebarCleanLine(raw)
         let body = line.drop { $0 == " " }
         let indent = raw.prefix { $0 == " " }.count
@@ -892,6 +913,27 @@ func runNativeSidebarModelSelfTests() -> Bool {
         open("NOTES.md", shown: ["~/dev/web"]) == "/home/a/dev/web/NOTES.md",
         open("notes.md", shown: shown) == nil,
         open("src/missing.ts", shown: shown) == nil
+    else {
+        return false
+    }
+    // What is being typed at an agent's prompt is left out, links and
+    // paths alike; what was printed above it and the hints below stay in.
+    let typing = """
+        ● See https://a.dev/done for the visits.
+        ────────────────────────────────────────
+        ❯ count the users at https://a.dev/us
+          and ./docs/visits.md
+        ────────────────────────────────────────
+          ? for shortcuts https://a.dev/help
+        """
+    guard
+        nativeSidebarItems(screen: typing) == [
+            .init(kind: .link, text: "https://a.dev/done", detail: "a.dev"),
+            .init(kind: .link, text: "https://a.dev/help", detail: "a.dev"),
+        ],
+        // Rules around something other than a prompt are not one.
+        nativeSidebarDroppingPrompt(["────────", "see /tmp/a.png", "────────"]).count == 3,
+        nativeSidebarDroppingPrompt(["────────", "────────", "x"]).count == 3
     else {
         return false
     }
