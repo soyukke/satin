@@ -328,6 +328,12 @@ extension TerminalShellViewController {
             pages: pageInbox.pages,
             unread: Set(pageInbox.unread.map(\.id)),
             items: sidebarItems.items(panes: panes),
+            github: githubLists.list(
+                folder: activePaneId.flatMap {
+                    paneWorkingDirectory(paneId: $0, logFailure: false)
+                },
+                shellPath: settings.shellPath
+            ) { [weak self] in self?.refreshItemsSidebar() },
             allTabs: sidebarItemsAllTabs
         )
     }
@@ -352,7 +358,6 @@ extension TerminalShellViewController {
     func scanSidebarScreens() {
         let panes = (lastSnapshot?.tabs ?? []).flatMap(\.panes)
         sidebarItems.keep(panes: Set(panes))
-        var found = false
         var lines: [Int: String] = [:]
         for paneId in panes {
             guard let runtime = paneStore.runtimes[paneId] else {
@@ -360,19 +365,18 @@ extension TerminalShellViewController {
             }
             let screen = runtime.controlScreenText()
             lines[paneId] = nativeHandArtLines(screen, count: 1, width: 120).first
-            if itemsSidebarMode != .off,
+            if itemsSidebarMode != .off {
                 sidebarItems.scan(
                     paneId: paneId, screen: screen, columns: paneGridSize(paneId).cols)
-            {
-                found = true
             }
         }
         sidebarScreenLines = lines
         itemsSidebar.refreshFile()
         refreshWindowsSidebar()
-        if found {
-            refreshItemsSidebar()
-        }
+        // Each scan, not only when something turned up: the pull requests
+        // and issues come in on their own, and the sidebar is drawn again
+        // only when what it shows changed.
+        refreshItemsSidebar()
     }
 
     /// Opens a link in the browser, or a file in its app. A file the
@@ -393,7 +397,7 @@ extension TerminalShellViewController {
     /// the rooted paths that pane showed.
     func sidebarItemURL(_ item: NativeSidebarItem) -> URL? {
         switch item.kind {
-        case .link:
+        case .link, .pull, .issue:
             guard let url = URL(string: item.text), ["http", "https"].contains(url.scheme ?? "")
             else {
                 return nil

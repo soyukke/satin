@@ -247,6 +247,8 @@ enum NativeSidebarItemKind: Int, CaseIterable, Equatable {
     case quote
     case link
     case file
+    case pull
+    case issue
 
     var glyph: String {
         switch self {
@@ -254,7 +256,15 @@ enum NativeSidebarItemKind: Int, CaseIterable, Equatable {
         case .quote: ">"
         case .link: "↗"
         case .file: "±"
+        case .pull: "⇄"
+        case .issue: "#"
         }
+    }
+
+    /// Whether a click opens it: a link, a file, a pull request or an
+    /// issue. The rest are copied.
+    var opens: Bool {
+        self != .command && self != .quote
     }
 }
 
@@ -266,6 +276,9 @@ struct NativeSidebarItem: Equatable {
     let text: String
     /// A word on where it came from: "edited", "line 88", "3 lines".
     let detail: String
+    /// What the row shows in place of the text: a pull request's or an
+    /// issue's number and title, whose link is the text.
+    var label: String? = nil
 }
 
 private enum NativeSidebarPatterns {

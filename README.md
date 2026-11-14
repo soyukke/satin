@@ -142,7 +142,10 @@ comes back when the sidebar is folded.
 The items sidebar on the right holds the pages as slips, then what the
 current tab's screens showed: commands after `!` or `$` (also inside
 backticks), `>` quotes joined into a paragraph, links, and files an agent
-edited or that appear as a path. What an agent ran or read for itself, and
+edited or that appear as a path. Under them come the open pull requests and
+issues of the GitHub repository the active pane's folder is a checkout of,
+read with `gh` (which must be signed in) once a minute while the sidebar is
+there; a click opens one in the browser. What an agent ran or read for itself, and
 what those tools printed, stays out; links they printed stay in. A click opens a link in the browser
 or a file in its app, such as an image in Preview; the copy button at the end
 of the row copies it instead. A file opens in the sidebar itself when it is
