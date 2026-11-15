@@ -87,6 +87,7 @@ struct SatinApplication {
                 ("attention hand view", runNativeAttentionHandViewSelfTests),
                 ("paste failure", runNativePasteFailureSelfTests),
                 ("sidebar model", runNativeSidebarModelSelfTests),
+                ("github list", runNativeGitHubListSelfTests),
                 ("sidebar file", runNativeSidebarFileSelfTests),
                 ("tmux pane growth", runNativeTmuxPaneGrowthSelfTests),
                 ("terminal shift selection", runTerminalShiftSelectionSelfTests),

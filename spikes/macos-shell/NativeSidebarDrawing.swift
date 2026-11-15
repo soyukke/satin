@@ -19,6 +19,8 @@ enum NativeSidebarLook {
         case .command, .quote: NativePageStyle.violet
         case .link: NativePageStyle.teal
         case .file: nativeHandColor(.done)
+        case .pull: nativeHandColor(.waiting)
+        case .issue: NativePageStyle.rose
         }
     }
 

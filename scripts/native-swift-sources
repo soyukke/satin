@@ -62,6 +62,7 @@ native_swift_sources=(
   spikes/macos-shell/NativePageHandView.swift
   spikes/macos-shell/NativePageDocument.swift
   spikes/macos-shell/NativeSidebarModel.swift
+  spikes/macos-shell/NativeGitHubList.swift
   spikes/macos-shell/NativeSidebarDrawing.swift
   spikes/macos-shell/NativeWindowsSidebarView.swift
   spikes/macos-shell/NativeItemsSidebarView.swift

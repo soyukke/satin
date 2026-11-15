@@ -351,6 +351,7 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
     var itemsSidebarDragWidth: CGFloat?
     var windowIdleOrder = NativeWindowIdleOrder()
     let sidebarItems = NativeSidebarItemStore()
+    let githubLists = NativeGitHubLists()
     var sidebarScanTimer: Timer?
     /// Each pane's last line on screen, as the scan last read it.
     var sidebarScreenLines: [Int: String] = [:]

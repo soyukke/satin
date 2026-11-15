@@ -375,13 +375,33 @@ final class NativeTmuxExecutableResolver {
     }
 
     private static func findTmux(in path: String) -> String? {
+        find("tmux", in: path)
+    }
+
+    /// An executable by its name: in Satin's own PATH, the usual places,
+    /// then the login shell's PATH, which is slow to ask for.
+    static func locate(_ name: String, shellPath: String) -> String? {
+        if let found = find(name, in: ProcessInfo.processInfo.environment["PATH"] ?? "") {
+            return found
+        }
+        for directory in fallbackDirectories() {
+            let candidate = URL(fileURLWithPath: directory).appendingPathComponent(name).path
+            if isExecutableFile(candidate) {
+                return candidate
+            }
+        }
+        return loginShellPath(shell: selectedLoginShell(configured: shellPath))
+            .flatMap { find(name, in: $0) }
+    }
+
+    private static func find(_ name: String, in path: String) -> String? {
         for component in path.split(separator: ":", omittingEmptySubsequences: false) {
             let directory = String(component)
             guard (directory as NSString).isAbsolutePath else {
                 continue
             }
             let candidate = URL(fileURLWithPath: directory)
-                .appendingPathComponent("tmux").path
+                .appendingPathComponent(name).path
             if isExecutableFile(candidate) {
                 return candidate
             }

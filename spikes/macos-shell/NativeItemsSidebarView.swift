@@ -11,7 +11,11 @@ final class NativeItemsSidebarView: NSView {
     private static let header: CGFloat = 40
     private static let footer: CGFloat = 36
     private static let shown: [NativeItemsSection: Int] = [
-        .pages: 6, .commands: 8, .links: 6, .files: 8,
+        .pages: 6, .commands: 8, .links: 6, .files: 8, .pulls: 8, .issues: 8,
+    ]
+    /// The sections of rows, in the order they stand.
+    private static let rowSections: [NativeItemsSection] = [
+        .commands, .links, .files, .pulls, .issues,
     ]
 
     var onOpenPage: ((NativeArtifactListItem) -> Void)?
@@ -103,6 +107,7 @@ final class NativeItemsSidebarView: NSView {
         pages: [NativeArtifactListItem],
         unread: Set<String>,
         items: [NativeSidebarItemKind: [NativeSidebarItemStore.Entry]],
+        github: NativeGitHubList? = nil,
         allTabs: Bool
     ) {
         let commands = ((items[.command] ?? []) + (items[.quote] ?? []))
@@ -111,6 +116,8 @@ final class NativeItemsSidebarView: NSView {
             .commands: commands,
             .links: (items[.link] ?? []).map(\.item),
             .files: (items[.file] ?? []).map(\.item),
+            .pulls: github?.pulls ?? [],
+            .issues: github?.issues ?? [],
         ]
         let pageKey = pages.map { "\($0.id)@\($0.version)" }
         let changed =
@@ -206,7 +213,7 @@ final class NativeItemsSidebarView: NSView {
                 slip.onPress = { [weak self] in self?.onOpenPage?($0) }
                 content.append(slip)
             }
-            for section in [NativeItemsSection.commands, .links, .files] {
+            for section in Self.rowSections {
                 for item in (items[section] ?? []).prefix(Self.shown[section] ?? 0) {
                     let row = NativeItemRowView(item: item)
                     row.onCopy = { [weak self] item, paste in self?.onCopy?(item, paste) }
@@ -275,7 +282,7 @@ final class NativeItemsSidebarView: NSView {
             y += CGFloat((slips.count + 1) / 2) * (NativePageSlipView.height + 12) + 6
         }
         let rows = content.compactMap { $0 as? NativeItemRowView }
-        for section in [NativeItemsSection.commands, .links, .files] {
+        for section in Self.rowSections {
             let sectionRows = rows.filter { NativeItemsSection($0.item.kind) == section }
             guard !sectionRows.isEmpty else {
                 continue
@@ -317,7 +324,7 @@ final class NativeItemsSidebarView: NSView {
                 x: 14, y: bounds.height - Self.footer + 11, width: bounds.width - 54, height: 14))
         if content.isEmpty {
             let empty = NativeSidebarLook.text(
-                "Pages, and the commands, quotes, links and files this tab shows, gather here.",
+                "Pages, and the commands, quotes, links and files this tab shows, gather here, with the open pull requests and issues of its repository.",
                 font: NativePageStyle.sans(11), color: NativePageStyle.muted,
                 breaking: .byWordWrapping)
             empty.draw(
@@ -383,12 +390,16 @@ enum NativeItemsSection: Int, CaseIterable {
     case commands
     case links
     case files
+    case pulls
+    case issues
 
     init(_ kind: NativeSidebarItemKind) {
         switch kind {
         case .command, .quote: self = .commands
         case .link: self = .links
         case .file: self = .files
+        case .pull: self = .pulls
+        case .issue: self = .issues
         }
     }
 
@@ -398,6 +409,8 @@ enum NativeItemsSection: Int, CaseIterable {
         case .commands: "COMMANDS · QUOTES"
         case .links: "LINKS"
         case .files: "FILES"
+        case .pulls: "PULL REQUESTS"
+        case .issues: "ISSUES"
         }
     }
 
@@ -407,6 +420,8 @@ enum NativeItemsSection: Int, CaseIterable {
         case .commands: "!"
         case .links: "↗"
         case .files: "±"
+        case .pulls: NativeSidebarItemKind.pull.glyph
+        case .issues: NativeSidebarItemKind.issue.glyph
         }
     }
 
@@ -416,6 +431,8 @@ enum NativeItemsSection: Int, CaseIterable {
         case .commands: NativeSidebarLook.color(.command)
         case .links: NativeSidebarLook.color(.link)
         case .files: NativeSidebarLook.color(.file)
+        case .pulls: NativeSidebarLook.color(.pull)
+        case .issues: NativeSidebarLook.color(.issue)
         }
     }
 }
@@ -476,24 +493,24 @@ final class NativeItemRowView: NSView {
         if option {
             return .paste
         }
-        guard kind == .link || kind == .file else {
+        guard kind.opens else {
             return .copy
         }
         return x >= width - copyWidth ? .copy : .open
     }
 
     private var opens: Bool {
-        item.kind == .link || item.kind == .file
+        item.kind.opens
     }
 
     init(item: NativeSidebarItem) {
         self.item = item
         super.init(frame: .zero)
         wantsLayer = true
-        toolTip = "\(item.text)\n\(item.detail)"
+        toolTip = [item.label, item.text, item.detail].compactMap { $0 }.joined(separator: "\n")
         setAccessibilityElement(true)
         setAccessibilityRole(.button)
-        setAccessibilityLabel((opens ? "Open " : "Copy ") + item.text)
+        setAccessibilityLabel((opens ? "Open " : "Copy ") + (item.label ?? item.text))
         setAccessibilityHelp(item.detail)
         if opens {
             setAccessibilityCustomActions([
@@ -542,7 +559,7 @@ final class NativeItemRowView: NSView {
         }
         let middle = item.kind == .link || item.kind == .file
         NativeSidebarLook.text(
-            item.text.replacingOccurrences(of: "\n", with: " "),
+            (item.label ?? item.text).replacingOccurrences(of: "\n", with: " "),
             font: NativePageStyle.mono(11, .regular), color: NativePageStyle.text,
             breaking: middle ? .byTruncatingMiddle : .byTruncatingTail
         ).draw(
