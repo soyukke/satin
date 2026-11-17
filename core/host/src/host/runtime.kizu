@@ -590,6 +590,33 @@ export "c" fn satin_runtime_tmux_feed_pane(pane: ?ptr<term::Runtime>, bytes: ?pt
     return 0;
 }
 
+/// Sends the Kitty graphics replies pane's projection holds back to the
+/// program in tmux pane pane_id, through gateway. 1 when there were none
+/// or they were sent.
+export "c" fn satin_runtime_tmux_forward_replies(
+    gateway: ?ptr<term::Runtime>,
+    pane: ?ptr<term::Runtime>,
+    pane_id: u32
+) -> u8 {
+    let sender = gateway orelse return 0;
+    let shown = pane orelse return 0;
+    if same_runtime(sender, shown) {
+        return 0;
+    }
+    let allocator = mem::page_allocator();
+    var replies = string::new(allocator);
+    defer replies.deinit(allocator);
+    // SAFETY: the host holds shown from a create, apart from sender, and calls from one thread.
+    let projection = unsafe &var shown.*;
+    if projection.take_graphics_replies(allocator, &var replies) {} else |_| {
+        return 0;
+    }
+    if replies.len() == 0 {
+        return 1;
+    }
+    return send_to_pane(sender, shown, pane_id, &replies, false);
+}
+
 export "c" fn satin_runtime_tmux_record_scroll_metadata(
     pane: ?ptr<term::Runtime>,
     rows: isize,

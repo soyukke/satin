@@ -7,6 +7,7 @@ useDefault = true
 description = "Generated dependency and native build outputs"
 paths = [
   '''^target/''',
+  '''^core/target/''',
   '''^spikes/macos-shell/\.build/''',
   '''^\.git/''',
 ]

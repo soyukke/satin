@@ -4,6 +4,70 @@ import Foundation
 #if SATIN_SMOKE_SCENARIOS
     let tmuxSmokeStableTabTitle = "tmux manual smoke title"
 
+    /// One Kitty graphics check run through tmux's passthrough: the shell
+    /// command that sends it, what the pane shows once it landed, and the
+    /// command that removes the image again.
+    struct TmuxSmokeKittyStep {
+        let name: String
+        let command: String
+        let isDone: (TmuxPane) -> Bool
+        let cleanup: String?
+    }
+
+    /// Wraps Kitty graphics control and payload in tmux's passthrough
+    /// envelope, as a shell `printf` format.
+    func tmuxSmokeKittyPrintf(_ body: String) -> String {
+        #"printf '\033Ptmux;\033\033_G"# + body + #"\033\033\\\033\\'"#
+    }
+
+    /// A one-pixel opaque red PNG, base64 as the protocol carries it.
+    let tmuxSmokeRedPixelPng =
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg=="
+
+    let tmuxSmokeKittySteps: [TmuxSmokeKittyStep] = [
+        // Raw RGB placed at the cursor.
+        TmuxSmokeKittyStep(
+            name: "kitty-image",
+            command: tmuxSmokeKittyPrintf("a=T,f=24,s=1,v=1,i=4242,c=8,r=4,q=2;/wAA"),
+            isDone: { $0.controlImageCount() == 1 },
+            cleanup: tmuxSmokeKittyPrintf("a=d,d=I,i=4242,q=2")
+        ),
+        // A PNG, which Satin decodes, placed at the cursor.
+        TmuxSmokeKittyStep(
+            name: "kitty-png",
+            command: tmuxSmokeKittyPrintf(
+                "a=T,f=100,t=d,i=4243,c=8,r=4,q=2;" + tmuxSmokeRedPixelPng),
+            isDone: { $0.controlImageCount() == 1 },
+            cleanup: tmuxSmokeKittyPrintf("a=d,d=I,i=4243,q=2")
+        ),
+        // A virtual placement shown by two Unicode placeholder cells, whose
+        // foreground (palette 77) names the image: U+10EEEE with row and
+        // column diacritics U+0305, then one that continues the run.
+        TmuxSmokeKittyStep(
+            name: "kitty-placeholder",
+            command: tmuxSmokeKittyPrintf(
+                "a=T,U=1,f=100,t=d,i=77,c=2,r=1,q=2;" + tmuxSmokeRedPixelPng)
+                + #"; printf '\033[38;5;77m\364\216\273\256\314\205\314\205\364\216\273\256\033[39m\n'"#,
+            isDone: { pane in
+                pane.controlImageCount() == 1
+                    && !pane.controlScreenText().unicodeScalars.contains("\u{10EEEE}")
+            },
+            cleanup: tmuxSmokeKittyPrintf("a=d,d=I,i=77,q=2")
+        ),
+        // A query tmux does not answer: Satin's reply has to reach the
+        // program through the pane's input.
+        TmuxSmokeKittyStep(
+            name: "kitty-query",
+            command: #"old=$(stty -g); stty -icanon -echo; "#
+                + tmuxSmokeKittyPrintf("i=31,s=1,v=1,a=q,t=d,f=24;AAAA")
+                + #"; IFS= read -r -t 3 -d "\\" reply; stty "$old"; "#
+                + #"case "$reply" in *OK*) printf 'TMUX_KITTY_%s\n' QUERY_OK;; "#
+                + #"*) printf 'TMUX_KITTY_%s\n' QUERY_NONE;; esac"#,
+            isDone: { $0.controlScreenText().contains("TMUX_KITTY_QUERY_OK") },
+            cleanup: nil
+        ),
+    ]
+
     extension TerminalShellViewController {
         func applyTmuxNativeSmokeScenario(resultPath: String) {
             waitForTmuxSmokeLayout(resultPath, previousGrid: nil, retries: 10)
@@ -333,52 +397,71 @@ import Foundation
                 writeSessionSmokeResult(resultPath, result: "failed tmux-native kitty-pane=no\n")
                 return
             }
-            let command =
-                "printf '\\033Ptmux;\\033\\033_G"
-                + "a=T,f=24,s=1,v=1,i=4242,c=8,r=4,q=2;/wAA"
-                + "\\033\\033\\\\\\033\\\\'"
-            guard pane.pasteThroughTmux(command), pane.writeThroughTmux(Data([13])) else {
-                tmuxSession?.gateway.tmuxCommand("kill-session")
-                writeSessionSmokeResult(resultPath, result: "failed tmux-native kitty-input=no\n")
-                return
-            }
-            waitForTmuxSmokeKitty(resultPath, pane: pane, retries: 30)
+            runTmuxSmokeKittyStep(resultPath, pane: pane, steps: tmuxSmokeKittySteps[...])
         }
 
-        func waitForTmuxSmokeKitty(
+        func runTmuxSmokeKittyStep(
             _ resultPath: String,
             pane: TmuxPane,
+            steps: ArraySlice<TmuxSmokeKittyStep>
+        ) {
+            guard let step = steps.first else {
+                beginTmuxSmokeReturnRepeat(resultPath)
+                return
+            }
+            guard pane.pasteThroughTmux(step.command), pane.writeThroughTmux(Data([13])) else {
+                tmuxSession?.gateway.tmuxCommand("kill-session")
+                writeSessionSmokeResult(
+                    resultPath, result: "failed tmux-native \(step.name)-input=no\n")
+                return
+            }
+            waitForTmuxSmokeKittyStep(resultPath, pane: pane, steps: steps, retries: 30)
+        }
+
+        func waitForTmuxSmokeKittyStep(
+            _ resultPath: String,
+            pane: TmuxPane,
+            steps: ArraySlice<TmuxSmokeKittyStep>,
             retries: Int
         ) {
-            guard pane.controlImageCount() == 1 else {
+            guard let step = steps.first else {
+                return
+            }
+            guard step.isDone(pane) else {
                 if retries > 0 {
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
                         [weak self, weak pane] in
                         guard let pane else {
                             return
                         }
-                        self?.waitForTmuxSmokeKitty(
+                        self?.waitForTmuxSmokeKittyStep(
                             resultPath,
                             pane: pane,
+                            steps: steps,
                             retries: retries - 1
                         )
                     }
                 } else {
                     tmuxSession?.gateway.tmuxCommand("kill-session")
                     writeSessionSmokeResult(
-                        resultPath, result: "failed tmux-native kitty-image=no\n")
+                        resultPath, result: "failed tmux-native \(step.name)=no\n")
                 }
                 return
             }
-            let clear =
-                "printf '\\033Ptmux;\\033\\033_Ga=d,d=I,i=4242,q=2"
-                + "\\033\\033\\\\\\033\\\\'"
-            guard pane.pasteThroughTmux(clear), pane.writeThroughTmux(Data([13])) else {
-                tmuxSession?.gateway.tmuxCommand("kill-session")
-                writeSessionSmokeResult(resultPath, result: "failed tmux-native kitty-clear=no\n")
-                return
+            if let cleanup = step.cleanup {
+                guard pane.pasteThroughTmux(cleanup), pane.writeThroughTmux(Data([13])) else {
+                    tmuxSession?.gateway.tmuxCommand("kill-session")
+                    writeSessionSmokeResult(
+                        resultPath, result: "failed tmux-native \(step.name)-clear=no\n")
+                    return
+                }
             }
-            beginTmuxSmokeReturnRepeat(resultPath)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self, weak pane] in
+                guard let pane else {
+                    return
+                }
+                self?.runTmuxSmokeKittyStep(resultPath, pane: pane, steps: steps.dropFirst())
+            }
         }
 
         func beginTmuxSmokeReturnRepeat(_ resultPath: String) {
@@ -955,6 +1038,7 @@ import Foundation
                     + "tabs=2 tab-close=x-redrawn cli=yes live-cursor=yes "
                     + "session-end=x-targeted "
                     + "ime=yes focus-input=yes return-repeat=yes kitty=yes "
+                    + "kitty-png=yes kitty-placeholder=yes kitty-query=yes "
                     + "shell-env=yes "
                     + "shell-restored=yes detach-clears=yes\n"
                 : "failed tmux-native shell-restored=\(restored ? "yes" : "no") "

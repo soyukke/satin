@@ -300,9 +300,6 @@ pub fn (self: &var Frames) render_terminal(
 ) -> term::Failure!void {
     list.reset(allocator);
     var has_images = true;
-    if runtime.collect_kitty(allocator) {} else |_| {
-        has_images = false;
-    }
     try self.ensure_pane(allocator, id);
     let frame_id = self.frame_id;
     var scene = new_scene(allocator);
@@ -314,6 +311,10 @@ pub fn (self: &var Frames) render_terminal(
         // A scroll the output asked for is kept until the model is brought
         // up to this frame, so whether it is still moving is read after.
         try runtime.update_model(allocator);
+        // After the frame: the Unicode placeholders it holds place images.
+        if runtime.collect_kitty(allocator) {} else |_| {
+            has_images = false;
+        }
         pane.scroll_active = runtime.model.has_active_animation();
         try terminal_scene(allocator, &var scene, runtime);
         let has_preedit = try pane.settle(allocator, &scene, geometry, dt, preedit, now_ms);

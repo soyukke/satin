@@ -125,6 +125,28 @@ test "a terminal's image is drawn over its cell and forgotten with it" {
     testing::expect_equal<i64>(0, renderer.painter.image_count());
 }
 
+test "Unicode placeholder cells are drawn as the image they name" {
+    let allocator = mem::page_allocator();
+    var runtime = try small_terminal(allocator);
+    defer runtime.deinit(allocator);
+    try feed_marked(allocator, &var runtime, "^_Ga=T,U=1,f=100,t=d,i=81,c=2,r=1,q=2;");
+    try feed_marked(allocator, &var runtime, red_pixel());
+    try feed_marked(allocator, &var runtime, "^\\");
+    try feed_marked(allocator, &var runtime, "^[2;3H^[38;5;81m􎻮̅̅􎻮^[39m");
+    var renderer = new_renderer(allocator) orelse return;
+    defer renderer.deinit(allocator);
+    renderer.begin_frame();
+    let geometry = pane_geometry(160, 160, 10.0, 20.0);
+    testing::expect(renderer.draw_terminal(allocator, &var runtime, 7, geometry, true, "", 0));
+
+    testing::expect_equal<i64>(1, renderer.count_of(CommandKind::Image));
+    // The two cells from column 2 of row 1 show the image, and no glyph.
+    testing::expect(is_color(renderer.pixel(21, 21), rgb(255, 0, 0)));
+    testing::expect(is_color(renderer.pixel(39, 39), rgb(255, 0, 0)));
+    testing::expect(is_color(renderer.pixel(19, 30), runtime.frame.background));
+    testing::expect(is_color(renderer.pixel(30, 50), runtime.frame.background));
+}
+
 test "a terminal of 200 x 60 cells is drawn into 3000 x 1800 pixels" {
     let allocator = mem::page_allocator();
     var runtime = try term::external_runtime(

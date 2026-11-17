@@ -764,7 +764,7 @@ final class TmuxPane: TerminalPane {
 
     @discardableResult
     func feed(_ data: Data) -> Bool {
-        guard gateway != nil else {
+        guard let gateway else {
             return false
         }
         let previousPromptGeneration = satinRuntimeTmuxPromptGeneration(handle)
@@ -779,6 +779,9 @@ final class TmuxPane: TerminalPane {
             ) != 0
         }
         if fed {
+            // tmux passes Kitty graphics through without answering them, so
+            // the projection's replies (an `a=q` probe, errors) go back here.
+            _ = satinRuntimeTmuxForwardReplies(gateway.handle, handle, tmuxPaneId)
             if satinRuntimeTmuxPromptGeneration(handle) != previousPromptGeneration {
                 semanticPromptOwnsPane = true
                 shellOwnsPane = true

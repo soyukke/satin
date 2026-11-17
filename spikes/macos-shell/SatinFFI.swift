@@ -179,6 +179,13 @@ func satinRuntimeTmuxFeedPane(
     _ length: Int
 ) -> UInt8
 
+@_silgen_name("satin_runtime_tmux_forward_replies")
+func satinRuntimeTmuxForwardReplies(
+    _ gateway: UnsafeMutableRawPointer?,
+    _ pane: UnsafeMutableRawPointer?,
+    _ paneId: UInt32
+) -> UInt8
+
 @_silgen_name("satin_runtime_tmux_record_scroll_metadata")
 func satinRuntimeTmuxRecordScrollMetadata(
     _ pane: UnsafeMutableRawPointer?,
