@@ -69,6 +69,8 @@ Swift host in `spikes/macos-shell` and its C ABI stay as they are.
 This supersedes ADR 0002's choice of Rust for the core and ADR 0004's Clippy
 gate. ADR 0007's retained model, scroll spring, and cursor animation are kept;
 its Skia/Metal drawing path is replaced by the one above.
+ADRs 0003, 0005 to 0011, and 0013 to 0018 name the Rust core or Skia in
+passing; each carries a note pointing here, and their text is left as written.
 
 ## Consequences
 
