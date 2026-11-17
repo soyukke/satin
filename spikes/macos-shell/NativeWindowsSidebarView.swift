@@ -7,7 +7,9 @@ import QuartzCore
 final class NativeWindowsSidebarView: NSView {
     static let openWidth: CGFloat = 264
     /// The narrowest a drag leaves it.
-    static let minWidth: CGFloat = 200
+    static let minWidth: CGFloat = 120
+    /// Narrower than this the session chip leaves the heading to itself.
+    static let chipLeastWidth: CGFloat = 190
     static let railWidth: CGFloat = 52
     private static let header: CGFloat = 40
     private static let footer: CGFloat = 36
@@ -178,7 +180,7 @@ final class NativeWindowsSidebarView: NSView {
             }
         }
         newTabButton.isHidden = mode != .open
-        sessionButton.isHidden = mode != .open
+        sessionButton.isHidden = mode != .open || bounds.width < Self.chipLeastWidth
         needsLayout = true
         needsDisplay = true
     }
@@ -200,6 +202,7 @@ final class NativeWindowsSidebarView: NSView {
             let chipWidth = min(130, sessionButton.fittingWidth, max(48, width - 134))
             sessionButton.frame = NSRect(
                 x: width - 42 - chipWidth, y: 9, width: chipWidth, height: 24)
+            sessionButton.isHidden = width < Self.chipLeastWidth
             scroll.frame = NSRect(
                 x: 0, y: Self.header, width: width,
                 height: max(0, bounds.height - Self.header - Self.footer))
@@ -249,7 +252,7 @@ final class NativeWindowsSidebarView: NSView {
         let size = heading.size()
         heading.draw(at: NSPoint(x: 14, y: 21 - size.height / 2))
         let ruleStart = 14 + ceil(size.width) + 8
-        let ruleEnd = sessionButton.frame.minX - 6
+        let ruleEnd = (sessionButton.isHidden ? newTabButton.frame : sessionButton.frame).minX - 6
         if ruleEnd > ruleStart {
             NativePageStyle.line.setFill()
             NSRect(x: ruleStart, y: 21, width: ruleEnd - ruleStart, height: 1).fill()
@@ -455,6 +458,8 @@ final class NativeSessionChip: NSView {
 /// tooltip.
 final class NativeWindowCardView: NSView {
     static let height: CGFloat = 26
+    /// Narrower than this a card shows no age.
+    static let ageLeastWidth: CGFloat = 140
     /// The room between two rows.
     static let gap: CGFloat = 2
     private static let radius: CGFloat = 6
@@ -580,10 +585,12 @@ final class NativeWindowCardView: NSView {
         NativeSidebarLook.drawGem(
             row.state, center: NSPoint(x: face.minX + 13, y: face.midY), half: 6)
 
-        // While ⌘ is held, the tab's digit takes the place of its age.
+        // While ⌘ is held, the tab's digit takes the place of its age; a
+        // narrow card leaves the age out for the title.
         let digit = showsShortcut ? row.shortcut : nil
         let age =
-            digit != nil ? "" : row.since.map { nativeSidebarAgeText(since: $0, now: now) } ?? ""
+            digit != nil || face.width < Self.ageLeastWidth
+            ? "" : row.since.map { nativeSidebarAgeText(since: $0, now: now) } ?? ""
         let clock = NativeSidebarLook.text(
             age, font: NativePageStyle.mono(10, .semibold),
             color: paper ? NativePageStyle.muted : color.withAlphaComponent(0.85),

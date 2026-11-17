@@ -1007,6 +1007,14 @@ func runNativeSidebarModelSelfTests() -> Bool {
         nativeSidebarDragMode(wanted: 136, rail: 52, least: 220) == .open,
         nativeSidebarDragMode(wanted: 135, rail: 52, least: 220) == .rail,
         nativeSidebarDragMode(wanted: -40, rail: 52, least: 220) == .rail,
+        // The windows sidebar stays open down to its least width, and folds
+        // once dragged most of the way from there to its rail.
+        nativeSidebarDragMode(
+            wanted: NativeWindowsSidebarView.minWidth, rail: NativeWindowsSidebarView.railWidth,
+            least: NativeWindowsSidebarView.minWidth) == .open,
+        nativeSidebarDragMode(
+            wanted: 80, rail: NativeWindowsSidebarView.railWidth,
+            least: NativeWindowsSidebarView.minWidth) == .rail,
         nativeSidebarWidth(wanted: 264, least: 220, room: 1200) == 264,
         nativeSidebarWidth(wanted: 150, least: 220, room: 1200) == 220,
         nativeSidebarWidth(wanted: 900, least: 220, room: 1000) == 680,
