@@ -4,6 +4,12 @@ Date: 2026-07-30
 
 Status: Accepted
 
+Superseded in part by [0019](0019-replace-the-rust-core-with-kizu.md): where
+this record names the Rust core, its crates and Cargo tooling, or the
+Skia/Metal renderer, 0019 replaced them with the Kizu core in `core/` and its
+CoreText/CoreGraphics renderer. The rest of the decision stands; the text below
+is kept as it was written.
+
 ## Context
 
 `Neovide Tabs` is too close to the established Neovide product name and can
