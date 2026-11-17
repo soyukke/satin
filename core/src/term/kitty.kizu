@@ -2,6 +2,7 @@
 // where each is on the viewport, and its pixels as RGBA. The Rust
 // `kitty_placements`, `configure_kitty_graphics` and `NativePngDecoder`.
 import std::array;
+import std::math;
 import std::mem;
 import std::string;
 
@@ -182,12 +183,26 @@ unsafe struct KittyHandles {
     slot: ptr<u8>,
 }
 
+/// A placement Unicode placeholder cells show, wherever they are: the
+/// cells it covers, zero where the image's size decides.
+struct VirtualPlacement {
+    image_id: u32,
+    placement_id: u32,
+    image_number: u32,
+    image_width: u32,
+    image_height: u32,
+    columns: u32,
+    rows: u32,
+    z: i32,
+}
+
 /// The placements of one terminal, as the last collect found them, and the
 /// pixels of the images they show.
 pub struct KittyImages {
     handles: KittyHandles,
     pub placements: array::Array<Placement>,
     images: array::Array<CachedImage>,
+    virtuals: array::Array<VirtualPlacement>,
 }
 
 pub fn new_kitty_images(allocator: Allocator) -> GhosttyError!KittyImages {
@@ -204,7 +219,8 @@ pub fn new_kitty_images(allocator: Allocator) -> GhosttyError!KittyImages {
         return KittyImages {
             handles: move handles,
             placements: array::new<Placement>(allocator),
-            images: array::new<CachedImage>(allocator)
+            images: array::new<CachedImage>(allocator),
+            virtuals: array::new<VirtualPlacement>(allocator)
         };
     }
     // SAFETY: the slot came from malloc and nothing reads it after this.
@@ -219,6 +235,7 @@ pub fn (self: KittyImages) deinit(allocator: Allocator) -> void {
     unsafe free(self.handles.slot);
     self.placements.deinit(allocator);
     self.images.deinit(allocator);
+    self.virtuals.deinit(allocator);
 }
 
 /// A u32 value of the placement the iterator is on.
@@ -230,6 +247,19 @@ fn (self: &KittyImages) placement_value(data: i32) -> GhosttyError!u32 {
         return GhosttyError::Refused;
     }
     return cast<u32>(slot_i32(slot));
+}
+
+/// Whether the placement the iterator is on is virtual: one Unicode
+/// placeholder cells show.
+fn (self: &KittyImages) placement_is_virtual() -> GhosttyError!bool {
+    let slot = self.handles.slot;
+    set_slot_usize(slot, 0);
+    // SAFETY: the iterator is on a placement; the slot holds the bool.
+    let result = unsafe ghostty_kitty_graphics_placement_get(self.handles.iterator, 3, slot);
+    if result != success() {
+        return GhosttyError::Refused;
+    }
+    return slot_bool(slot);
 }
 
 /// A value of image, written to the slot.
@@ -356,6 +386,132 @@ unsafe fn(self: &var KittyImages) cache_image(
     return;
 }
 
+/// Reads image's number and size through the outs and caches its pixels.
+///
+/// image must be a live image of the terminal being read.
+unsafe fn(self: &var KittyImages) read_cached(
+    allocator: Allocator,
+    image: ptr<u8>,
+    image_id: u32,
+    image_number: &var u32,
+    image_width: &var u32,
+    image_height: &var u32
+) -> Failure!void {
+    let slot = self.handles.slot;
+    // SAFETY: the caller passes a live image; 2 is its number.
+    try unsafe self.read_image(image, 2);
+    let number = cast<u32>(slot_i32(slot));
+    // SAFETY: as above; 3 is its width.
+    try unsafe self.read_image(image, 3);
+    let width = cast<u32>(slot_i32(slot));
+    // SAFETY: as above; 4 is its height.
+    try unsafe self.read_image(image, 4);
+    let height = cast<u32>(slot_i32(slot));
+    // SAFETY: as above, of that size.
+    try unsafe self.cache_image(allocator, image, image_id, number, width, height);
+    image_number = number;
+    image_width = width;
+    image_height = height;
+    return;
+}
+
+/// Records the virtual placement the iterator is on, of image.
+///
+/// image must be a live image of the terminal being read.
+unsafe fn(self: &var KittyImages) collect_virtual(allocator: Allocator, image: ptr<u8>, image_id: u32) -> Failure!void {
+    var image_number: u32 = 0;
+    var image_width: u32 = 0;
+    var image_height: u32 = 0;
+    // SAFETY: the caller passes a live image.
+    try unsafe self.read_cached(allocator, image, image_id, &var image_number, &var image_width, &var image_height);
+    try self.virtuals.append(allocator, VirtualPlacement {
+        image_id: image_id,
+        placement_id: try self.placement_value(2),
+        image_number: image_number,
+        image_width: image_width,
+        image_height: image_height,
+        columns: try self.placement_value(10),
+        rows: try self.placement_value(11),
+        z: cast<i32>(try self.placement_value(12))
+    });
+    return;
+}
+
+/// The virtual placement run shows: the one of its placement id, or
+/// without one the first of its image; -1 when there is none.
+fn (self: &KittyImages) virtual_index(run: &PlaceholderRun) -> i64 {
+    for 0..self.virtuals.len() |index| {
+        if self.virtuals.at(index) |candidate| {
+            let same_placement = run.placement_id == 0 or candidate.placement_id == run.placement_id;
+            if candidate.image_id == run.image_id and same_placement {
+                return index;
+            }
+        }
+    }
+    return -1;
+}
+
+fn rounded(value: f64) -> u32 {
+    if value <= 0.0 {
+        return 0;
+    }
+    return cast<u32>(math::round<f64>(value));
+}
+
+/// Adds a placement for each run of the placeholder cells, in viewport
+/// order, that shows a virtual placement of the last collect, for cells of
+/// the given pixels, and orders the placements again.
+pub fn (self: &var KittyImages) place_placeholders(
+    allocator: Allocator,
+    cells: []PlaceholderCell,
+    cell_width: u32,
+    cell_height: u32
+) -> mem::Error!void {
+    if self.virtuals.len() == 0 or mem::count<PlaceholderCell>(cells) == 0 {
+        return;
+    }
+    var runs = array::new<PlaceholderRun>(allocator);
+    defer runs.deinit(allocator);
+    try placeholder_runs(allocator, cells, &var runs);
+    for 0..runs.len() |index| {
+        let run = runs.get(index) orelse continue;
+        let found = self.virtual_index(&run);
+        let shown = self.virtuals.get(found) orelse continue;
+        let fit = PlaceholderFit {
+            image_width: shown.image_width,
+            image_height: shown.image_height,
+            columns: shown.columns,
+            rows: shown.rows,
+            cell_width: cell_width,
+            cell_height: cell_height
+        };
+        var source = PixelRect { x: 0.0, y: 0.0, width: 0.0, height: 0.0 };
+        var dest = source;
+        if !place_run(&run, &fit, &var source, &var dest) {
+            continue;
+        }
+        try self.placements.append(allocator, Placement {
+            image_id: shown.image_id,
+            image_number: shown.image_number,
+            z: shown.z,
+            viewport_col: cast<i32>(run.col),
+            viewport_row: cast<i32>(run.row),
+            x_offset: rounded(dest.x),
+            y_offset: rounded(dest.y),
+            pixel_width: rounded(dest.width),
+            pixel_height: rounded(dest.height),
+            source_x: rounded(source.x),
+            source_y: rounded(source.y),
+            source_width: rounded(source.width),
+            source_height: rounded(source.height),
+            image_width: shown.image_width,
+            image_height: shown.image_height
+        });
+    }
+    self.sort_by_z();
+    return;
+}
+
 /// Drops the cached pixels of every image no placement shows.
 fn (self: &var KittyImages) drop_hidden_images(allocator: Allocator, visible: &array::Array<u32>) -> void {
     var index = self.images.len() - 1;
@@ -402,6 +558,7 @@ fn (self: &var KittyImages) sort_by_z() -> void {
 /// terminal must be a live libghostty terminal.
 pub unsafe fn(self: &var KittyImages) collect(allocator: Allocator, terminal: ptr<u8>) -> Failure!void {
     self.placements.clear(allocator);
+    self.virtuals.clear(allocator);
     let slot = self.handles.slot;
     let iterator = self.handles.iterator;
     set_slot_usize(slot, 0);
@@ -424,6 +581,11 @@ pub unsafe fn(self: &var KittyImages) collect(allocator: Allocator, terminal: pt
         try visible.append(allocator, image_id);
         // SAFETY: graphics is the terminal's live image storage.
         let image = unsafe ghostty_kitty_graphics_image(graphics, image_id) orelse continue;
+        if try self.placement_is_virtual() {
+            // SAFETY: image is a live image of the caller's terminal.
+            try unsafe self.collect_virtual(allocator, image, image_id);
+            continue;
+        }
         var info = RenderInfo {
             size: mem::size_of<RenderInfo>(),
             pixel_width: 0,
@@ -445,17 +607,11 @@ pub unsafe fn(self: &var KittyImages) collect(allocator: Allocator, terminal: pt
         if !info.viewport_visible {
             continue;
         }
-        // SAFETY: image is a live image of the caller's terminal; 2 is its number.
-        try unsafe self.read_image(image, 2);
-        let image_number = cast<u32>(slot_i32(slot));
-        // SAFETY: as above; 3 is its width.
-        try unsafe self.read_image(image, 3);
-        let image_width = cast<u32>(slot_i32(slot));
-        // SAFETY: as above; 4 is its height.
-        try unsafe self.read_image(image, 4);
-        let image_height = cast<u32>(slot_i32(slot));
-        // SAFETY: image is a live image of the caller's terminal, of that size.
-        try unsafe self.cache_image(allocator, image, image_id, image_number, image_width, image_height);
+        var image_number: u32 = 0;
+        var image_width: u32 = 0;
+        var image_height: u32 = 0;
+        // SAFETY: image is a live image of the caller's terminal.
+        try unsafe self.read_cached(allocator, image, image_id, &var image_number, &var image_width, &var image_height);
         let z = cast<i32>(try self.placement_value(12));
         let x_offset = try self.placement_value(4);
         let y_offset = try self.placement_value(5);
@@ -499,4 +655,29 @@ pub fn (self: &KittyImages) append_pixels(
         return true;
     }
     return false;
+}
+
+/// Appends every Kitty graphics reply, `ESC _ G ... ESC \`, in replies to
+/// out; the rest of replies is left out.
+pub fn append_graphics_replies(allocator: Allocator, replies: []u8, out: &var string::String) -> mem::Error!void {
+    let length = mem::len(replies);
+    var index: i64 = 0;
+    while index + 2 < length {
+        let starts = replies[index] == cast<u8>(27) and replies[index + 1] == cast<u8>(95) and
+            replies[index + 2] == cast<u8>(71);
+        if !starts {
+            index = index + 1;
+            continue;
+        }
+        var end = index + 3;
+        while end + 1 < length and !(replies[end] == cast<u8>(27) and replies[end + 1] == cast<u8>(92)) {
+            end = end + 1;
+        }
+        if end + 1 >= length {
+            return;
+        }
+        try out.append_bytes(allocator, replies[index..end + 2]);
+        index = end + 2;
+    }
+    return;
 }

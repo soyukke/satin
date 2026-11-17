@@ -1,0 +1,64 @@
+import std::array;
+import std::mem;
+import std::testing;
+
+test "diacritics number rows and columns in Kitty's order" {
+    testing::expect(diacritic_index(773) == 0);
+    testing::expect(diacritic_index(781) == 1);
+    testing::expect(diacritic_index(782) == 2);
+    testing::expect(diacritic_index(119364) == 296);
+    testing::expect(diacritic_index(65) == -1);
+    testing::expect(diacritic_index(774) == -1);
+}
+
+fn cell(col: i64, image_row: i64, image_col: i64) -> PlaceholderCell {
+    return PlaceholderCell {
+        row: 0,
+        col: col,
+        image_low: 9,
+        placement_id: 0,
+        image_row: image_row,
+        image_col: image_col,
+        image_high: -1
+    };
+}
+
+test "adjacent cells that leave out their numbers continue one run" {
+    let allocator = mem::page_allocator();
+    var cells = array::new<PlaceholderCell>(allocator);
+    defer cells.deinit(allocator);
+    try cells.append(allocator, cell(0, 1, 0));
+    try cells.append(allocator, cell(1, -1, -1));
+    try cells.append(allocator, cell(2, 1, 2));
+    // A gap on the viewport, and a column that does not follow, end a run.
+    try cells.append(allocator, cell(4, -1, -1));
+    try cells.append(allocator, cell(5, 1, 0));
+    var runs = array::new<PlaceholderRun>(allocator);
+    defer runs.deinit(allocator);
+    let slice = cells.as_slice();
+    try placeholder_runs(allocator, slice, &var runs);
+    testing::expect(runs.len() == 3);
+    let first = runs.get(0) orelse return;
+    let second = runs.get(1) orelse return;
+    let third = runs.get(2) orelse return;
+    testing::expect(first.col == 0 and first.width == 3 and first.image_row == 1 and first.image_col == 0);
+    testing::expect(second.col == 4 and second.width == 1 and second.image_row == 0);
+    testing::expect(third.col == 5 and third.image_col == 0);
+}
+
+test "a run outside the image places nothing" {
+    let fit = PlaceholderFit { image_width: 4, image_height: 2, columns: 4, rows: 2, cell_width: 10, cell_height: 20 };
+    let run = PlaceholderRun {
+        row: 0,
+        col: 0,
+        image_id: 9,
+        placement_id: 0,
+        image_row: 5,
+        image_col: 0,
+        image_high: -1,
+        width: 1
+    };
+    var source = PixelRect { x: 0.0, y: 0.0, width: 0.0, height: 0.0 };
+    var dest = source;
+    testing::expect(!place_run(&run, &fit, &var source, &var dest));
+}

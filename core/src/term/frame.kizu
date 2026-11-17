@@ -78,6 +78,9 @@ pub struct Frame {
     pub cursor: Cursor,
     pub scrollbar: Scrollbar,
     pub alternate: bool,
+    /// The Kitty Unicode placeholder cells, in viewport order. Their text
+    /// is left out of text: the image they name is drawn there instead.
+    pub placeholders: array::Array<PlaceholderCell>,
 }
 
 fn black() -> Color {
@@ -94,7 +97,8 @@ pub fn new_frame(allocator: Allocator) -> Frame {
         has_cursor: false,
         cursor: Cursor { x: 0, y: 0, shape: CursorShape::Block },
         scrollbar: Scrollbar { top: 0, visible: 0, total: 0 },
-        alternate: false
+        alternate: false,
+        placeholders: array::new<PlaceholderCell>(allocator)
     };
 }
 
@@ -102,6 +106,7 @@ pub fn (self: Frame) deinit(allocator: Allocator) -> void {
     self.cells.deinit(allocator);
     self.row_ends.deinit(allocator);
     self.text.deinit(allocator);
+    self.placeholders.deinit(allocator);
 }
 
 pub fn (self: &Frame) row_count() -> i64 {
@@ -535,6 +540,7 @@ pub unsafe fn(self: &var FrameRenderer) collect(
     frame.cells.clear(allocator);
     frame.row_ends.clear(allocator);
     frame.text.clear();
+    frame.placeholders.clear(allocator);
     // SAFETY: the caller passes a live terminal; the slot holds a scrollbar.
     let scrollbar_result = unsafe ghostty_terminal_get(terminal, terminal_data_scrollbar(), self.slot);
     if scrollbar_result != success() {
@@ -654,10 +660,11 @@ fn (self: &var FrameRenderer) collect_cells(
     if cells_result != success() {
         return GhosttyError::Refused;
     }
+    let row = frame.row_ends.len();
     var column: i64 = 0;
     // SAFETY: the cells handle is live and was filled from the row above.
     while unsafe ghostty_render_state_row_cells_next(self.cells) {
-        var cell = try self.collect_cell(allocator, frame, foreground, background);
+        var cell = try self.collect_cell(allocator, frame, foreground, background, row, column);
         if selected and column >= selection_start and column <= selection_end {
             cell.has_bg = true;
             cell.bg = selection_color(background);
@@ -668,12 +675,44 @@ fn (self: &var FrameRenderer) collect_cells(
     return;
 }
 
+/// Records the cell at row and column, whose text starts at text_start, in
+/// the frame's placeholders when it is a Kitty Unicode placeholder, and
+/// leaves its text out.
+fn take_placeholder(
+    allocator: Allocator,
+    frame: &var Frame,
+    text_start: i64,
+    style: &Style,
+    row: i64,
+    column: i64
+) -> mem::Error!void {
+    let text = frame.text.as_bytes();
+    let cell_text = text[text_start..mem::len(text)];
+    var placeholder = PlaceholderCell {
+        row: 0,
+        col: 0,
+        image_low: 0,
+        placement_id: 0,
+        image_row: -1,
+        image_col: -1,
+        image_high: -1
+    };
+    if !read_placeholder(cell_text, style, row, column, &var placeholder) {
+        return;
+    }
+    try frame.placeholders.append(allocator, placeholder);
+    if frame.text.truncate(text_start) {} else |_| {}
+    return;
+}
+
 /// Reads the cell the iterator is on, appending its text to the frame's.
 fn (self: &var FrameRenderer) collect_cell(
     allocator: Allocator,
     frame: &var Frame,
     default_foreground: Color,
-    background: Color
+    background: Color,
+    row: i64,
+    column: i64
 ) -> Failure!Cell {
     clear_slot(self.slot);
     set_slot_usize(self.slot, mem::size_of<Style>());
@@ -685,6 +724,7 @@ fn (self: &var FrameRenderer) collect_cell(
     let text_start = frame.text.len();
     if !style.invisible {
         try self.append_text(allocator, frame);
+        try take_placeholder(allocator, frame, text_start, &style, row, column);
     }
     var fg = default_foreground;
     if self.get_cell(cell_data_fg_color()) {

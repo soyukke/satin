@@ -1,0 +1,370 @@
+// Kitty graphics Unicode placeholders: cells of U+10EEEE whose colors and
+// diacritics name an image and the part of it the cell shows. A port of
+// Ghostty's `terminal/kitty/graphics_unicode.zig`; libghostty keeps the
+// virtual placements, and its C API leaves finding the cells to the host.
+import std::array;
+import std::math;
+import std::mem;
+
+/// The diacritics that number rows and columns, in Kitty's
+/// rowcolumn-diacritics.txt order: five hex digits each, sixteen a line.
+fn diacritic_table() -> []u8 {
+    return
+        \\003050030D0030E00310003120033D0033E0033F003460034A0034B0034C00350003510035200357
+        \\0035B003630036400365003660036700368003690036A0036B0036C0036D0036E0036F0048300484
+        \\004850048600487005920059300594005950059700598005990059C0059D0059E0059F005A0005A1
+        \\005A8005A9005AB005AC005AF005C400610006110061200613006140061500616006170065700658
+        \\006590065A0065B0065D0065E006D6006D7006D8006D9006DA006DB006DC006DF006E0006E1006E2
+        \\006E4006E7006E8006EB006EC00730007320073300735007360073A0073D0073F007400074100743
+        \\0074500747007490074A007EB007EC007ED007EE007EF007F0007F1007F300816008170081800819
+        \\0081B0081C0081D0081E0081F00820008210082200823008250082600827008290082A0082B0082C
+        \\0082D00951009530095400F8200F8300F8600F870135D0135E0135F017DD0193A01A1701A7501A76
+        \\01A7701A7801A7901A7A01A7B01A7C01B6B01B6D01B6E01B6F01B7001B7101B7201B7301CD001CD1
+        \\01CD201CDA01CDB01CE001DC001DC101DC301DC401DC501DC601DC701DC801DC901DCB01DCC01DD1
+        \\01DD201DD301DD401DD501DD601DD701DD801DD901DDA01DDB01DDC01DDD01DDE01DDF01DE001DE1
+        \\01DE201DE301DE401DE501DE601DFE020D0020D1020D4020D5020D6020D7020DB020DC020E1020E7
+        \\020E9020F002CEF02CF002CF102DE002DE102DE202DE302DE402DE502DE602DE702DE802DE902DEA
+        \\02DEB02DEC02DED02DEE02DEF02DF002DF102DF202DF302DF402DF502DF602DF702DF802DF902DFA
+        \\02DFB02DFC02DFD02DFE02DFF0A66F0A67C0A67D0A6F00A6F10A8E00A8E10A8E20A8E30A8E40A8E5
+        \\0A8E60A8E70A8E80A8E90A8EA0A8EB0A8EC0A8ED0A8EE0A8EF0A8F00A8F10AAB00AAB20AAB30AAB7
+        \\0AAB80AABE0AABF0AAC10FE200FE210FE220FE230FE240FE250FE2610A0F10A381D1851D1861D187
+        \\1D1881D1891D1AA1D1AB1D1AC1D1AD1D2421D2431D244
+    ;
+}
+
+fn diacritic_count() -> i64 {
+    return 297;
+}
+
+fn diacritic_hex(byte: u8) -> i64 {
+    let value = cast<i64>(byte);
+    if value >= 65 {
+        return value - 55;
+    }
+    return value - 48;
+}
+
+fn diacritic_at(index: i64) -> i64 {
+    let table = diacritic_table();
+    let at = (index / 16) * 81 + (index % 16) * 5;
+    var value: i64 = 0;
+    for 0..5 |offset| {
+        value = value * 16 + diacritic_hex(table[at + offset]);
+    }
+    return value;
+}
+
+/// The number codepoint stands for as a row, column or high-byte
+/// diacritic; -1 when it is none of them.
+pub fn diacritic_index(codepoint: i64) -> i64 {
+    var low: i64 = 0;
+    var high = diacritic_count();
+    while low < high {
+        let middle = (low + high) / 2;
+        let value = diacritic_at(middle);
+        if value == codepoint {
+            return middle;
+        }
+        if value < codepoint {
+            low = middle + 1;
+        } else {
+            high = middle;
+        }
+    }
+    return -1;
+}
+
+/// The codepoint the UTF-8 in text starts at at, and its byte length in
+/// length; -1 when no whole codepoint starts there.
+fn codepoint_at(text: []u8, at: i64, length: &var i64) -> i64 {
+    length = 0;
+    if at >= mem::len(text) {
+        return -1;
+    }
+    let first = cast<i64>(text[at]);
+    var count: i64 = 1;
+    var value = first;
+    if first >= 240 {
+        count = 4;
+        value = first & 7;
+    } else if first >= 224 {
+        count = 3;
+        value = first & 15;
+    } else if first >= 192 {
+        count = 2;
+        value = first & 31;
+    } else if first >= 128 {
+        return -1;
+    }
+    if at + count > mem::len(text) {
+        return -1;
+    }
+    for 1..count |offset| {
+        value = (value << 6) | (cast<i64>(text[at + offset]) & 63);
+    }
+    length = count;
+    return value;
+}
+
+fn placeholder_codepoint() -> i64 {
+    return 1109742;
+}
+
+/// What a style color says of an image or placement: a palette index, or
+/// an RGB color as one 24-bit number; zero without a color.
+fn color_id(color: StyleColor) -> u32 {
+    if color.tag == 1 {
+        return cast<u32>(color.value & 255);
+    }
+    if color.tag == 2 {
+        let red = color.value & 255;
+        let green = (color.value >> 8) & 255;
+        let blue = (color.value >> 16) & 255;
+        return cast<u32>((red << 16) | (green << 8) | blue);
+    }
+    return 0;
+}
+
+/// A placeholder cell on the viewport: the low 24 bits of its image's id
+/// from its foreground, its placement's id from its underline color, and
+/// the row, column and high id byte its diacritics give, each -1 where the
+/// cell carries none.
+pub struct PlaceholderCell {
+    pub row: i64,
+    pub col: i64,
+    pub image_low: u32,
+    pub placement_id: u32,
+    pub image_row: i64,
+    pub image_col: i64,
+    pub image_high: i64,
+}
+
+/// Reads the diacritic at at in text as a number into value, -1 when
+/// there is none or it is not one, and returns where the text goes on.
+fn next_index(text: []u8, at: i64, value: &var i64) -> i64 {
+    value = -1;
+    var length: i64 = 0;
+    let codepoint = codepoint_at(text, at, &var length);
+    if codepoint < 0 {
+        return at;
+    }
+    value = diacritic_index(codepoint);
+    return at + length;
+}
+
+/// Reads the cell at row and col whose text and style are given into out;
+/// false when it is no placeholder.
+fn read_placeholder(text: []u8, style: &Style, row: i64, col: i64, out: &var PlaceholderCell) -> bool {
+    var length: i64 = 0;
+    if codepoint_at(text, 0, &var length) != placeholder_codepoint() {
+        return false;
+    }
+    var image_row: i64 = -1;
+    var image_col: i64 = -1;
+    var image_high: i64 = -1;
+    let after_row = next_index(text, length, &var image_row);
+    if image_row >= 0 {
+        let after_col = next_index(text, after_row, &var image_col);
+        if image_col >= 0 {
+            let _ = next_index(text, after_col, &var image_high);
+        }
+    }
+    if image_high > 255 {
+        image_high = -1;
+    }
+    out = PlaceholderCell {
+        row: row,
+        col: col,
+        image_low: color_id(style.fg_color),
+        placement_id: color_id(style.underline_color),
+        image_row: image_row,
+        image_col: image_col,
+        image_high: image_high
+    };
+    return true;
+}
+
+/// Adjacent placeholder cells of one row that show adjacent parts of one
+/// row of an image: width cells from (row, col) on the viewport, showing
+/// the image's cells from (image_row, image_col).
+pub struct PlaceholderRun {
+    pub row: i64,
+    pub col: i64,
+    pub image_id: u32,
+    pub placement_id: u32,
+    pub image_row: i64,
+    pub image_col: i64,
+    pub image_high: i64,
+    pub width: i64,
+}
+
+fn start_run(cell: PlaceholderCell) -> PlaceholderRun {
+    return PlaceholderRun {
+        row: cell.row,
+        col: cell.col,
+        image_id: cell.image_low,
+        placement_id: cell.placement_id,
+        image_row: math::max<i64>(cell.image_row, 0),
+        image_col: math::max<i64>(cell.image_col, 0),
+        image_high: cell.image_high,
+        width: 1
+    };
+}
+
+/// Whether cell continues run, as Ghostty's `canAppend` has it: a cell
+/// may leave out its row, column and high byte to mean the next ones.
+fn continues(run: &PlaceholderRun, cell: &PlaceholderCell) -> bool {
+    return cell.row == run.row and cell.col == run.col + run.width and cell.image_low == run.image_id and
+        cell.placement_id == run.placement_id and (cell.image_row < 0 or cell.image_row == run.image_row) and
+        (cell.image_col < 0 or cell.image_col == run.image_col + run.width) and
+        (cell.image_high < 0 or cell.image_high == run.image_high);
+}
+
+fn finish_run(allocator: Allocator, run: PlaceholderRun, out: &var array::Array<PlaceholderRun>) -> mem::Error!void {
+    var done = run;
+    if run.image_high > 0 {
+        done.image_id = run.image_id | (cast<u32>(run.image_high) << 24);
+    }
+    try out.append(allocator, done);
+    return;
+}
+
+/// Groups cells, in viewport order, into runs appended to out.
+pub fn placeholder_runs(
+    allocator: Allocator,
+    cells: []PlaceholderCell,
+    out: &var array::Array<PlaceholderRun>
+) -> mem::Error!void {
+    let count = mem::count<PlaceholderCell>(cells);
+    if count == 0 {
+        return;
+    }
+    var run = start_run(cells[0]);
+    for 1..count |index| {
+        let cell = cells[index];
+        if continues(&run, &cell) {
+            run.width = run.width + 1;
+        } else {
+            try finish_run(allocator, run, out);
+            run = start_run(cell);
+        }
+    }
+    try finish_run(allocator, run, out);
+    return;
+}
+
+/// The image's size, the cells its virtual placement covers, and the
+/// pixels of one cell, which place_run fits the image into.
+pub struct PlaceholderFit {
+    pub image_width: u32,
+    pub image_height: u32,
+    pub columns: u32,
+    pub rows: u32,
+    pub cell_width: u32,
+    pub cell_height: u32,
+}
+
+/// A rectangle in pixels.
+pub struct PixelRect {
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
+}
+
+fn whole_cells(pixels: u32, cell: u32) -> u32 {
+    return (pixels + cell - 1) / cell;
+}
+
+/// The grid the image fills, centered there with its aspect kept: the
+/// image's offset into the grid in image pixels, and its scale.
+struct Fitted {
+    columns: f64,
+    rows: f64,
+    x_pad: f64,
+    y_pad: f64,
+    scale: f64,
+}
+
+fn fit_image(fit: &PlaceholderFit) -> Fitted {
+    var columns = fit.columns;
+    var rows = fit.rows;
+    if columns == 0 {
+        columns = whole_cells(fit.image_width, fit.cell_width);
+    }
+    if rows == 0 {
+        rows = whole_cells(fit.image_height, fit.cell_height);
+    }
+    let width = cast<f64>(fit.image_width);
+    let height = cast<f64>(fit.image_height);
+    let grid_width = cast<f64>(columns) * cast<f64>(fit.cell_width);
+    let grid_height = cast<f64>(rows) * cast<f64>(fit.cell_height);
+    var fitted = Fitted { columns: cast<f64>(columns), rows: cast<f64>(rows), x_pad: 0.0, y_pad: 0.0, scale: 1.0 };
+    if width * grid_height > height * grid_width {
+        fitted.scale = grid_width / width;
+        fitted.y_pad = (grid_height / fitted.scale - height) / 2.0;
+    } else {
+        fitted.scale = grid_height / height;
+        fitted.x_pad = (grid_width / fitted.scale - width) / 2.0;
+    }
+    return fitted;
+}
+
+/// Cuts the padding the grid adds around the image on one axis out of the
+/// source span start..start + length, in padded image pixels, as Ghostty's
+/// `renderPlacement` does. Returns the destination offset in padded
+/// pixels and leaves the cut span in start and length; dest is the
+/// destination length in screen pixels, which it shortens to match.
+fn trim_axis(start: &var f64, length: &var f64, dest: &var f64, pad: f64, image: f64, scale: f64) -> f64 {
+    let padded = image + pad * 2.0;
+    if start < pad {
+        let offset = pad - start;
+        length = length - offset;
+        dest = dest - offset * scale;
+        start = 0.0;
+        if length > image {
+            length = image;
+            dest = image * scale;
+        }
+        return offset;
+    }
+    if start + length > padded - pad {
+        start = start - pad;
+        length = padded - pad - start - pad;
+        dest = length * scale;
+        return 0.0;
+    }
+    start = start - pad;
+    return 0.0;
+}
+
+/// Where run shows its part of the image: the source rectangle in image
+/// pixels in source, and the destination offset into its first cell and
+/// size in dest. False when the run falls outside the image.
+pub fn place_run(run: &PlaceholderRun, fit: &PlaceholderFit, source: &var PixelRect, dest: &var PixelRect) -> bool {
+    if fit.image_width == 0 or fit.image_height == 0 or fit.cell_width == 0 or fit.cell_height == 0 {
+        return false;
+    }
+    let fitted = fit_image(fit);
+    if fitted.columns > 65535.0 or fitted.rows > 65535.0 {
+        return false;
+    }
+    let image_width = cast<f64>(fit.image_width);
+    let image_height = cast<f64>(fit.image_height);
+    let padded_width = image_width + fitted.x_pad * 2.0;
+    let padded_height = image_height + fitted.y_pad * 2.0;
+    var x = padded_width * (cast<f64>(run.image_col) / fitted.columns);
+    var y = padded_height * (cast<f64>(run.image_row) / fitted.rows);
+    var width = padded_width * (cast<f64>(run.width) / fitted.columns);
+    var height = padded_height / fitted.rows;
+    var dest_width = cast<f64>(run.width) * cast<f64>(fit.cell_width);
+    var dest_height = cast<f64>(fit.cell_height);
+    let y_offset = trim_axis(&var y, &var height, &var dest_height, fitted.y_pad, image_height, fitted.scale);
+    let x_offset = trim_axis(&var x, &var width, &var dest_width, fitted.x_pad, image_width, fitted.scale);
+    if width <= 0.0 or height <= 0.0 {
+        return false;
+    }
+    source = PixelRect { x: x, y: y, width: width, height: height };
+    dest = PixelRect { x: x_offset * fitted.scale, y: y_offset * fitted.scale, width: dest_width, height: dest_height };
+    return true;
+}

@@ -2,7 +2,7 @@
 
 Date: 2026-08-07
 
-Amended: 2026-08-23
+Amended: 2026-08-23, 2026-11-17
 
 Status: Accepted
 
@@ -99,6 +99,23 @@ connection while native surfaces render the individual panes.
   capture and must be replayed afterwards as one uninterrupted stream. This
   prevents a hydration reset from cutting an image transfer in half and
   exposing the remaining Base64 as terminal text.
+- Keep the Kitty graphics replies (`ESC _ G ... ESC \`) the projection owes,
+  and drop its other replies. tmux passes the envelope on without answering
+  it, so an `a=q` probe or an error report would otherwise never reach the
+  program. Send them back as the pane's input through the gateway with
+  `send-keys -H`, as typed input goes, without scrolling the projection.
+- Draw Unicode placeholder (`U=1`) images in the core. `libghostty-vt` keeps
+  virtual placements, but its C API leaves the placeholder cells to the host:
+  the frame collector reads each U+10EEEE cell's foreground, underline color,
+  and row, column, and high-byte diacritics, leaves its glyph out, groups
+  adjacent cells into runs as Ghostty's `graphics_unicode.zig` does, and
+  places each run with Ghostty's `renderPlacement` arithmetic. The image is
+  positioned by cells tmux itself redraws, so it follows scrolls, redraws,
+  splits, and hydration with no position tracking of its own. Programs in tmux
+  that need an image to stay put should use placeholders rather than
+  cursor-positioned placements.
+- `just native-tmux-smoke` sends raw RGB, a PNG, a placeholder placement, and
+  an `a=q` probe through tmux's passthrough and checks each lands.
 - When `satin-nvim` deliberately falls back to an interactive TUI inside tmux,
   preload an image.nvim Kitty transport adapter. The adapter reads image.nvim's
   cropped file in the Neovim process, converts it to bounded direct-transfer

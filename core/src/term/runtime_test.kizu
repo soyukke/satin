@@ -1,3 +1,4 @@
+import satin::tmux;
 import std::mem;
 import std::string;
 import std::testing;
@@ -226,4 +227,111 @@ test "a child's output is drained into the terminal and its exit seen" {
     testing::expect(try runtime.working_directory(allocator, &var directory));
     let bytes = directory.as_bytes();
     testing::expect(mem::equal_bytes(bytes, "/tmp"));
+}
+
+
+/// A 4 x 2 PNG of 16-bit RGB samples, red on the left and blue on the
+/// right, base64 as the protocol carries it.
+fn deep_png() -> []u8 {
+    return "iVBORw0KGgoAAAANSUhEUgAAAAQAAAACEAIAAACgWjZ3AAAAFUlEQVR4nGP4/58BCCAkggUkcUkAAI6xD/H1JsyPAAAAAElFTkSuQmCC";
+}
+
+/// Feeds text, with `^` read as ESC, to runtime as tmux's control mode
+/// hands a pane's output over: the passthrough envelope still around it.
+fn project_through_tmux(allocator: Allocator, runtime: &var Runtime, text: []u8) -> !void {
+    var decoder = tmux::new_decoder(0);
+    var shown = string::new(allocator);
+    defer shown.deinit(allocator);
+    var inner = string::new(allocator);
+    defer inner.deinit(allocator);
+    let input = try marked(allocator, text);
+    defer input.deinit(allocator);
+    let bytes = input.as_bytes();
+    try decoder.decode(allocator, bytes, &var shown, &var inner);
+    let output = shown.as_bytes();
+    try runtime.feed_tmux_projection(allocator, output);
+    return;
+}
+
+/// Kitty graphics command, wrapped as a program in tmux sends it.
+fn wrapped_graphics(allocator: Allocator, control: []u8, payload: []u8) -> mem::Error!string::String {
+    var out = try string::from_bytes(allocator, "^Ptmux;^^_G");
+    errdefer out.deinit(allocator);
+    try out.append_bytes(allocator, control);
+    try out.append_byte(allocator, 59);
+    try out.append_bytes(allocator, payload);
+    try out.append_bytes(allocator, "^^");
+    try out.append_byte(allocator, 92);
+    try out.append_byte(allocator, 94);
+    try out.append_byte(allocator, 92);
+    return move out;
+}
+
+test "a PNG a program in tmux passes through is placed" {
+    let allocator = mem::page_allocator();
+    var runtime = try external_runtime(allocator, test_size());
+    defer runtime.deinit(allocator);
+    let command = try wrapped_graphics(allocator, "a=T,f=100,t=d,q=2,i=901,c=20,r=3,C=0", deep_png());
+    defer command.deinit(allocator);
+    let text = command.as_bytes();
+    try project_through_tmux(allocator, &var runtime, text);
+    try runtime.update_model(allocator);
+    try runtime.collect_kitty(allocator);
+    testing::expect(runtime.kitty.placements.len() == 1);
+    let placement = runtime.kitty.placements.get(0) orelse return GhosttyError::Refused;
+    testing::expect(placement.image_id == 901 and placement.image_width == 4 and placement.image_height == 2);
+    testing::expect(placement.pixel_width == 200 and placement.pixel_height == 60);
+    var pixels = string::new(allocator);
+    defer pixels.deinit(allocator);
+    testing::expect(try runtime.kitty.append_pixels(allocator, 901, &var pixels));
+    let rgba = pixels.as_bytes();
+    testing::expect(mem::len(rgba) == 32 and rgba[0] == cast<u8>(255) and rgba[2] == cast<u8>(0));
+    testing::expect(rgba[12] == cast<u8>(0) and rgba[14] == cast<u8>(255));
+}
+
+test "Unicode placeholders in a tmux pane show their virtual placement" {
+    let allocator = mem::page_allocator();
+    var runtime = try external_runtime(allocator, test_size());
+    defer runtime.deinit(allocator);
+    let command = try wrapped_graphics(allocator, "a=T,U=1,f=100,t=d,q=2,i=77,c=4,r=2", deep_png());
+    defer command.deinit(allocator);
+    let text = command.as_bytes();
+    try project_through_tmux(allocator, &var runtime, text);
+    try project_through_tmux(allocator, &var runtime, "^[2;3H^[38;5;77m􎻮̅̅􎻮􎻮􎻮^[3;3H􎻮̍̅􎻮􎻮􎻮^[39m");
+    try runtime.update_model(allocator);
+    try runtime.collect_kitty(allocator);
+    // Cells are 10 x 20 pixels: the 4 x 2 image fills the 40 pixels of the
+    // grid's width, 20 high, centered with 10 above and below.
+    testing::expect(runtime.kitty.placements.len() == 2);
+    let top = runtime.kitty.placements.get(0) orelse return GhosttyError::Refused;
+    let bottom = runtime.kitty.placements.get(1) orelse return GhosttyError::Refused;
+    testing::expect(top.image_id == 77 and top.viewport_row == 1 and top.viewport_col == 2);
+    testing::expect(top.source_y == 0 and top.source_height == 1 and top.source_width == 4);
+    testing::expect(top.y_offset == 10 and top.pixel_height == 10 and top.pixel_width == 40);
+    testing::expect(bottom.viewport_row == 2 and bottom.source_y == 1 and bottom.source_height == 1);
+    testing::expect(bottom.y_offset == 0 and bottom.pixel_height == 10);
+    testing::expect(!try screen_has(allocator, &var runtime, "􎻮"));
+}
+
+test "a tmux projection keeps the Kitty graphics replies it owes" {
+    let allocator = mem::page_allocator();
+    var runtime = try external_runtime(allocator, test_size());
+    defer runtime.deinit(allocator);
+    let command = try wrapped_graphics(allocator, "i=31,s=1,v=1,a=q,t=d,f=24", "AAAA");
+    defer command.deinit(allocator);
+    let text = command.as_bytes();
+    try project_through_tmux(allocator, &var runtime, text);
+    try project(allocator, &var runtime, "^[c");
+    var replies = string::new(allocator);
+    defer replies.deinit(allocator);
+    try runtime.take_graphics_replies(allocator, &var replies);
+    var expected = try marked(allocator, "^_Gi=31;OK^");
+    defer expected.deinit(allocator);
+    try expected.append_byte(allocator, 92);
+    let got = replies.as_bytes();
+    let want = expected.as_bytes();
+    testing::expect(mem::equal_bytes(got, want));
+    replies.clear();
+    try runtime.take_graphics_replies(allocator, &var replies);
+    testing::expect(replies.len() == 0);
 }
