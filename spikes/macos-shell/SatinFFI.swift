@@ -360,6 +360,15 @@ func satinRuntimeWrappedWord(
 @_silgen_name("satin_runtime_title")
 func satinRuntimeTitle(_ handle: UnsafeMutableRawPointer?) -> UnsafeMutablePointer<CChar>?
 
+@_silgen_name("satin_runtime_program_status_revision")
+func satinRuntimeProgramStatusRevision(_ handle: UnsafeMutableRawPointer?) -> UInt64
+
+@_silgen_name("satin_runtime_program_status")
+func satinRuntimeProgramStatus(
+    _ handle: UnsafeMutableRawPointer?,
+    _ revision: UInt64
+) -> UnsafeMutablePointer<CChar>?
+
 @_silgen_name("satin_runtime_take_bell_count")
 func satinRuntimeTakeBellCount(_ handle: UnsafeMutableRawPointer?) -> UInt64
 

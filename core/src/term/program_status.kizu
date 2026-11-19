@@ -1,0 +1,729 @@
+// Program status over OSC 7501 (rev 0.4): a program in the terminal reports
+// whether it is working, waiting on the user, done or failed, and asks first
+// whether the terminal listens. The spec:
+// https://www.superlogical.com/rex/docs/build/program-status
+import std::array;
+import std::mem;
+import std::string;
+
+/// Appends the reply to `OSC 7501 ; ?`: the terminal listens, for every
+/// state and kind of revision 0.4.
+pub fn append_program_status_reply(allocator: Allocator, out: &var string::String) -> mem::Error!void {
+    try out.append_byte(allocator, 27);
+    try out.append_bytes(allocator, "]7501;?:states=idle,working,done,blocked,error:kinds=permission,question,auth");
+    try out.append_byte(allocator, 27);
+    try out.append_byte(allocator, 92);
+    return;
+}
+
+/// The longest report the spec allows, past which a report is dropped.
+fn max_report_bytes() -> i64 {
+    return 4096;
+}
+
+/// The records a terminal keeps; past it the least recently updated goes.
+fn max_records() -> i64 {
+    return 256;
+}
+
+fn state_idle() -> i64 {
+    return 1;
+}
+
+fn state_working() -> i64 {
+    return 2;
+}
+
+fn state_done() -> i64 {
+    return 3;
+}
+
+fn state_blocked() -> i64 {
+    return 4;
+}
+
+fn state_error() -> i64 {
+    return 5;
+}
+
+fn state_clear() -> i64 {
+    return 6;
+}
+
+fn kind_permission() -> i64 {
+    return 1;
+}
+
+fn kind_question() -> i64 {
+    return 2;
+}
+
+fn kind_auth() -> i64 {
+    return 3;
+}
+
+enum ScanState {
+    Ground,
+    Escape,
+    Osc,
+    OscEscape,
+}
+
+/// What one id last reported.
+struct Record {
+    id: string::String,
+    state: i64,
+    kind: i64,
+    app: string::String,
+    message: string::String,
+    touched: u64,
+}
+
+fn (self: Record) deinit(allocator: Allocator) -> void {
+    self.id.deinit(allocator);
+    self.app.deinit(allocator);
+    self.message.deinit(allocator);
+}
+
+/// A report read from one OSC, before it is kept.
+struct Report {
+    state: i64,
+    kind: i64,
+    id: string::String,
+    app: string::String,
+    message: string::String,
+    valid: bool,
+}
+
+fn (self: Report) deinit(allocator: Allocator) -> void {
+    self.id.deinit(allocator);
+    self.app.deinit(allocator);
+    self.message.deinit(allocator);
+}
+
+pub struct ProgramStatus {
+    state: ScanState,
+    payload: string::String,
+    overlong: bool,
+    records: array::Array<Record>,
+    clock: u64,
+    /// Counts each change to what the records say.
+    revision: u64,
+    /// Queries read and not yet answered.
+    queries: i64,
+}
+
+pub fn new_program_status(allocator: Allocator) -> ProgramStatus {
+    return ProgramStatus {
+        state: ScanState::Ground,
+        payload: string::new(allocator),
+        overlong: false,
+        records: array::new<Record>(allocator),
+        clock: 0,
+        revision: 0,
+        queries: 0
+    };
+}
+
+pub fn (self: ProgramStatus) deinit(allocator: Allocator) -> void {
+    self.payload.deinit(allocator);
+    self.records.deinit(allocator);
+}
+
+/// Counts each change to the status the records add up to.
+pub fn (self: &ProgramStatus) revision() -> u64 {
+    return self.revision;
+}
+
+/// The queries read since the last call, each owed a reply.
+pub fn (self: &var ProgramStatus) take_queries() -> i64 {
+    let count = self.queries;
+    self.queries = 0;
+    return count;
+}
+
+/// Reads output for reports and queries. A sequence may be cut anywhere
+/// between two feeds.
+pub fn (self: &var ProgramStatus) feed(allocator: Allocator, bytes: []u8) -> mem::Error!void {
+    for 0..mem::len(bytes) |index| {
+        try self.feed_byte(allocator, bytes[index]);
+    }
+    return;
+}
+
+fn (self: &var ProgramStatus) feed_byte(allocator: Allocator, byte: u8) -> mem::Error!void {
+    let value = cast<i64>(byte);
+    if self.state == ScanState::Ground {
+        if value == 27 {
+            self.state = ScanState::Escape;
+        }
+        return;
+    }
+    if self.state == ScanState::Escape {
+        self.feed_escape(allocator, value);
+        return;
+    }
+    if self.state == ScanState::Osc {
+        if value == 7 {
+            return self.finish(allocator);
+        }
+        if value == 27 {
+            self.state = ScanState::OscEscape;
+            return;
+        }
+        return self.keep(allocator, byte);
+    }
+    if value == 92 {
+        return self.finish(allocator);
+    }
+    // ESC then anything but `\` abandons the string and starts a sequence.
+    self.feed_escape(allocator, value);
+    return;
+}
+
+fn (self: &var ProgramStatus) feed_escape(allocator: Allocator, value: i64) -> void {
+    if value == 93 {
+        self.state = ScanState::Osc;
+        self.payload.clear();
+        self.overlong = false;
+    } else if value == 27 {
+        self.state = ScanState::Escape;
+    } else {
+        if value == 99 {
+            // RIS: a full reset forgets every record.
+            self.clear_all(allocator);
+        }
+        self.state = ScanState::Ground;
+    }
+}
+
+/// Keeps a byte of the OSC while it may still be a 7501 one.
+fn (self: &var ProgramStatus) keep(allocator: Allocator, byte: u8) -> mem::Error!void {
+    if self.overlong {
+        return;
+    }
+    let prefix = "7501;";
+    let length = self.payload.len();
+    if length < mem::len(prefix) and byte != prefix[length] {
+        self.overlong = true;
+        return;
+    }
+    if length >= max_report_bytes() {
+        self.overlong = true;
+        return;
+    }
+    try self.payload.append_byte(allocator, byte);
+    return;
+}
+
+fn (self: &var ProgramStatus) finish(allocator: Allocator) -> mem::Error!void {
+    self.state = ScanState::Ground;
+    let prefix = "7501;";
+    let payload = self.payload.as_bytes();
+    if self.overlong or mem::len(payload) < mem::len(prefix) {
+        return;
+    }
+    let body = payload[mem::len(prefix)..mem::len(payload)];
+    if mem::equal_bytes(body, "?") {
+        self.queries = self.queries + 1;
+        return;
+    }
+    var report = try read_report(allocator, body);
+    defer report.deinit(allocator);
+    if !report.valid {
+        return;
+    }
+    return self.apply(allocator, &var report);
+}
+
+fn (self: &var ProgramStatus) apply(allocator: Allocator, report: &var Report) -> mem::Error!void {
+    let id = report.id.as_bytes();
+    if report.state == state_clear() {
+        if mem::len(id) == 0 {
+            self.clear_all(allocator);
+        } else {
+            self.clear_under(allocator, id);
+        }
+        return;
+    }
+    self.clock = self.clock + 1;
+    var found = -1;
+    for 0..self.records.len() |index| {
+        if self.records.at(index) |record| {
+            let held = record.id.as_bytes();
+            if mem::equal_bytes(held, id) {
+                found = index;
+            }
+        }
+    }
+    if found < 0 and self.records.len() >= max_records() {
+        self.drop_oldest(allocator);
+    }
+    var record = Record {
+        id: try string::from_bytes(allocator, id),
+        state: report.state,
+        kind: report.kind,
+        app: string::new(allocator),
+        message: string::new(allocator),
+        touched: self.clock
+    };
+    errdefer record.deinit(allocator);
+    try record.app.append_string(allocator, &report.app);
+    try record.message.append_string(allocator, &report.message);
+    if found >= 0 {
+        if self.records.remove(found) |old| {
+            old.deinit(allocator);
+        } else |_| {}
+    }
+    try self.records.append(allocator, move record);
+    self.revision = self.revision + 1;
+    return;
+}
+
+fn (self: &var ProgramStatus) clear_all(allocator: Allocator) -> void {
+    if self.records.len() == 0 {
+        return;
+    }
+    while self.records.len() > 0 {
+        if self.records.pop() |record| {
+            record.deinit(allocator);
+        }
+    }
+    self.revision = self.revision + 1;
+}
+
+/// Removes the record of id and every record beneath it.
+fn (self: &var ProgramStatus) clear_under(allocator: Allocator, id: []u8) -> void {
+    var removed = false;
+    var index = self.records.len();
+    while index > 0 {
+        index = index - 1;
+        var beneath = false;
+        if self.records.at(index) |record| {
+            let held = record.id.as_bytes();
+            beneath = mem::equal_bytes(held, id) or
+                (mem::len(held) > mem::len(id) and mem::starts_with(held, id) and held[mem::len(id)] == cast<u8>(47));
+        }
+        if beneath {
+            if self.records.remove(index) |record| {
+                record.deinit(allocator);
+                removed = true;
+            } else |_| {}
+        }
+    }
+    if removed {
+        self.revision = self.revision + 1;
+    }
+}
+
+fn (self: &var ProgramStatus) drop_oldest(allocator: Allocator) -> void {
+    var oldest = -1;
+    var touched: u64 = 0;
+    for 0..self.records.len() |index| {
+        if self.records.at(index) |record| {
+            if oldest < 0 or record.touched < touched {
+                oldest = index;
+                touched = record.touched;
+            }
+        }
+    }
+    if oldest >= 0 {
+        if self.records.remove(oldest) |record| {
+            record.deinit(allocator);
+        } else |_| {}
+    }
+}
+
+/// A new shell prompt ends what was still working or waiting: the program
+/// that reported it is gone. What finished or failed stays.
+pub fn (self: &var ProgramStatus) end_active(allocator: Allocator) -> void {
+    var removed = false;
+    var index = self.records.len();
+    while index > 0 {
+        index = index - 1;
+        var active = false;
+        if self.records.at(index) |record| {
+            active = record.state == state_working() or record.state == state_blocked();
+        }
+        if active {
+            if self.records.remove(index) |record| {
+                record.deinit(allocator);
+                removed = true;
+            } else |_| {}
+        }
+    }
+    if removed {
+        self.revision = self.revision + 1;
+    }
+}
+
+/// Writes the status the records add up to, as a pane status word (idle,
+/// running, waiting, done or failed) and a one-line summary. What waits on
+/// the user comes first, then what works, then what failed, then what is
+/// done. With no record the program is idle.
+pub fn (self: &ProgramStatus) summary(
+    allocator: Allocator,
+    word: &var string::String,
+    line: &var string::String
+) -> mem::Error!void {
+    word.clear();
+    line.clear();
+    var best = -1;
+    var best_rank: i64 = 0;
+    var best_touched: u64 = 0;
+    for 0..self.records.len() |index| {
+        if self.records.at(index) |record| {
+            let rank = state_rank(record.state);
+            if best < 0 or rank > best_rank or (rank == best_rank and record.touched > best_touched) {
+                best = index;
+                best_rank = rank;
+                best_touched = record.touched;
+            }
+        }
+    }
+    if best < 0 {
+        try word.append_bytes(allocator, "idle");
+        return;
+    }
+    if self.records.at(best) |record| {
+        try word.append_bytes(allocator, status_word(record.state));
+        if record.message.len() > 0 {
+            try line.append_string(allocator, &record.message);
+        } else {
+            try append_app_name(allocator, &record.app, line);
+            try line.append_bytes(allocator, " ");
+            try line.append_bytes(allocator, default_summary(record.state, record.kind));
+        }
+    }
+    return;
+}
+
+fn state_rank(state: i64) -> i64 {
+    if state == state_blocked() {
+        return 5;
+    }
+    if state == state_working() {
+        return 4;
+    }
+    if state == state_error() {
+        return 3;
+    }
+    if state == state_done() {
+        return 2;
+    }
+    return 1;
+}
+
+fn status_word(state: i64) -> []u8 {
+    if state == state_working() {
+        return "running";
+    }
+    if state == state_blocked() {
+        return "waiting";
+    }
+    if state == state_done() {
+        return "done";
+    }
+    if state == state_error() {
+        return "failed";
+    }
+    return "idle";
+}
+
+fn default_summary(state: i64, kind: i64) -> []u8 {
+    if state == state_working() {
+        return "working";
+    }
+    if state == state_blocked() {
+        if kind == kind_permission() {
+            return "needs approval";
+        }
+        if kind == kind_auth() {
+            return "needs sign-in";
+        }
+        return "needs input";
+    }
+    if state == state_done() {
+        return "finished";
+    }
+    if state == state_error() {
+        return "failed";
+    }
+    return "ready";
+}
+
+/// The program's name with its first letter capitalized, or "Program".
+fn append_app_name(allocator: Allocator, app: &string::String, out: &var string::String) -> mem::Error!void {
+    let bytes = app.as_bytes();
+    if mem::len(bytes) == 0 {
+        return out.append_bytes(allocator, "Program");
+    }
+    var first = bytes[0];
+    if cast<i64>(first) >= 97 and cast<i64>(first) <= 122 {
+        first = cast<u8>(cast<i64>(first) - 32);
+    }
+    try out.append_byte(allocator, first);
+    try out.append_bytes(allocator, bytes[1..mem::len(bytes)]);
+    return;
+}
+
+/// Reads `key=value` pairs. A malformed pair is skipped; a report with no
+/// valid state, a malformed id, or text that does not decode is invalid.
+fn read_report(allocator: Allocator, body: []u8) -> mem::Error!Report {
+    var report = Report {
+        state: 0,
+        kind: 0,
+        id: string::new(allocator),
+        app: string::new(allocator),
+        message: string::new(allocator),
+        valid: true
+    };
+    errdefer report.deinit(allocator);
+    var start = 0;
+    for 0..mem::len(body) + 1 |index| {
+        if index < mem::len(body) and body[index] != cast<u8>(58) {
+            continue;
+        }
+        try read_pair(allocator, trim(body[start..index]), &var report);
+        start = index + 1;
+    }
+    if report.state == 0 {
+        report.valid = false;
+    }
+    return move report;
+}
+
+fn read_pair(allocator: Allocator, pair: []u8, report: &var Report) -> mem::Error!void {
+    var equals = -1;
+    for 0..mem::len(pair) |index| {
+        if equals < 0 and pair[index] == cast<u8>(61) {
+            equals = index;
+        }
+    }
+    if equals <= 0 {
+        return;
+    }
+    let key = trim(pair[0..equals]);
+    let value = trim(pair[equals + 1..mem::len(pair)]);
+    if !is_key(key) or !is_value(value) {
+        return;
+    }
+    if mem::equal_bytes(key, "state") {
+        report.state = read_state(value);
+    } else if mem::equal_bytes(key, "kind") {
+        report.kind = read_kind(value);
+    } else if mem::equal_bytes(key, "id") {
+        report.id.clear();
+        if !is_id(value) {
+            report.valid = false;
+            return;
+        }
+        try report.id.append_bytes(allocator, value);
+    } else if mem::equal_bytes(key, "app") {
+        report.app.clear();
+        if is_word(value, 32) {
+            try report.app.append_bytes(allocator, value);
+        }
+    } else if mem::equal_bytes(key, "msg") {
+        report.message.clear();
+        if mem::len(value) > 2732 or !try decode_text(allocator, value, &var report.message) {
+            report.valid = false;
+        }
+    }
+    return;
+}
+
+fn read_state(value: []u8) -> i64 {
+    if mem::equal_bytes(value, "idle") {
+        return state_idle();
+    }
+    if mem::equal_bytes(value, "working") {
+        return state_working();
+    }
+    if mem::equal_bytes(value, "done") {
+        return state_done();
+    }
+    if mem::equal_bytes(value, "blocked") {
+        return state_blocked();
+    }
+    if mem::equal_bytes(value, "error") {
+        return state_error();
+    }
+    if mem::equal_bytes(value, "clear") {
+        return state_clear();
+    }
+    return 0;
+}
+
+fn read_kind(value: []u8) -> i64 {
+    if mem::equal_bytes(value, "permission") {
+        return kind_permission();
+    }
+    if mem::equal_bytes(value, "question") {
+        return kind_question();
+    }
+    if mem::equal_bytes(value, "auth") {
+        return kind_auth();
+    }
+    return 0;
+}
+
+fn trim(bytes: []u8) -> []u8 {
+    var first = 0;
+    var end = mem::len(bytes);
+    while first < end and is_space(bytes[first]) {
+        first = first + 1;
+    }
+    while end > first and is_space(bytes[end - 1]) {
+        end = end - 1;
+    }
+    return bytes[first..end];
+}
+
+fn is_space(byte: u8) -> bool {
+    let value = cast<i64>(byte);
+    return value == 32 or value == 9;
+}
+
+fn is_lower(value: i64) -> bool {
+    return value >= 97 and value <= 122;
+}
+
+fn is_alnum(value: i64) -> bool {
+    return is_lower(value) or (value >= 65 and value <= 90) or (value >= 48 and value <= 57);
+}
+
+fn is_key(bytes: []u8) -> bool {
+    if mem::len(bytes) == 0 or mem::len(bytes) > 16 {
+        return false;
+    }
+    for 0..mem::len(bytes) |index| {
+        if !is_lower(cast<i64>(bytes[index])) {
+            return false;
+        }
+    }
+    return true;
+}
+
+/// `[A-Za-z0-9_.,+/=-]*`, which leaves out `:` and `;`.
+fn is_value(bytes: []u8) -> bool {
+    for 0..mem::len(bytes) |index| {
+        let value = cast<i64>(bytes[index]);
+        if !is_alnum(value) and value != 95 and value != 46 and value != 44 and value != 43 and value != 47 and
+            value != 61 and value != 45 {
+            return false;
+        }
+    }
+    return true;
+}
+
+/// `[A-Za-z0-9_.+-]{1,limit}`.
+fn is_word(bytes: []u8, limit: i64) -> bool {
+    if mem::len(bytes) == 0 or mem::len(bytes) > limit {
+        return false;
+    }
+    for 0..mem::len(bytes) |index| {
+        let value = cast<i64>(bytes[index]);
+        if !is_alnum(value) and value != 95 and value != 46 and value != 43 and value != 45 {
+            return false;
+        }
+    }
+    return true;
+}
+
+/// Segments of `[A-Za-z0-9_.+-]{1,32}` joined by `/`, at most 8 deep and
+/// 128 bytes in all.
+fn is_id(bytes: []u8) -> bool {
+    if mem::len(bytes) == 0 or mem::len(bytes) > 128 {
+        return false;
+    }
+    var segments = 0;
+    var start = 0;
+    for 0..mem::len(bytes) + 1 |index| {
+        if index < mem::len(bytes) and bytes[index] != cast<u8>(47) {
+            continue;
+        }
+        if !is_word(bytes[start..index], 32) {
+            return false;
+        }
+        segments = segments + 1;
+        start = index + 1;
+    }
+    return segments <= 8;
+}
+
+fn base64_value(value: i64) -> i64 {
+    if value >= 65 and value <= 90 {
+        return value - 65;
+    }
+    if value >= 97 and value <= 122 {
+        return value - 71;
+    }
+    if value >= 48 and value <= 57 {
+        return value + 4;
+    }
+    if value == 43 {
+        return 62;
+    }
+    if value == 47 {
+        return 63;
+    }
+    return -1;
+}
+
+/// Decodes standard base64, padded or not, into out. False when it is not
+/// base64, decodes past 2048 bytes, or holds a control character.
+fn decode_text(allocator: Allocator, encoded: []u8, out: &var string::String) -> mem::Error!bool {
+    var end = mem::len(encoded);
+    while end > 0 and encoded[end - 1] == cast<u8>(61) {
+        end = end - 1;
+    }
+    if mem::len(encoded) - end > 2 or end % 4 == 1 {
+        return false;
+    }
+    var bits: i64 = 0;
+    var count: i64 = 0;
+    for 0..end |index| {
+        let digit = base64_value(cast<i64>(encoded[index]));
+        if digit < 0 {
+            return false;
+        }
+        bits = (bits * 64 + digit) % 16777216;
+        count = count + 6;
+        if count >= 8 {
+            count = count - 8;
+            let byte = (bits / power_of_two(count)) % 256;
+            if byte < 32 or byte == 127 {
+                return false;
+            }
+            try out.append_byte(allocator, cast<u8>(byte));
+        }
+    }
+    if out.len() > 2048 {
+        return false;
+    }
+    let decoded = out.as_bytes();
+    return !has_c1_control(decoded);
+}
+
+fn power_of_two(exponent: i64) -> i64 {
+    var result: i64 = 1;
+    for 0..exponent |_| {
+        result = result * 2;
+    }
+    return result;
+}
+
+/// Whether UTF-8 text holds U+0080 to U+009F, which are C2 80 to C2 9F.
+fn has_c1_control(bytes: []u8) -> bool {
+    if mem::len(bytes) < 2 {
+        return false;
+    }
+    for 1..mem::len(bytes) |index| {
+        let value = cast<i64>(bytes[index]);
+        if bytes[index - 1] == cast<u8>(194) and value >= 128 and value <= 159 {
+            return true;
+        }
+    }
+    return false;
+}

@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$PWD"
+app="$repo_root/spikes/macos-shell/.build/SatinApplication"
+smoke_root="$(cd "$(mktemp -d "${TMPDIR:-/tmp}/satin-pane-worktree-smoke.XXXXXX")" && pwd -P)"
+repository="$smoke_root/project"
+result_file="$smoke_root/result"
+log_file="$smoke_root/app.log"
+
+cleanup() {
+  rm -rf -- "$smoke_root"
+}
+trap cleanup EXIT INT TERM
+
+# The user's git configuration and hooks stay out of the scratch repository.
+export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
+export GIT_AUTHOR_NAME=Satin GIT_AUTHOR_EMAIL=satin@example.invalid
+export GIT_COMMITTER_NAME=Satin GIT_COMMITTER_EMAIL=satin@example.invalid
+mkdir -p "$repository"
+git -C "$repository" init --quiet --initial-branch=main
+printf 'smoke\n' >"$repository/README"
+git -C "$repository" add README
+git -C "$repository" commit --quiet -m smoke
+
+SATIN_NATIVE_SMOKE_SCENARIO=pane-worktree \
+  SATIN_NATIVE_SMOKE_RESULT="$result_file" \
+  SATIN_NATIVE_SMOKE_WORKTREE_REPO="$repository" \
+  "$app" >"$log_file" 2>&1
+
+if [[ ! -s "$result_file" ]]; then
+  echo "pane worktree smoke failed before result was written" >&2
+  sed -n '1,160p' "$log_file" >&2 || true
+  exit 1
+fi
+
+result="$(cat "$result_file")"
+printf '%s\n' "$result"
+[[ "$result" == ok\ pane-worktree* ]]

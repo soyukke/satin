@@ -8,6 +8,10 @@ private final class NativeBadgeLabel: NSTextField {
 
 let nativePaneChromeHeight: CGFloat = 24
 
+/// The symbol for a worktree, on the button that makes one and beside the
+/// branch of a pane that shows one.
+let nativeWorktreeSymbolName = "arrow.triangle.branch"
+
 func nativePaneContentFrame(_ paneFrame: NSRect) -> NSRect {
     let chromeHeight = min(nativePaneChromeHeight, max(0, paneFrame.height - 1))
     return NSRect(
@@ -23,10 +27,12 @@ enum NativePaneChromeAction: Int {
     case splitVertical
     case splitHorizontal
     case openInFinder
+    case newWorktree
 
     static let standardActions: [Self] = [
         .splitVertical,
         .splitHorizontal,
+        .newWorktree,
         .openInFinder,
         .close,
     ]
@@ -37,6 +43,7 @@ enum NativePaneChromeAction: Int {
         case .splitVertical: "Split Left and Right"
         case .splitHorizontal: "Split Top and Bottom"
         case .openInFinder: "Open Pane Directory in Finder"
+        case .newWorktree: "New Worktree…"
         }
     }
 
@@ -46,6 +53,7 @@ enum NativePaneChromeAction: Int {
         case .splitVertical: "rectangle.split.2x1"
         case .splitHorizontal: "rectangle.split.1x2"
         case .openInFinder: "folder"
+        case .newWorktree: nativeWorktreeSymbolName
         }
     }
 }
@@ -248,6 +256,8 @@ final class NativePaneChromeView: NSView {
 
     private let actions: [NativePaneChromeAction]
     private var buttons: [NativePaneChromeAction: NativeHoverIconButton] = [:]
+    private let worktreeLabel = NativeBadgeLabel(labelWithString: "")
+    private var worktreeBranch: String?
     private var active = true
     private var draggable = false
     private var hoverTrackingArea: NSTrackingArea?
@@ -280,6 +290,14 @@ final class NativePaneChromeView: NSView {
         let actionWidth = min(preferredWidth, bounds.width)
         let buttonWidth = max(1, (actionWidth - spacingWidth) / count)
         let actionOrigin = bounds.maxX - actionWidth
+        let labelOrigin: CGFloat = 22
+        let labelHeight = worktreeLabel.intrinsicContentSize.height
+        worktreeLabel.frame = NSRect(
+            x: labelOrigin,
+            y: floor((bounds.height - labelHeight) / 2),
+            width: max(0, dragHandleRect.width - labelOrigin - 4),
+            height: labelHeight
+        )
         for (index, action) in actions.enumerated() {
             buttons[action]?.frame = NSRect(
                 x: actionOrigin + CGFloat(index) * (buttonWidth + Self.buttonSpacing),
@@ -410,6 +428,47 @@ final class NativePaneChromeView: NSView {
         for button in buttons.values {
             button.setEmphasized(isActive)
         }
+        updateWorktreeLabelColor()
+    }
+
+    /// Shows the branch of the worktree the pane is in, or nothing when it is
+    /// in none. A detached worktree shows as such.
+    func update(worktreeBranch branch: String?) {
+        guard worktreeBranch != branch else {
+            return
+        }
+        worktreeBranch = branch
+        worktreeLabel.isHidden = branch == nil
+        guard let branch else {
+            worktreeLabel.stringValue = ""
+            worktreeLabel.setAccessibilityLabel(nil)
+            return
+        }
+        let text = NSMutableAttributedString()
+        if let symbol = NSImage(
+            systemSymbolName: nativeWorktreeSymbolName,
+            accessibilityDescription: nil
+        )?.withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 10, weight: .medium)) {
+            let attachment = NSTextAttachment()
+            attachment.image = symbol
+            text.append(NSAttributedString(attachment: attachment))
+            text.append(NSAttributedString(string: " "))
+        }
+        text.append(NSAttributedString(string: branch))
+        worktreeLabel.attributedStringValue = text
+        worktreeLabel.setAccessibilityLabel("Worktree \(branch)")
+        updateWorktreeLabelColor()
+        needsLayout = true
+    }
+
+    private func updateWorktreeLabelColor() {
+        let color: NSColor = active ? .secondaryLabelColor : .tertiaryLabelColor
+        let text = NSMutableAttributedString(attributedString: worktreeLabel.attributedStringValue)
+        text.addAttributes(
+            [.foregroundColor: color, .font: NSFont.systemFont(ofSize: 11, weight: .medium)],
+            range: NSRange(location: 0, length: text.length)
+        )
+        worktreeLabel.attributedStringValue = text
     }
 
     func update(isDraggable: Bool) {
@@ -444,6 +503,10 @@ final class NativePaneChromeView: NSView {
     #if SATIN_SMOKE_SCENARIOS
         func actionEnabledForSmoke(_ action: NativePaneChromeAction) -> Bool {
             buttons[action]?.isEnabled == true
+        }
+
+        func worktreeBranchForSmoke() -> String? {
+            worktreeLabel.isHidden ? nil : worktreeBranch
         }
 
         func finderPresentationReadyForSmoke() -> Bool {
@@ -495,6 +558,11 @@ final class NativePaneChromeView: NSView {
     #endif
 
     private func configure() {
+        worktreeLabel.lineBreakMode = .byTruncatingTail
+        worktreeLabel.isHidden = true
+        worktreeLabel.setAccessibilityElement(true)
+        worktreeLabel.setAccessibilityRole(.staticText)
+        addSubview(worktreeLabel)
         for action in actions {
             let button = NativeHoverIconButton(
                 symbolName: action.symbolName,
@@ -511,7 +579,7 @@ final class NativePaneChromeView: NSView {
         setAccessibilityRole(.group)
         setAccessibilityLabel("Pane \(paneId) header")
         setAccessibilityHelp(
-            "Drag the header to move this pane, or use its split, Finder, and close actions."
+            "Drag the header to move this pane, or use its split, worktree, Finder, and close actions."
         )
     }
 

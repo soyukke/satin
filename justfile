@@ -136,6 +136,7 @@ native-smoke-suite:
         ./scripts/native-frame-liveness-smoke; \
         ./scripts/native-terminal-bottom-input-smoke; \
         ./scripts/native-home-cwd-smoke; \
+        ./scripts/native-pane-worktree-smoke; \
         ./scripts/native-terminal-exit-closes-tab-smoke; \
     fi
 
@@ -265,6 +266,10 @@ native-pane-dnd-smoke:
 # Repeatedly verify terminal input and tab switches reach a newly presented Metal frame.
 frame-liveness-smoke:
     @if [[ -z "${IN_NIX_SHELL:-}" ]]; then exec nix develop --command just frame-liveness-smoke; else just native-build && ./scripts/native-frame-liveness-smoke; fi
+
+# Verify a pane makes a worktree beside its repository, opens it in a split, and deletes it on close.
+native-pane-worktree-smoke:
+    @if [[ -z "${IN_NIX_SHELL:-}" ]]; then exec nix develop --command just native-pane-worktree-smoke; else just native-build && ./scripts/native-pane-worktree-smoke; fi
 
 # Verify an empty startup-directory setting resolves to the macOS user home.
 native-home-cwd-smoke:

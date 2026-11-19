@@ -1,0 +1,175 @@
+import std::mem;
+import std::string;
+import std::testing;
+
+/// text with `^` read as ESC, `~` as BEL and a backquote as ST (ESC \).
+fn sequence(allocator: Allocator, text: []u8) -> mem::Error!string::String {
+    var out = string::new(allocator);
+    errdefer out.deinit(allocator);
+    for 0..mem::len(text) |index| {
+        if text[index] == cast<u8>(94) {
+            try out.append_byte(allocator, 27);
+        } else if text[index] == cast<u8>(126) {
+            try out.append_byte(allocator, 7);
+        } else if text[index] == cast<u8>(96) {
+            try out.append_byte(allocator, 27);
+            try out.append_byte(allocator, 92);
+        } else {
+            try out.append_byte(allocator, text[index]);
+        }
+    }
+    return move out;
+}
+
+fn feed_status(allocator: Allocator, status: &var ProgramStatus, text: []u8) -> !void {
+    let bytes = try sequence(allocator, text);
+    defer bytes.deinit(allocator);
+    let view = bytes.as_bytes();
+    try status.feed(allocator, view);
+    return;
+}
+
+fn expect_summary(allocator: Allocator, status: &ProgramStatus, word: []u8, line: []u8) -> !void {
+    var got_word = string::new(allocator);
+    defer got_word.deinit(allocator);
+    var got_line = string::new(allocator);
+    defer got_line.deinit(allocator);
+    try status.summary(allocator, &var got_word, &var got_line);
+    let word_bytes = got_word.as_bytes();
+    let line_bytes = got_line.as_bytes();
+    testing::expect(mem::equal_bytes(word_bytes, word));
+    testing::expect(mem::equal_bytes(line_bytes, line));
+    return;
+}
+
+test "a query in either terminator is owed the reply of revision 0.4" {
+    let allocator = mem::page_allocator();
+    var status = new_program_status(allocator);
+    defer status.deinit(allocator);
+    try feed_status(allocator, &var status, "^]7501;?~text^]7501;?`");
+    testing::expect_equal<i64>(2, status.take_queries());
+    testing::expect_equal<i64>(0, status.take_queries());
+    var reply = string::new(allocator);
+    defer reply.deinit(allocator);
+    try append_program_status_reply(allocator, &var reply);
+    let expected = try sequence(allocator, "^]7501;?:states=idle,working,done,blocked,error:kinds=permission,question,auth`");
+    defer expected.deinit(allocator);
+    let reply_bytes = reply.as_bytes();
+    let expected_bytes = expected.as_bytes();
+    testing::expect(mem::equal_bytes(reply_bytes, expected_bytes));
+}
+
+test "each state reads as a pane status" {
+    let allocator = mem::page_allocator();
+    var status = new_program_status(allocator);
+    defer status.deinit(allocator);
+    try expect_summary(allocator, &status, "idle", "");
+    try feed_status(allocator, &var status, "^]7501;state=working:app=antigravity~");
+    try expect_summary(allocator, &status, "running", "Antigravity working");
+    try feed_status(allocator, &var status, "^]7501;state=blocked:kind=permission:app=antigravity:msg=VHJ1c3QgdGhpcyBmb2xkZXI/~");
+    try expect_summary(allocator, &status, "waiting", "Trust this folder?");
+    try feed_status(allocator, &var status, "^]7501;state=blocked:kind=auth:app=antigravity~");
+    try expect_summary(allocator, &status, "waiting", "Antigravity needs sign-in");
+    try feed_status(allocator, &var status, "^]7501;state=blocked:kind=question~");
+    try expect_summary(allocator, &status, "waiting", "Program needs input");
+    try feed_status(allocator, &var status, "^]7501;state=done:app=build~");
+    try expect_summary(allocator, &status, "done", "Build finished");
+    try feed_status(allocator, &var status, "^]7501;state=error:app=build~");
+    try expect_summary(allocator, &status, "failed", "Build failed");
+    try feed_status(allocator, &var status, "^]7501;state=idle:app=antigravity~");
+    try expect_summary(allocator, &status, "idle", "Antigravity ready");
+}
+
+test "a report reads the same however the output is cut" {
+    let allocator = mem::page_allocator();
+    let report = try sequence(allocator, "x^]2;title~^]7501; state = blocked : kind=question : msg=5pys5b2T77yf `y");
+    defer report.deinit(allocator);
+    let bytes = report.as_bytes();
+    for 0..mem::len(bytes) + 1 |cut| {
+        var status = new_program_status(allocator);
+        defer status.deinit(allocator);
+        try status.feed(allocator, bytes[0..cut]);
+        try status.feed(allocator, bytes[cut..mem::len(bytes)]);
+        try expect_summary(allocator, &status, "waiting", "本当？");
+    }
+}
+
+test "a report that breaks the rules changes nothing" {
+    let allocator = mem::page_allocator();
+    var status = new_program_status(allocator);
+    defer status.deinit(allocator);
+    try feed_status(allocator, &var status, "^]7501;state=working~");
+    let revision = status.revision();
+    // No state, an unknown state, a malformed id, text that is not base64,
+    // and text that decodes to a control character.
+    try feed_status(allocator, &var status, "^]7501;kind=question~^]7501;state=sleeping~^]7501;state=done:id=a//b~");
+    try feed_status(allocator, &var status, "^]7501;state=done:msg=QQ=Q~^]7501;state=done:msg=bGluZQpicmVhaw==~");
+    // An OSC of another number, and one cut short by another sequence.
+    try feed_status(allocator, &var status, "^]75011;state=done~^]7501;state=done^[0m");
+    testing::expect(status.revision() == revision);
+    try expect_summary(allocator, &status, "running", "Program working");
+    // Unknown keys and malformed pairs, such as a value with a character
+    // the grammar leaves out, are skipped; the rest still counts.
+    try feed_status(allocator, &var status, "^]7501;state=done:future=1:broken:app=@@:msg=ZG9uZQ~");
+    try expect_summary(allocator, &status, "done", "done");
+}
+
+test "a report past the length limit is dropped" {
+    let allocator = mem::page_allocator();
+    var status = new_program_status(allocator);
+    defer status.deinit(allocator);
+    var text = string::new(allocator);
+    defer text.deinit(allocator);
+    try text.append_bytes(allocator, "^]7501;state=done:pad=");
+    for 0..4100 |_| {
+        try text.append_byte(allocator, 120);
+    }
+    try text.append_bytes(allocator, "~");
+    let bytes = text.as_bytes();
+    try feed_status(allocator, &var status, bytes);
+    testing::expect(status.revision() == 0);
+}
+
+test "records add up to what most needs the user" {
+    let allocator = mem::page_allocator();
+    var status = new_program_status(allocator);
+    defer status.deinit(allocator);
+    try feed_status(allocator, &var status, "^]7501;state=working:app=build~^]7501;state=done:id=tests:app=build~");
+    try expect_summary(allocator, &status, "running", "Build working");
+    try feed_status(allocator, &var status, "^]7501;state=blocked:id=deploy/us-east:kind=permission:app=build~");
+    try expect_summary(allocator, &status, "waiting", "Build needs approval");
+    // Clearing a record clears what lies beneath it.
+    try feed_status(allocator, &var status, "^]7501;state=clear:id=deploy~");
+    try expect_summary(allocator, &status, "running", "Build working");
+    try feed_status(allocator, &var status, "^]7501;state=clear~");
+    try expect_summary(allocator, &status, "idle", "");
+}
+
+test "a new prompt ends what still worked or waited, and a reset ends all" {
+    let allocator = mem::page_allocator();
+    var status = new_program_status(allocator);
+    defer status.deinit(allocator);
+    try feed_status(allocator, &var status, "^]7501;state=working~^]7501;state=done:id=tests:app=build~");
+    status.end_active(allocator);
+    try expect_summary(allocator, &status, "done", "Build finished");
+    try feed_status(allocator, &var status, "^c");
+    try expect_summary(allocator, &status, "idle", "");
+}
+
+test "the oldest record goes past the limit" {
+    let allocator = mem::page_allocator();
+    var status = new_program_status(allocator);
+    defer status.deinit(allocator);
+    try feed_status(allocator, &var status, "^]7501;state=blocked:id=first:app=old~");
+    for 0..256 |index| {
+        var text = string::new(allocator);
+        defer text.deinit(allocator);
+        try text.append_bytes(allocator, "^]7501;state=done:app=new:id=r");
+        try text.append_byte(allocator, cast<u8>(97 + index % 26));
+        try text.append_byte(allocator, cast<u8>(97 + index / 26));
+        try text.append_bytes(allocator, "~");
+        let bytes = text.as_bytes();
+        try feed_status(allocator, &var status, bytes);
+    }
+    try expect_summary(allocator, &status, "done", "New finished");
+}

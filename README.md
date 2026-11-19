@@ -72,7 +72,10 @@ and changes across the workspace.
   tmux session, or agent status, with inline activity excerpts, a current-screen
   text preview, and a compact toolbar attention badge. Codex and Claude Code
   lifecycle classification works in local and projected tmux panes without
-  scraping terminal screen text.
+  scraping terminal screen text. Programs that report their status over
+  [OSC 7501](https://www.superlogical.com/rex/docs/build/program-status)
+  (rev 0.4), such as the Antigravity CLI (`agy`), are answered and classified
+  the same way.
 - A windows sidebar on the left that lists every tab on one line, with its
   state, how long it has been so, and how long it has waited, and an items
   sidebar on the right that keeps the pages and the commands, quotes, links,
@@ -344,6 +347,10 @@ loaded.
 `command claude`, or `SATIN_DISABLE_AGENT_INTEGRATION=1` retains an opt-out path.
 Activity then uses emitted terminal-title events, so Satin does not replace the
 user's single machine-level Codex `notify` command.
+A program that asks with `OSC 7501 ; ?` gets Satin's answer, through `send-keys`
+in a projected tmux pane, and then reports `working`, `blocked`, `done`, or
+`error` with no hook to install. A new shell prompt ends a report that was still
+working or blocked.
 The Unix socket is owner-only, verifies the peer UID, and has bounded request,
 client, and timeout limits; it is not a remote-control interface. See
 [`docs/satin-cli.md`](docs/satin-cli.md) for commands, JSON behavior, and the
@@ -363,7 +370,11 @@ security boundary.
 - `Command-1` through `Command-8`: select that tab; `Command-9`: select the last tab
 - `Command-R`: rename the active tab
 - a borderless new-tab action immediately after the native tab strip
-- per-pane vertical split, horizontal split, Finder-directory, and `×` actions
+- per-pane vertical split, horizontal split, new worktree, Finder-directory, and
+  `×` actions. A worktree is made next to its repository, in
+  `<repository>.worktrees/<branch>`, and opens in a new pane whose header shows
+  its branch. Closing the last pane of a worktree offers to delete it; a
+  worktree with uncommitted changes is kept, and its branch always stays.
 - right-side toolbar actions for the page binder and Work Switcher
 - `Command-N`: open the unified native Neovim UI while retaining the current shell
 - `Command-C`, `Command-V`, `Command-A`, `Command-F`: copy, paste, select all,

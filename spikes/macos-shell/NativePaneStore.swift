@@ -8,6 +8,8 @@ final class NativePaneStore {
     var workingDirectories: [Int: String] = [:]
     var modes: [Int: NativePaneMode] = [:]
     var titles: [Int: String] = [:]
+    /// The program status revision each pane's status last took.
+    var programStatusRevisions: [Int: UInt64] = [:]
     var visibleFrames: [Int: NSRect] = [:]
     var wakeupSources: [Int: DispatchSourceRead] = [:]
     var suspendedWakeupSources: [Int: DispatchSourceRead] = [:]
@@ -20,5 +22,6 @@ final class NativePaneStore {
         workingDirectories.removeValue(forKey: paneId)
         modes.removeValue(forKey: paneId)
         titles.removeValue(forKey: paneId)
+        programStatusRevisions.removeValue(forKey: paneId)
     }
 }

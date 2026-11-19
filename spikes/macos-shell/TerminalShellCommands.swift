@@ -9,9 +9,16 @@ enum NativeTabMoveFailure: Error {
 
 let nativeTmuxCurrentPaneDirectoryArgument = "'#{pane_current_path}'"
 
-func nativeTmuxSplitCommand(horizontal: Bool, targetPaneId: UInt32) -> String {
+/// tmux's command to split a pane, opening the new one in directory, or in
+/// the pane's own directory when none is given.
+func nativeTmuxSplitCommand(
+    horizontal: Bool,
+    targetPaneId: UInt32,
+    directory: String? = nil
+) -> String {
     let flag = horizontal ? "-h" : "-v"
-    return "split-window \(flag) -c \(nativeTmuxCurrentPaneDirectoryArgument) -t %\(targetPaneId)"
+    let cwd = directory.map(tmuxCommandArgument) ?? nativeTmuxCurrentPaneDirectoryArgument
+    return "split-window \(flag) -c \(cwd) -t %\(targetPaneId)"
 }
 
 func nativeTmuxNewWindowCommand() -> String {
@@ -24,6 +31,8 @@ func runNativeTmuxCreationCommandSelfTests() -> Bool {
             == "split-window -h -c '#{pane_current_path}' -t %7"
         && nativeTmuxSplitCommand(horizontal: false, targetPaneId: 42)
             == "split-window -v -c '#{pane_current_path}' -t %42"
+        && nativeTmuxSplitCommand(horizontal: true, targetPaneId: 3, directory: "/a b")
+            == "split-window -h -c \"\\057\\141\\040\\142\" -t %3"
 }
 
 extension TerminalShellViewController {
@@ -237,6 +246,9 @@ extension TerminalShellViewController {
             splitPane(paneId, axis: ffiSplitHorizontal)
         case .openInFinder:
             _ = openPaneDirectoryInFinder(paneId: paneId)
+        case .newWorktree:
+            requestNewWorktree(paneId: paneId)
+            return
         }
         focusTerminal()
     }
@@ -258,7 +270,9 @@ extension TerminalShellViewController {
         return true
     }
 
-    private func splitPane(_ paneId: Int?, axis: UInt32) {
+    /// Splits the pane; the new pane opens in cwd, or in the pane's directory
+    /// when none is given.
+    func splitPane(_ paneId: Int?, axis: UInt32, cwd requestedCwd: String? = nil) {
         guard let paneId else {
             return
         }
@@ -271,7 +285,8 @@ extension TerminalShellViewController {
                 session.gateway.tmuxCommand(
                     nativeTmuxSplitCommand(
                         horizontal: axis == ffiSplitVertical,
-                        targetPaneId: tmuxPaneId
+                        targetPaneId: tmuxPaneId,
+                        directory: requestedCwd
                     ))
             else {
                 presentTmuxSessionError("Satin could not split the tmux pane.")
@@ -279,7 +294,7 @@ extension TerminalShellViewController {
             }
             return
         }
-        guard let cwd = inheritedPaneWorkingDirectory(paneId: paneId) else {
+        guard let cwd = requestedCwd ?? inheritedPaneWorkingDirectory(paneId: paneId) else {
             presentPaneWorkingDirectoryError(title: "Could Not Split Pane")
             return
         }
@@ -300,7 +315,7 @@ extension TerminalShellViewController {
         syncFromCore()
     }
 
-    private func closePane(_ paneId: Int?) {
+    func closePane(_ paneId: Int?) {
         guard let paneId else {
             return
         }
@@ -674,6 +689,14 @@ extension TerminalShellViewController {
     /// Closes the pane, first asking when a program other than its shell runs
     /// in it. Closing a tab's last pane closes the tab, so this guards that too.
     private func requestClosingPane(_ paneId: Int?) {
+        if let paneId, let worktree = worktreeClosedWithPane(paneId) {
+            confirmClosingWorktreePane(
+                paneId,
+                worktree: worktree,
+                busy: closingBusyPaneNeedsConfirmation && paneRunsProgram(paneId)
+            )
+            return
+        }
         guard let paneId, closingBusyPaneNeedsConfirmation, paneRunsProgram(paneId) else {
             closePane(paneId)
             return

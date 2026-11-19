@@ -63,6 +63,8 @@ native_swift_sources=(
   spikes/macos-shell/NativePageDocument.swift
   spikes/macos-shell/NativeSidebarModel.swift
   spikes/macos-shell/NativeGitHubList.swift
+  spikes/macos-shell/NativeGitWorktree.swift
+  spikes/macos-shell/TerminalShellWorktree.swift
   spikes/macos-shell/NativeSidebarDrawing.swift
   spikes/macos-shell/NativeWindowsSidebarView.swift
   spikes/macos-shell/NativeItemsSidebarView.swift
@@ -96,6 +98,7 @@ native_smoke_swift_sources=(
   spikes/macos-shell/NativeSmokeFrameLivenessScenarios.swift
   spikes/macos-shell/NativeSmokeHomeCwdScenarios.swift
   spikes/macos-shell/NativeSmokePaneFinderSupport.swift
+  spikes/macos-shell/NativeSmokePaneWorktreeScenarios.swift
   spikes/macos-shell/NativeSmokePaneDragScenarios.swift
   spikes/macos-shell/NativeSmokeNvimHelpers.swift
   spikes/macos-shell/NativeSmokeNvimLayoutScenarios.swift

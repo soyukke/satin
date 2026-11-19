@@ -105,9 +105,9 @@ extension TerminalShellViewController {
                 if changed, tmuxSession?.gatewayPaneId != paneId {
                     observeShellCommand(terminal, paneId: paneId)
                 }
-                if terminal is TmuxPane {
-                    updateTerminalBells(terminal)
-                } else if tmuxSession?.gatewayPaneId != paneId {
+                // A tmux pane's output arrives with the tmux events below, and
+                // its bells and status are read after it.
+                if !(terminal is TmuxPane), tmuxSession?.gatewayPaneId != paneId {
                     updateTerminalMetadata(terminal, paneId: paneId)
                 }
             } else if let neovim = pane as? NeovimPane {
@@ -125,6 +125,12 @@ extension TerminalShellViewController {
         }
         for item in tmuxEvents {
             handleTmuxEvent(item.event, gatewayPaneId: item.paneId, gateway: item.pane)
+        }
+        for (paneId, pane) in paneStore.runtimes {
+            if let tmuxPane = pane as? TmuxPane {
+                updateTerminalBells(tmuxPane)
+                updateProgramStatus(tmuxPane, paneId: paneId)
+            }
         }
         for paneId in exitedNvimPanes {
             replaceExitedNeovimPane(paneId)
@@ -345,6 +351,10 @@ extension TerminalShellViewController {
         session.latestPanes = Dictionary(
             uniqueKeysWithValues: paneSnapshots.map { ($0.pane_id, $0) }
         )
+        // A tmux pane's directory arrives here, and with it its worktree.
+        defer {
+            terminalTextView.refreshPaneChromeActionAvailability()
+        }
         let nextNativePaneIds = Dictionary(
             uniqueKeysWithValues: paneSnapshots.map {
                 ($0.pane_id, session.nativePaneId($0.pane_id))
@@ -597,6 +607,7 @@ extension TerminalShellViewController {
             paneStore.workingDirectories.removeValue(forKey: paneId)
             paneStore.modes.removeValue(forKey: paneId)
             paneStore.titles.removeValue(forKey: paneId)
+            paneStore.programStatusRevisions.removeValue(forKey: paneId)
             closed = core.closePane(paneId) || closed
         }
         guard closed else {
@@ -665,6 +676,21 @@ extension TerminalShellViewController {
         }
         let bells = pane.takeBellCount()
         handleTerminalBells(bells)
+        updateProgramStatus(pane, paneId: paneId)
+    }
+
+    /// Takes what a program reported of its status over OSC 7501, as an
+    /// agent's hooks would report it.
+    func updateProgramStatus(_ pane: TerminalPane, paneId: Int) {
+        guard
+            let reported = pane.programStatus(
+                after: paneStore.programStatusRevisions[paneId] ?? 0
+            )
+        else {
+            return
+        }
+        paneStore.programStatusRevisions[paneId] = reported.revision
+        paneStatuses.update(paneId: paneId, status: reported.status, summary: reported.summary)
     }
 
     private func updateNeovimMetadata(cwd: String, paneId: Int) {

@@ -372,6 +372,21 @@ class TerminalPane: NativePane {
         satinRuntimeTakeBellCount(handle)
     }
 
+    /// What programs in the pane last reported of their status over OSC 7501,
+    /// as a pane status word and a summary; nil while it is still at revision.
+    func programStatus(after revision: UInt64) -> (
+        revision: UInt64, status: String, summary: String
+    )? {
+        let current = satinRuntimeProgramStatusRevision(handle)
+        guard current != revision,
+            let text = ownedCoreString(satinRuntimeProgramStatus(handle, revision))
+        else {
+            return nil
+        }
+        let parts = text.split(separator: "\n", maxSplits: 1, omittingEmptySubsequences: false)
+        return (current, String(parts[0]), parts.count > 1 ? String(parts[1]) : "")
+    }
+
     /// The commands the shell's prompt marks say it started and finished,
     /// the last one's exit status, and whether a program holds the whole
     /// screen.
