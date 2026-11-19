@@ -574,7 +574,12 @@ fn (self: &var Control) push_output(allocator: Allocator, pane: i64, data: []u8)
     try decoder.decode(allocator, data, &var all, &var passthrough);
     if self.decoders.set(decoder_at, decoder) {} else |_| {}
     let tracker_at = try self.tracker_index(allocator, pane);
-    var update = ScrollUpdate { rows: 0, has_region: false, region: Region { top: 0, bottom: 0, left: 0, right: 0 } };
+    var update = ScrollUpdate {
+        rows: 0,
+        has_region: false,
+        region: Region { top: 0, bottom: 0, left: 0, right: 0 },
+        named: false
+    };
     let all_bytes = all.as_bytes();
     if self.trackers.at_mut(tracker_at) |tracker| {
         if tracker.feed(allocator, all_bytes) |fed| {

@@ -55,7 +55,7 @@ test "reads a Satin rectangular scroll event" {
     let allocator = mem::page_allocator();
     var tracker = new_tracker(allocator, 1);
     defer tracker.deinit(allocator);
-    expect_update(try feed_tracker(allocator, &var tracker, "\e]777;SatinScroll;1;31;2;47;26;160\e\\"), 24, true, 2, 47, 26, 160);
+    expect_update(try feed_tracker(allocator, &var tracker, "\e]777;SatinScroll;1;31;2;47;26;160\e\\"), 31, true, 2, 47, 26, 160);
 }
 
 test "ignores cursor and control string updates" {
@@ -73,4 +73,112 @@ test "reads scroll up and down sequences" {
     expect_update(try feed_tracker(allocator, &var tracker, "\e[3S"), 3, false, 0, 0, 0, 0);
     expect_update(try feed_tracker(allocator, &var tracker, "\e[2T"), -2, false, 0, 0, 0, 0);
     expect_update(try feed_tracker(allocator, &var tracker, "\e[L"), -1, false, 0, 0, 0, 0);
+}
+
+test "UTF-8 text never starts a control sequence" {
+    let allocator = mem::page_allocator();
+    var tracker = new_tracker(allocator, 1);
+    defer tracker.deinit(allocator);
+    // Every value of a C1 control is also a UTF-8 continuation byte.
+    for 128..160 |value| {
+        var glyph = [3]u8{};
+        let bytes = glyph.as_mut_bytes();
+        bytes[0] = cast<u8>(238);
+        bytes[1] = cast<u8>(value);
+        bytes[2] = cast<u8>(128);
+        expect_update(try tracker.feed(allocator, bytes), 0, false, 0, 0, 0, 0);
+        expect_update(try feed_tracker(allocator, &var tracker, "\e[1;38r\e[H\e[19M\e[r"), 19, true, 1, 38, 0, 0);
+    }
+}
+
+test "UTF-8 inside a control string does not end it" {
+    let allocator = mem::page_allocator();
+    var tracker = new_tracker(allocator, 1);
+    defer tracker.deinit(allocator);
+    expect_update(try feed_tracker(allocator, &var tracker, "\eP本\e[8M\e\\"), 0, false, 0, 0, 0, 0);
+    expect_update(try feed_tracker(allocator, &var tracker, "\e]2;本\e[8M\a"), 0, false, 0, 0, 0, 0);
+}
+
+test "a scroll between side margins stays between them" {
+    let allocator = mem::page_allocator();
+    var tracker = new_tracker(allocator, 1);
+    defer tracker.deinit(allocator);
+    expect_update(try feed_tracker(allocator, &var tracker, "\e[1;38r\e[?69h\e[32;120s\e[1;32H\e[19M\e[r\e[1;120s\e[?69l"), 19, true, 1, 38, 32, 120);
+    // Once the margins are off, a scroll spans the rows again.
+    expect_update(try feed_tracker(allocator, &var tracker, "\e[1;38r\e[3M\e[r"), 3, true, 1, 38, 0, 0);
+}
+
+test "side margins count only while they are on" {
+    let allocator = mem::page_allocator();
+    var tracker = new_tracker(allocator, 1);
+    defer tracker.deinit(allocator);
+    expect_update(try feed_tracker(allocator, &var tracker, "\e[1;38r\e[5;9s\e[2M\e[r"), 2, true, 1, 38, 0, 0);
+}
+
+test "a program that names its scrolls owns them until it leaves the screen" {
+    let allocator = mem::page_allocator();
+    var tracker = new_tracker(allocator, 1);
+    defer tracker.deinit(allocator);
+    let named = try feed_tracker(allocator, &var tracker, "\e]777;SatinScroll;2;19;1;38;32;120\a");
+    expect_update(named, 19, true, 1, 38, 32, 120);
+    testing::expect(named.named);
+    testing::expect(tracker.program_names_scrolls());
+    // How it draws what it named is not another scroll, in any region.
+    expect_update(try feed_tracker(allocator, &var tracker, "\e[1;38r\e[?69h\e[32;120s\e[19M\e[r\e[1;120s\e[?69l"), 0, false, 0, 0, 0, 0);
+    expect_update(try feed_tracker(allocator, &var tracker, "\e[1;38r\e[4M\e[r"), 0, false, 0, 0, 0, 0);
+    let left = try feed_tracker(allocator, &var tracker, "\e[?1049l\e[1;38r\e[2M\e[r");
+    expect_update(left, 2, true, 1, 38, 0, 0);
+    testing::expect(!left.named);
+    testing::expect(!tracker.program_names_scrolls());
+}
+
+test "a terminal reset ends a program's naming its scrolls" {
+    let allocator = mem::page_allocator();
+    var tracker = new_tracker(allocator, 1);
+    defer tracker.deinit(allocator);
+    expect_update(try feed_tracker(allocator, &var tracker, "\e]777;SatinScroll;2;1;1;9;1;80\a"), 1, true, 1, 9, 1, 80);
+    expect_update(try feed_tracker(allocator, &var tracker, "\ec\e[2S"), 2, false, 0, 0, 0, 0);
+}
+
+test "version 1 names one scroll and leaves the output's to count" {
+    let allocator = mem::page_allocator();
+    var tracker = new_tracker(allocator, 1);
+    defer tracker.deinit(allocator);
+    let named = try feed_tracker(allocator, &var tracker, "\e]777;SatinScroll;1;3;1;9;4;20\a");
+    expect_update(named, 3, true, 1, 9, 4, 20);
+    testing::expect(named.named);
+    testing::expect(!tracker.program_names_scrolls());
+    expect_update(try feed_tracker(allocator, &var tracker, "\e[1;9r\e[2M\e[r"), 2, true, 1, 9, 0, 0);
+}
+
+test "a scroll keeps every row it moved" {
+    let allocator = mem::page_allocator();
+    var tracker = new_tracker(allocator, 1);
+    defer tracker.deinit(allocator);
+    expect_update(try feed_tracker(allocator, &var tracker, "\e]777;SatinScroll;2;-2000;1;69;32;125\a"), -2000, true, 1, 69, 32, 125);
+    expect_update(try feed_tracker(allocator, &var tracker, "\ec\e[1;71r\e[34M\e[r"), 34, true, 1, 71, 0, 0);
+}
+
+test "a scroll OSC of another version or an impossible size is none" {
+    let allocator = mem::page_allocator();
+    var tracker = new_tracker(allocator, 1);
+    defer tracker.deinit(allocator);
+    expect_update(try feed_tracker(allocator, &var tracker, "\e]777;SatinScroll;3;1;1;9;1;80\a"), 0, false, 0, 0, 0, 0);
+    expect_update(try feed_tracker(allocator, &var tracker, "\e]777;SatinScroll;2;99999999;1;9;1;80\a"), 0, false, 0, 0, 0, 0);
+    testing::expect(!tracker.program_names_scrolls());
+}
+
+test "output reads the same however it is cut" {
+    let allocator = mem::page_allocator();
+    let input = try escaped(allocator, "本\e]777;SatinScroll;2;3;1;9;4;20\a\e[?2026h\e[1;9r\e[2M\e[r本\e[?2026l");
+    defer input.deinit(allocator);
+    let bytes = input.as_bytes();
+    for 0..mem::len(bytes) + 1 |cut| {
+        var tracker = new_tracker(allocator, 1);
+        defer tracker.deinit(allocator);
+        let head = try tracker.feed(allocator, bytes[0..cut]);
+        let tail = try tracker.feed(allocator, bytes[cut..mem::len(bytes)]);
+        testing::expect_equal<i64>(3, head.rows + tail.rows);
+        testing::expect(tracker.program_names_scrolls());
+    }
 }

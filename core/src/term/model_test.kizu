@@ -94,8 +94,15 @@ fn region_scroll(rows: i64, top: i64, bottom: i64, left: i64, right: i64) -> tmu
     return tmux::ScrollUpdate {
         rows: rows,
         has_region: true,
-        region: tmux::Region { top: top, bottom: bottom, left: left, right: right }
+        region: tmux::Region { top: top, bottom: bottom, left: left, right: right },
+        named: false
     };
+}
+
+fn named_scroll(rows: i64, top: i64, bottom: i64, left: i64, right: i64) -> tmux::ScrollUpdate {
+    var update = region_scroll(rows, top, bottom, left, right);
+    update.named = true;
+    return update;
 }
 
 test "draws a frame into one window" {
@@ -231,6 +238,115 @@ test "output streaming in shows each frame where it is" {
     testing::expect(position_is(&model, -1.0));
 }
 
+test "scrolls a program names slide however close they come" {
+    let allocator = mem::page_allocator();
+    var model = try new_render_model(allocator, 16, 6);
+    defer model.deinit(allocator);
+    model.set_clock(1000);
+    try show(allocator, &var model, "one/two/three/four/five/#status");
+    model.set_clock(3000);
+    model.record_scroll_update(named_scroll(1, 1, 5, 1, 16));
+    try show(allocator, &var model, "two/three/four/five/six/#status");
+    testing::expect(position_is(&model, -1.0));
+    model.set_clock(3080);
+    model.record_scroll_update(named_scroll(1, 1, 5, 1, 16));
+    try show(allocator, &var model, "three/four/five/six/seven/#status");
+    testing::expect(position_is(&model, -2.0));
+}
+
+test "a named scroll starts on the frame that shows its rows" {
+    let allocator = mem::page_allocator();
+    var model = try new_render_model(allocator, 16, 10);
+    defer model.deinit(allocator);
+    model.set_clock(1000);
+    try show(allocator, &var model, "#title/one/two/three/four/five/six/seven/> /#status");
+    model.set_clock(3000);
+    model.record_scroll_update(named_scroll(1, 2, 9, 4, 16));
+    try show(allocator, &var model, "#title/one/two/three/four/five/six/seven/> /#status");
+    testing::expect(position_is(&model, 0.0));
+    model.set_clock(3004);
+    try show(allocator, &var model, "#title/two/three/four/five/six/seven/eight/> /#status");
+    testing::expect(position_is(&model, -1.0));
+    testing::expect(model.window.margins.left == 3);
+    testing::expect(model.window.margins.top == 1);
+    testing::expect(model.window.margins.bottom == 1);
+}
+
+test "a named scroll whose rows never change is dropped" {
+    let allocator = mem::page_allocator();
+    var model = try new_render_model(allocator, 16, 6);
+    defer model.deinit(allocator);
+    model.set_clock(1000);
+    try show(allocator, &var model, "same/same/same/same/same/#status");
+    model.set_clock(3000);
+    model.record_scroll_update(named_scroll(1, 1, 5, 1, 16));
+    try show(allocator, &var model, "same/same/same/same/same/#status");
+    model.set_clock(3499);
+    try show(allocator, &var model, "same/same/same/same/same/#status");
+    testing::expect(position_is(&model, 0.0));
+    model.set_clock(3500);
+    try show(allocator, &var model, "same/same/same/same/same/#status");
+    // What changes after it has nothing to do with that scroll.
+    model.set_clock(3600);
+    try show(allocator, &var model, "other/same/same/same/same/#status");
+    testing::expect(position_is(&model, 0.0));
+}
+
+test "a named scroll still waiting takes the rows that come in time" {
+    let allocator = mem::page_allocator();
+    var model = try new_render_model(allocator, 16, 6);
+    defer model.deinit(allocator);
+    model.set_clock(1000);
+    try show(allocator, &var model, "one/two/three/four/five/#status");
+    model.set_clock(3000);
+    model.record_scroll_update(named_scroll(2, 1, 5, 1, 16));
+    try show(allocator, &var model, "one/two/three/four/five/#status");
+    model.set_clock(3499);
+    try show(allocator, &var model, "three/four/five/six/seven/#status");
+    testing::expect(position_is(&model, -2.0));
+}
+
+test "a named jump past the window slides as a jump" {
+    let allocator = mem::page_allocator();
+    var model = try new_render_model(allocator, 16, 6);
+    defer model.deinit(allocator);
+    model.set_clock(1000);
+    try show(allocator, &var model, "one/two/three/four/five/#status");
+    model.set_clock(3000);
+    model.record_scroll_update(named_scroll(2000, 1, 5, 1, 16));
+    try show(allocator, &var model, "x1/x2/x3/x4/x5/#status");
+    testing::expect(position_is(&model, -1.0));
+}
+
+test "a program that names its scrolls is not read for them" {
+    let allocator = mem::page_allocator();
+    var model = try new_render_model(allocator, 16, 10);
+    defer model.deinit(allocator);
+    model.set_program_names_scrolls(true);
+    try show(allocator, &var model, "#title/one/two/three/four/five/six/seven/> /#status");
+    try show(allocator, &var model, "#title/three/four/five/six/seven/eight/nine/> /#status");
+    testing::expect(position_is(&model, 0.0));
+    model.set_program_names_scrolls(false);
+    try show(allocator, &var model, "#title/four/five/six/seven/eight/nine/ten/> /#status");
+    testing::expect(position_is(&model, -1.0));
+}
+
+test "scrolls named on the primary screen still settle while they stream" {
+    let allocator = mem::page_allocator();
+    var model = try new_render_model(allocator, 16, 6);
+    defer model.deinit(allocator);
+    model.set_clock(1000);
+    try show_primary(allocator, &var model, "one/two/three/four/five/prompt>", 0, 6);
+    model.set_clock(3000);
+    model.record_scroll_delta(1);
+    try show_primary(allocator, &var model, "two/three/four/five/six/prompt>", 0, 6);
+    testing::expect(position_is(&model, -1.0));
+    model.set_clock(3080);
+    model.record_scroll_delta(1);
+    try show_primary(allocator, &var model, "three/four/five/six/seven/prompt>", 0, 6);
+    testing::expect(position_is(&model, 0.0));
+}
+
 test "the rows a program keeps at the foot stay still while output scrolls" {
     let allocator = mem::page_allocator();
     var model = try new_render_model(allocator, 16, 6);
@@ -274,6 +390,17 @@ test "the rows between a still head and foot scroll together" {
     testing::expect(position_is(&model, -2.0));
     testing::expect(model.window.margins.top == 1);
     testing::expect(model.window.margins.bottom == 3);
+}
+
+test "rows beside a column that stays still are not a scroll of the whole row" {
+    let allocator = mem::page_allocator();
+    var model = try new_render_model(allocator, 16, 9);
+    defer model.deinit(allocator);
+    try show(allocator, &var model, "a  |one/b  |two/c  |three/   |four/   |five/   |six/   |seven/   |eight/#status");
+    try show(allocator, &var model, "a  |two/b  |three/c  |four/   |five/   |six/   |seven/   |eight/   |nine/#status");
+    testing::expect(position_is(&model, 0.0));
+    try show(allocator, &var model, "a  |one/b  |two/c  |three/   |four/   |five/   |six/   |seven/   |eight/#status");
+    testing::expect(position_is(&model, 0.0));
 }
 
 test "rows that change without moving do not scroll" {

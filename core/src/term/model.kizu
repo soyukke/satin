@@ -10,7 +10,8 @@ fn no_scroll() -> tmux::ScrollUpdate {
     return tmux::ScrollUpdate {
         rows: 0,
         has_region: false,
-        region: tmux::Region { top: 0, bottom: 0, left: 0, right: 0 }
+        region: tmux::Region { top: 0, bottom: 0, left: 0, right: 0 },
+        named: false
     };
 }
 
@@ -73,11 +74,23 @@ pub struct RenderModel {
     /// When output last scrolled.
     has_last_scroll: bool,
     last_scroll_millis: i64,
+    /// Whether the program on the screen names each of its scrolls, so that
+    /// its rows need no reading for one.
+    program_names_scrolls: bool,
+    /// Since when a scroll the program named waits for its rows.
+    named_scroll_waiting: bool,
+    named_scroll_since_millis: i64,
 }
 
 /// Scrolls closer together than this are output streaming in.
 fn streaming_gap_millis() -> i64 {
     return 400;
+}
+
+/// How long a named scroll waits for its rows. Rows that do not come by then
+/// showed the same before and after, and there is nothing to slide.
+fn named_scroll_wait_millis() -> i64 {
+    return 500;
 }
 
 /// The mark of a row that shows nothing.
@@ -170,7 +183,10 @@ pub fn new_render_model(allocator: Allocator, cols: i64, rows: i64) -> mem::Erro
         has_clock: false,
         clock_millis: 0,
         has_last_scroll: false,
-        last_scroll_millis: 0
+        last_scroll_millis: 0,
+        program_names_scrolls: false,
+        named_scroll_waiting: false,
+        named_scroll_since_millis: 0
     };
 }
 
@@ -203,10 +219,16 @@ pub fn (self: &var RenderModel) record_scroll_update(update: tmux::ScrollUpdate)
         self.pending.rows = self.pending.rows + update.rows;
         self.pending.has_region = update.has_region;
         self.pending.region = update.region;
+        self.pending.named = self.pending.named or update.named;
     } else {
         self.pending = update;
     }
     return;
+}
+
+/// Says whether the program on the screen names each of its scrolls.
+pub fn (self: &var RenderModel) set_program_names_scrolls(names: bool) -> void {
+    self.program_names_scrolls = names;
 }
 
 /// Tells the time the next frame is drawn at, so that scrolls arriving in a
@@ -228,8 +250,44 @@ pub fn (self: &var RenderModel) update(allocator: Allocator, frame: &Frame) -> m
     for 0..frame.row_count() |row| {
         try self.next_rows.append(allocator, row_mark(frame, row));
     }
+    let waiting = self.named_scroll_waits(frame);
+    self.read_scroll_from_frame(frame, height);
+    if self.pending.rows != 0 and !waiting {
+        self.settle_streaming_scroll();
+    }
+    try self.resize_window(allocator, width, height);
+    if !self.has_last_screen or self.last_alternate != frame.alternate {
+        self.window.set_margins(Margins { top: 0, bottom: 0, left: 0, right: 0 });
+    }
+    if !waiting {
+        self.prepare_pending_scroll_region(height);
+    }
+    try self.window.flush(allocator, 1);
+    for 0..frame.row_count() |row| {
+        let id = try self.window.line_from_frame(allocator, frame, row);
+        self.window.draw_line(allocator, row, id);
+    }
+    if self.pending.rows != 0 and !waiting {
+        self.window.viewport(self.pending.rows);
+        self.pending = no_scroll();
+    }
+    try self.window.flush(allocator, 1);
+    self.has_last_scrollbar = true;
+    self.last_scrollbar = frame.scrollbar;
+    self.has_last_screen = true;
+    self.last_alternate = frame.alternate;
+    self.last_rows.clear(allocator);
+    let marks = self.next_rows.as_slice();
+    for 0..mem::count<u64>(marks) |row| {
+        try self.last_rows.append(allocator, marks[row]);
+    }
+    return;
+}
+
+/// Records the scroll a frame shows of a program that does not name them.
+fn (self: &var RenderModel) read_scroll_from_frame(frame: &Frame, height: i64) -> void {
     let inferred = self.inferred_output_scroll(frame);
-    if inferred == 0 and self.pending.rows == 0 {
+    if inferred == 0 and self.pending.rows == 0 and !self.program_names_scrolls {
         // A full-screen program scrolls by drawing its rows again further
         // up or down, and says nothing of it.
         var redrawn = no_scroll();
@@ -255,41 +313,61 @@ pub fn (self: &var RenderModel) update(allocator: Allocator, frame: &Frame) -> m
         }
         self.record_scroll_update(update);
     }
-    if self.pending.rows != 0 {
-        self.settle_streaming_scroll();
+}
+
+/// Whether the scroll the program named is still to be drawn. A program names
+/// a scroll before it draws the rows, and the frames between show the rows
+/// from before it: the slide starts on the frame that shows them moved.
+fn (self: &var RenderModel) named_scroll_waits(frame: &Frame) -> bool {
+    if self.pending.rows == 0 or !self.pending.named or !self.has_clock or !self.has_last_screen or
+        !frame.alternate or !self.last_alternate {
+        self.named_scroll_waiting = false;
+        return false;
     }
-    try self.resize_window(allocator, width, height);
-    if !self.has_last_screen or self.last_alternate != frame.alternate {
-        self.window.set_margins(Margins { top: 0, bottom: 0, left: 0, right: 0 });
+    if self.named_scroll_rows_changed() {
+        self.named_scroll_waiting = false;
+        return false;
     }
-    self.prepare_pending_scroll_region(height);
-    try self.window.flush(allocator, 1);
-    for 0..frame.row_count() |row| {
-        let id = try self.window.line_from_frame(allocator, frame, row);
-        self.window.draw_line(allocator, row, id);
+    if !self.named_scroll_waiting {
+        self.named_scroll_waiting = true;
+        self.named_scroll_since_millis = self.clock_millis;
     }
-    if self.pending.rows != 0 {
-        self.window.viewport(self.pending.rows);
-        self.pending = no_scroll();
+    if self.clock_millis - self.named_scroll_since_millis < named_scroll_wait_millis() {
+        return true;
     }
-    try self.window.flush(allocator, 1);
-    self.has_last_scrollbar = true;
-    self.last_scrollbar = frame.scrollbar;
-    self.has_last_screen = true;
-    self.last_alternate = frame.alternate;
-    self.last_rows.clear(allocator);
-    let marks = self.next_rows.as_slice();
-    for 0..mem::count<u64>(marks) |row| {
-        try self.last_rows.append(allocator, marks[row]);
+    self.named_scroll_waiting = false;
+    self.pending = no_scroll();
+    return false;
+}
+
+/// Whether a row the named scroll moves shows something else in this frame.
+fn (self: &RenderModel) named_scroll_rows_changed() -> bool {
+    let before = self.last_rows.as_slice();
+    let next = self.next_rows.as_slice();
+    let rows = mem::count<u64>(next);
+    if rows != mem::count<u64>(before) {
+        return true;
     }
-    return;
+    var first: i64 = 0;
+    var end = rows;
+    if self.pending.has_region {
+        first = math::max<i64>(self.pending.region.top - 1, 0);
+        end = math::min<i64>(self.pending.region.bottom, rows);
+    }
+    for first..end |row| {
+        if before[row] != next[row] {
+            return true;
+        }
+    }
+    return false;
 }
 
 /// Output that streams in, a reply being written or a log, scrolls again
 /// before the last scroll has settled. Restarting the slide each time makes
 /// the text jump and drag by turns, so while it streams the screen shows
 /// each frame where it is, as a terminal without slides does, and only a
-/// scroll that comes alone slides.
+/// scroll that comes alone slides. A scroll the program named, an editor
+/// answering a key, slides every time.
 fn (self: &var RenderModel) settle_streaming_scroll() -> void {
     if !self.has_clock {
         return;
@@ -298,7 +376,7 @@ fn (self: &var RenderModel) settle_streaming_scroll() -> void {
         self.clock_millis - self.last_scroll_millis < streaming_gap_millis();
     self.has_last_scroll = true;
     self.last_scroll_millis = self.clock_millis;
-    if streaming {
+    if streaming and !self.pending.named {
         self.window.reset_scroll_animation();
         self.pending = no_scroll();
     }
@@ -359,6 +437,16 @@ fn (self: &RenderModel) redrawn_scroll(frame: &Frame, out: &var tmux::ScrollUpda
     }
     top = math::min<i64>(top, head);
     bottom = math::max<i64>(bottom, rows - foot);
+    // Whole rows that scroll move from the edge of what scrolls. Rows that
+    // only match further in have a column beside them that stayed still,
+    // a file tree next to an editor, and sliding them would slide it too.
+    var first_moved = top;
+    if !best_up {
+        first_moved = top + best_distance;
+    }
+    if best.start != first_moved {
+        return false;
+    }
     out.has_region = true;
     out.region = tmux::Region { top: top + 1, bottom: bottom, left: 0, right: 0 };
     out.rows = best_distance;
@@ -426,8 +514,12 @@ fn (self: &var RenderModel) prepare_pending_scroll_region(height: i64) -> void {
             margins = Margins { top: 0, bottom: 0, left: 0, right: 0 };
         }
     }
-    let inner_height = math::max<i64>(height - margins.top - margins.bottom, 1);
-    self.pending.rows = math::clamp<i64>(self.pending.rows, 0 - inner_height, inner_height);
+    // A named scroll past the window is a jump, which the window's flush
+    // shows as one; rows the output moved cannot have moved further than it.
+    if !self.pending.named {
+        let inner_height = math::max<i64>(height - margins.top - margins.bottom, 1);
+        self.pending.rows = math::clamp<i64>(self.pending.rows, 0 - inner_height, inner_height);
+    }
     self.window.set_margins(margins);
     return;
 }

@@ -4,12 +4,13 @@
 import std::mem;
 import std::string;
 
-pub fn max_scroll_rows() -> i64 {
-    return 24;
-}
-
 fn max_osc_bytes() -> i64 {
     return 96;
+}
+
+/// The most rows a scroll OSC may name; a number past it is not a scroll.
+fn max_named_rows() -> i64 {
+    return 1048576;
 }
 
 enum ScrollState {
@@ -31,11 +32,13 @@ pub struct Region {
 }
 
 /// Rows scrolled, positive up, and the region they scrolled in when there
-/// was one.
+/// was one. named says the program told Satin of the scroll itself, ahead of
+/// the rows it draws for it.
 pub struct ScrollUpdate {
     pub rows: i64,
     pub has_region: bool,
     pub region: Region,
+    pub named: bool,
 }
 
 fn no_region() -> Region {
@@ -43,7 +46,7 @@ fn no_region() -> Region {
 }
 
 fn no_update() -> ScrollUpdate {
-    return ScrollUpdate { rows: 0, has_region: false, region: no_region() };
+    return ScrollUpdate { rows: 0, has_region: false, region: no_region(), named: false };
 }
 
 fn same_region(first: &ScrollUpdate, second: &ScrollUpdate) -> bool {
@@ -66,8 +69,18 @@ pub struct ScrollTracker {
     second_present: bool,
     parameter_index: i64,
     csi_valid: bool,
+    csi_private: bool,
     has_scroll_region: bool,
     scroll_region: Region,
+    /// Whether side margins may be set (DECLRMM), and the columns they hold,
+    /// zero when none are set.
+    side_margins_on: bool,
+    margin_left: i64,
+    margin_right: i64,
+    /// Whether the program names every scroll of its own (version 2 of the
+    /// Satin OSC). Until it leaves the alternate screen the scrolls in its
+    /// output are how it draws what it named, and count for nothing.
+    names_scrolls: bool,
     osc_payload: string::String,
     osc_valid: bool,
 }
@@ -86,8 +99,13 @@ pub fn new_tracker(allocator: Allocator, pane: i64) -> ScrollTracker {
         second_present: false,
         parameter_index: 0,
         csi_valid: false,
+        csi_private: false,
         has_scroll_region: false,
         scroll_region: no_region(),
+        side_margins_on: false,
+        margin_left: 0,
+        margin_right: 0,
+        names_scrolls: false,
         osc_payload: string::new(allocator),
         osc_valid: true
     };
@@ -103,10 +121,20 @@ pub fn (self: &var ScrollTracker) reset() -> void {
     self.second_present = false;
     self.parameter_index = 0;
     self.csi_valid = false;
+    self.csi_private = false;
     self.has_scroll_region = false;
     self.scroll_region = no_region();
+    self.side_margins_on = false;
+    self.margin_left = 0;
+    self.margin_right = 0;
+    self.names_scrolls = false;
     self.osc_payload.clear();
     self.osc_valid = true;
+}
+
+/// Whether the program in this output names its scrolls itself.
+pub fn (self: &ScrollTracker) program_names_scrolls() -> bool {
+    return self.names_scrolls;
 }
 
 /// Feeds bytes and returns the scroll they carried. Scrolls in one region
@@ -124,6 +152,7 @@ pub fn (self: &var ScrollTracker) feed(allocator: Allocator, bytes: []u8) -> mem
             update.rows = update.rows + next.rows;
             update.has_region = next.has_region;
             update.region = next.region;
+            update.named = update.named or next.named;
         } else {
             update = next;
         }
@@ -155,16 +184,11 @@ fn (self: &var ScrollTracker) feed_byte(allocator: Allocator, byte: u8) -> mem::
     return self.feed_control_string_escape(byte, false);
 }
 
+/// The output is UTF-8, so only ESC opens a sequence: the values of the 8-bit
+/// C1 controls are also the continuation bytes of ordinary text.
 fn (self: &var ScrollTracker) feed_ground(byte: u8) -> void {
-    let value = cast<i64>(byte);
-    if value == 27 {
+    if cast<i64>(byte) == 27 {
         self.state = ScrollState::Escape;
-    } else if value == 155 {
-        self.start_csi();
-    } else if value == 157 {
-        self.start_osc();
-    } else if value == 144 or value == 152 or value == 158 or value == 159 {
-        self.state = ScrollState::Text;
     }
 }
 
@@ -177,6 +201,13 @@ fn (self: &var ScrollTracker) feed_escape(byte: u8) -> void {
     } else if value == 80 or value == 88 or value == 94 or value == 95 {
         self.state = ScrollState::Text;
     } else if value != 27 {
+        if value == 99 {
+            // RIS: the terminal is back to how it started.
+            self.names_scrolls = false;
+            self.side_margins_on = false;
+            self.margin_left = 0;
+            self.margin_right = 0;
+        }
         self.state = ScrollState::Ground;
     }
 }
@@ -189,6 +220,7 @@ fn (self: &var ScrollTracker) start_csi() -> void {
     self.second_present = false;
     self.parameter_index = 0;
     self.csi_valid = true;
+    self.csi_private = false;
 }
 
 fn (self: &var ScrollTracker) start_osc() -> void {
@@ -226,6 +258,7 @@ fn (self: &var ScrollTracker) feed_csi(byte: u8) -> ScrollUpdate {
         return no_update();
     }
     if value >= 32 and value <= 47 or value >= 58 and value <= 63 {
+        self.csi_private = value == 63 and self.parameter_index == 0 and !self.first_present;
         self.csi_valid = false;
         return no_update();
     }
@@ -241,8 +274,59 @@ fn (self: &var ScrollTracker) feed_csi(byte: u8) -> ScrollUpdate {
     return no_update();
 }
 
+/// Follows DECLRMM, mode 69, which lets side margins be set, and the modes
+/// that leave the alternate screen, which end a program's naming its scrolls.
+fn (self: &var ScrollTracker) update_private_mode(value: i64) -> void {
+    if self.parameter_index != 0 {
+        return;
+    }
+    if self.first == 69 {
+        if value == 104 {
+            self.side_margins_on = true;
+        } else if value == 108 {
+            self.side_margins_on = false;
+            self.margin_left = 0;
+            self.margin_right = 0;
+        }
+    } else if value == 108 and (self.first == 1049 or self.first == 1047 or self.first == 47) {
+        self.names_scrolls = false;
+    }
+}
+
+/// The region a scroll moves in now, between the side margins when set.
+fn (self: &ScrollTracker) current_region(rows: i64) -> ScrollUpdate {
+    var update = ScrollUpdate {
+        rows: rows,
+        has_region: self.has_scroll_region,
+        region: self.scroll_region,
+        named: false
+    };
+    if self.margin_left > 0 {
+        if !update.has_region {
+            update.has_region = true;
+            update.region = Region { top: 1, bottom: 65535, left: 0, right: 0 };
+        }
+        update.region.left = self.margin_left;
+        update.region.right = self.margin_right;
+    }
+    return update;
+}
+
 fn (self: &var ScrollTracker) update_for_final(value: i64) -> ScrollUpdate {
+    if self.csi_private {
+        self.update_private_mode(value);
+        return no_update();
+    }
     if !self.csi_valid {
+        return no_update();
+    }
+    if value == 115 {
+        // DECSLRM, or with no margins on a cursor save, which moves nothing.
+        if self.side_margins_on and self.parameter_index == 1 and self.first_present and self.second_present and
+            self.first > 0 and self.second >= self.first {
+            self.margin_left = self.first;
+            self.margin_right = self.second;
+        }
         return no_update();
     }
     if value == 114 {
@@ -261,26 +345,24 @@ fn (self: &var ScrollTracker) update_for_final(value: i64) -> ScrollUpdate {
     if self.first_present and self.first != 0 {
         count = self.first;
     }
-    if count > max_scroll_rows() {
-        count = max_scroll_rows();
-    }
     var rows: i64 = 0;
     if value == 77 or value == 83 {
         rows = count;
     } else if value == 76 or value == 84 {
         rows = 0 - count;
     }
-    return ScrollUpdate { rows: rows, has_region: self.has_scroll_region, region: self.scroll_region };
+    if rows == 0 or self.names_scrolls {
+        return no_update();
+    }
+    return self.current_region(rows);
 }
 
 fn (self: &var ScrollTracker) feed_control_string(allocator: Allocator, byte: u8, osc: bool) -> mem::Error!ScrollUpdate {
     let value = cast<i64>(byte);
-    if osc and (value == 7 or value == 156) {
+    if osc and value == 7 {
         return self.finish_osc();
     }
-    if value == 156 {
-        self.state = ScrollState::Ground;
-    } else if value == 27 {
+    if value == 27 {
         if osc {
             self.state = ScrollState::OscEscape;
         } else {
@@ -321,14 +403,20 @@ fn (self: &var ScrollTracker) finish_osc() -> ScrollUpdate {
     return update;
 }
 
-/// Reads `777;SatinScroll;1;rows;top;bottom;left;right`.
-fn (self: &ScrollTracker) parse_scroll_osc() -> ScrollUpdate {
+/// Reads `777;SatinScroll;version;rows;top;bottom;left;right`. Version 1 names
+/// the scrolls the output cannot show; version 2 names all of them.
+fn (self: &var ScrollTracker) parse_scroll_osc() -> ScrollUpdate {
     if !self.osc_valid {
         return no_update();
     }
     let payload = self.osc_payload.as_bytes();
-    let prefix = "777;SatinScroll;1;";
+    let prefix = "777;SatinScroll;";
     if !mem::starts_with(payload, prefix) {
+        return no_update();
+    }
+    let versioned = payload[mem::len(prefix)..mem::len(payload)];
+    let every_scroll = mem::starts_with(versioned, "2;");
+    if !every_scroll and !mem::starts_with(versioned, "1;") {
         return no_update();
     }
     var rows: i64 = 0;
@@ -337,7 +425,7 @@ fn (self: &ScrollTracker) parse_scroll_osc() -> ScrollUpdate {
     var left: i64 = 0;
     var right: i64 = 0;
     var field = 0;
-    var start = mem::len(prefix);
+    var start = mem::len(prefix) + 2;
     var index = start;
     while index <= mem::len(payload) {
         if index == mem::len(payload) or payload[index] == cast<u8>(59) {
@@ -375,17 +463,14 @@ fn (self: &ScrollTracker) parse_scroll_osc() -> ScrollUpdate {
     if rows == 0 or top == 0 or bottom < top or left == 0 or right < left {
         return no_update();
     }
-    var clamped = rows;
-    if clamped > max_scroll_rows() {
-        clamped = max_scroll_rows();
-    }
-    if clamped < 0 - max_scroll_rows() {
-        clamped = 0 - max_scroll_rows();
+    if every_scroll {
+        self.names_scrolls = true;
     }
     return ScrollUpdate {
-        rows: clamped,
+        rows: rows,
         has_region: true,
-        region: Region { top: top, bottom: bottom, left: left, right: right }
+        region: Region { top: top, bottom: bottom, left: left, right: right },
+        named: true
     };
 }
 
@@ -419,7 +504,7 @@ pub fn parse_unsigned(bytes: []u8, max: i64, out: &var i64) -> bool {
 fn parse_signed(bytes: []u8, out: &var i64) -> bool {
     if mem::len(bytes) > 0 and bytes[0] == cast<u8>(45) {
         var magnitude: i64 = 0;
-        if !parse_unsigned(bytes[1..mem::len(bytes)], 9223372036854775807, &var magnitude) {
+        if !parse_unsigned(bytes[1..mem::len(bytes)], max_named_rows(), &var magnitude) {
             return false;
         }
         if mem::len(bytes) > 1 and bytes[1] == cast<u8>(43) {
@@ -428,5 +513,5 @@ fn parse_signed(bytes: []u8, out: &var i64) -> bool {
         out = 0 - magnitude;
         return true;
     }
-    return parse_unsigned(bytes, 9223372036854775807, out);
+    return parse_unsigned(bytes, max_named_rows(), out);
 }

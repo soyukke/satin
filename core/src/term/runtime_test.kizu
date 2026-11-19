@@ -147,6 +147,172 @@ test "a scroll region the output names animates the model" {
     testing::expect(runtime.model.advance_animations(cast<f32>(0.016)));
 }
 
+fn tree_size() -> GridSize {
+    return GridSize { rows: 8, cols: 24, pixel_width: 240, pixel_height: 160 };
+}
+
+fn append_number(allocator: Allocator, out: &var string::String, value: i64) -> !void {
+    if value >= 10 {
+        try append_number(allocator, out, value / 10);
+    }
+    try out.append_byte(allocator, cast<u8>(48 + value % 10));
+    return;
+}
+
+/// Draws a file tree in the first six columns and, past its border, seven
+/// lines of text from line first. Its icon, U+E612, holds a byte that is also
+/// the value of a C1 control.
+fn append_tree_screen(allocator: Allocator, out: &var string::String, first: i64) -> !void {
+    for 0..7 |row| {
+        try out.append_bytes(allocator, "^[");
+        try append_number(allocator, out, row + 1);
+        try out.append_bytes(allocator, ";1H");
+        if row == 0 {
+            try out.append_byte(allocator, 238);
+            try out.append_byte(allocator, 152);
+            try out.append_byte(allocator, 146);
+            try out.append_bytes(allocator, "tree ");
+        } else if row < 3 {
+            try out.append_bytes(allocator, "  file");
+        } else {
+            try out.append_bytes(allocator, "      ");
+        }
+        try out.append_bytes(allocator, "│line ");
+        try append_number(allocator, out, first + row);
+        try out.append_bytes(allocator, "^[K");
+    }
+    return;
+}
+
+/// What an editor beside a tree writes for a key that moves its text up two
+/// rows: the scroll named, then the rows in one synchronized update, carried
+/// by whatever scroll sequence the terminal takes.
+fn tree_key_output(allocator: Allocator, carried: []u8, first: i64) -> !string::String {
+    var text = string::new(allocator);
+    defer text.deinit(allocator);
+    try text.append_bytes(allocator, "^]777;SatinScroll;2;2;1;7;8;24~^[?2026h");
+    try text.append_bytes(allocator, carried);
+    try append_tree_screen(allocator, &var text, first);
+    try text.append_bytes(allocator, "^[?2026l");
+    let bytes = text.as_bytes();
+    return marked(allocator, bytes);
+}
+
+fn tree_runtime(allocator: Allocator) -> !Runtime {
+    var runtime = try external_runtime(allocator, tree_size());
+    errdefer runtime.deinit(allocator);
+    var text = string::new(allocator);
+    defer text.deinit(allocator);
+    try text.append_bytes(allocator, "^[?1049h");
+    try append_tree_screen(allocator, &var text, 1);
+    let bytes = text.as_bytes();
+    try project(allocator, &var runtime, bytes);
+    try runtime.update_model_at(allocator, 1000);
+    return move runtime;
+}
+
+fn expect_slides_beside_tree(runtime: &Runtime, position: f64) -> void {
+    testing::expect(runtime.model.scroll_position() == cast<f32>(position));
+    testing::expect(runtime.model.window.margins.left == 7);
+    testing::expect(runtime.model.window.margins.right == 0);
+    testing::expect(runtime.model.window.margins.top == 0);
+    testing::expect(runtime.model.window.margins.bottom == 1);
+}
+
+fn expect_one_slide_wherever_a_frame_falls(allocator: Allocator, carried: []u8) -> !void {
+    let output = try tree_key_output(allocator, carried, 3);
+    defer output.deinit(allocator);
+    let bytes = output.as_bytes();
+    for 0..mem::len(bytes) + 1 |cut| {
+        var runtime = try tree_runtime(allocator);
+        defer runtime.deinit(allocator);
+        try runtime.feed_tmux_projection(allocator, bytes[0..cut]);
+        try runtime.update_model_at(allocator, 3000);
+        try runtime.feed_tmux_projection(allocator, bytes[cut..mem::len(bytes)]);
+        try runtime.update_model_at(allocator, 3008);
+        expect_slides_beside_tree(&runtime, -2.0);
+    }
+    return;
+}
+
+test "a named scroll slides once beside a tree wherever a frame falls" {
+    let allocator = mem::page_allocator();
+    try expect_one_slide_wherever_a_frame_falls(allocator, "");
+}
+
+test "a named scroll the terminal also carries out counts once" {
+    let allocator = mem::page_allocator();
+    try expect_one_slide_wherever_a_frame_falls(allocator, "^[1;7r^[?69h^[8;24s^[8;1H^[2M^[r^[1;24s^[?69l");
+}
+
+test "a named scroll slides when a frame follows every byte" {
+    let allocator = mem::page_allocator();
+    let output = try tree_key_output(allocator, "", 3);
+    defer output.deinit(allocator);
+    let bytes = output.as_bytes();
+    var runtime = try tree_runtime(allocator);
+    defer runtime.deinit(allocator);
+    for 0..mem::len(bytes) |index| {
+        try runtime.feed_tmux_projection(allocator, bytes[index..index + 1]);
+        try runtime.update_model_at(allocator, 3000 + index / 8);
+    }
+    expect_slides_beside_tree(&runtime, -2.0);
+}
+
+test "keys pressed closer than output streams each slide beside a tree" {
+    let allocator = mem::page_allocator();
+    var runtime = try tree_runtime(allocator);
+    defer runtime.deinit(allocator);
+    for 0..3 |press| {
+        let output = try tree_key_output(allocator, "", 3 + press * 2);
+        defer output.deinit(allocator);
+        let bytes = output.as_bytes();
+        try runtime.feed_tmux_projection(allocator, bytes);
+        try runtime.update_model_at(allocator, 3000 + press * 80);
+        expect_slides_beside_tree(&runtime, cast<f64>(-2 - press * 2));
+    }
+}
+
+fn plain_screen(allocator: Allocator, opening: []u8, first: i64) -> !string::String {
+    var text = string::new(allocator);
+    errdefer text.deinit(allocator);
+    try text.append_bytes(allocator, opening);
+    for 0..7 |row| {
+        try text.append_bytes(allocator, "^[");
+        try append_number(allocator, &var text, row + 1);
+        try text.append_bytes(allocator, ";1Hline ");
+        try append_number(allocator, &var text, first + row);
+        try text.append_bytes(allocator, "^[K");
+    }
+    return move text;
+}
+
+fn show_plain(allocator: Allocator, runtime: &var Runtime, opening: []u8, first: i64, millis: i64) -> !void {
+    let text = try plain_screen(allocator, opening, first);
+    defer text.deinit(allocator);
+    let bytes = text.as_bytes();
+    try project(allocator, runtime, bytes);
+    try runtime.update_model_at(allocator, millis);
+    return;
+}
+
+test "rows are read for scrolls only of a program that does not name them" {
+    let allocator = mem::page_allocator();
+    var runtime = try external_runtime(allocator, tree_size());
+    defer runtime.deinit(allocator);
+    try show_plain(allocator, &var runtime, "^[?1049h", 1, 1000);
+    try show_plain(allocator, &var runtime, "^]777;SatinScroll;2;2;1;7;1;24~", 3, 3000);
+    testing::expect(runtime.model.scroll_position() == cast<f32>(-2.0));
+    let _ = runtime.model.advance_animations(cast<f32>(10.0));
+    // Rows it moved without naming them are not a scroll.
+    try show_plain(allocator, &var runtime, "", 5, 5000);
+    testing::expect(runtime.model.scroll_position() == cast<f32>(0.0));
+    // The program that comes after it on the screen says nothing of its own.
+    try show_plain(allocator, &var runtime, "^[?1049l^[?1049h", 1, 7000);
+    try show_plain(allocator, &var runtime, "", 3, 9000);
+    testing::expect(runtime.model.scroll_position() == cast<f32>(-2.0));
+}
+
 test "scrolling the viewport is bounded by the scrollback and recorded" {
     let allocator = mem::page_allocator();
     var runtime = try external_runtime(allocator, GridSize { rows: 3, cols: 8, pixel_width: 80, pixel_height: 60 });

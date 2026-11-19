@@ -616,7 +616,12 @@ pub fn (self: &var Runtime) record_tmux_scroll(
             return RuntimeError::InvalidRegion;
         }
     }
-    self.model.record_scroll_update(tmux::ScrollUpdate { rows: rows, has_region: has_region, region: region });
+    self.model.record_scroll_update(tmux::ScrollUpdate {
+        rows: rows,
+        has_region: has_region,
+        region: region,
+        named: false
+    });
     return;
 }
 
@@ -780,6 +785,11 @@ pub fn (self: &var Runtime) screen_text(allocator: Allocator, out: &var string::
 
 /// Reads the viewport into frame and draws it into model.
 pub fn (self: &var Runtime) update_model(allocator: Allocator) -> Failure!void {
+    return self.update_model_at(allocator, process::monotonic_millis());
+}
+
+/// update_model for a frame drawn at millis on the monotonic clock.
+pub fn (self: &var Runtime) update_model_at(allocator: Allocator, millis: i64) -> Failure!void {
     // A screen half written is not drawn: the last whole one stays.
     // SAFETY: the screen's terminal is live.
     if self.has_model_frame and self.held_frames < max_held_frames() and
@@ -789,7 +799,7 @@ pub fn (self: &var Runtime) update_model(allocator: Allocator) -> Failure!void {
     }
     self.held_frames = 0;
     try self.collect_frame(allocator);
-    self.model.set_clock(process::monotonic_millis());
+    self.model.set_clock(millis);
     try self.model.update(allocator, &self.frame);
     self.has_model_frame = true;
     return;
@@ -834,6 +844,7 @@ fn (self: &var Runtime) feed_passthrough(allocator: Allocator) -> RuntimeFailure
     if !(full_viewport and primary) {
         self.model.record_scroll_update(update);
     }
+    self.model.set_program_names_scrolls(self.tracker.program_names_scrolls());
     try self.screen.feed(allocator, bytes);
     try self.update_working_directory(allocator);
     return;
