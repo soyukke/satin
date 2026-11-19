@@ -20,4 +20,5 @@ done
 KIZU="$kizu" scripts/spec-table --check
 scripts/test-cli target/bin/satin
 scripts/test-nvim-launcher target/bin/satin-nvim
+scripts/test-scroll-bridge
 scripts/test-drawable

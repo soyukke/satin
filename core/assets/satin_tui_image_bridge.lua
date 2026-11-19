@@ -5,15 +5,13 @@ if vim.env.TMUX then
   -- macOS. satin-nvim only installs this bridge when stdout itself is a TTY.
   local scroll_output = io.stdout
   if scroll_output then
-    local function write_scroll_event(rows, top, bottom, left, right)
-      local payload = string.format(
-        "\27]777;SatinScroll;1;%d;%d;%d;%d;%d\7",
-        rows,
-        top,
-        bottom,
-        left,
-        right
-      )
+    local api = vim.api
+    local scroll = {}
+    -- Windows that show another buffer since the last event: their topline
+    -- moved because the text was replaced, which is no scroll.
+    local replaced = {}
+
+    local function write_scroll_event(payload)
       if vim.env.SATIN_SMOKE_SPLIT_SCROLL_OSC == "1" then
         local split_at = math.floor(#payload / 2)
         scroll_output:write(payload:sub(1, split_at))
@@ -27,31 +25,94 @@ if vim.env.TMUX then
       scroll_output:flush()
     end
 
-    local group = vim.api.nvim_create_augroup("SatinTuiScroll", { clear = true })
-    vim.api.nvim_create_autocmd("WinScrolled", {
+    -- The screen rows the text of window moved, positive when it moved up.
+    -- Wrapped lines take several rows and a closed fold takes one.
+    function scroll.screen_rows(window, change)
+      local lines = tonumber(change.topline) or 0
+      if lines == 0 then
+        local columns = tonumber(change.skipcol) or 0
+        if columns == 0 then
+          return 0
+        end
+        local info = vim.fn.getwininfo(window)[1]
+        local whole = math.floor(math.abs(columns) / math.max(info.width - info.textoff, 1) + 0.5)
+        return columns < 0 and -whole or whole
+      end
+      local topline = vim.fn.line("w0", window)
+      local first = math.min(topline, topline - lines)
+      local last = math.max(topline, topline - lines) - 1
+      local ok, height = pcall(api.nvim_win_text_height, window, { start_row = first - 1, end_row = last - 1 })
+      local rows = ok and height.all or math.abs(lines)
+      return lines < 0 and -rows or rows
+    end
+
+    -- The OSC that names the scroll change made of window, or nil for none.
+    function scroll.payload(window, change)
+      if type(change) ~= "table" or tonumber(change.width) ~= 0 or tonumber(change.height) ~= 0 then
+        return nil
+      end
+      if not api.nvim_win_is_valid(window) then
+        return nil
+      end
+      local rows = scroll.screen_rows(window, change)
+      if rows == 0 then
+        return nil
+      end
+      local info = vim.fn.getwininfo(window)[1]
+      local top = info.winrow + info.winbar
+      local bottom = top + info.height - 1
+      local right = info.wincol + info.width - 1
+      if top <= 0 or bottom < top or right < info.wincol then
+        return nil
+      end
+      return string.format("\27]777;SatinScroll;2;%d;%d;%d;%d;%d\7", rows, top, bottom, info.wincol, right)
+    end
+
+    -- The OSCs of a WinScrolled event. The terminal slides one region at a
+    -- time and the last one named stays, so the current window comes last.
+    function scroll.payloads(event)
+      local current = api.nvim_get_current_win()
+      local windows = {}
+      for key in pairs(event) do
+        local window = tonumber(key)
+        if window and window ~= current then
+          table.insert(windows, window)
+        end
+      end
+      table.sort(windows)
+      if event[tostring(current)] then
+        table.insert(windows, current)
+      end
+      local payloads = {}
+      for _, window in ipairs(windows) do
+        local payload = not replaced[window] and scroll.payload(window, event[tostring(window)]) or nil
+        if payload then
+          table.insert(payloads, payload)
+        end
+      end
+      return payloads
+    end
+
+    local group = api.nvim_create_augroup("SatinTuiScroll", { clear = true })
+    api.nvim_create_autocmd("BufWinEnter", {
       group = group,
       callback = function()
-        for key, change in pairs(vim.v.event) do
-          local window = tonumber(key)
-          local rows = type(change) == "table" and tonumber(change.topline) or nil
-          local resized =
-            type(change) ~= "table"
-            or tonumber(change.width) ~= 0
-            or tonumber(change.height) ~= 0
-          if window and rows and rows ~= 0 and not resized and vim.api.nvim_win_is_valid(window) then
-            local position = vim.fn.win_screenpos(window)
-            local top = tonumber(position[1]) or 0
-            local left = tonumber(position[2]) or 0
-            local bottom = top + vim.api.nvim_win_get_height(window) - 1
-            local right = left + vim.api.nvim_win_get_width(window) - 1
-            local rectangular = left > 1 or right < vim.o.columns
-            if rectangular and top > 0 and bottom >= top and right >= left then
-              write_scroll_event(rows, top, bottom, left, right)
-            end
-          end
+        local window = api.nvim_get_current_win()
+        replaced[window] = true
+        vim.schedule(function()
+          replaced[window] = nil
+        end)
+      end,
+    })
+    api.nvim_create_autocmd("WinScrolled", {
+      group = group,
+      callback = function()
+        for _, payload in ipairs(scroll.payloads(vim.v.event)) do
+          write_scroll_event(payload)
         end
       end,
     })
+    package.loaded["satin.scroll"] = scroll
     satin_features.scroll_events = true
   end
 end

@@ -1,0 +1,9 @@
+#!/bin/sh
+# Runs the tmux bridge's scroll events in a real Neovim.
+#
+#   NVIM_BIN=path/to/nvim scripts/test-scroll-bridge
+set -eu
+root="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$root"
+TMUX=scroll-bridge-test "${NVIM_BIN:-nvim}" --headless -u NONE -i NONE -n \
+    -l nvim/test/scroll_bridge_test.lua assets/satin_tui_image_bridge.lua

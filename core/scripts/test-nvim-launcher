@@ -54,7 +54,7 @@ check() {
     fi
 }
 
-check "the launcher names its version" "satin-nvim 0.4.42" "$("$launcher" --satin-launcher-version)"
+check "the launcher names its version" "satin-nvim 0.4.43" "$("$launcher" --satin-launcher-version)"
 
 out="$(PATH="$work/bin:/usr/bin:/bin" "$launcher" -u NONE "file name" < /dev/null)"
 check "without a terminal the real nvim runs" "real nvim: [-u] [NONE] [file name]" "$out"
@@ -107,7 +107,7 @@ check "--headless sends no request" "absent" "$([ -e "$work/request" ] && echo p
     PATH="$work/bin:/usr/bin:/bin" \
     "$python" "$on_terminal" "$launcher" file > "$work/tmux.out" 2>&1) || true
 check "inside tmux the bridge is preloaded" "1" "$(grep -c 'real nvim: \[--cmd\] \[lua assert(load("' "$work/tmux.out")"
-check "the bridge is one quoted Lua string" "1" "$(grep -c '777;SatinScroll;1' "$work/tmux.out")"
+check "the bridge is one quoted Lua string" "1" "$(grep -c '777;SatinScroll;2' "$work/tmux.out")"
 check "the bridge command ends the call" "1" "$(grep -c '"))()\] \[file\]$' "$work/tmux.out")"
 
 if [ "$failures" -ne 0 ]; then
