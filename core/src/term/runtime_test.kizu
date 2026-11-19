@@ -313,6 +313,59 @@ test "rows are read for scrolls only of a program that does not name them" {
     testing::expect(runtime.model.scroll_position() == cast<f32>(-2.0));
 }
 
+fn program_status_is(runtime: &Runtime, word: []u8, line: []u8) -> !bool {
+    let allocator = mem::page_allocator();
+    var got_word = string::new(allocator);
+    defer got_word.deinit(allocator);
+    var got_line = string::new(allocator);
+    defer got_line.deinit(allocator);
+    if !try runtime.program_status(allocator, 0, &var got_word, &var got_line) {
+        return false;
+    }
+    let word_bytes = got_word.as_bytes();
+    let line_bytes = got_line.as_bytes();
+    return mem::equal_bytes(word_bytes, word) and mem::equal_bytes(line_bytes, line);
+}
+
+test "a terminal answers a program status query and keeps its reports" {
+    let allocator = mem::page_allocator();
+    var runtime = try external_runtime(allocator, test_size());
+    defer runtime.deinit(allocator);
+    var replies = string::new(allocator);
+    defer replies.deinit(allocator);
+    try feed(allocator, &var runtime, "^[c^]7501;?~", &var replies);
+    let reply_bytes = replies.as_bytes();
+    let device = try marked(allocator, "^[?");
+    defer device.deinit(allocator);
+    let device_bytes = device.as_bytes();
+    testing::expect(find_bytes(reply_bytes, "7501;?:states=idle,working,done,blocked,error", 0) >= 0);
+    // The device attributes asked first are answered first.
+    testing::expect(find_bytes(reply_bytes, device_bytes, 0) >= 0);
+    testing::expect(find_bytes(reply_bytes, device_bytes, 0) < find_bytes(reply_bytes, "7501;", 0));
+    try feed(allocator, &var runtime, "^]7501;state=blocked:kind=question:app=antigravity~", &var replies);
+    testing::expect(try program_status_is(&runtime, "waiting", "Antigravity needs input"));
+    // The shell's next prompt ends it, as the program is gone.
+    try feed(allocator, &var runtime, "^]133;A~$ ^]133;B~", &var replies);
+    testing::expect(try program_status_is(&runtime, "idle", ""));
+}
+
+test "a tmux projection keeps the program status reply it owes" {
+    let allocator = mem::page_allocator();
+    var runtime = try external_runtime(allocator, test_size());
+    defer runtime.deinit(allocator);
+    try project(allocator, &var runtime, "^[c^]7501;?^\\");
+    var kept = string::new(allocator);
+    defer kept.deinit(allocator);
+    try runtime.take_graphics_replies(allocator, &var kept);
+    let kept_bytes = kept.as_bytes();
+    let device = try marked(allocator, "^[?");
+    defer device.deinit(allocator);
+    let device_bytes = device.as_bytes();
+    testing::expect(find_bytes(kept_bytes, "7501;?:states=", 0) >= 0);
+    // tmux answers the device attributes itself.
+    testing::expect(find_bytes(kept_bytes, device_bytes, 0) < 0);
+}
+
 test "scrolling the viewport is bounded by the scrollback and recorded" {
     let allocator = mem::page_allocator();
     var runtime = try external_runtime(allocator, GridSize { rows: 3, cols: 8, pixel_width: 80, pixel_height: 60 });

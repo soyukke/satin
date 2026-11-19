@@ -172,6 +172,46 @@ if grep -Fq -- "$private_response" "$smoke_root/wait.json"; then
   exit 1
 fi
 
+# A program reports its status over OSC 7501 once Satin answers its query.
+"$cli" --socket "$socket" send --pane 3 \
+  "printf '\\033]7501;?\\007'; read -rs -t 2 -d '\\\\' reply; printf 'PROGRAM_STATUS:%s\\n' \"\${reply#*7501;}\"; printf '\\033]7501;state=blocked:kind=question:app=smoke\\007'; sleep 1" \
+  >/dev/null
+"$cli" --socket "$socket" key --pane 3 Enter >/dev/null
+for _ in {1..100}; do
+  program_state="$("$cli" --socket "$socket" --json list)"
+  if jq -e '
+    .result.panes[]
+      | select(.id == 3)
+      | .status.status == "waiting" and .status.summary == "Smoke needs input"
+  ' <<<"$program_state" >/dev/null; then
+    break
+  fi
+  sleep 0.05
+done
+program_screen="$("$cli" --socket "$socket" read-screen --pane 3)"
+if ! grep -Fq -- "PROGRAM_STATUS:?:states=idle,working,done,blocked,error" <<<"$program_screen" ||
+  ! jq -e '.result.panes[] | select(.id == 3) | .status.status == "waiting"' \
+    <<<"${program_state:-}" >/dev/null; then
+  printf '%s\n%s\n' "$program_screen" "${program_state:-}" >&2
+  echo "control smoke failed: program status over OSC 7501" >&2
+  exit 1
+fi
+# The shell's next prompt ends what still waited; a finished report stays.
+"$cli" --socket "$socket" send --pane 3 "printf '\\033]7501;state=done:app=smoke\\007'" >/dev/null
+"$cli" --socket "$socket" key --pane 3 Enter >/dev/null
+for _ in {1..100}; do
+  program_state="$("$cli" --socket "$socket" --json list)"
+  if jq -e '
+    .result.panes[] | select(.id == 3) | .status.status == "done" and .status.summary == "Smoke finished"
+  ' <<<"$program_state" >/dev/null; then
+    break
+  fi
+  sleep 0.05
+done
+jq -e '
+  .result.panes[] | select(.id == 3) | .status.status == "done" and .status.summary == "Smoke finished"
+' <<<"${program_state:-}" >/dev/null
+
 "$cli" --socket "$socket" close-pane --pane 3 >/dev/null
 closed_pane="$("$cli" --socket "$socket" --json list)"
 jq -e '

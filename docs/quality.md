@@ -75,7 +75,7 @@ therefore required before pushing, and `just native-package-verify` checks the
 packaged bundle before a release.
 The native portion explicitly includes frame-liveness, repeated bottom-line
 terminal input, stable tab-title ownership, active-pane Command-T cwd
-inheritance, per-pane Finder directory actions, animated pane-header drag/drop,
+inheritance, per-pane Finder directory and worktree actions, animated pane-header drag/drop,
 multi-tab toolbar placement, full tmux control-mode behavior, and the pane/grid
 matrix. The Finder checks cover live local PTY cwd, tmux `current_path`, and
 event-driven native Neovim `DirChanged` metadata without a home/process-cwd

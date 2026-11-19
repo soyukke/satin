@@ -484,6 +484,46 @@ export "c" fn satin_runtime_title(handle: ?ptr<term::Runtime>) -> ?ptr<u8> {
     return null;
 }
 
+/// The revision of what programs in the pane reported over OSC 7501.
+export "c" fn satin_runtime_program_status_revision(handle: ?ptr<term::Runtime>) -> u64 {
+    let live = handle orelse return 0;
+    // SAFETY: the host holds live from a create and calls from one thread.
+    let runtime = unsafe &live.*;
+    return runtime.program.revision();
+}
+
+/// What programs in the pane reported, as `status\nsummary`; null when it is
+/// still at revision.
+export "c" fn satin_runtime_program_status(handle: ?ptr<term::Runtime>, revision: u64) -> ?ptr<u8> {
+    let live = handle orelse return null;
+    let allocator = mem::page_allocator();
+    // SAFETY: the host holds live from a create and calls from one thread.
+    let runtime = unsafe &live.*;
+    var word = string::new(allocator);
+    defer word.deinit(allocator);
+    var line = string::new(allocator);
+    defer line.deinit(allocator);
+    if runtime.program_status(allocator, revision, &var word, &var line) |changed| {
+        if !changed {
+            return null;
+        }
+    } else |_| {
+        return null;
+    }
+    var out = string::new(allocator);
+    defer out.deinit(allocator);
+    if out.append_string(allocator, &word) {} else |_| {
+        return null;
+    }
+    if out.append_byte(allocator, 10) {} else |_| {
+        return null;
+    }
+    if out.append_string(allocator, &line) {} else |_| {
+        return null;
+    }
+    return owned_out(&out);
+}
+
 export "c" fn satin_runtime_take_bell_count(handle: ?ptr<term::Runtime>) -> u64 {
     let live = handle orelse return 0;
     // SAFETY: the host holds live from a create and calls from one thread.

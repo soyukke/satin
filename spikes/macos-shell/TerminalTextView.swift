@@ -22,6 +22,8 @@ final class TerminalTextView: NSView, NSTextInputClient {
     var onPaneSelected: ((Int) -> Void)?
     var onPaneChromeAction: ((NativePaneChromeAction, Int, NSView) -> Void)?
     var isPaneChromeActionEnabled: ((NativePaneChromeAction, Int) -> Bool)?
+    /// The branch to show in a pane's header for the worktree it is in.
+    var paneWorktreeBranch: ((Int) -> String?)?
     var onPaneDropChangesLayout: ((Int, Int, NativePaneDropPosition) -> Bool)?
     var onPaneMoveRequested: ((Int, Int, NativePaneDropPosition) -> Bool)?
     var onSplitResize: ((Int, Int, NativePaneDividerAxis, CGFloat, Int) -> Void)?
@@ -824,6 +826,7 @@ final class TerminalTextView: NSView, NSTextInputClient {
                 isEnabled: isPaneChromeActionEnabled?(action, paneId) ?? true
             )
         }
+        chrome.update(worktreeBranch: paneWorktreeBranch?(paneId))
     }
 
     func drawSplitDividerFeedback() {

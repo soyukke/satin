@@ -122,6 +122,23 @@ it against `Satin Dev`, not an installed release build.
   `Open Pane Directory in Finder` tooltip, is also available in the pane context
   menu, and never begins a pane drag.
 
+## Pane worktree action
+
+- [ ] In a local terminal pane inside a git repository, click the branch icon in
+  the pane's top band and enter a new branch name. Confirm a pane opens to the
+  right in `<repository>.worktrees/<branch>`, its header shows the branch, and
+  the original pane stays in the main checkout.
+- [ ] Enter an existing branch name. Confirm its worktree checks that branch out
+  instead of creating one.
+- [ ] Confirm the branch icon is dimmed in a pane outside any repository, and
+  that an invalid name or an existing folder reports `Could Not Create Worktree`.
+- [ ] Close the worktree pane with `Delete Worktree` checked. Confirm the folder
+  is gone and the branch remains. With uncommitted changes, confirm the checkbox
+  is unavailable and the worktree stays.
+- [ ] With two panes in one worktree, close one and confirm no question is asked.
+- [ ] Repeat the creation from a projected tmux pane and confirm the new tmux
+  pane starts in the worktree.
+
 ## Tab title and agent activity ownership
 
 - [ ] Rename a local tab manually, start Claude Code or Codex, and submit work.

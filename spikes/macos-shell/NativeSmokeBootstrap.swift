@@ -171,6 +171,13 @@ import Foundation
                 if let path = environment["SATIN_NATIVE_SMOKE_RESULT"], !path.isEmpty {
                     controller.applyReadmeDemoScenario(resultPath: path)
                 }
+            case "pane-worktree":
+                if let path = environment["SATIN_NATIVE_SMOKE_RESULT"], !path.isEmpty,
+                    let repository = environment["SATIN_NATIVE_SMOKE_WORKTREE_REPO"]
+                {
+                    controller.applyPaneWorktreeSmokeScenario(
+                        resultPath: path, repository: repository)
+                }
             case "home-cwd":
                 if let path = environment["SATIN_NATIVE_SMOKE_RESULT"], !path.isEmpty {
                     controller.applyHomeWorkingDirectorySmokeScenario(resultPath: path)

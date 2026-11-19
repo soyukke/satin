@@ -67,6 +67,10 @@ pub struct Runtime {
     /// The Kitty graphics replies a tmux projection owes the pane's
     /// program, which tmux does not answer for it.
     graphics_replies: string::String,
+    /// What programs report of their status over OSC 7501.
+    pub program: ProgramStatus,
+    /// The shell prompt the program status last saw begin.
+    program_prompt_generation: u64,
     /// Whether update_model drew a frame, and how many times in a row it
     /// kept that frame because the program was still writing the next.
     has_model_frame: bool,
@@ -151,6 +155,8 @@ fn new_runtime(
         passthrough: string::new(allocator),
         outgoing: string::new(allocator),
         graphics_replies: string::new(allocator),
+        program: new_program_status(allocator),
+        program_prompt_generation: 0,
         has_model_frame: false,
         held_frames: 0
     };
@@ -197,6 +203,7 @@ pub fn (self: Runtime) deinit(allocator: Allocator) -> void {
     self.passthrough.deinit(allocator);
     self.outgoing.deinit(allocator);
     self.graphics_replies.deinit(allocator);
+    self.program.deinit(allocator);
 }
 
 pub fn (self: &Runtime) grid_size() -> GridSize {
@@ -535,6 +542,7 @@ pub fn (self: &var Runtime) drain(allocator: Allocator) -> RuntimeFailure!bool {
         try self.flush_tmux_outgoing(allocator);
         self.outgoing.clear();
         try self.screen.take_replies(allocator, &var self.outgoing);
+        try take_program_status_replies(allocator, &var self.program, &var self.outgoing);
         if self.outgoing.len() > 0 {
             try self.write_outgoing();
         }
@@ -566,6 +574,7 @@ pub fn (self: &var Runtime) feed_external(
     try self.passthrough.append_bytes(allocator, bytes);
     try self.feed_passthrough(allocator);
     try self.screen.take_replies(allocator, replies);
+    try take_program_status_replies(allocator, &var self.program, replies);
     return;
 }
 
@@ -582,13 +591,42 @@ pub fn (self: &var Runtime) feed_tmux_projection(allocator: Allocator, bytes: []
     // display-only projection would be duplicates; a late duplicate can
     // otherwise arrive at the shell after an alternate-screen app exits.
     // Kitty graphics are the exception: tmux passes them through without
-    // answering, so their replies are kept for the host to send back.
+    // answering, so their replies are kept for the host to send back. So is
+    // the answer to a program status query, which tmux does not know.
     var replies = string::new(allocator);
     defer replies.deinit(allocator);
     try self.screen.take_replies(allocator, &var replies);
     let reply_bytes = replies.as_bytes();
     try append_graphics_replies(allocator, reply_bytes, &var self.graphics_replies);
+    try take_program_status_replies(allocator, &var self.program, &var self.graphics_replies);
     return;
+}
+
+/// Appends a reply for each program status query read since the last call.
+fn take_program_status_replies(
+    allocator: Allocator,
+    program: &var ProgramStatus,
+    out: &var string::String
+) -> mem::Error!void {
+    for 0..program.take_queries() |_| {
+        try append_program_status_reply(allocator, out);
+    }
+    return;
+}
+
+/// The status programs reported, as a pane status word and a summary; false
+/// when it has not changed since revision.
+pub fn (self: &Runtime) program_status(
+    allocator: Allocator,
+    revision: u64,
+    word: &var string::String,
+    line: &var string::String
+) -> mem::Error!bool {
+    if self.program.revision() == revision {
+        return false;
+    }
+    try self.program.summary(allocator, word, line);
+    return true;
 }
 
 /// Appends the Kitty graphics replies a tmux projection holds to out, and
@@ -845,7 +883,13 @@ fn (self: &var Runtime) feed_passthrough(allocator: Allocator) -> RuntimeFailure
         self.model.record_scroll_update(update);
     }
     self.model.set_program_names_scrolls(self.tracker.program_names_scrolls());
+    try self.program.feed(allocator, bytes);
     try self.screen.feed(allocator, bytes);
+    let prompt = self.screen.prompt_generation();
+    if prompt != self.program_prompt_generation {
+        self.program_prompt_generation = prompt;
+        self.program.end_active(allocator);
+    }
     try self.update_working_directory(allocator);
     return;
 }

@@ -507,10 +507,20 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
             self?.performPaneChromeAction(action, paneId: paneId, sourceView: sourceView)
         }
         self.terminalTextView.isPaneChromeActionEnabled = { [weak self] action, paneId in
-            guard action == .openInFinder else {
+            guard let self else {
                 return true
             }
-            return self?.paneWorkingDirectory(paneId: paneId, logFailure: false) != nil
+            switch action {
+            case .openInFinder:
+                return self.paneWorkingDirectory(paneId: paneId, logFailure: false) != nil
+            case .newWorktree:
+                return self.paneCanCreateWorktree(paneId: paneId)
+            case .close, .splitVertical, .splitHorizontal:
+                return true
+            }
+        }
+        self.terminalTextView.paneWorktreeBranch = { [weak self] paneId in
+            self?.paneWorktree(paneId: paneId).map { $0.branch ?? "Detached HEAD" }
         }
         self.terminalTextView.onPaneDropChangesLayout = {
             [weak self] sourcePaneId, targetPaneId, position in
