@@ -37,6 +37,18 @@ enum NativeWindowState: Int, Equatable {
         }
     }
 
+    /// The short word a pinned card prints to tell its state when the heading
+    /// says PINNED instead. Idle cards stay quiet.
+    var statusWord: String? {
+        switch self {
+        case .waiting: "WAITING"
+        case .failed: "FAILED"
+        case .clear: "DONE"
+        case .running: "RUNNING"
+        case .idle: nil
+        }
+    }
+
     var glyph: String {
         switch self {
         case .waiting: "!"
@@ -59,9 +71,10 @@ enum NativeWindowState: Int, Equatable {
 }
 
 /// One tab as a card in the windows sidebar.
-/// The headings the windows sidebar sorts its cards under, most urgent
-/// first.
+/// The headings the windows sidebar sorts its cards under, pinned first,
+/// then most urgent first.
 enum NativeWindowGroup: Int, CaseIterable, Equatable {
+    case pinned
     case needsYou
     case running
     case done
@@ -78,6 +91,7 @@ enum NativeWindowGroup: Int, CaseIterable, Equatable {
 
     var title: String {
         switch self {
+        case .pinned: "PINNED"
         case .needsYou: "NEEDS YOU"
         case .running: "RUNNING"
         case .done: "DONE"
@@ -86,22 +100,120 @@ enum NativeWindowGroup: Int, CaseIterable, Equatable {
     }
 }
 
-/// The rows under their headings, leaving out empty ones. What needs you
-/// reads as the hand deals it: waiting before failed, the longest first.
-/// The idle tabs start with the one that went idle last; the rest keep
-/// their tabs' order.
+/// The rows under their headings, leaving out empty ones. Pinned tabs sit
+/// at the top in their tabs' order. What needs you reads as the hand deals
+/// it: waiting before failed, the longest first. The idle tabs start with
+/// the one that went idle last; the rest keep their tabs' order.
 func nativeWindowGroups(_ rows: [NativeWindowRow]) -> [(NativeWindowGroup, [NativeWindowRow])] {
     NativeWindowGroup.allCases.compactMap { group in
-        var members = rows.filter { NativeWindowGroup($0.state) == group }
-        if group == .needsYou {
-            members.sort {
-                ($0.state == .waiting ? 0 : 1, $0.since ?? .distantFuture, $0.index)
-                    < ($1.state == .waiting ? 0 : 1, $1.since ?? .distantFuture, $1.index)
+        var members: [NativeWindowRow]
+        if group == .pinned {
+            members = rows.filter(\.isPinned)
+            members.sort { $0.index < $1.index }
+        } else {
+            members = rows.filter { !$0.isPinned && NativeWindowGroup($0.state) == group }
+            if group == .needsYou {
+                members.sort {
+                    ($0.state == .waiting ? 0 : 1, $0.since ?? .distantFuture, $0.index)
+                        < ($1.state == .waiting ? 0 : 1, $1.since ?? .distantFuture, $1.index)
+                }
+            } else if group == .idle {
+                members.sort { (-$0.settled, $0.index) < (-$1.settled, $1.index) }
             }
-        } else if group == .idle {
-            members.sort { (-$0.settled, $0.index) < (-$1.settled, $1.index) }
         }
         return members.isEmpty ? nil : (group, members)
+    }
+}
+
+/// Which local tabs and tmux windows are pinned to the top of the windows
+/// sidebar. Local pins follow the tab id and save with the session; tmux
+/// pins follow each session's window id (`@N`) across reconnects.
+final class NativeWindowPinStore {
+    private var localTabIds: Set<Int> = []
+    private var tmuxWindowsBySession: [String: Set<UInt32>] = [:]
+
+    static func tmuxSessionKey(socketPath: String, sessionName: String) -> String {
+        "\(socketPath)\u{0}\(sessionName)"
+    }
+
+    func isLocalPinned(_ tabId: Int) -> Bool {
+        localTabIds.contains(tabId)
+    }
+
+    func setLocalPinned(_ tabId: Int, pinned: Bool) {
+        if pinned {
+            localTabIds.insert(tabId)
+        } else {
+            localTabIds.remove(tabId)
+        }
+    }
+
+    @discardableResult
+    func toggleLocalPinned(_ tabId: Int) -> Bool {
+        let pinned = !localTabIds.contains(tabId)
+        setLocalPinned(tabId, pinned: pinned)
+        return pinned
+    }
+
+    func keepLocal(tabIds: Set<Int>) {
+        localTabIds.formIntersection(tabIds)
+    }
+
+    func isTmuxPinned(socketPath: String, sessionName: String, windowId: UInt32) -> Bool {
+        let key = Self.tmuxSessionKey(socketPath: socketPath, sessionName: sessionName)
+        return tmuxWindowsBySession[key]?.contains(windowId) == true
+    }
+
+    @discardableResult
+    func toggleTmuxPinned(socketPath: String, sessionName: String, windowId: UInt32) -> Bool {
+        let key = Self.tmuxSessionKey(socketPath: socketPath, sessionName: sessionName)
+        var windows = tmuxWindowsBySession[key] ?? []
+        let pinned: Bool
+        if windows.contains(windowId) {
+            windows.remove(windowId)
+            pinned = false
+        } else {
+            windows.insert(windowId)
+            pinned = true
+        }
+        if windows.isEmpty {
+            tmuxWindowsBySession.removeValue(forKey: key)
+        } else {
+            tmuxWindowsBySession[key] = windows
+        }
+        return pinned
+    }
+
+    @discardableResult
+    func keepTmux(socketPath: String, sessionName: String, windowIds: Set<UInt32>) -> Bool {
+        let key = Self.tmuxSessionKey(socketPath: socketPath, sessionName: sessionName)
+        guard let existing = tmuxWindowsBySession[key] else {
+            return false
+        }
+        let kept = existing.intersection(windowIds)
+        guard kept != existing else {
+            return false
+        }
+        if kept.isEmpty {
+            tmuxWindowsBySession.removeValue(forKey: key)
+        } else {
+            tmuxWindowsBySession[key] = kept
+        }
+        return true
+    }
+
+    func encodeTmuxPins() -> Data? {
+        let payload = tmuxWindowsBySession.mapValues { $0.sorted() }
+        return try? JSONEncoder().encode(payload)
+    }
+
+    func loadTmuxPins(from data: Data) {
+        guard let payload = try? JSONDecoder().decode([String: [UInt32]].self, from: data) else {
+            return
+        }
+        tmuxWindowsBySession = payload.compactMapValues { ids in
+            ids.isEmpty ? nil : Set(ids)
+        }
     }
 }
 
@@ -169,6 +281,8 @@ struct NativeWindowRow: Equatable {
     let isCurrent: Bool
     /// Whether ⌘J plays this tab's card next.
     let isNext: Bool
+    /// Whether the user pinned this tab above the state sections.
+    var isPinned = false
     /// The digit that goes with ⌘ to select this tab, if one does.
     var shortcut: Int? = nil
     /// When the tab last went idle, counted up from one; zero if it has
@@ -194,7 +308,8 @@ func nativeWindowRows(
     isUnread: (Int) -> Bool,
     shellBadge: (Int) -> NativeTabStatusBadge?,
     screenLine: (Int) -> String?,
-    nextPaneId: Int?
+    nextPaneId: Int?,
+    isPinned: (Int) -> Bool = { _ in false }
 ) -> [NativeWindowRow] {
     tabs.sorted { $0.index < $1.index }.map { tab in
         var best: (badge: NativeTabStatusBadge, paneId: Int, since: Date?)?
@@ -236,6 +351,7 @@ func nativeWindowRows(
             since: state == .idle ? nil : best?.since,
             isCurrent: tab.index == activeTabIndex,
             isNext: nextPaneId.map { tab.panes.contains($0) } ?? false,
+            isPinned: isPinned(tab.id),
             shortcut: nativeTabShortcut(index: tab.index, count: tabs.count)
         )
     }
@@ -981,6 +1097,67 @@ func runNativeSidebarModelSelfTests() -> Bool {
     guard groups.map(\.0) == [.needsYou, .running],
         groups[0].1.map(\.title) == ["worker", "api", "web"],
         groups[1].1.map(\.title) == ["logs"]
+    else {
+        return false
+    }
+    // Pinned tabs rise above NEEDS YOU in their tabs' order and leave
+    // their state groups; each non-idle state still has a word to show.
+    var pinnedDone = NativeWindowRow(
+        tabId: 12, index: 0, title: "docs", state: .clear, line: "",
+        since: base, isCurrent: false, isNext: false, isPinned: true)
+    var pinnedWaiting = earlier
+    pinnedWaiting.isPinned = true
+    let pinnedGroups = nativeWindowGroups([pinnedWaiting] + rows + [pinnedDone])
+    guard pinnedGroups.map(\.0) == [.pinned, .needsYou, .running],
+        pinnedGroups[0].1.map(\.title) == ["docs", "worker"],
+        pinnedGroups[1].1.map(\.title) == ["api", "web"],
+        pinnedGroups[2].1.map(\.title) == ["logs"],
+        NativeWindowState.waiting.statusWord == "WAITING",
+        NativeWindowState.failed.statusWord == "FAILED",
+        NativeWindowState.clear.statusWord == "DONE",
+        NativeWindowState.running.statusWord == "RUNNING",
+        NativeWindowState.idle.statusWord == nil
+    else {
+        return false
+    }
+    pinnedDone.isPinned = false
+    let unpinnedGroups = nativeWindowGroups([pinnedDone])
+    guard unpinnedGroups.map(\.0) == [.done], unpinnedGroups[0].1.map(\.title) == ["docs"] else {
+        return false
+    }
+    let pins = NativeWindowPinStore()
+    guard pins.toggleLocalPinned(5),
+        pins.isLocalPinned(5),
+        !pins.isLocalPinned(7),
+        !pins.toggleLocalPinned(5),
+        !pins.isLocalPinned(5)
+    else {
+        return false
+    }
+    pins.setLocalPinned(5, pinned: true)
+    pins.setLocalPinned(9, pinned: true)
+    pins.keepLocal(tabIds: [5, 7])
+    guard pins.isLocalPinned(5), !pins.isLocalPinned(9) else {
+        return false
+    }
+    guard pins.toggleTmuxPinned(socketPath: "/tmp/a.sock", sessionName: "work", windowId: 3),
+        pins.toggleTmuxPinned(socketPath: "/tmp/a.sock", sessionName: "work", windowId: 7),
+        pins.toggleTmuxPinned(socketPath: "/tmp/a.sock", sessionName: "ops", windowId: 3),
+        pins.isTmuxPinned(socketPath: "/tmp/a.sock", sessionName: "work", windowId: 3),
+        !pins.isTmuxPinned(socketPath: "/tmp/b.sock", sessionName: "work", windowId: 3),
+        pins.keepTmux(socketPath: "/tmp/a.sock", sessionName: "work", windowIds: [3, 8]),
+        !pins.isTmuxPinned(socketPath: "/tmp/a.sock", sessionName: "work", windowId: 7),
+        pins.isTmuxPinned(socketPath: "/tmp/a.sock", sessionName: "ops", windowId: 3),
+        !pins.keepTmux(socketPath: "/tmp/a.sock", sessionName: "work", windowIds: [3, 8]),
+        let encodedPins = pins.encodeTmuxPins()
+    else {
+        return false
+    }
+    let reloadedPins = NativeWindowPinStore()
+    reloadedPins.loadTmuxPins(from: encodedPins)
+    guard reloadedPins.isTmuxPinned(socketPath: "/tmp/a.sock", sessionName: "work", windowId: 3),
+        !reloadedPins.isTmuxPinned(socketPath: "/tmp/a.sock", sessionName: "work", windowId: 7),
+        reloadedPins.isTmuxPinned(socketPath: "/tmp/a.sock", sessionName: "ops", windowId: 3)
     else {
         return false
     }
