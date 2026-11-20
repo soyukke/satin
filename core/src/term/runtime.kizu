@@ -53,6 +53,8 @@ pub struct Runtime {
     encoder: InputEncoder,
     frames: FrameRenderer,
     pub frame: Frame,
+    /// Scratch frame for screen_text so non-render reads never clobber frame.
+    text_frame: Frame,
     pub model: RenderModel,
     queries: Queries,
     pub kitty: KittyImages,
@@ -71,16 +73,18 @@ pub struct Runtime {
     pub program: ProgramStatus,
     /// The shell prompt the program status last saw begin.
     program_prompt_generation: u64,
-    /// Whether update_model drew a frame, and how many times in a row it
-    /// kept that frame because the program was still writing the next.
+    /// Whether update_model drew a frame, and since when it has kept that
+    /// frame while the program holds synchronized output open.
     has_model_frame: bool,
-    held_frames: i64,
+    sync_holding: bool,
+    sync_hold_since_ms: i64,
+    sync_timed_out: bool,
 }
 
-/// How many times in a row a frame is kept for a program that says it is
-/// still writing: one that never says it is done is drawn all the same.
-fn max_held_frames() -> i64 {
-    return 20;
+/// How long a frame is kept for a program holding synchronized output open:
+/// one that never closes it is drawn after this many milliseconds.
+pub fn sync_hold_limit_ms() -> i64 {
+    return 1000;
 }
 
 /// Resizes terminal to size, with the pixels of one cell.
@@ -143,6 +147,7 @@ fn new_runtime(
         encoder: move encoder,
         frames: move frames,
         frame: new_frame(allocator),
+        text_frame: new_frame(allocator),
         model: move model,
         queries: move queries,
         kitty: move kitty,
@@ -158,7 +163,9 @@ fn new_runtime(
         program: new_program_status(allocator),
         program_prompt_generation: 0,
         has_model_frame: false,
-        held_frames: 0
+        sync_holding: false,
+        sync_hold_since_ms: 0,
+        sync_timed_out: false
     };
 }
 
@@ -193,6 +200,7 @@ pub fn (self: Runtime) deinit(allocator: Allocator) -> void {
     self.encoder.deinit(allocator);
     self.frames.deinit();
     self.frame.deinit(allocator);
+    self.text_frame.deinit(allocator);
     self.model.deinit(allocator);
     self.queries.deinit(allocator);
     self.kitty.deinit(allocator);
@@ -814,11 +822,34 @@ pub fn (self: &var Runtime) collect_frame(allocator: Allocator) -> Failure!void 
     return;
 }
 
-/// Appends the viewport's text to out, one line a row.
+/// Appends the viewport's text to out, one line a row, without disturbing
+/// the last rendered frame. While a program holds synchronized output open
+/// after a frame has been drawn, returns that completed frame's text.
 pub fn (self: &var Runtime) screen_text(allocator: Allocator, out: &var string::String) -> Failure!void {
-    try self.collect_frame(allocator);
-    try self.frame.screen_text(allocator, out);
+    // SAFETY: the screen's terminal is live.
+    if self.has_model_frame and unsafe self.encoder.synchronized(self.screen.handle()) {
+        try self.frame.screen_text(allocator, out);
+        return;
+    }
+    // SAFETY: the screen's terminal is live.
+    try unsafe self.frames.collect(allocator, self.screen.handle(), &var self.text_frame);
+    try self.text_frame.screen_text(allocator, out);
     return;
+}
+
+/// Whether update_model_at kept the previous frame while synchronized
+/// output stays open.
+pub fn (self: &Runtime) is_sync_holding() -> bool {
+    return self.sync_holding;
+}
+
+/// The monotonic millisecond at which an active synchronized-output hold
+/// expires, or null when no hold is active.
+pub fn (self: &Runtime) sync_hold_deadline_ms() -> ?i64 {
+    if !self.sync_holding {
+        return null;
+    }
+    return self.sync_hold_since_ms + sync_hold_limit_ms();
 }
 
 /// Reads the viewport into frame and draws it into model.
@@ -828,14 +859,25 @@ pub fn (self: &var Runtime) update_model(allocator: Allocator) -> Failure!void {
 
 /// update_model for a frame drawn at millis on the monotonic clock.
 pub fn (self: &var Runtime) update_model_at(allocator: Allocator, millis: i64) -> Failure!void {
-    // A screen half written is not drawn: the last whole one stays.
+    // A screen half written is not drawn: the last whole one stays until
+    // synchronized output closes or the hold timeout expires.
     // SAFETY: the screen's terminal is live.
-    if self.has_model_frame and self.held_frames < max_held_frames() and
-        unsafe self.encoder.synchronized(self.screen.handle()) {
-        self.held_frames = self.held_frames + 1;
-        return;
+    if self.has_model_frame and unsafe self.encoder.synchronized(self.screen.handle()) {
+        if !self.sync_timed_out {
+            if !self.sync_holding {
+                self.sync_holding = true;
+                self.sync_hold_since_ms = millis;
+            }
+            if millis - self.sync_hold_since_ms < sync_hold_limit_ms() {
+                return;
+            }
+            self.sync_holding = false;
+            self.sync_timed_out = true;
+        }
+    } else {
+        self.sync_holding = false;
+        self.sync_timed_out = false;
     }
-    self.held_frames = 0;
     try self.collect_frame(allocator);
     self.model.set_clock(millis);
     try self.model.update(allocator, &self.frame);

@@ -397,7 +397,12 @@ final class NativeGpuRenderer {
 
     private func updateAtlas(_ frame: Frame, renderer: UnsafeMutableRawPointer?) -> Bool {
         let side = frame.atlasSide
-        if atlas == nil || atlas?.width != side {
+        // When the core empties and rebuilds the atlas (new generation), allocate
+        // a fresh texture so any in-flight GPU command buffer keeps reading the
+        // previous generation untouched.
+        let needsFullUpload =
+            atlas == nil || atlas?.width != side || atlasGeneration != frame.generation
+        if needsFullUpload {
             let descriptor = MTLTextureDescriptor.texture2DDescriptor(
                 pixelFormat: .bgra8Unorm, width: side, height: side, mipmapped: false)
             descriptor.storageMode = .shared
@@ -406,16 +411,12 @@ final class NativeGpuRenderer {
                 return false
             }
             atlas = made
-            atlasGeneration = -1
+            atlasGeneration = frame.generation
         }
         guard let atlas, let pixels = frame.atlas else {
             return true
         }
-        var region = frame.dirty
-        if atlasGeneration != frame.generation {
-            region = (0, 0, side, side)
-            atlasGeneration = frame.generation
-        }
+        let region = needsFullUpload ? (x: 0, y: 0, width: side, height: side) : frame.dirty
         if region.width > 0, region.height > 0 {
             let rowBytes = side * 4
             atlas.replace(

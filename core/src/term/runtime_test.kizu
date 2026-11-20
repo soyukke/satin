@@ -554,3 +554,67 @@ test "a tmux projection keeps the Kitty graphics replies it owes" {
     try runtime.take_graphics_replies(allocator, &var replies);
     testing::expect(replies.len() == 0);
 }
+
+test "screen_text does not clobber the rendered frame during synchronized output" {
+    let allocator = mem::page_allocator();
+    var runtime = try external_runtime(allocator, test_size());
+    defer runtime.deinit(allocator);
+    var replies = string::new(allocator);
+    defer replies.deinit(allocator);
+    try feed(allocator, &var runtime, "ready> ", &var replies);
+    try runtime.update_model_at(allocator, 1000);
+    testing::expect(runtime.frame.has_cursor);
+    testing::expect(runtime.frame.cursor.x == 7 and runtime.frame.cursor.y == 0);
+
+    // Program begins a synchronized redraw: hides the cursor and clears the screen.
+    try feed(allocator, &var runtime, "^[?2026h^[?25l^[2J^[Hpartial", &var replies);
+    var text = string::new(allocator);
+    defer text.deinit(allocator);
+    try runtime.screen_text(allocator, &var text);
+    let held = text.as_bytes();
+    testing::expect(find_bytes(held, "ready>", 0) >= 0);
+    testing::expect(find_bytes(held, "partial", 0) < 0);
+    testing::expect(runtime.frame.has_cursor);
+    testing::expect(runtime.frame.cursor.x == 7 and runtime.frame.cursor.y == 0);
+
+    // Once synchronized output closes, screen_text reads the new screen
+    // without overwriting runtime.frame before the next update_model.
+    try feed(allocator, &var runtime, "^[?25h^[?2026l", &var replies);
+    text.clear();
+    try runtime.screen_text(allocator, &var text);
+    let updated = text.as_bytes();
+    testing::expect(find_bytes(updated, "partial", 0) >= 0);
+    testing::expect(runtime.frame.cursor.x == 7 and runtime.frame.cursor.y == 0);
+}
+
+test "synchronized output holds by time rather than frame count and times out" {
+    let allocator = mem::page_allocator();
+    var runtime = try external_runtime(allocator, test_size());
+    defer runtime.deinit(allocator);
+    var replies = string::new(allocator);
+    defer replies.deinit(allocator);
+    try feed(allocator, &var runtime, "before", &var replies);
+    try runtime.update_model_at(allocator, 1000);
+
+    try feed(allocator, &var runtime, "^[?2026h^[2J^[Hmid-frame", &var replies);
+    // 60 frames at 120Hz (~500ms) stay held well past the old 20-frame cap.
+    for 0..60 |step| {
+        try runtime.update_model_at(allocator, 1000 + step * 8);
+        testing::expect(runtime.is_sync_holding());
+        testing::expect(runtime.frame.cursor.x == 6);
+    }
+    testing::expect_equal<i64>(1000 + sync_hold_limit_ms(), runtime.sync_hold_deadline_ms() orelse -1);
+
+    // At the timeout, the frame is drawn so a wedged program cannot freeze it.
+    try runtime.update_model_at(allocator, 1000 + sync_hold_limit_ms());
+    testing::expect(!runtime.is_sync_holding());
+    testing::expect(runtime.frame.cursor.x == 9);
+
+    // Closing synchronized output resets the timeout for the next update.
+    try feed(allocator, &var runtime, "^[?2026l", &var replies);
+    try runtime.update_model_at(allocator, 2100);
+    try feed(allocator, &var runtime, "^[?2026h^[2J^[Hnext", &var replies);
+    try runtime.update_model_at(allocator, 2200);
+    testing::expect(runtime.is_sync_holding());
+    testing::expect(runtime.frame.cursor.x == 9);
+}
