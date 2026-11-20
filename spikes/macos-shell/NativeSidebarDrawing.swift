@@ -26,18 +26,19 @@ enum NativeSidebarLook {
 
     /// What the title of a card is written in.
     static var cardText: NSColor {
-        NativePageStyle.paper ? NativePageStyle.text : .white
+        NativePageStyle.isLightSurface ? NativePageStyle.text : .white
     }
 
     /// A tab's shortcut, drawn at its corner while ⌘ is held.
     static func drawShortcut(_ digit: Int, center: NSPoint) {
+        let lightSurface = NativePageStyle.isLightSurface
         let paper = NativePageStyle.paper
         let pill = NSRect(x: center.x - 13, y: center.y - 9, width: 26, height: 18)
-        (paper ? NativePageStyle.text : NSColor.white).setFill()
+        (lightSurface ? NativePageStyle.text : NSColor.white).setFill()
         NSBezierPath(roundedRect: pill, xRadius: paper ? 3 : 6, yRadius: paper ? 3 : 6).fill()
         text(
             "⌘\(digit)", font: NativePageStyle.mono(11, .bold),
-            color: paper ? NativePageStyle.surface : .black, alignment: .center
+            color: lightSurface ? NativePageStyle.surface : .black, alignment: .center
         ).draw(in: pill.insetBy(dx: 0, dy: 2))
     }
 
@@ -86,8 +87,9 @@ enum NativeSidebarLook {
         gem.close()
         color.setFill()
         gem.fill()
+        let glyphColor = NativePageStyle.isLight ? NativePageStyle.surface : stock
         let glyph = text(
-            state.glyph, font: NativePageStyle.sans(half * 1.05, .heavy), color: stock,
+            state.glyph, font: NativePageStyle.sans(half * 1.05, .heavy), color: glyphColor,
             alignment: .center)
         let height = glyph.size().height
         glyph.draw(

@@ -442,14 +442,19 @@ enum NativeItemsSection: Int, CaseIterable {
 private func nativeDrawItemBadge(_ glyph: String, color: NSColor, in rect: NSRect) {
     let box = NSBezierPath(roundedRect: rect, xRadius: 4, yRadius: 4)
     let ink: NSColor
-    if NativePageStyle.paper {
+    switch NativePageStyle.mode {
+    case .paper:
         NativePageStyle.surface.setFill()
         box.fill()
         box.lineWidth = 2
         NativePageStyle.text.setStroke()
         box.stroke()
         ink = color
-    } else {
+    case .light:
+        color.setFill()
+        box.fill()
+        ink = NativePageStyle.surface
+    case .terminal:
         color.setFill()
         box.fill()
         ink = NativeSidebarLook.stock
@@ -708,7 +713,9 @@ final class NativePageSlipView: NSView {
     }
 
     override func draw(_ dirtyRect: NSRect) {
-        let paper = NativePageStyle.paper
+        let mode = NativePageStyle.mode
+        let paper = mode == .paper
+        let light = mode == .light
         let sheet =
             paper
             ? NSRect(x: 0, y: 6, width: bounds.width - 5, height: bounds.height - 11)
@@ -716,7 +723,8 @@ final class NativePageSlipView: NSView {
         let shape = NSBezierPath(roundedRect: sheet, xRadius: paper ? 4 : 6, yRadius: paper ? 4 : 6)
         let strip = NSRect(x: sheet.minX, y: sheet.minY, width: sheet.width, height: 17)
         let version = "@\(page.version)"
-        if paper {
+        switch mode {
+        case .paper:
             NativePageStyle.teal.withAlphaComponent(0.8).setFill()
             NSBezierPath(roundedRect: sheet.offsetBy(dx: 5, dy: 5), xRadius: 4, yRadius: 4).fill()
             NativePageStyle.surface.setFill()
@@ -726,7 +734,20 @@ final class NativePageSlipView: NSView {
             shape.stroke()
             NativePageStyle.line.setFill()
             NSRect(x: sheet.minX + 2, y: strip.maxY, width: sheet.width - 4, height: 1).fill()
-        } else {
+        case .light:
+            NativePageStyle.surface.setFill()
+            shape.fill()
+            NSGraphicsContext.saveGraphicsState()
+            shape.addClip()
+            NativePageStyle.teal.withAlphaComponent(0.12).setFill()
+            strip.fill()
+            NSGraphicsContext.restoreGraphicsState()
+            (hovering ? NativePageStyle.violet : NativePageStyle.line).setStroke()
+            shape.lineWidth = 1
+            shape.stroke()
+            NativePageStyle.line.setFill()
+            NSRect(x: sheet.minX, y: strip.maxY, width: sheet.width, height: 1).fill()
+        case .terminal:
             NativePageStyle.raised.setFill()
             shape.fill()
             NSGraphicsContext.saveGraphicsState()
@@ -738,7 +759,7 @@ final class NativePageSlipView: NSView {
             shape.lineWidth = 1
             shape.stroke()
         }
-        let stripInk = paper ? NativePageStyle.teal : NativePageStyle.ink
+        let stripInk = (paper || light) ? NativePageStyle.teal : NativePageStyle.ink
         NativeSidebarLook.text(
             "PAGE", font: NativePageStyle.mono(9, .bold), color: stripInk, kern: 1
         ).draw(at: NSPoint(x: sheet.minX + 7, y: strip.minY + 3))
@@ -746,9 +767,13 @@ final class NativePageSlipView: NSView {
             version, font: NativePageStyle.mono(9, .bold), color: stripInk, alignment: .right
         ).draw(in: NSRect(x: sheet.minX, y: strip.minY + 3, width: sheet.width - 7, height: 12))
 
-        let titleFont = paper ? NativePageStyle.serif(12) : NativePageStyle.sans(12, .heavy)
+        let titleFont =
+            paper
+            ? NativePageStyle.serif(12)
+            : (light ? NativePageStyle.sans(12, .semibold) : NativePageStyle.sans(12, .heavy))
         NativeSidebarLook.text(
-            page.title, font: titleFont, color: paper ? NativePageStyle.text : .white,
+            page.title, font: titleFont,
+            color: NativePageStyle.isLightSurface ? NativePageStyle.text : .white,
             breaking: .byWordWrapping
         ).draw(
             with: NSRect(
@@ -843,7 +868,7 @@ final class NativeItemsRailButton: NSView {
         }
         let label = NativeSidebarLook.text(
             count > 99 ? "99+" : String(count), font: NativePageStyle.sans(9, .bold),
-            color: NativePageStyle.paper ? NativePageStyle.surface : NativePageStyle.ink,
+            color: NativePageStyle.isLightSurface ? NativePageStyle.surface : NativePageStyle.ink,
             alignment: .center)
         let width = max(16, ceil(label.size().width) + 6)
         let bubble = NSRect(x: badge.maxX - width + 6, y: badge.minY - 6, width: width, height: 16)

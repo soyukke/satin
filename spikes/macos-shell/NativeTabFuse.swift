@@ -9,7 +9,7 @@ final class NativeTabFuseView: NSView {
         let rect: NSRect
         let color: NSColor
         let steady: Bool
-        let paper: Bool
+        let mode: NativeAppearanceMode
     }
 
     /// The rectangle of a tab in the tab strip's coordinates.
@@ -70,15 +70,15 @@ final class NativeTabFuseView: NSView {
 
     private func rebuild() {
         var wanted = [Int: Fuse]()
+        let mode = NativePageStyle.mode
         for (segment, color) in colors {
             if let rect = tabRect(segment) {
-                wanted[segment] = Fuse(
-                    rect: rect, color: color, steady: false, paper: NativePageStyle.paper)
+                wanted[segment] = Fuse(rect: rect, color: color, steady: false, mode: mode)
             }
         }
         if let target, let rect = tabRect(target.segment) {
             wanted[target.segment] = Fuse(
-                rect: rect, color: target.color, steady: true, paper: NativePageStyle.paper)
+                rect: rect, color: target.color, steady: true, mode: mode)
         }
         guard wanted != shown else {
             return
@@ -97,16 +97,23 @@ final class NativeTabFuseView: NSView {
 
     private func makeLayer(_ fuse: Fuse) -> CALayer {
         // The fuse runs along the tab's own edge: the terminal look's square
-        // frame, or paper's folder tab with its foot closed.
+        // frame, light mode's rounded pill, or paper's folder tab.
         let path: CGPath
         let perimeter: CGFloat
-        if fuse.paper {
+        switch fuse.mode {
+        case .paper:
             let rect = NativePaperTab.rect(fuse.rect, flipped: isFlipped)
             let outline = NativePaperTab.outline(rect, flipped: isFlipped)
             outline.close()
             path = outline.cgPath
             perimeter = NativePaperTab.perimeter(rect)
-        } else {
+        case .light:
+            let rect = nativeTerminalTabFrame(fuse.rect)
+            let radius = min(6, min(rect.width, rect.height) / 2)
+            path = CGPath(
+                roundedRect: rect, cornerWidth: radius, cornerHeight: radius, transform: nil)
+            perimeter = 2 * (rect.width + rect.height) - (8 - 2 * .pi) * radius
+        case .terminal:
             let rect = nativeTerminalTabFrame(fuse.rect)
             path = CGPath(rect: rect, transform: nil)
             perimeter = 2 * (rect.width + rect.height)
@@ -121,7 +128,7 @@ final class NativeTabFuseView: NSView {
             shape.lineWidth = width
             shape.lineCap = .round
             shape.shadowColor = fuse.color.cgColor
-            shape.shadowOpacity = 0.9
+            shape.shadowOpacity = fuse.mode == .light ? 0.45 : 0.9
             shape.shadowRadius = 4
             shape.shadowOffset = .zero
             if length < perimeter {

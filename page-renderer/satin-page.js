@@ -180,7 +180,7 @@
     if (pass !== drawn) {
       return;
     }
-    const paper = root.dataset.look === "paper";
+    const isDark = root.dataset.look !== "paper" && root.dataset.look !== "light";
     mermaid.initialize({
       startOnLoad: false,
       securityLevel: "strict",
@@ -194,7 +194,7 @@
       state: { useMaxWidth: false },
       er: { useMaxWidth: false },
       themeVariables: {
-        darkMode: !paper,
+        darkMode: isDark,
         background: token("--surface"),
         primaryColor: token("--raised"),
         primaryTextColor: token("--text"),
@@ -338,10 +338,17 @@
     await drawDiagrams(page, pass);
   }
 
-  // `look` is "datasheet" or "paper"; `colors` optionally overrides the look's
-  // tokens, as `{ "--surface": "#fff", ... }`.
+  // `look` is "datasheet", "light", or "paper"; `colors` optionally overrides
+  // the look's tokens, as `{ "--surface": "#fff", ... }`.
+  function normalizeLook(look) {
+    if (look === "paper" || look === "light") {
+      return look;
+    }
+    return "datasheet";
+  }
+
   function setLook(look, colors) {
-    root.dataset.look = look === "paper" ? "paper" : "datasheet";
+    root.dataset.look = normalizeLook(look);
     for (const [name, value] of Object.entries(colors || {})) {
       root.style.setProperty(name, value);
     }
@@ -361,7 +368,7 @@
     document.body.classList.add("preview");
     const bar = document.createElement("nav");
     bar.className = "preview-bar";
-    for (const look of ["datasheet", "paper"]) {
+    for (const look of ["datasheet", "light", "paper"]) {
       const button = document.createElement("button");
       button.textContent = look;
       button.addEventListener("click", () => {
@@ -395,7 +402,7 @@
 
   async function start() {
     const params = new URLSearchParams(location.search);
-    root.dataset.look = params.get("look") === "paper" ? "paper" : "datasheet";
+    root.dataset.look = normalizeLook(params.get("look"));
     // A host sets the look and opens each page itself, and keeps this
     // document for page after page.
     if (params.has("host")) {

@@ -21,6 +21,7 @@ enum NativePreferenceKey {
     static let animatedBackdrop = "animatedBackdrop"
     static let ambientSound = "ambientSound"
     static let appearanceMode = "appearanceMode"
+    static let paneDisplayMode = "paneDisplayMode"
     static let agentChimes = "agentChimes"
     static let shellPath = "shellPath"
     static let tmuxExecutablePath = "tmuxExecutablePath"
@@ -65,6 +66,7 @@ struct NativeSettings: Equatable {
     var animatedBackdrop: Bool
     var ambientSound: Bool
     var appearanceMode: String
+    var paneDisplayMode: String
     var agentChimes: Bool
     var shellPath: String
     var tmuxExecutablePath: String
@@ -143,6 +145,9 @@ final class NativeSettingsStore {
             appearanceMode: NativeAppearanceMode(
                 rawValue: defaults.string(forKey: NativePreferenceKey.appearanceMode) ?? ""
             )?.rawValue ?? NativeAppearanceMode.terminal.rawValue,
+            paneDisplayMode: NativePaneDisplayMode(
+                rawValue: defaults.string(forKey: NativePreferenceKey.paneDisplayMode) ?? ""
+            )?.rawValue ?? NativePaneDisplayMode.split.rawValue,
             agentChimes: preferredBool(NativePreferenceKey.agentChimes, defaultValue: false),
             shellPath: validShellPath(
                 defaults.string(forKey: NativePreferenceKey.shellPath) ?? ""
@@ -186,7 +191,16 @@ final class NativeSettingsStore {
         defaults.set(settings.attentionHand, forKey: NativePreferenceKey.attentionHand)
         defaults.set(settings.animatedBackdrop, forKey: NativePreferenceKey.animatedBackdrop)
         defaults.set(settings.ambientSound, forKey: NativePreferenceKey.ambientSound)
-        defaults.set(settings.appearanceMode, forKey: NativePreferenceKey.appearanceMode)
+        defaults.set(
+            NativeAppearanceMode(rawValue: settings.appearanceMode)?.rawValue
+                ?? NativeAppearanceMode.terminal.rawValue,
+            forKey: NativePreferenceKey.appearanceMode
+        )
+        defaults.set(
+            NativePaneDisplayMode(rawValue: settings.paneDisplayMode)?.rawValue
+                ?? NativePaneDisplayMode.split.rawValue,
+            forKey: NativePreferenceKey.paneDisplayMode
+        )
         defaults.set(settings.agentChimes, forKey: NativePreferenceKey.agentChimes)
         defaults.set(validShellPath(settings.shellPath), forKey: NativePreferenceKey.shellPath)
         defaults.set(
@@ -232,6 +246,7 @@ final class NativeSettingsStore {
             NativePreferenceKey.animatedBackdrop,
             NativePreferenceKey.ambientSound,
             NativePreferenceKey.appearanceMode,
+            NativePreferenceKey.paneDisplayMode,
             NativePreferenceKey.agentChimes,
             NativePreferenceKey.shellPath,
             NativePreferenceKey.tmuxExecutablePath,

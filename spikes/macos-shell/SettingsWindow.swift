@@ -19,6 +19,7 @@ final class NativeSettingsWindowController: NSWindowController, NSTextFieldDeleg
     private var animatedBackdropButton: NSButton?
     private var ambientSoundButton: NSButton?
     private var appearanceModePopup: NSPopUpButton?
+    private var paneDisplayModePopup: NSPopUpButton?
     private var agentChimesButton: NSButton?
     private var sessionRestoreButton: NSButton?
     private var confirmBeforeQuitButton: NSButton?
@@ -309,6 +310,12 @@ final class NativeSettingsWindowController: NSWindowController, NSTextFieldDeleg
         modes.action = #selector(appearanceModeChanged(_:))
         appearanceModePopup = modes
 
+        let paneModes = NSPopUpButton()
+        paneModes.addItems(withTitles: NativePaneDisplayMode.allCases.map(\.title))
+        paneModes.target = self
+        paneModes.action = #selector(paneDisplayModeChanged(_:))
+        paneDisplayModePopup = paneModes
+
         let themes = NSPopUpButton()
         themes.addItems(withTitles: nativeThemeNames)
         themes.target = self
@@ -333,6 +340,7 @@ final class NativeSettingsWindowController: NSWindowController, NSTextFieldDeleg
                 "Font changes apply immediately. Theme updates the current tab and new tabs.",
             rows: [
                 ("Mode", modes),
+                ("Pane layout", paneModes),
                 ("Font", fonts),
                 ("Font size", sizeRow),
                 ("Theme", themes),
@@ -347,6 +355,13 @@ final class NativeSettingsWindowController: NSWindowController, NSTextFieldDeleg
     @objc private func appearanceModeChanged(_ sender: NSPopUpButton) {
         let index = max(0, sender.indexOfSelectedItem)
         settings.appearanceMode = NativeAppearanceMode.allCases[index].rawValue
+        applyWindowAppearance()
+        commit()
+    }
+
+    @objc private func paneDisplayModeChanged(_ sender: NSPopUpButton) {
+        let index = max(0, sender.indexOfSelectedItem)
+        settings.paneDisplayMode = NativePaneDisplayMode.allCases[index].rawValue
         commit()
     }
 
@@ -557,6 +572,11 @@ final class NativeSettingsWindowController: NSWindowController, NSTextFieldDeleg
             at: NativeAppearanceMode.allCases.firstIndex {
                 $0.rawValue == settings.appearanceMode
             } ?? 0)
+        paneDisplayModePopup?.selectItem(
+            at: NativePaneDisplayMode.allCases.firstIndex {
+                $0.rawValue == settings.paneDisplayMode
+            } ?? 0)
+        applyWindowAppearance()
         agentChimesButton?.state = settings.agentChimes ? .on : .off
         sessionRestoreButton?.state = settings.sessionRestore ? .on : .off
         confirmBeforeQuitButton?.state = settings.confirmBeforeQuit ? .on : .off
@@ -582,6 +602,15 @@ final class NativeSettingsWindowController: NSWindowController, NSTextFieldDeleg
                 settings.keyBindings[command.rawValue] ?? command.defaultShortcut
         }
         _ = validateShortcuts()
+    }
+
+    func refreshFromStore() {
+        refreshControls()
+    }
+
+    private func applyWindowAppearance() {
+        let mode = NativeAppearanceMode(rawValue: settings.appearanceMode) ?? .terminal
+        window?.appearance = NSAppearance(named: mode.nsAppearanceName)
     }
 
     private func refreshTmuxStatus(force: Bool = false) {

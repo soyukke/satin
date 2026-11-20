@@ -78,7 +78,8 @@ extension TerminalShellViewController {
     func syncTabStatusBadges(_ snapshot: TerminalCoreSnapshot) {
         var badges = [Int: NativeTabStatusBadge]()
         for tab in snapshot.tabs {
-            let paneStates = tab.panes.compactMap { paneId in
+            let panes = allPaneIds(in: tab)
+            let paneStates = panes.compactMap { paneId in
                 paneStatuses.status(for: paneId).map { status in
                     (
                         status: status.status,
@@ -86,7 +87,7 @@ extension TerminalShellViewController {
                     )
                 }
             }
-            let badge = [nativeTabStatusBadge(for: paneStates), shellCommandBadge(tab.panes)]
+            let badge = [nativeTabStatusBadge(for: paneStates), shellCommandBadge(panes)]
                 .compactMap { $0 }.max { $0.rawValue < $1.rawValue }
             badges[tab.index] = badge
             let statusLine = badge.map { "\nStatus: \($0.toolTipDescription)" } ?? ""
@@ -97,6 +98,7 @@ extension TerminalShellViewController {
             )
         }
         tabControl.setStatusBadges(badges)
+        refreshPaneTabBar()
         refreshAttentionHand()
     }
 
@@ -118,7 +120,7 @@ extension TerminalShellViewController {
         }
         let attentionStatuses: Set<String> = ["waiting", "blocked", "failed"]
         let candidates = (lastSnapshot?.tabs ?? []).flatMap { tab in
-            tab.panes.compactMap { paneId -> NativeAttentionPane? in
+            allPaneIds(in: tab).compactMap { paneId -> NativeAttentionPane? in
                 guard let status = paneStatuses.status(for: paneId),
                     attentionStatuses.contains(status.status)
                 else {
@@ -199,7 +201,7 @@ extension TerminalShellViewController {
             return []
         }
         return snapshot.tabs.flatMap { tab in
-            tab.panes.enumerated().map { paneOrdinal, paneId in
+            allPaneIds(in: tab).enumerated().map { paneOrdinal, paneId in
                 let mode =
                     paneStore.runtimes[paneId]?.kind
                     ?? paneStore.modes[paneId]
@@ -261,7 +263,7 @@ extension TerminalShellViewController {
     func focusWorkPane(tabId: Int, paneId: Int) -> Bool {
         guard let snapshot = lastSnapshot,
             let tab = snapshot.tabs.first(where: { $0.id == tabId }),
-            tab.panes.contains(paneId)
+            allPaneIds(in: tab).contains(paneId)
         else {
             NSSound.beep()
             refreshWorkSwitcherPresentation()
@@ -270,11 +272,28 @@ extension TerminalShellViewController {
         if let session = tmuxSession {
             guard let windowId = session.tmuxWindowIds[tabId],
                 let tmuxPaneId = session.tmuxPaneIds[paneId],
-                session.gateway.tmuxCommand("select-window -t @\(windowId)"),
-                session.gateway.tmuxCommand("select-pane -t %\(tmuxPaneId)")
+                session.gateway.tmuxCommand("select-window -t @\(windowId)")
             else {
                 NSSound.beep()
                 return false
+            }
+            let paneCount = allPaneIds(in: tab).count
+            let zoomed = session.windowZoomed[tabId] ?? false
+            let commands = session.tabModeZoomTracker.selectPaneCommands(
+                window: NativeTmuxTabModeWindowState(
+                    windowId: windowId,
+                    activePaneId: tmuxPaneId,
+                    paneCount: paneCount,
+                    zoomed: zoomed
+                ),
+                targetPaneId: tmuxPaneId,
+                mode: paneDisplayMode
+            )
+            for command in commands {
+                guard session.gateway.tmuxCommand(command) else {
+                    NSSound.beep()
+                    return false
+                }
             }
         } else {
             guard core.selectTab(tab.index), core.selectPane(paneId) else {

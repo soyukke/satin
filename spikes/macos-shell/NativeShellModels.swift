@@ -54,6 +54,11 @@ final class NativeTmuxSession {
     var bufferedHydration: [UInt32: Data] = [:]
     var bufferedScrollMetadata: [UInt32: [NativeTmuxScrollMetadata]] = [:]
     var latestPanes: [UInt32: TmuxPaneSnapshot] = [:]
+    /// All native pane IDs belonging to each native tab ID, including panes
+    /// temporarily hidden while tmux has zoomed the active pane.
+    var windowPanes: [Int: [Int]] = [:]
+    var windowZoomed: [Int: Bool] = [:]
+    var tabModeZoomTracker = NativeTmuxTabModeZoomTracker()
     var requestedClientGrid: NativePaneGridCapacity?
     var clientResizeThrottleWorkItem: DispatchWorkItem?
     #if SATIN_SMOKE_SCENARIOS

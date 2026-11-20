@@ -10,8 +10,9 @@ extension TerminalShellViewController {
             lastExit: marks.lastExit, fullScreen: marks.fullScreen,
             visible: paneIsVisibleForAttention(paneId))
         if let finish = result.finish, !agentReported(paneId: paneId),
-            let segment = lastSnapshot?.tabs.first(where: { $0.panes.contains(finish.paneId) })?
-                .index
+            let segment = lastSnapshot?.tabs.first(where: {
+                allPaneIds(in: $0).contains(finish.paneId)
+            })?.index
         {
             tabControl.signalFinish(segment: segment, failed: finish.failed)
         }

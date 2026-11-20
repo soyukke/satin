@@ -40,6 +40,7 @@ extension NativeSettingsStore {
             !initial.animatedBackdrop,
             !initial.ambientSound,
             initial.appearanceMode == "terminal",
+            initial.paneDisplayMode == "split",
             !initial.agentChimes,
             initial.sessionRestore,
             initial.confirmBeforeQuit,
@@ -59,6 +60,8 @@ extension NativeSettingsStore {
         changed.fontFamily = "Menlo"
         changed.fontSize = 19
         changed.defaultTheme = "Harbor"
+        changed.appearanceMode = NativeAppearanceMode.light.rawValue
+        changed.paneDisplayMode = NativePaneDisplayMode.tab.rawValue
         changed.finderEditorCommand = "vim"
         changed.tmuxExecutablePath = "/usr/bin/true"
         changed.confirmBeforeQuit = false
@@ -78,6 +81,8 @@ extension NativeSettingsStore {
         )
         defaults.set("/not/a/real/directory", forKey: NativePreferenceKey.startupDirectory)
         defaults.set("nvim --clean", forKey: NativePreferenceKey.finderEditorCommand)
+        defaults.set("invalid-mode", forKey: NativePreferenceKey.appearanceMode)
+        defaults.set("invalid-layout", forKey: NativePreferenceKey.paneDisplayMode)
         defaults.set(
             [
                 NativeCommandID.newTab.rawValue: "cmd+q",
@@ -90,6 +95,8 @@ extension NativeSettingsStore {
             repaired.tmuxExecutablePath.isEmpty,
             repaired.startupDirectory.isEmpty,
             repaired.finderEditorCommand == "nvim",
+            repaired.appearanceMode == NativeAppearanceMode.terminal.rawValue,
+            repaired.paneDisplayMode == NativePaneDisplayMode.split.rawValue,
             repaired.keyBindings == store.defaultKeyBindings()
         else {
             return false

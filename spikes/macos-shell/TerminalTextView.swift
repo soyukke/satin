@@ -20,6 +20,8 @@ final class TerminalTextView: NSView, NSTextInputClient {
     var onFindRequested: (() -> Bool)?
     var onScroll: ((CGFloat) -> Void)?
     var onPaneSelected: ((Int) -> Void)?
+    var onPaneTabClose: ((Int) -> Void)?
+    var onPaneTabNew: (() -> Void)?
     var onPaneChromeAction: ((NativePaneChromeAction, Int, NSView) -> Void)?
     var isPaneChromeActionEnabled: ((NativePaneChromeAction, Int) -> Bool)?
     /// The branch to show in a pane's header for the worktree it is in.
@@ -53,6 +55,16 @@ final class TerminalTextView: NSView, NSTextInputClient {
     var paneBounds: [Int: NSRect] = [:]
     var paneDividers: [NativePaneDivider] = []
     var paneChromeViews: [Int: NativePaneChromeView] = [:]
+    let paneTabBarView = NativePaneTabBarView(frame: .zero)
+    private var paneTabBarActivePaneId: Int?
+    var paneDisplayMode: NativePaneDisplayMode = .split {
+        didSet {
+            if paneDisplayMode != oldValue {
+                updatePaneChromeViews()
+                needsDisplay = true
+            }
+        }
+    }
     let paneDragInteraction = NativePaneDragInteraction()
     var activeDividerDrag: NativePaneDivider?
     var activeDividerCommandRatio: CGFloat?
@@ -90,6 +102,48 @@ final class TerminalTextView: NSView, NSTextInputClient {
     func configure() {
         wantsLayer = true
         layer?.backgroundColor = NSColor.clear.cgColor
+        paneTabBarView.isHidden = true
+        paneTabBarView.onSelectPane = { [weak self] paneId in
+            self?.onPaneSelected?(paneId)
+        }
+        paneTabBarView.onClosePane = { [weak self] paneId in
+            self?.onPaneTabClose?(paneId)
+        }
+        paneTabBarView.onNewPane = { [weak self] in
+            self?.onPaneTabNew?()
+        }
+        paneTabBarView.onAction = { [weak self] action, sourceView in
+            guard let self, let paneId = self.paneTabBarActivePaneId ?? self.activePaneId else {
+                return
+            }
+            self.onPaneChromeAction?(action, paneId, sourceView)
+        }
+        paneTabBarView.onContextMenu = { [weak self] paneId, event, sourceView in
+            self?.onContextMenuRequested?(paneId, event, sourceView)
+        }
+        addSubview(paneTabBarView)
+    }
+
+    func refreshAppearance() {
+        paneTabBarView.refreshLook()
+        needsDisplay = true
+    }
+
+    func updatePaneTabBar(
+        items: [NativePaneTabItem],
+        frame: NSRect,
+        visible: Bool,
+        activePaneId: Int?
+    ) {
+        paneTabBarActivePaneId = activePaneId
+        paneTabBarView.isHidden = !visible
+        guard visible else {
+            paneTabBarView.showsShortcuts = false
+            return
+        }
+        paneTabBarView.frame = frame
+        paneTabBarView.update(items: items)
+        refreshPaneTabBarActionAvailability(paneId: activePaneId)
     }
 
     override var acceptsFirstResponder: Bool {
@@ -550,6 +604,25 @@ final class TerminalTextView: NSView, NSTextInputClient {
         for (candidateId, chrome) in paneChromeViews where paneId == nil || paneId == candidateId {
             updatePaneChromeActionAvailability(chrome, paneId: candidateId)
         }
+        if paneDisplayMode == .tab, paneId == nil || paneId == activePaneId {
+            refreshPaneTabBarActionAvailability(paneId: activePaneId)
+        }
+    }
+
+    private func refreshPaneTabBarActionAvailability(paneId: Int?) {
+        guard let paneId, paneId != nativeArtifactSidebarPaneId else {
+            paneTabBarView.update(action: .newWorktree, isEnabled: false)
+            paneTabBarView.update(action: .openInFinder, isEnabled: false)
+            return
+        }
+        paneTabBarView.update(
+            action: .newWorktree,
+            isEnabled: isPaneChromeActionEnabled?(.newWorktree, paneId) ?? true
+        )
+        paneTabBarView.update(
+            action: .openInFinder,
+            isEnabled: isPaneChromeActionEnabled?(.openInFinder, paneId) ?? true
+        )
     }
 
     #if SATIN_SMOKE_SCENARIOS
@@ -713,25 +786,35 @@ final class TerminalTextView: NSView, NSTextInputClient {
     }
 
     func drawPaneBorders() {
-        guard paneBounds.count > 1 else {
+        let workspacePanes = paneBounds.filter { $0.key != nativeArtifactSidebarPaneId }
+        guard workspacePanes.count > 1 else {
             return
         }
         let scale = max(1, terminalBackingCellSize().width / terminalCellSize().width)
         let lineWidth = 1 / max(1, scale)
-        for (paneId, rect) in paneBounds {
+        for (paneId, rect) in workspacePanes {
             let path = NSBezierPath(
                 rect: rect.insetBy(dx: lineWidth / 2, dy: lineWidth / 2)
             )
             path.lineWidth = lineWidth
-            (paneId == activePaneId
-                ? NSColor.systemBlue.withAlphaComponent(0.55)
-                : NSColor.separatorColor.withAlphaComponent(0.24)).setStroke()
+            let activeBorder: NSColor =
+                NativePageStyle.isLight
+                ? NativePageStyle.violet.withAlphaComponent(0.55)
+                : NSColor.systemBlue.withAlphaComponent(0.55)
+            let inactiveBorder: NSColor =
+                NativePageStyle.isLightSurface
+                ? NativePageStyle.line
+                : NSColor.separatorColor.withAlphaComponent(0.24)
+            (paneId == activePaneId ? activeBorder : inactiveBorder).setStroke()
             path.stroke()
         }
     }
 
     func drawPaneChromeBackgrounds() {
         for (paneId, paneRect) in paneBounds {
+            if paneDisplayMode == .tab, paneId != nativeArtifactSidebarPaneId {
+                continue
+            }
             let height = min(nativePaneChromeHeight, paneRect.height)
             let headerRect = NSRect(
                 x: paneRect.minX,
@@ -739,30 +822,45 @@ final class TerminalTextView: NSView, NSTextInputClient {
                 width: paneRect.width,
                 height: height
             )
-            // On paper the header is a faint ink tint over a ruled line.
-            let paper = NativePageStyle.paper
-            (paper ? NativePageStyle.text : NSColor.black)
-                .withAlphaComponent(
-                    paneId == activePaneId ? (paper ? 0.06 : 0.2) : (paper ? 0.03 : 0.12)
-                )
-                .setFill()
-            headerRect.fill()
-            (paper ? NativePageStyle.line : NSColor.separatorColor.withAlphaComponent(0.28))
-                .setFill()
+            switch NativePageStyle.mode {
+            case .paper:
+                NativePageStyle.text
+                    .withAlphaComponent(paneId == activePaneId ? 0.06 : 0.03)
+                    .setFill()
+                headerRect.fill()
+                NativePageStyle.line.setFill()
+            case .light:
+                let inactiveFill =
+                    NativePageStyle.raised.blended(withFraction: 0.04, of: NativePageStyle.text)
+                    ?? NativePageStyle.raised
+                (paneId == activePaneId ? NativePageStyle.raised : inactiveFill).setFill()
+                headerRect.fill()
+                NativePageStyle.line.setFill()
+            case .terminal:
+                NSColor.black
+                    .withAlphaComponent(paneId == activePaneId ? 0.2 : 0.12)
+                    .setFill()
+                headerRect.fill()
+                NSColor.separatorColor.withAlphaComponent(0.28).setFill()
+            }
             NSRect(x: headerRect.minX, y: headerRect.maxY - 1, width: headerRect.width, height: 1)
                 .fill()
         }
     }
 
     private func updatePaneChromeViews() {
-        let visiblePaneIds = Set(paneBounds.keys)
-        let movablePaneCount = paneBounds.keys.count { $0 != nativeArtifactSidebarPaneId }
+        let chromePaneBounds: [Int: NSRect] =
+            paneDisplayMode == .tab
+            ? paneBounds.filter { $0.key == nativeArtifactSidebarPaneId }
+            : paneBounds
+        let visiblePaneIds = Set(chromePaneBounds.keys)
+        let movablePaneCount = chromePaneBounds.keys.count { $0 != nativeArtifactSidebarPaneId }
         let stalePaneIds = paneChromeViews.keys.filter { !visiblePaneIds.contains($0) }
         for paneId in stalePaneIds {
             paneChromeViews[paneId]?.removeFromSuperview()
             paneChromeViews.removeValue(forKey: paneId)
         }
-        for (paneId, paneRect) in paneBounds {
+        for (paneId, paneRect) in chromePaneBounds {
             let chrome: NativePaneChromeView
             let created: Bool
             if let existing = paneChromeViews[paneId] {

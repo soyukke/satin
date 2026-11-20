@@ -21,6 +21,7 @@ native_swift_sources=(
   spikes/macos-shell/NativePaneGeometry.swift
   spikes/macos-shell/PaneDragInteraction.swift
   spikes/macos-shell/PaneChromeView.swift
+  spikes/macos-shell/NativePaneTabBarView.swift
   spikes/macos-shell/NativePaneRuntime.swift
   spikes/macos-shell/NativeHandEffects.swift
   spikes/macos-shell/NativeTabFuse.swift

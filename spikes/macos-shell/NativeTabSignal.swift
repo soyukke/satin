@@ -7,7 +7,7 @@ import QuartzCore
 final class NativeTabSignalView: NSView {
     private struct Comet: Equatable {
         let rect: NSRect
-        let paper: Bool
+        let mode: NativeAppearanceMode
     }
 
     /// The rectangle of a tab in the tab strip's coordinates.
@@ -62,21 +62,23 @@ final class NativeTabSignalView: NSView {
     /// look's frame, or the top of paper's folder tab, its foot being the
     /// line the tabs stand on.
     private func track(_ comet: Comet) -> (y: CGFloat, minX: CGFloat, maxX: CGFloat) {
-        if comet.paper {
+        if comet.mode == .paper {
             let rect = NativePaperTab.rect(comet.rect, flipped: isFlipped)
             let top = isFlipped ? rect.minY + 1 : rect.maxY - 1
             return (top, rect.minX + 6, rect.maxX - 6)
         }
         let rect = nativeTerminalTabFrame(comet.rect)
-        return (isFlipped ? rect.maxY : rect.minY, rect.minX, rect.maxX)
+        let inset: CGFloat = comet.mode == .light ? 4 : 0
+        return (isFlipped ? rect.maxY : rect.minY, rect.minX + inset, rect.maxX - inset)
     }
 
     private func rebuild() {
         var wanted = [Int: Comet]()
         if !NativeHandEffects.reducesMotion {
+            let mode = NativePageStyle.mode
             for segment in running {
                 if let rect = tabRect(segment) {
-                    wanted[segment] = Comet(rect: rect, paper: NativePageStyle.paper)
+                    wanted[segment] = Comet(rect: rect, mode: mode)
                 }
             }
         }
@@ -178,21 +180,27 @@ final class NativeTabSignalView: NSView {
         let now = CACurrentMediaTime()
 
         // The tab's edge flares, once for a finish and twice for a failure.
-        let paper = NativePageStyle.paper
+        let mode = NativePageStyle.mode
         let outline = CAShapeLayer()
-        if paper {
+        switch mode {
+        case .paper:
             let tab = NativePaperTab.rect(rect, flipped: isFlipped)
             let path = NativePaperTab.outline(tab, flipped: isFlipped)
             path.close()
             outline.path = path.cgPath
-        } else {
+        case .light:
+            let frame = nativeTerminalTabFrame(rect)
+            let radius = min(6, min(frame.width, frame.height) / 2)
+            outline.path = CGPath(
+                roundedRect: frame, cornerWidth: radius, cornerHeight: radius, transform: nil)
+        case .terminal:
             outline.path = CGPath(rect: nativeTerminalTabFrame(rect), transform: nil)
         }
         outline.fillColor = color.withAlphaComponent(0.12).cgColor
         outline.strokeColor = color.cgColor
         outline.lineWidth = 1.5
         outline.shadowColor = color.cgColor
-        outline.shadowOpacity = 1
+        outline.shadowOpacity = mode == .light ? 0.45 : 1
         outline.shadowRadius = 6
         outline.shadowOffset = .zero
         outline.opacity = 0
@@ -207,7 +215,8 @@ final class NativeTabSignalView: NSView {
 
         // A shine leaves the badge and runs through the tab.
         let frame =
-            paper ? NativePaperTab.rect(rect, flipped: isFlipped) : nativeTerminalTabFrame(rect)
+            mode == .paper
+            ? NativePaperTab.rect(rect, flipped: isFlipped) : nativeTerminalTabFrame(rect)
         let clip = CALayer()
         clip.frame = frame
         clip.masksToBounds = true

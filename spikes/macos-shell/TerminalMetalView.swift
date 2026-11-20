@@ -449,11 +449,21 @@ final class TerminalMetalView: MTKView, CAMetalDisplayLinkDelegate, MTKViewDeleg
         requestFrame()
     }
 
-    private var backdropPaper = false
+    private var backdropMode: NativeAppearanceMode = .terminal
 
-    /// Paints the backdrop as ink on paper, or as the terminal's swirl.
-    func setBackdropPaper(_ paper: Bool) {
-        backdropPaper = paper
+    /// Paints the backdrop and clear color for the active appearance mode.
+    func setBackdropAppearance(_ mode: NativeAppearanceMode) {
+        backdropMode = mode
+        switch mode {
+        case .terminal:
+            clearColor = MTLClearColor(red: 0.078, green: 0.086, blue: 0.102, alpha: 1.0)
+        case .light:
+            clearColor = MTLClearColor(
+                red: 250.0 / 255.0, green: 251.0 / 255.0, blue: 253.0 / 255.0, alpha: 1.0)
+        case .paper:
+            clearColor = MTLClearColor(
+                red: 241.0 / 255.0, green: 232.0 / 255.0, blue: 212.0 / 255.0, alpha: 1.0)
+        }
         applyBackdropLook()
         requestFrame()
     }
@@ -463,14 +473,25 @@ final class TerminalMetalView: MTKView, CAMetalDisplayLinkDelegate, MTKViewDeleg
             return
         }
         let look = NativeGpuRenderer.Backdrop()
-        gpuRenderer?.backdrop?.paper = backdropPaper
-        gpuRenderer?.backdrop?.colors =
-            backdropPaper
-            ? [
+        switch backdropMode {
+        case .terminal:
+            gpuRenderer?.backdrop?.surfaceStyle = 0
+            gpuRenderer?.backdrop?.colors = look.colors
+        case .light:
+            gpuRenderer?.backdrop?.surfaceStyle = 1
+            gpuRenderer?.backdrop?.colors = [
+                SIMD4(0.31, 0.275, 0.898, 1),
+                SIMD4(0.051, 0.502, 0.541, 1),
+                SIMD4(0.980, 0.984, 0.992, 1),
+            ]
+        case .paper:
+            gpuRenderer?.backdrop?.surfaceStyle = 2
+            gpuRenderer?.backdrop?.colors = [
                 SIMD4(0.42, 0.29, 0.77, 1),
                 SIMD4(0.12, 0.54, 0.54, 1),
                 SIMD4(0.945, 0.91, 0.83, 1),
-            ] : look.colors
+            ]
+        }
         updateBackdropPixel()
     }
 
@@ -493,7 +514,7 @@ final class TerminalMetalView: MTKView, CAMetalDisplayLinkDelegate, MTKViewDeleg
 
     private func updateBackdropPixel() {
         let scale = Float(window?.backingScaleFactor ?? 2)
-        gpuRenderer?.backdrop?.pixel = (backdropPaper ? 1 : 4) * scale
+        gpuRenderer?.backdrop?.pixel = (backdropMode.isLightSurface ? 1 : 4) * scale
     }
 
     /// Runs the backdrop's clock at 30 frames a second while the window can

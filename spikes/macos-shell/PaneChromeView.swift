@@ -28,8 +28,10 @@ enum NativePaneChromeAction: Int {
     case splitHorizontal
     case openInFinder
     case newWorktree
+    case togglePaneDisplayMode
 
     static let standardActions: [Self] = [
+        .togglePaneDisplayMode,
         .splitVertical,
         .splitHorizontal,
         .newWorktree,
@@ -44,6 +46,7 @@ enum NativePaneChromeAction: Int {
         case .splitHorizontal: "Split Top and Bottom"
         case .openInFinder: "Open Pane Directory in Finder"
         case .newWorktree: "New Worktree…"
+        case .togglePaneDisplayMode: "Switch to Pane Tabs (⌥⌘T)"
         }
     }
 
@@ -54,6 +57,7 @@ enum NativePaneChromeAction: Int {
         case .splitHorizontal: "rectangle.split.1x2"
         case .openInFinder: "folder"
         case .newWorktree: nativeWorktreeSymbolName
+        case .togglePaneDisplayMode: "square.stack"
         }
     }
 }

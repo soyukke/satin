@@ -239,8 +239,15 @@ func runNativePaneGeometrySelfTests() -> Bool {
         cellSize: NSSize(width: 8.4, height: 17),
         paneChromeHeight: 24
     )
+    let tabSingle = tmuxClientGridCapacity(
+        layout: PaneLayoutSnapshot(kind: "leaf", paneId: 1),
+        size: nativePaneTabContentRect(NSRect(x: 0, y: 0, width: 252, height: 200)).size,
+        cellSize: NSSize(width: 8.4, height: 17),
+        paneChromeHeight: 0
+    )
     return abs(fittedRatio - 0.425) < 0.001
         && abs(compressedRatio - (200.0 / 450.0)) < 0.001
         && client == NativePaneGridCapacity(rows: 33, cols: 95)
         && single == NativePaneGridCapacity(rows: 10, cols: 30)
+        && tabSingle == NativePaneGridCapacity(rows: 10, cols: 30)
 }
