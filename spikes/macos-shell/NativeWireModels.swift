@@ -43,6 +43,19 @@ struct NativeSessionTab: Codable {
     let title: String
     let theme: String
     let layout: NativeSessionPane
+    let pinned: Bool?
+
+    init(
+        title: String,
+        theme: String,
+        layout: NativeSessionPane,
+        pinned: Bool? = nil
+    ) {
+        self.title = title
+        self.theme = theme
+        self.layout = layout
+        self.pinned = pinned
+    }
 }
 
 final class NativeSessionPane: Codable {

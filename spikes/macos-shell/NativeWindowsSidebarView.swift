@@ -557,6 +557,7 @@ final class NativeWindowCardView: NSView {
         let elapsed = row.since.map { nativeElapsedText(since: $0, now: now) } ?? ""
         setAccessibilityLabel(
             "\(row.title), \(row.state.title.lowercased())"
+                + (row.isPinned ? ", pinned" : "")
                 + (row.isCurrent ? ", current" : "") + (elapsed.isEmpty ? "" : ", \(elapsed)"))
         setAccessibilityHelp(row.line.isEmpty ? nil : row.line)
         toolTip = row.line.isEmpty ? row.title : "\(row.title)\n\(row.line)"
@@ -569,8 +570,8 @@ final class NativeWindowCardView: NSView {
         let face = self.face
         let outline = NSBezierPath(
             roundedRect: face, xRadius: paper ? 3 : Self.radius, yRadius: paper ? 3 : Self.radius)
-        // A plain row; only the current tab and the one under the pointer
-        // are filled.
+        // A plain row; the current tab, the hovered row, and a pinned tab
+        // with a notable state are filled.
         if row.isCurrent {
             NativePageStyle.violet.withAlphaComponent(paper ? 0.16 : 0.22).setFill()
             outline.fill()
@@ -579,6 +580,11 @@ final class NativeWindowCardView: NSView {
             outline.stroke()
         } else if hovering {
             (paper ? NativePageStyle.text : NSColor.white).withAlphaComponent(0.07).setFill()
+            outline.fill()
+        } else if row.isPinned,
+            row.state == .waiting || row.state == .failed || row.state == .clear
+        {
+            color.withAlphaComponent(paper ? 0.09 : 0.11).setFill()
             outline.fill()
         }
 
@@ -605,22 +611,46 @@ final class NativeWindowCardView: NSView {
         let title = NativeSidebarLook.text(
             row.title, font: NativePageStyle.sans(12, .semibold),
             color: NativeSidebarLook.cardText)
-        // Under NEEDS YOU the word tells waiting from failed; elsewhere the
-        // heading already says it.
-        let showsWord = NativeWindowGroup(row.state) == .needsYou
+        // Under PINNED the badge tells every active state apart; under NEEDS
+        // YOU the word tells waiting from failed; elsewhere the heading says it.
+        let word: String? =
+            row.isPinned
+            ? row.state.statusWord
+            : (NativeWindowGroup(row.state) == .needsYou ? row.state.title : nil)
         let wordFont = NativePageStyle.sans(8, .bold)
-        let wordWidth =
-            showsWord
-            ? ceil(
-                (row.state.title as NSString).size(withAttributes: [.font: wordFont, .kern: 1.2])
-                    .width) : 0
-        let titleWidth = min(ceil(title.size().width), max(0, right - left - wordWidth - 6))
+        let wordKern: CGFloat = row.isPinned ? 1.0 : 1.2
+        let wordSize =
+            word.map {
+                ($0 as NSString).size(withAttributes: [.font: wordFont, .kern: wordKern])
+            } ?? .zero
+        let badgePadX: CGFloat = row.isPinned ? 4 : 0
+        let badgeWidth = word == nil ? 0 : ceil(wordSize.width) + badgePadX * 2
+        let showsWord = word != nil && right - left >= badgeWidth + 30
+        let titleWidth = min(
+            ceil(title.size().width),
+            max(0, right - left - (showsWord ? badgeWidth + 6 : 0)))
         title.draw(in: NSRect(x: left, y: face.midY - 8, width: titleWidth, height: 16))
         let wordX = left + titleWidth + 6
-        if showsWord, wordX + wordWidth <= right {
-            NativeSidebarLook.text(
-                row.state.title, font: wordFont, color: color.withAlphaComponent(0.9), kern: 1.2
-            ).draw(at: NSPoint(x: wordX, y: face.midY - 5))
+        if showsWord, let word, wordX + badgeWidth <= right {
+            if row.isPinned {
+                let pill = NSRect(x: wordX, y: face.midY - 7, width: badgeWidth, height: 14)
+                let radius: CGFloat = paper ? 2.5 : 3.5
+                let path = NSBezierPath(roundedRect: pill, xRadius: radius, yRadius: radius)
+                color.withAlphaComponent(paper ? 0.14 : 0.18).setFill()
+                path.fill()
+                color.withAlphaComponent(paper ? 0.45 : 0.42).setStroke()
+                path.lineWidth = 0.75
+                path.stroke()
+                NativeSidebarLook.text(word, font: wordFont, color: color, kern: wordKern)
+                    .draw(
+                        at: NSPoint(
+                            x: pill.minX + badgePadX,
+                            y: pill.midY - ceil(wordSize.height) / 2))
+            } else {
+                NativeSidebarLook.text(
+                    word, font: wordFont, color: color.withAlphaComponent(0.9), kern: wordKern
+                ).draw(at: NSPoint(x: wordX, y: face.midY - 5))
+            }
         }
 
         guard row.state != .idle, row.state != .running else {
@@ -741,9 +771,15 @@ final class NativeWindowGemView: NSView {
         glow.isHidden = !hot
         CATransaction.commit()
         NativeHandEffects.setPulse(glow, active: hot, minimumOpacity: 0.25, duration: 2.4)
-        toolTip = row.line.isEmpty ? row.title : "\(row.title) — \(row.state.title)\n\(row.line)"
+        let pinnedMark = row.isPinned ? " (Pinned)" : ""
+        toolTip =
+            row.line.isEmpty
+            ? "\(row.title)\(pinnedMark)"
+            : "\(row.title)\(pinnedMark) — \(row.state.title)\n\(row.line)"
         setAccessibilityLabel(
-            "\(row.title), \(row.state.title.lowercased())" + (row.isCurrent ? ", current" : ""))
+            "\(row.title), \(row.state.title.lowercased())"
+                + (row.isPinned ? ", pinned" : "")
+                + (row.isCurrent ? ", current" : ""))
         needsDisplay = true
     }
 

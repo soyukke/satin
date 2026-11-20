@@ -28,6 +28,9 @@ import Foundation
             _ = core.resizeSplit(firstPaneId: 2, secondPaneId: 3, ratio: 0.65)
             core.renameTab(0, title: "manual session title")
             syncFromCore()
+            let menuBeforePin = tabContextMenu(index: 0, includesPin: true).items.map(\.title)
+            togglePinTab(at: 0)
+            let menuAfterPin = tabContextMenu(index: 0, includesPin: true).items.map(\.title)
             guard let state = currentSessionState(),
                 let data = try? JSONEncoder().encode(state),
                 let decoded = decodeSessionState(data)
@@ -57,6 +60,12 @@ import Foundation
             var versionTwoObject = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
             versionTwoObject?["schemaVersion"] = 2
             versionTwoObject?.removeValue(forKey: "tmuxAttachment")
+            if var versionTwoTabs = versionTwoObject?["tabs"] as? [[String: Any]] {
+                for index in versionTwoTabs.indices {
+                    versionTwoTabs[index].removeValue(forKey: "pinned")
+                }
+                versionTwoObject?["tabs"] = versionTwoTabs
+            }
             let versionTwoData = versionTwoObject.flatMap {
                 try? JSONSerialization.data(withJSONObject: $0)
             }
@@ -91,12 +100,17 @@ import Foundation
                 && counts.activeLeaves == 1
                 && ratiosRetained
                 && decoded.tabs[decoded.activeTab].title == "manual session title"
+                && decoded.tabs[decoded.activeTab].pinned == true
+                && menuBeforePin == ["Pin Tab", "Rename Tab…", "", "Close Tab"]
+                && menuAfterPin == ["Unpin Tab", "Rename Tab…", "", "Close Tab"]
                 && migrated?.schemaVersion == currentSessionSchemaVersion
                 && migrated?.tabs.first?.layout.kind == "leaf"
+                && migrated?.tabs.first?.pinned == nil
                 && attachedRoundTrip?.tmuxAttachment == attachment
                 && consumed.tmuxAttachment == nil
                 && versionTwoMigrated?.schemaVersion == currentSessionSchemaVersion
                 && versionTwoMigrated?.tmuxAttachment == nil
+                && versionTwoMigrated?.tabs.first?.pinned == nil
                 && versionThreeMigrated?.tmuxAttachment == versionThreeExpected
                 && validatedTmuxAttachment(attachment) == attachment
                 && validatedTmuxAttachment(

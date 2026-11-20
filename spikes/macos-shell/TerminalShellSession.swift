@@ -41,6 +41,9 @@ extension TerminalShellViewController {
             _ = core.selectTab(index)
             core.renameTab(index, title: saved.title)
             core.setTheme(saved.theme, tab: index)
+            if saved.pinned == true {
+                windowPins.setLocalPinned(tab.id, pinned: true)
+            }
             if let activePane = restoreSessionPane(saved.layout, paneId: tab.active_pane) {
                 _ = core.selectPane(activePane)
             }

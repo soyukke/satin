@@ -350,6 +350,7 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
     var windowsSidebarDragWidth: CGFloat?
     var itemsSidebarDragWidth: CGFloat?
     var windowIdleOrder = NativeWindowIdleOrder()
+    var windowPins = NativeWindowPinStore()
     let sidebarItems = NativeSidebarItemStore()
     let githubLists = NativeGitHubLists()
     var sidebarScanTimer: Timer?

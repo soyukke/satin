@@ -6,6 +6,7 @@ import AppKit
 extension TerminalShellViewController {
     private static let windowsSidebarKey = "SatinWindowsSidebar"
     private static let windowsSidebarWidthKey = "SatinWindowsSidebarWidth"
+    private static let pinnedTmuxWindowsKey = "SatinPinnedTmuxWindows"
     private static let itemsSidebarKey = "SatinItemsSidebar"
     private static let itemsSidebarWidthKey = "SatinItemsSidebarWidth"
     private static let scanInterval: TimeInterval = 1.5
@@ -59,6 +60,7 @@ extension TerminalShellViewController {
     }
 
     func configureSidebars() {
+        loadPinnedTmuxWindows()
         installShortcutHints()
         windowsSidebar.onSelect = { [weak self] index in
             self?.selectTab(index)
@@ -67,7 +69,7 @@ extension TerminalShellViewController {
             self?.renameTab(at: index)
         }
         windowsSidebar.tabMenu = { [weak self] index in
-            self?.tabContextMenu(index: index)
+            self?.tabContextMenu(index: index, includesPin: true)
         }
         windowsSidebar.onNewTab = { [weak self] in
             self?.newTab(nil)
@@ -300,9 +302,74 @@ extension TerminalShellViewController {
         refreshItemsSidebar()
     }
 
+    func isTabPinned(tabId: Int) -> Bool {
+        if let session = tmuxSession {
+            guard let windowId = session.tmuxWindowIds[tabId] else {
+                return false
+            }
+            return windowPins.isTmuxPinned(
+                socketPath: session.socketPath,
+                sessionName: session.sessionName,
+                windowId: windowId
+            )
+        }
+        return windowPins.isLocalPinned(tabId)
+    }
+
+    func isTabPinned(at index: Int) -> Bool {
+        guard let tab = lastSnapshot?.tabs.first(where: { $0.index == index }) else {
+            return false
+        }
+        return isTabPinned(tabId: tab.id)
+    }
+
+    func togglePinTab(at index: Int) {
+        guard let tab = lastSnapshot?.tabs.first(where: { $0.index == index }) else {
+            return
+        }
+        if let session = tmuxSession {
+            guard let windowId = session.tmuxWindowIds[tab.id] else {
+                return
+            }
+            _ = windowPins.toggleTmuxPinned(
+                socketPath: session.socketPath,
+                sessionName: session.sessionName,
+                windowId: windowId
+            )
+            savePinnedTmuxWindows()
+        } else {
+            _ = windowPins.toggleLocalPinned(tab.id)
+            if ProcessInfo.processInfo.environment["SATIN_NATIVE_SMOKE_SCENARIO"] == nil {
+                saveSessionState()
+            }
+        }
+        refreshWindowsSidebar()
+    }
+
+    func loadPinnedTmuxWindows() {
+        guard ProcessInfo.processInfo.environment["SATIN_NATIVE_SMOKE_SCENARIO"] == nil,
+            let data = UserDefaults.standard.data(forKey: Self.pinnedTmuxWindowsKey)
+        else {
+            return
+        }
+        windowPins.loadTmuxPins(from: data)
+    }
+
+    func savePinnedTmuxWindows() {
+        guard ProcessInfo.processInfo.environment["SATIN_NATIVE_SMOKE_SCENARIO"] == nil,
+            let data = windowPins.encodeTmuxPins()
+        else {
+            return
+        }
+        UserDefaults.standard.set(data, forKey: Self.pinnedTmuxWindowsKey)
+    }
+
     func refreshWindowsSidebar() {
         guard windowsSidebarMode != .off, let snapshot = lastSnapshot else {
             return
+        }
+        if tmuxSession == nil {
+            windowPins.keepLocal(tabIds: Set(snapshot.tabs.map(\.id)))
         }
         let rows = nativeWindowRows(
             tabs: snapshot.tabs.map(NativeAttentionTab.init),
@@ -311,7 +378,8 @@ extension TerminalShellViewController {
             isUnread: { [workAttentionStore] in workAttentionStore.isUnread(paneId: $0) },
             shellBadge: { [weak self] in self?.shellCommandBadge([$0]) },
             screenLine: { [sidebarScreenLines] in sidebarScreenLines[$0] },
-            nextPaneId: currentAttentionHand().cards.first?.paneId
+            nextPaneId: currentAttentionHand().cards.first?.paneId,
+            isPinned: { [weak self] in self?.isTabPinned(tabId: $0) ?? false }
         )
         windowsSidebar.update(
             rows: windowIdleOrder.mark(rows), sessionName: tmuxSession?.sessionName ?? "local")

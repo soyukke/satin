@@ -428,7 +428,8 @@ extension TerminalShellViewController {
                 NativeSessionTab(
                     title: tab.title,
                     theme: tab.theme,
-                    layout: layout
+                    layout: layout,
+                    pinned: windowPins.isLocalPinned(tab.id) ? true : nil
                 )
             }
         }
@@ -559,8 +560,16 @@ extension TerminalShellViewController {
         syncFromCore()
     }
 
-    func tabContextMenu(index: Int) -> NSMenu {
+    func tabContextMenu(index: Int, includesPin: Bool = false) -> NSMenu {
         let menu = NSMenu()
+        if includesPin {
+            let pinItem = menuItem(
+                isTabPinned(at: index) ? "Unpin Tab" : "Pin Tab",
+                #selector(togglePinTabFromContextMenu(_:))
+            )
+            pinItem.representedObject = index
+            menu.addItem(pinItem)
+        }
         let renameItem = menuItem("Rename Tab…", #selector(renameTabFromContextMenu(_:)))
         renameItem.representedObject = index
         menu.addItem(renameItem)
@@ -604,6 +613,13 @@ extension TerminalShellViewController {
                 }
         }
     #endif
+
+    @objc func togglePinTabFromContextMenu(_ sender: NSMenuItem) {
+        guard let index = sender.representedObject as? Int else {
+            return
+        }
+        togglePinTab(at: index)
+    }
 
     @objc func renameTabFromContextMenu(_ sender: NSMenuItem) {
         guard let index = sender.representedObject as? Int else {

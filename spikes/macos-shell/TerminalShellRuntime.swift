@@ -424,6 +424,15 @@ extension TerminalShellViewController {
         session.tmuxWindowIds = Dictionary(
             uniqueKeysWithValues: session.nativeTabIds.map { ($0.value, $0.key) }
         )
+        if !snapshot.windows.isEmpty, !session.sessionName.isEmpty,
+            windowPins.keepTmux(
+                socketPath: session.socketPath,
+                sessionName: session.sessionName,
+                windowIds: Set(snapshot.windows.map(\.window_id))
+            )
+        {
+            savePinnedTmuxWindows()
+        }
         let repair = NativeTmuxWorkspaceRepair(
             tmuxWorkspace(snapshot, session: session), previous: lastSnapshot)
         for note in repair.notes {
