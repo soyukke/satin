@@ -140,7 +140,7 @@ final class NativePageHandView: NSView {
 
     func refreshLook() {
         for card in cards {
-            card.needsDisplay = true
+            card.refreshLook()
         }
     }
 

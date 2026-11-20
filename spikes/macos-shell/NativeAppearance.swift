@@ -75,18 +75,26 @@ final class NativeTerminalBackdropView: NSView {
     }
 
     override func draw(_ dirtyRect: NSRect) {
-        // The tabs lie on this: paper's stock, or the datasheet's near-black
-        // with a violet rule under the title bar.
-        guard !NativePageStyle.paper else {
+        // The tabs lie on this: paper's cream stock, clean light chrome, or the
+        // datasheet's near-black with a violet rule under the title bar.
+        switch NativePageStyle.mode {
+        case .paper:
             NativePageStyle.raised.setFill()
             dirtyRect.fill()
-            return
-        }
-        NativePageStyle.rgb(11, 9, 20).setFill()
-        dirtyRect.fill()
-        if let content = window?.contentLayoutRect, content.maxY < bounds.maxY {
-            NativePageStyle.violet.withAlphaComponent(0.25).setFill()
-            NSRect(x: bounds.minX, y: content.maxY - 1, width: bounds.width, height: 1).fill()
+        case .light:
+            NativePageStyle.raised.setFill()
+            dirtyRect.fill()
+            if let content = window?.contentLayoutRect, content.maxY < bounds.maxY {
+                NativePageStyle.line.setFill()
+                NSRect(x: bounds.minX, y: content.maxY - 1, width: bounds.width, height: 1).fill()
+            }
+        case .terminal:
+            NativePageStyle.rgb(11, 9, 20).setFill()
+            dirtyRect.fill()
+            if let content = window?.contentLayoutRect, content.maxY < bounds.maxY {
+                NativePageStyle.violet.withAlphaComponent(0.25).setFill()
+                NSRect(x: bounds.minX, y: content.maxY - 1, width: bounds.width, height: 1).fill()
+            }
         }
     }
 }

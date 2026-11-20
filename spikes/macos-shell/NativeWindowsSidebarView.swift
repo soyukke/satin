@@ -536,6 +536,7 @@ final class NativeWindowCardView: NSView {
         self.now = now
         let color = NativeSidebarLook.color(row.state)
         let paper = NativePageStyle.paper
+        let lightSurface = NativePageStyle.isLightSurface
         let hot =
             (row.state == .waiting || row.state == .failed)
             && row.since.map { NativeHandWait.isHot(since: $0, now: now) } == true
@@ -545,12 +546,13 @@ final class NativeWindowCardView: NSView {
         glow.cornerRadius = paper ? 4 : Self.radius
         glow.borderColor = color.cgColor
         glow.shadowColor = color.cgColor
-        glow.isHidden = paper || !hot
+        glow.isHidden = lightSurface || !hot
         foil.frame = face
-        foil.isHidden = paper || !row.isNext
+        foil.isHidden = lightSurface || !row.isNext
         CATransaction.commit()
         // A slow breath, not an alarm: the sidebar sits beside the work.
-        NativeHandEffects.setPulse(glow, active: hot && !paper, minimumOpacity: 0.25, duration: 2.4)
+        NativeHandEffects.setPulse(
+            glow, active: hot && !lightSurface, minimumOpacity: 0.25, duration: 2.4)
         comet.layout(
             NSRect(x: face.minX + 26, y: face.maxY - 3, width: face.width - 34, height: 1.5),
             running: row.state == .running)
@@ -566,6 +568,7 @@ final class NativeWindowCardView: NSView {
 
     override func draw(_ dirtyRect: NSRect) {
         let paper = NativePageStyle.paper
+        let lightSurface = NativePageStyle.isLightSurface
         let color = NativeSidebarLook.color(row.state)
         let face = self.face
         let outline = NSBezierPath(
@@ -573,18 +576,31 @@ final class NativeWindowCardView: NSView {
         // A plain row; the current tab, the hovered row, and a pinned tab
         // with a notable state are filled.
         if row.isCurrent {
-            NativePageStyle.violet.withAlphaComponent(paper ? 0.16 : 0.22).setFill()
+            let fillAlpha: CGFloat =
+                switch NativePageStyle.mode {
+                case .terminal: 0.22
+                case .light: 0.11
+                case .paper: 0.16
+                }
+            let strokeAlpha: CGFloat =
+                switch NativePageStyle.mode {
+                case .terminal: 0.7
+                case .light: 0.55
+                case .paper: 0.9
+                }
+            NativePageStyle.violet.withAlphaComponent(fillAlpha).setFill()
             outline.fill()
-            NativePageStyle.violet.withAlphaComponent(paper ? 0.9 : 0.7).setStroke()
+            NativePageStyle.violet.withAlphaComponent(strokeAlpha).setStroke()
             outline.lineWidth = 1
             outline.stroke()
         } else if hovering {
-            (paper ? NativePageStyle.text : NSColor.white).withAlphaComponent(0.07).setFill()
+            (lightSurface ? NativePageStyle.text : NSColor.white)
+                .withAlphaComponent(lightSurface ? 0.06 : 0.07).setFill()
             outline.fill()
         } else if row.isPinned,
             row.state == .waiting || row.state == .failed || row.state == .clear
         {
-            color.withAlphaComponent(paper ? 0.09 : 0.11).setFill()
+            color.withAlphaComponent(lightSurface ? 0.09 : 0.11).setFill()
             outline.fill()
         }
 
@@ -599,7 +615,7 @@ final class NativeWindowCardView: NSView {
             ? "" : row.since.map { nativeSidebarAgeText(since: $0, now: now) } ?? ""
         let clock = NativeSidebarLook.text(
             age, font: NativePageStyle.mono(10, .semibold),
-            color: paper ? NativePageStyle.muted : color.withAlphaComponent(0.85),
+            color: lightSurface ? NativePageStyle.muted : color.withAlphaComponent(0.85),
             alignment: .right)
         clock.draw(in: NSRect(x: face.maxX - 46, y: face.midY - 7, width: 40, height: 14))
         if let digit {
@@ -636,9 +652,9 @@ final class NativeWindowCardView: NSView {
                 let pill = NSRect(x: wordX, y: face.midY - 7, width: badgeWidth, height: 14)
                 let radius: CGFloat = paper ? 2.5 : 3.5
                 let path = NSBezierPath(roundedRect: pill, xRadius: radius, yRadius: radius)
-                color.withAlphaComponent(paper ? 0.14 : 0.18).setFill()
+                color.withAlphaComponent(lightSurface ? 0.12 : 0.18).setFill()
                 path.fill()
-                color.withAlphaComponent(paper ? 0.45 : 0.42).setStroke()
+                color.withAlphaComponent(lightSurface ? 0.42 : 0.42).setStroke()
                 path.lineWidth = 0.75
                 path.stroke()
                 NativeSidebarLook.text(word, font: wordFont, color: color, kern: wordKern)
@@ -657,13 +673,13 @@ final class NativeWindowCardView: NSView {
             return
         }
         let track = NSRect(x: left, y: face.maxY - 3, width: face.maxX - 8 - left, height: 1.5)
-        (paper ? NativePageStyle.line : NSColor.white.withAlphaComponent(0.08)).setFill()
+        (lightSurface ? NativePageStyle.line : NSColor.white.withAlphaComponent(0.08)).setFill()
         track.fill()
         var fill = track
         fill.size.width *=
             row.state == .clear
             ? 1 : CGFloat(row.since.map { NativeHandWait.fraction(since: $0, now: now) } ?? 0)
-        color.withAlphaComponent(paper ? 1 : 0.75).setFill()
+        color.withAlphaComponent(lightSurface ? 1 : 0.75).setFill()
         fill.fill()
     }
 
@@ -759,7 +775,7 @@ final class NativeWindowGemView: NSView {
     func refresh(now: Date = Date()) {
         let color = NativeSidebarLook.color(row.state)
         let hot =
-            !NativePageStyle.paper
+            !NativePageStyle.isLightSurface
             && (row.state == .waiting || row.state == .failed)
             && row.since.map { NativeHandWait.isHot(since: $0, now: now) } == true
         CATransaction.begin()

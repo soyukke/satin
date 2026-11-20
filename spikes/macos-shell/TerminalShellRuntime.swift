@@ -424,6 +424,19 @@ extension TerminalShellViewController {
         session.tmuxWindowIds = Dictionary(
             uniqueKeysWithValues: session.nativeTabIds.map { ($0.value, $0.key) }
         )
+        session.windowPanes = Dictionary(
+            uniqueKeysWithValues: snapshot.windows.map { window in
+                let ordered = window.panes
+                    .sorted { ($0.index, $0.pane_id) < ($1.index, $1.pane_id) }
+                    .map { session.nativePaneId($0.pane_id) }
+                return (session.nativeTabId(window.window_id), ordered)
+            }
+        )
+        session.windowZoomed = Dictionary(
+            uniqueKeysWithValues: snapshot.windows.map { window in
+                (session.nativeTabId(window.window_id), window.zoomed)
+            }
+        )
         if !snapshot.windows.isEmpty, !session.sessionName.isEmpty,
             windowPins.keepTmux(
                 socketPath: session.socketPath,
@@ -445,6 +458,7 @@ extension TerminalShellViewController {
             return
         }
         syncFromCore()
+        reconcileTmuxTabModeZoom()
         saveSessionState()
     }
 
@@ -506,16 +520,21 @@ extension TerminalShellViewController {
     }
 
     private func updateTmuxPaneMetadata(_ pane: TmuxPaneSnapshot, nativePaneId: Int) {
+        var metadataChanged = false
         if paneStore.workingDirectories[nativePaneId] != pane.current_path {
             paneStore.workingDirectories[nativePaneId] = pane.current_path
             terminalTextView.refreshPaneChromeActionAvailability(paneId: nativePaneId)
+            metadataChanged = true
         }
         let previousTitle = paneStore.titles[nativePaneId] ?? ""
-        guard previousTitle != pane.title else {
-            return
+        if previousTitle != pane.title {
+            paneStore.titles[nativePaneId] = pane.title
+            updateAgentStatusFromTitle(pane.title, paneId: nativePaneId)
+            metadataChanged = true
         }
-        paneStore.titles[nativePaneId] = pane.title
-        updateAgentStatusFromTitle(pane.title, paneId: nativePaneId)
+        if metadataChanged {
+            refreshPaneTabBar()
+        }
     }
 
     func tmuxWorkspace(
@@ -675,13 +694,19 @@ extension TerminalShellViewController {
     }
 
     func updateTerminalMetadata(_ pane: TerminalPane, paneId: Int) {
+        var metadataChanged = false
         if let cwd = pane.currentWorkingDirectory(), paneStore.workingDirectories[paneId] != cwd {
             paneStore.workingDirectories[paneId] = cwd
             terminalTextView.refreshPaneChromeActionAvailability(paneId: paneId)
+            metadataChanged = true
         }
         if let title = pane.title(), paneStore.titles[paneId] != title {
             paneStore.titles[paneId] = title
             updateAgentStatusFromTitle(title, paneId: paneId)
+            metadataChanged = true
+        }
+        if metadataChanged {
+            refreshPaneTabBar()
         }
         let bells = pane.takeBellCount()
         handleTerminalBells(bells)
@@ -708,6 +733,7 @@ extension TerminalShellViewController {
         }
         paneStore.workingDirectories[paneId] = cwd
         terminalTextView.refreshPaneChromeActionAvailability(paneId: paneId)
+        refreshPaneTabBar()
     }
 
     private func updateAgentStatusFromTitle(_ title: String, paneId: Int) {

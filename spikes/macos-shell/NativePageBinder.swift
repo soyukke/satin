@@ -13,12 +13,21 @@ final class NativePageCardView: NSView {
                 height: NativePageBinderView.cardSize.height))
         wantsLayer = true
         layer?.shadowColor = NSColor.black.cgColor
-        layer?.shadowOpacity = 0.6
-        layer?.shadowRadius = 14
-        layer?.shadowOffset = CGSize(width: 0, height: -10)
+        applyShadowLook()
         setAccessibilityElement(true)
         setAccessibilityRole(.button)
         setAccessibilityLabel("Read \(page.title), version \(page.version)")
+    }
+
+    func refreshLook() {
+        applyShadowLook()
+        needsDisplay = true
+    }
+
+    private func applyShadowLook() {
+        layer?.shadowOpacity = NativePageStyle.isLight ? 0.16 : 0.6
+        layer?.shadowRadius = NativePageStyle.isLight ? 10 : 14
+        layer?.shadowOffset = CGSize(width: 0, height: NativePageStyle.isLight ? -4 : -10)
     }
 
     required init?(coder: NSCoder) {
@@ -36,9 +45,15 @@ final class NativePageCardView: NSView {
     }
 
     override func draw(_ dirtyRect: NSRect) {
-        if NativePageStyle.paper {
+        switch NativePageStyle.mode {
+        case .paper:
             drawPaper()
             return
+        case .light:
+            drawLight()
+            return
+        case .terminal:
+            break
         }
         let edge = NativePageStyle.edge(for: page.kind)
         let card = NativePageStyle.panelPath(bounds.insetBy(dx: 0.5, dy: 0.5), cut: 18)
@@ -119,6 +134,39 @@ extension NativePageCardView {
         NativePageStyle.drawStamp(
             "NEW", center: NSPoint(x: sheet.width - 40, y: sheet.height - 30),
             color: NativePageStyle.rose, angle: -10, size: 11)
+    }
+
+    /// Clean light card: rounded white card with a slim top accent bar and crisp text.
+    fileprivate func drawLight() {
+        let edge = NativePageStyle.edge(for: page.kind)
+        let rect = bounds.insetBy(dx: 0.5, dy: 0.5)
+        let card = NSBezierPath(roundedRect: rect, xRadius: 8, yRadius: 8)
+        NativePageStyle.surface.setFill()
+        card.fill()
+        NSGraphicsContext.saveGraphicsState()
+        card.addClip()
+        edge.setFill()
+        NSRect(x: 0, y: 0, width: bounds.width, height: 4).fill()
+        NSGraphicsContext.restoreGraphicsState()
+        NativePageStyle.line.setStroke()
+        card.lineWidth = 1
+        card.stroke()
+        NativePageStyle.draw(
+            NativePageStyle.shortId(page.id), at: NSPoint(x: 12, y: 12),
+            font: NativePageStyle.mono(10, .semibold), color: NativePageStyle.muted)
+        NativePageStyle.draw(
+            "v\(page.version)", at: NSPoint(x: bounds.width - 44, y: 12),
+            font: NativePageStyle.mono(10, .semibold), color: edge)
+        NativePageStyle.draw(
+            page.title, in: NSRect(x: 12, y: 32, width: bounds.width - 24, height: 46),
+            font: NativePageStyle.sans(15, .semibold), color: NativePageStyle.text)
+        NativePageStyle.draw(
+            "\(page.kind.uppercased()) · \(NativePageStyle.age(page.updatedAtMs)) ago",
+            at: NSPoint(x: 12, y: 84),
+            font: NativePageStyle.mono(10), color: NativePageStyle.muted)
+        NativePageStyle.draw(
+            page.preview, in: NSRect(x: 12, y: 104, width: bounds.width - 24, height: 40),
+            font: NativePageStyle.sans(11), color: NativePageStyle.muted)
     }
 }
 
@@ -481,11 +529,16 @@ final class NativePageBinderView: NSView {
 
     override func draw(_ dirtyRect: NSRect) {
         let dim = NSBezierPath(rect: bounds)
-        dim.append(NativePageStyle.panelPath(panel))
+        if NativePageStyle.isLight {
+            dim.append(NSBezierPath(roundedRect: panel, xRadius: 10, yRadius: 10))
+        } else {
+            dim.append(NativePageStyle.panelPath(panel))
+        }
         dim.windingRule = .evenOdd
         NativePageStyle.dim.setFill()
         dim.fill()
-        if NativePageStyle.paper {
+        switch NativePageStyle.mode {
+        case .paper:
             NativePageStyle.drawPaperFrame(panel)
             let serif =
                 NativePageStyle.serif(18)
@@ -505,7 +558,38 @@ final class NativePageBinderView: NSView {
                 height: 2
             )
             .fill()
-        } else {
+        case .light:
+            let outline = NSBezierPath(roundedRect: panel, xRadius: 10, yRadius: 10)
+            NSGraphicsContext.saveGraphicsState()
+            let shadow = NSShadow()
+            shadow.shadowColor = NSColor.black.withAlphaComponent(0.18)
+            shadow.shadowBlurRadius = 22
+            shadow.shadowOffset = NSSize(width: 0, height: -8)
+            shadow.set()
+            NativePageStyle.surface.setFill()
+            outline.fill()
+            NSGraphicsContext.restoreGraphicsState()
+            NSGraphicsContext.saveGraphicsState()
+            outline.addClip()
+            NativePageStyle.raised.setFill()
+            NSRect(x: panel.minX, y: panel.minY, width: panel.width, height: NativePageStyle.strip)
+                .fill()
+            NSGraphicsContext.restoreGraphicsState()
+            NativePageStyle.line.setStroke()
+            outline.lineWidth = 1
+            outline.stroke()
+            NativePageStyle.draw(
+                "Pages", at: NSPoint(x: panel.minX + 16, y: panel.minY + 7),
+                font: NativePageStyle.sans(13, .semibold), color: NativePageStyle.text)
+            NativePageStyle.draw(
+                "\(pages.count) total · \(unreadIds.count) unread",
+                at: NSPoint(x: panel.minX + 74, y: panel.minY + 8),
+                font: NativePageStyle.sans(12), color: NativePageStyle.muted)
+            NativePageStyle.line.setFill()
+            NSRect(
+                x: panel.minX, y: panel.minY + NativePageStyle.strip, width: panel.width, height: 1
+            ).fill()
+        case .terminal:
             let outline = NativePageStyle.panelPath(panel)
             NativePageStyle.surface.withAlphaComponent(0.97).setFill()
             outline.fill()
@@ -586,7 +670,13 @@ extension NativePageBinderView {
     fileprivate func drawCursor(_ cursor: NSRect) {
         let accent = NativePageStyle.paper ? NativePageStyle.teal : NativePageStyle.violet
         let band = NSBezierPath(roundedRect: cursor.insetBy(dx: 0, dy: 3), xRadius: 4, yRadius: 4)
-        accent.withAlphaComponent(NativePageStyle.paper ? 0.14 : 0.18).setFill()
+        let alpha: CGFloat =
+            switch NativePageStyle.mode {
+            case .terminal: 0.18
+            case .light: 0.10
+            case .paper: 0.14
+            }
+        accent.withAlphaComponent(alpha).setFill()
         band.fill()
         (NativePageStyle.paper ? NativePageStyle.text : accent).setFill()
         NSBezierPath(

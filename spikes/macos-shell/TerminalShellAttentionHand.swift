@@ -202,7 +202,15 @@ extension TerminalShellViewController {
 
     func currentAttentionHand() -> NativeAttentionHand {
         nativeAttentionHand(
-            tabs: (lastSnapshot?.tabs ?? []).map(NativeAttentionTab.init),
+            tabs: (lastSnapshot?.tabs ?? []).map {
+                NativeAttentionTab(
+                    id: $0.id,
+                    index: $0.index,
+                    title: $0.title,
+                    activePane: $0.active_pane,
+                    panes: allPaneIds(in: $0)
+                )
+            },
             status: { [paneStatuses] in paneStatuses.status(for: $0) },
             isUnread: { [workAttentionStore] in workAttentionStore.isUnread(paneId: $0) },
             visiblePaneId: activePaneId

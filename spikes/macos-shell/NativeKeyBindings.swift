@@ -18,6 +18,7 @@ enum NativeCommandID: String, CaseIterable {
     case actualSize
     case toggleWindowsSidebar
     case toggleItemsSidebar
+    case togglePaneDisplayMode
     case checkForUpdates
 
     var title: String {
@@ -39,6 +40,7 @@ enum NativeCommandID: String, CaseIterable {
         case .actualSize: "Actual Size"
         case .toggleWindowsSidebar: "Windows Sidebar"
         case .toggleItemsSidebar: "Items Sidebar"
+        case .togglePaneDisplayMode: "Toggle Pane Tabs"
         case .checkForUpdates: "Check for Updates"
         }
     }
@@ -62,6 +64,7 @@ enum NativeCommandID: String, CaseIterable {
         case .actualSize: "cmd+0"
         case .toggleWindowsSidebar: "cmd+b"
         case .toggleItemsSidebar: "cmd+option+b"
+        case .togglePaneDisplayMode: "cmd+option+t"
         case .checkForUpdates: "cmd+u"
         }
     }

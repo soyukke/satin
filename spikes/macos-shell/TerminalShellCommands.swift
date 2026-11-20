@@ -14,11 +14,13 @@ let nativeTmuxCurrentPaneDirectoryArgument = "'#{pane_current_path}'"
 func nativeTmuxSplitCommand(
     horizontal: Bool,
     targetPaneId: UInt32,
-    directory: String? = nil
+    directory: String? = nil,
+    zoomed: Bool = false
 ) -> String {
     let flag = horizontal ? "-h" : "-v"
+    let zoomFlag = zoomed ? " -Z" : ""
     let cwd = directory.map(tmuxCommandArgument) ?? nativeTmuxCurrentPaneDirectoryArgument
-    return "split-window \(flag) -c \(cwd) -t %\(targetPaneId)"
+    return "split-window \(flag)\(zoomFlag) -c \(cwd) -t %\(targetPaneId)"
 }
 
 func nativeTmuxNewWindowCommand() -> String {
@@ -29,6 +31,8 @@ func runNativeTmuxCreationCommandSelfTests() -> Bool {
     nativeTmuxNewWindowCommand() == "new-window -c '#{pane_current_path}'"
         && nativeTmuxSplitCommand(horizontal: true, targetPaneId: 7)
             == "split-window -h -c '#{pane_current_path}' -t %7"
+        && nativeTmuxSplitCommand(horizontal: true, targetPaneId: 7, zoomed: true)
+            == "split-window -h -Z -c '#{pane_current_path}' -t %7"
         && nativeTmuxSplitCommand(horizontal: false, targetPaneId: 42)
             == "split-window -v -c '#{pane_current_path}' -t %42"
         && nativeTmuxSplitCommand(horizontal: true, targetPaneId: 3, directory: "/a b")
@@ -249,7 +253,19 @@ extension TerminalShellViewController {
         case .newWorktree:
             requestNewWorktree(paneId: paneId)
             return
+        case .togglePaneDisplayMode:
+            togglePaneDisplayMode(nil)
+            return
         }
+        focusTerminal()
+    }
+
+    func newPaneInTabMode() {
+        let targetPaneId =
+            activePaneId == nativeArtifactSidebarPaneId
+            ? lastSnapshot.flatMap(activePaneId(in:))
+            : activePaneId
+        splitPane(targetPaneId, axis: ffiSplitVertical)
         focusTerminal()
     }
 
@@ -281,16 +297,21 @@ extension TerminalShellViewController {
                 presentTmuxSessionError("Satin could not resolve the tmux pane to split.")
                 return
             }
+            let keepZoomed = paneDisplayMode == .tab
             guard
                 session.gateway.tmuxCommand(
                     nativeTmuxSplitCommand(
                         horizontal: axis == ffiSplitVertical,
                         targetPaneId: tmuxPaneId,
-                        directory: requestedCwd
+                        directory: requestedCwd,
+                        zoomed: keepZoomed
                     ))
             else {
                 presentTmuxSessionError("Satin could not split the tmux pane.")
                 return
+            }
+            if keepZoomed, let state = tmuxTabModeWindowStates() {
+                session.tabModeZoomTracker.markWindowZoomedByTabMode(state.activeWindowId)
             }
             return
         }
@@ -376,11 +397,42 @@ extension TerminalShellViewController {
     }
 
     private func focusPane(_ direction: NativePaneDirection) {
+        if paneDisplayMode == .tab,
+            let snapshot = lastSnapshot,
+            let tab = snapshot.tabs.first(where: { $0.index == snapshot.active_tab })
+        {
+            let panes = allPaneIds(in: tab)
+            guard panes.count > 1,
+                let current = panes.firstIndex(of: activePaneId ?? tab.active_pane)
+            else {
+                focusTerminal()
+                return
+            }
+            let step = (direction == .left || direction == .up) ? -1 : 1
+            let next = (current + step + panes.count) % panes.count
+            selectPane(panes[next])
+            return
+        }
         guard let paneId = core.paneInDirection(direction) else {
             focusTerminal()
             return
         }
         selectPane(paneId)
+    }
+
+    func selectPaneTabFromShortcut(_ digit: Int) {
+        guard (1...9).contains(digit),
+            let snapshot = lastSnapshot,
+            let tab = snapshot.tabs.first(where: { $0.index == snapshot.active_tab })
+        else {
+            return
+        }
+        let panes = allPaneIds(in: tab)
+        let index = digit - 1
+        guard panes.indices.contains(index) else {
+            return
+        }
+        selectPane(panes[index])
     }
 
     @objc func toggleOptionAsAlt(_ sender: Any?) {
@@ -704,7 +756,7 @@ extension TerminalShellViewController {
 
     /// Closes the pane, first asking when a program other than its shell runs
     /// in it. Closing a tab's last pane closes the tab, so this guards that too.
-    private func requestClosingPane(_ paneId: Int?) {
+    func requestClosingPane(_ paneId: Int?) {
         if let paneId, let worktree = worktreeClosedWithPane(paneId) {
             confirmClosingWorktreePane(
                 paneId,

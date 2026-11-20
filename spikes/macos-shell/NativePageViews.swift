@@ -1,47 +1,105 @@
 import AppKit
 
-/// The colors pages are drawn in: a datasheet on the backdrop's own violet
-/// and teal.
+/// The colors pages and chrome are drawn in across Terminal (dark datasheet),
+/// Light (clean white/off-white), and Paper (cream stock with ink & stamps).
 enum NativePageStyle {
-    /// Whether pages are printed on paper rather than lit as datasheets.
-    static var paper = false
+    /// The window's active appearance mode.
+    static var mode: NativeAppearanceMode = .terminal
+
+    /// Whether pages are printed on cream paper stock with tape and stamps.
+    static var paper: Bool {
+        get { mode == .paper }
+        set { mode = newValue ? .paper : .terminal }
+    }
+
+    /// Whether the clean light look (distinct from cream paper) is active.
+    static var isLight: Bool {
+        mode == .light
+    }
+
+    /// Whether the active look uses a light background (either Light or Paper).
+    static var isLightSurface: Bool {
+        mode.isLightSurface
+    }
 
     static var surface: NSColor {
-        paper ? rgb(251, 245, 231) : NSColor(srgbRed: 0.055, green: 0.047, blue: 0.094, alpha: 1)
+        switch mode {
+        case .terminal: NSColor(srgbRed: 0.055, green: 0.047, blue: 0.094, alpha: 1)
+        case .light: rgb(255, 255, 255)
+        case .paper: rgb(251, 245, 231)
+        }
     }
     static var raised: NSColor {
-        paper ? rgb(241, 232, 212) : NSColor(srgbRed: 0.082, green: 0.071, blue: 0.165, alpha: 1)
+        switch mode {
+        case .terminal: NSColor(srgbRed: 0.082, green: 0.071, blue: 0.165, alpha: 1)
+        case .light: rgb(243, 245, 248)
+        case .paper: rgb(241, 232, 212)
+        }
     }
     static var text: NSColor {
-        paper ? rgb(43, 34, 51) : NSColor(srgbRed: 0.925, green: 0.910, blue: 0.969, alpha: 1)
+        switch mode {
+        case .terminal: NSColor(srgbRed: 0.925, green: 0.910, blue: 0.969, alpha: 1)
+        case .light: rgb(24, 28, 36)
+        case .paper: rgb(43, 34, 51)
+        }
     }
     static var muted: NSColor {
-        paper ? rgb(110, 98, 79) : NSColor(srgbRed: 0.608, green: 0.580, blue: 0.702, alpha: 1)
+        switch mode {
+        case .terminal: NSColor(srgbRed: 0.608, green: 0.580, blue: 0.702, alpha: 1)
+        case .light: rgb(92, 102, 114)
+        case .paper: rgb(110, 98, 79)
+        }
     }
     static var teal: NSColor {
-        paper ? rgb(31, 138, 138) : NSColor(srgbRed: 0.310, green: 0.820, blue: 0.773, alpha: 1)
+        switch mode {
+        case .terminal: NSColor(srgbRed: 0.310, green: 0.820, blue: 0.773, alpha: 1)
+        case .light: rgb(13, 128, 138)
+        case .paper: rgb(31, 138, 138)
+        }
     }
     static var violet: NSColor {
-        paper ? rgb(91, 63, 184) : NSColor(srgbRed: 0.663, green: 0.545, blue: 1, alpha: 1)
+        switch mode {
+        case .terminal: NSColor(srgbRed: 0.663, green: 0.545, blue: 1, alpha: 1)
+        case .light: rgb(79, 70, 229)
+        case .paper: rgb(91, 63, 184)
+        }
     }
     static var amber: NSColor {
-        paper ? rgb(184, 95, 14) : NSColor(srgbRed: 0.949, green: 0.639, blue: 0.227, alpha: 1)
+        switch mode {
+        case .terminal: NSColor(srgbRed: 0.949, green: 0.639, blue: 0.227, alpha: 1)
+        case .light: rgb(180, 83, 9)
+        case .paper: rgb(184, 95, 14)
+        }
     }
     static var rose: NSColor {
-        paper ? rgb(194, 54, 79) : NSColor(srgbRed: 0.937, green: 0.353, blue: 0.435, alpha: 1)
+        switch mode {
+        case .terminal: NSColor(srgbRed: 0.937, green: 0.353, blue: 0.435, alpha: 1)
+        case .light: rgb(207, 34, 46)
+        case .paper: rgb(194, 54, 79)
+        }
     }
     /// What is printed over a colored strip.
     static var ink: NSColor {
-        paper ? rgb(251, 245, 231) : NSColor(srgbRed: 0.027, green: 0.024, blue: 0.051, alpha: 1)
+        switch mode {
+        case .terminal: NSColor(srgbRed: 0.027, green: 0.024, blue: 0.051, alpha: 1)
+        case .light: rgb(255, 255, 255)
+        case .paper: rgb(251, 245, 231)
+        }
     }
     static var line: NSColor {
-        paper
-            ? rgb(43, 34, 51).withAlphaComponent(0.35)
-            : NSColor(srgbRed: 0.663, green: 0.545, blue: 1, alpha: 0.28)
+        switch mode {
+        case .terminal: NSColor(srgbRed: 0.663, green: 0.545, blue: 1, alpha: 0.28)
+        case .light: rgb(24, 28, 36).withAlphaComponent(0.14)
+        case .paper: rgb(43, 34, 51).withAlphaComponent(0.35)
+        }
     }
     /// The dim over the work around a page.
     static var dim: NSColor {
-        paper ? rgb(43, 34, 51).withAlphaComponent(0.32) : NSColor.black.withAlphaComponent(0.58)
+        switch mode {
+        case .terminal: NSColor.black.withAlphaComponent(0.58)
+        case .light: rgb(15, 23, 42).withAlphaComponent(0.24)
+        case .paper: rgb(43, 34, 51).withAlphaComponent(0.32)
+        }
     }
 
     static func rgb(_ red: Int, _ green: Int, _ blue: Int) -> NSColor {
@@ -247,9 +305,15 @@ final class NativePageReaderChrome: NSView {
     }
 
     override func draw(_ dirtyRect: NSRect) {
-        if NativePageStyle.paper {
+        switch NativePageStyle.mode {
+        case .paper:
             drawPaper()
             return
+        case .light:
+            drawLight()
+            return
+        case .terminal:
+            break
         }
         let dim = NSBezierPath(rect: bounds)
         dim.append(NativePageStyle.panelPath(panel))
@@ -372,6 +436,70 @@ final class NativePageReaderChrome: NSView {
         NativePageStyle.draw(
             footerKeys(paper: true),
             at: NSPoint(x: panel.minX + 18, y: footerTop + 8),
+            font: NativePageStyle.sans(11, .medium), color: NativePageStyle.muted)
+    }
+
+    /// Clean light reader: a crisp white rounded panel with a soft shadow,
+    /// muted off-white header strip, and subtle hairline dividers.
+    private func drawLight() {
+        let radius: CGFloat = 10
+        let outline = NSBezierPath(roundedRect: panel, xRadius: radius, yRadius: radius)
+        let dim = NSBezierPath(rect: bounds)
+        dim.append(outline)
+        dim.windingRule = .evenOdd
+        NativePageStyle.dim.setFill()
+        dim.fill()
+
+        NSGraphicsContext.saveGraphicsState()
+        let shadow = NSShadow()
+        shadow.shadowColor = NSColor.black.withAlphaComponent(0.18)
+        shadow.shadowBlurRadius = 22
+        shadow.shadowOffset = NSSize(width: 0, height: -8)
+        shadow.set()
+        let frame = NSBezierPath(roundedRect: panel, xRadius: radius, yRadius: radius)
+        frame.append(NSBezierPath(rect: nativePaneContentFrame(pane)))
+        frame.windingRule = .evenOdd
+        NativePageStyle.surface.setFill()
+        frame.fill()
+        NSGraphicsContext.restoreGraphicsState()
+
+        let strip = NSRect(
+            x: panel.minX, y: panel.minY, width: panel.width, height: NativePageStyle.strip)
+        NSGraphicsContext.saveGraphicsState()
+        outline.addClip()
+        NativePageStyle.raised.setFill()
+        strip.fill()
+        NSGraphicsContext.restoreGraphicsState()
+
+        NativePageStyle.line.setStroke()
+        outline.lineWidth = 1
+        outline.stroke()
+
+        let meta =
+            "PAGE · \(NativePageStyle.shortId(pageId)) · v\(version)"
+            + (latest > 1 ? " of \(latest)" : "")
+        let metaFont = NativePageStyle.mono(10.5, .semibold)
+        let metaWidth = (meta as NSString).size(withAttributes: [.font: metaFont]).width
+        NativePageStyle.draw(
+            meta, at: NSPoint(x: panel.maxX - 16 - metaWidth, y: panel.minY + 9),
+            font: metaFont, color: NativePageStyle.muted)
+        NativePageStyle.draw(
+            title,
+            in: NSRect(
+                x: panel.minX + 16, y: panel.minY + 6,
+                width: max(0, panel.width - metaWidth - 48), height: 18),
+            font: NativePageStyle.sans(13, .semibold), color: NativePageStyle.text)
+
+        NativePageStyle.line.setFill()
+        NSRect(
+            x: panel.minX, y: panel.minY + NativePageStyle.strip, width: panel.width, height: 1
+        ).fill()
+
+        let footerTop = panel.maxY - NativePageStyle.footer
+        NSRect(x: panel.minX, y: footerTop, width: panel.width, height: 1).fill()
+        NativePageStyle.draw(
+            footerKeys(paper: true),
+            at: NSPoint(x: panel.minX + 16, y: footerTop + 8),
             font: NativePageStyle.sans(11, .medium), color: NativePageStyle.muted)
     }
 }

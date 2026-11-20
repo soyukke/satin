@@ -39,6 +39,176 @@ extension TerminalShellViewController {
         focusTerminal()
     }
 
+    private static var smokeEnforcesPaneDisplayMode: Bool {
+        ProcessInfo.processInfo.environment["SATIN_NATIVE_SMOKE_SCENARIO"] != nil
+    }
+
+    var paneDisplayMode: NativePaneDisplayMode {
+        if Self.smokeEnforcesPaneDisplayMode {
+            return smokePaneDisplayMode ?? .split
+        }
+        return NativePaneDisplayMode(rawValue: settings.paneDisplayMode) ?? .split
+    }
+
+    @objc func togglePaneDisplayMode(_ sender: Any?) {
+        setPaneDisplayMode(paneDisplayMode.toggled)
+    }
+
+    func setPaneDisplayMode(_ mode: NativePaneDisplayMode) {
+        guard mode != paneDisplayMode else {
+            return
+        }
+        if Self.smokeEnforcesPaneDisplayMode {
+            smokePaneDisplayMode = mode
+        } else {
+            settings.paneDisplayMode = mode.rawValue
+            UserDefaults.standard.set(mode.rawValue, forKey: NativePreferenceKey.paneDisplayMode)
+        }
+        applyPaneDisplayModeChange()
+        onPaneDisplayModeChanged?()
+    }
+
+    func applyPaneDisplayModeChange() {
+        terminalTextView.paneDisplayMode = paneDisplayMode
+        if paneDisplayMode != .tab {
+            _ = commandDoubleTapState.reset()
+            terminalTextView.paneTabBarView.showsShortcuts = false
+        }
+        reconcileTmuxTabModeZoom()
+        if let snapshot = lastSnapshot {
+            syncPaneLayout(snapshot, tmuxClientResizeImmediately: true)
+            syncTabStatusBadges(snapshot)
+        }
+        updateSessionControl()
+        updateActiveFrame()
+        metalView.requestFrame()
+        focusTerminal()
+    }
+
+    /// All panes belonging to a tab, including panes temporarily hidden in a
+    /// zoomed tmux window.
+    func allPaneIds(in tab: TerminalCoreTabSnapshot) -> [Int] {
+        if let session = tmuxSession, let panes = session.windowPanes[tab.id], !panes.isEmpty {
+            return panes
+        }
+        return tab.panes
+    }
+
+    func paneTabStatusBadge(for paneId: Int) -> NativeTabStatusBadge? {
+        let agentBadge = paneStatuses.status(for: paneId).flatMap { status in
+            nativeTabStatusBadge(for: [
+                (status: status.status, unread: workAttentionStore.isUnread(paneId: paneId))
+            ])
+        }
+        return [agentBadge, shellCommandBadge([paneId])]
+            .compactMap { $0 }
+            .max { $0.rawValue < $1.rawValue }
+    }
+
+    func refreshPaneTabBar() {
+        let workspace = workspaceContentRect()
+        let barHeight = min(nativePaneTabBarHeight, max(0, workspace.height - 1))
+        let barFrame = NSRect(
+            x: workspace.minX,
+            y: workspace.minY,
+            width: workspace.width,
+            height: barHeight
+        )
+        guard paneDisplayMode == .tab,
+            let snapshot = lastSnapshot,
+            let tab = snapshot.tabs.first(where: { $0.index == snapshot.active_tab })
+        else {
+            terminalTextView.updatePaneTabBar(
+                items: [], frame: barFrame, visible: false, activePaneId: activePaneId)
+            return
+        }
+        let paneIds = allPaneIds(in: tab)
+        let activeWorkspacePaneId =
+            activePaneId == nativeArtifactSidebarPaneId
+            ? tab.active_pane : (activePaneId ?? tab.active_pane)
+        let items: [NativePaneTabItem] = paneIds.enumerated().map { index, paneId in
+            let mode = paneStore.runtimes[paneId]?.kind ?? paneStore.modes[paneId] ?? .terminal
+            let directory =
+                paneWorkingDirectory(paneId: paneId, logFailure: false)
+                ?? paneStore.workingDirectories[paneId]
+                ?? ""
+            let currentCommand: String? =
+                if let session = tmuxSession, let tmuxPaneId = session.tmuxPaneIds[paneId] {
+                    session.latestPanes[tmuxPaneId]?.current_command
+                } else {
+                    nil
+                }
+            let labels = nativePaneTabTitle(
+                paneTitle: paneStore.titles[paneId],
+                currentCommand: currentCommand,
+                directory: directory,
+                mode: mode
+            )
+            let worktreeBranch = paneWorktree(paneId: paneId).map { $0.branch ?? "Detached HEAD" }
+            return NativePaneTabItem(
+                paneId: paneId,
+                index: index,
+                title: labels.title,
+                directoryName: labels.directoryName,
+                fullDirectory: directory,
+                worktreeBranch: worktreeBranch,
+                status: paneTabStatusBadge(for: paneId),
+                isActive: paneId == activeWorkspacePaneId
+            )
+        }
+        terminalTextView.updatePaneTabBar(
+            items: items,
+            frame: barFrame,
+            visible: true,
+            activePaneId: activeWorkspacePaneId
+        )
+    }
+
+    func tmuxTabModeWindowStates() -> (
+        windows: [NativeTmuxTabModeWindowState], activeWindowId: UInt32
+    )? {
+        guard let session = tmuxSession, let snapshot = lastSnapshot else {
+            return nil
+        }
+        let activeTabId = snapshot.tabs.first(where: { $0.index == snapshot.active_tab })?.id
+        guard let activeTabId, let activeWindowId = session.tmuxWindowIds[activeTabId] else {
+            return nil
+        }
+        var windows: [NativeTmuxTabModeWindowState] = []
+        for tab in snapshot.tabs {
+            guard let windowId = session.tmuxWindowIds[tab.id],
+                let activeTmuxPaneId = session.tmuxPaneIds[tab.active_pane]
+            else {
+                continue
+            }
+            let paneCount = allPaneIds(in: tab).count
+            let zoomed = session.windowZoomed[tab.id] ?? false
+            windows.append(
+                NativeTmuxTabModeWindowState(
+                    windowId: windowId,
+                    activePaneId: activeTmuxPaneId,
+                    paneCount: paneCount,
+                    zoomed: zoomed
+                )
+            )
+        }
+        return (windows, activeWindowId)
+    }
+
+    func reconcileTmuxTabModeZoom() {
+        guard let session = tmuxSession, let state = tmuxTabModeWindowStates() else {
+            return
+        }
+        let commands = session.tabModeZoomTracker.reconcile(
+            windows: state.windows,
+            activeWindowId: state.activeWindowId,
+            mode: paneDisplayMode
+        )
+        for command in commands {
+            _ = session.gateway.tmuxCommand(command)
+        }
+    }
+
     func selectPane(_ paneId: Int) {
         if paneId == nativeArtifactSidebarPaneId,
             paneStore.runtimes[paneId] != nil
@@ -50,10 +220,28 @@ extension TerminalShellViewController {
             return
         }
         if let session = tmuxSession, let tmuxPaneId = session.tmuxPaneIds[paneId] {
-            guard session.gateway.tmuxCommand("select-pane -t %\(tmuxPaneId)") else {
-                return
+            let commands: [String]
+            if let state = tmuxTabModeWindowStates(),
+                let activeWindow = state.windows.first(where: {
+                    $0.windowId == state.activeWindowId
+                })
+            {
+                commands = session.tabModeZoomTracker.selectPaneCommands(
+                    window: activeWindow,
+                    targetPaneId: tmuxPaneId,
+                    mode: paneDisplayMode
+                )
+            } else {
+                commands = ["select-pane -t %\(tmuxPaneId)"]
+            }
+            for command in commands {
+                guard session.gateway.tmuxCommand(command) else {
+                    return
+                }
             }
             activePaneId = paneId
+            terminalTextView.setActivePaneId(paneId)
+            refreshPaneTabBar()
             updateActiveFrame()
             focusTerminal()
             return
@@ -109,26 +297,52 @@ extension TerminalShellViewController {
         _ snapshot: TerminalCoreSnapshot,
         tmuxClientResizeImmediately: Bool = false
     ) {
+        terminalTextView.paneDisplayMode = paneDisplayMode
         guard let tab = snapshot.tabs.first(where: { $0.index == snapshot.active_tab }) else {
             paneStore.visibleFrames = [:]
             terminalTextView.updatePaneFrames([:], paneBounds: [:], activePaneId: nil)
+            refreshPaneTabBar()
             return
         }
         var paneBounds: [Int: NSRect] = [:]
         var dividers: [NativePaneDivider] = []
         let contentRect = terminalTextView.terminalContentRect()
-        let minimumFrameRequirements = tmuxPaneFrameRequirements(for: tab.layout)
-        collectPaneFrames(
-            tab.layout,
-            rect: workspaceContentRect(),
-            frames: &paneBounds,
-            dividers: &dividers,
-            minimumFrameRequirements: minimumFrameRequirements
-        )
+        let workspace = workspaceContentRect()
+        if paneDisplayMode == .tab {
+            let paneArea = nativePaneTabContentRect(workspace)
+            if tmuxSession == nil {
+                paneBounds[tab.active_pane] = paneArea
+            } else {
+                let minimumFrameRequirements = tmuxPaneFrameRequirements(for: tab.layout)
+                collectPaneFrames(
+                    tab.layout,
+                    rect: paneArea,
+                    frames: &paneBounds,
+                    dividers: &dividers,
+                    minimumFrameRequirements: minimumFrameRequirements
+                )
+            }
+        } else {
+            let minimumFrameRequirements = tmuxPaneFrameRequirements(for: tab.layout)
+            collectPaneFrames(
+                tab.layout,
+                rect: workspace,
+                frames: &paneBounds,
+                dividers: &dividers,
+                minimumFrameRequirements: minimumFrameRequirements
+            )
+        }
         if paneStore.runtimes[nativeArtifactSidebarPaneId] != nil {
             paneBounds[nativeArtifactSidebarPaneId] = artifactSidebarFrames(in: contentRect).sidebar
         }
-        let frames = paneBounds.mapValues(nativePaneContentFrame)
+        var frames: [Int: NSRect] = [:]
+        for (paneId, bounds) in paneBounds {
+            if paneDisplayMode == .tab, paneId != nativeArtifactSidebarPaneId {
+                frames[paneId] = bounds
+            } else {
+                frames[paneId] = nativePaneContentFrame(bounds)
+            }
+        }
         paneStore.visibleFrames = frames
         let presentedActivePaneId =
             activePaneId == nativeArtifactSidebarPaneId
@@ -139,6 +353,7 @@ extension TerminalShellViewController {
             activePaneId: presentedActivePaneId,
             dividers: dividers
         )
+        refreshPaneTabBar()
         for (paneId, frame) in frames {
             let pane = terminalPane(for: paneId)
             if !(pane is TmuxPane) {
@@ -203,8 +418,11 @@ extension TerminalShellViewController {
         // uses the same cell size, so size it from the workspace and the
         // layout's shape without introducing pane-specific zoom state.
         let workspace = workspaceContentRect()
+        let tabMode = paneDisplayMode == .tab
+        let availableSize = tabMode ? nativePaneTabContentRect(workspace).size : workspace.size
+        let perPaneChromeHeight: CGFloat = tabMode ? 0 : nativePaneChromeHeight
         let fallback = terminalTextView.terminalGridSize(
-            for: nativePaneContentFrame(workspace))
+            for: tabMode ? nativePaneTabContentRect(workspace) : nativePaneContentFrame(workspace))
         guard let session = tmuxSession,
             let snapshot = lastSnapshot,
             let tab = snapshot.tabs.first(where: { $0.index == snapshot.active_tab }),
@@ -215,9 +433,9 @@ extension TerminalShellViewController {
         guard
             let capacity = tmuxClientGridCapacity(
                 layout: tab.layout,
-                size: workspace.size,
+                size: availableSize,
                 cellSize: terminalTextView.terminalCellSize(),
-                paneChromeHeight: nativePaneChromeHeight
+                paneChromeHeight: perPaneChromeHeight
             )
         else {
             return fallback
@@ -323,6 +541,7 @@ extension TerminalShellViewController {
             return [:]
         }
         let cell = terminalTextView.terminalCellSize()
+        let perPaneChromeHeight: CGFloat = paneDisplayMode == .tab ? 0 : nativePaneChromeHeight
         let leafRequirements = session.tmuxPaneIds.reduce(into: [Int: NSSize]()) {
             requirements, entry in
             guard let pane = session.latestPanes[entry.value] else {
@@ -330,7 +549,7 @@ extension TerminalShellViewController {
             }
             requirements[entry.key] = NSSize(
                 width: CGFloat(pane.cols) * cell.width,
-                height: CGFloat(pane.rows) * cell.height + nativePaneChromeHeight
+                height: CGFloat(pane.rows) * cell.height + perPaneChromeHeight
             )
         }
         return paneFrameRequirements(layout: layout, leafRequirements: leafRequirements)
@@ -982,7 +1201,7 @@ extension TerminalShellViewController {
         if let session = tmuxSession {
             title =
                 "tmux · \(session.sessionName)"
-                + (session.activeWindowZoomed ? " · Zoom" : "")
+                + (session.activeWindowZoomed && paneDisplayMode != .tab ? " · Zoom" : "")
             symbol = "rectangle.stack"
         } else {
             title = "Local"

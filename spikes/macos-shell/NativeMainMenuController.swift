@@ -21,6 +21,7 @@ enum NativeMainMenuAction: Equatable {
     case actualSize
     case toggleWindowsSidebar
     case toggleItemsSidebar
+    case togglePaneDisplayMode
     case toggleTabBar
     case checkForUpdates
     case showAcknowledgements
@@ -46,6 +47,7 @@ private final class NativeMainMenuActionBox: NSObject {
 final class NativeMainMenuController: NSObject, NSMenuItemValidation {
     private let actionHandler: (NativeMainMenuAction) -> Void
     private let terminalOwnsCommands: () -> Bool
+    private let isPaneTabModeActive: () -> Bool
     private let includesUpdates: Bool
     private let mainMenu = NSMenu()
     private var windowMenu: NSMenu?
@@ -56,6 +58,7 @@ final class NativeMainMenuController: NSObject, NSMenuItemValidation {
         terminalWindow: NSWindow,
         settings: NativeSettings,
         includesUpdates: Bool,
+        isPaneTabModeActive: @escaping () -> Bool = { false },
         actionHandler: @escaping (NativeMainMenuAction) -> Void
     ) {
         self.init(
@@ -64,6 +67,7 @@ final class NativeMainMenuController: NSObject, NSMenuItemValidation {
             terminalOwnsCommands: { [weak application, weak terminalWindow] in
                 application?.keyWindow === terminalWindow
             },
+            isPaneTabModeActive: isPaneTabModeActive,
             actionHandler: actionHandler
         )
     }
@@ -72,10 +76,12 @@ final class NativeMainMenuController: NSObject, NSMenuItemValidation {
         settings: NativeSettings,
         includesUpdates: Bool,
         terminalOwnsCommands: @escaping () -> Bool,
+        isPaneTabModeActive: @escaping () -> Bool,
         actionHandler: @escaping (NativeMainMenuAction) -> Void
     ) {
         self.actionHandler = actionHandler
         self.terminalOwnsCommands = terminalOwnsCommands
+        self.isPaneTabModeActive = isPaneTabModeActive
         self.includesUpdates = includesUpdates
         super.init()
         buildMainMenu(settings: settings)
@@ -99,6 +105,9 @@ final class NativeMainMenuController: NSObject, NSMenuItemValidation {
             let action = (menuItem.representedObject as? NativeMainMenuActionBox)?.action
         else {
             return true
+        }
+        if action == .togglePaneDisplayMode {
+            menuItem.state = isPaneTabModeActive() ? .on : .off
         }
         return !action.requiresTerminalWindow || terminalOwnsCommands()
     }
@@ -241,6 +250,7 @@ final class NativeMainMenuController: NSObject, NSMenuItemValidation {
             [
                 (.toggleWindowsSidebar, .toggleWindowsSidebar),
                 (.toggleItemsSidebar, .toggleItemsSidebar),
+                (.togglePaneDisplayMode, .togglePaneDisplayMode),
             ],
             to: menu,
             settings: settings
@@ -366,18 +376,21 @@ final class NativeMainMenuController: NSObject, NSMenuItemValidation {
         defer { defaults.removePersistentDomain(forName: suiteName) }
 
         let focus = FocusProbe()
+        var paneTabMode = false
         var actions: [NativeMainMenuAction] = []
         var settings = NativeSettingsStore(defaults: defaults).load()
         let controller = NativeMainMenuController(
             settings: settings,
             includesUpdates: true,
             terminalOwnsCommands: { focus.role == .terminal },
+            isPaneTabModeActive: { paneTabMode },
             actionHandler: { actions.append($0) }
         )
         guard controller.mainMenu.items.count == 6,
             controller.commandItems.count == NativeCommandID.allCases.count,
             let workSwitcherItem = controller.commandItems[.showWorkSwitcher],
             let newTabItem = controller.commandItems[.newTab],
+            let paneTabsItem = controller.commandItems[.togglePaneDisplayMode],
             let updateItem = controller.commandItems[.checkForUpdates]
         else {
             return false
@@ -399,6 +412,17 @@ final class NativeMainMenuController: NSObject, NSMenuItemValidation {
             }
         }
 
+        focus.role = .terminal
+        paneTabsItem.menu?.update()
+        guard paneTabsItem.state == .off else {
+            return false
+        }
+        paneTabMode = true
+        paneTabsItem.menu?.update()
+        guard paneTabsItem.state == .on else {
+            return false
+        }
+
         settings.keyBindings[NativeCommandID.newTab.rawValue] = "cmd+shift+t"
         controller.refreshShortcuts(using: settings)
         guard ObjectIdentifier(controller.mainMenu) == mainMenuIdentity,
@@ -412,9 +436,10 @@ final class NativeMainMenuController: NSObject, NSMenuItemValidation {
 
         controller.performAction(newTabItem)
         controller.performAction(workSwitcherItem)
+        controller.performAction(paneTabsItem)
         let tabItem = NSMenuItem()
         tabItem.representedObject = NativeMainMenuActionBox(.selectTab(7))
         controller.performAction(tabItem)
-        return actions == [.newTab, .showWorkSwitcher, .selectTab(7)]
+        return actions == [.newTab, .showWorkSwitcher, .togglePaneDisplayMode, .selectTab(7)]
     }
 }

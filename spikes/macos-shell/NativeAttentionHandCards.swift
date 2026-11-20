@@ -2,10 +2,16 @@ import AppKit
 import QuartzCore
 
 func nativeHandColor(_ kind: NativeHandCardKind) -> NSColor {
-    switch kind {
-    case .waiting: NativePageStyle.paper ? NativePageStyle.amber : .systemOrange
-    case .failed: NativePageStyle.paper ? NativePageStyle.rose : .systemRed
-    case .done: NativePageStyle.paper ? NativePageStyle.rgb(31, 122, 82) : .systemGreen
+    switch (NativePageStyle.mode, kind) {
+    case (.terminal, .waiting): .systemOrange
+    case (.terminal, .failed): .systemRed
+    case (.terminal, .done): .systemGreen
+    case (.light, .waiting): NativePageStyle.amber
+    case (.light, .failed): NativePageStyle.rose
+    case (.light, .done): NativePageStyle.rgb(22, 132, 74)
+    case (.paper, .waiting): NativePageStyle.amber
+    case (.paper, .failed): NativePageStyle.rose
+    case (.paper, .done): NativePageStyle.rgb(31, 122, 82)
     }
 }
 
@@ -152,9 +158,15 @@ final class NativeHandCardView: NSView {
     }
 
     override func draw(_ dirtyRect: NSRect) {
-        if NativePageStyle.paper {
+        switch NativePageStyle.mode {
+        case .paper:
             drawPaper()
             return
+        case .light:
+            drawLight()
+            return
+        case .terminal:
+            break
         }
         let color = nativeHandColor(card.kind)
         let outline = NSBezierPath(
@@ -277,6 +289,80 @@ final class NativeHandCardView: NSView {
         fill.fill()
     }
 
+    /// Clean light card: white surface, subtle colored accent border, clean pill
+    /// badge for state, and crisp dark typography.
+    private func drawLight() {
+        let style = NativePageStyle.self
+        let color = nativeHandColor(card.kind)
+        let outline = NSBezierPath(
+            roundedRect: bounds.insetBy(dx: 0.5, dy: 0.5),
+            xRadius: Self.cornerRadius, yRadius: Self.cornerRadius)
+        style.surface.setFill()
+        outline.fill()
+        color.withAlphaComponent(0.45).setStroke()
+        outline.lineWidth = 1
+        outline.stroke()
+
+        let dot = NSBezierPath(ovalIn: NSRect(x: 11, y: 11, width: 11, height: 11))
+        color.setFill()
+        dot.fill()
+        text(
+            nativeElapsedText(since: card.since, now: now),
+            font: .monospacedDigitSystemFont(ofSize: 10, weight: .semibold),
+            color: style.muted, alignment: .right
+        ).draw(in: NSRect(x: bounds.maxX - 52, y: 11, width: 43, height: 14))
+        text(card.title, font: NativePageStyle.sans(13, .semibold), color: style.text)
+            .draw(in: NSRect(x: 28, y: 8, width: bounds.width - 28 - 54, height: 18))
+
+        let artRect = NSRect(x: 9, y: 33, width: bounds.width - 18, height: 50)
+        let artPath = NSBezierPath(roundedRect: artRect, xRadius: 5, yRadius: 5)
+        style.raised.setFill()
+        artPath.fill()
+        style.line.setStroke()
+        artPath.lineWidth = 1
+        artPath.stroke()
+        let artFont = NativePageStyle.mono(8, .regular)
+        for (index, line) in art.enumerated() {
+            let last = index == art.count - 1
+            text(line, font: artFont, color: last ? style.text : style.muted)
+                .draw(
+                    in: NSRect(
+                        x: artRect.minX + 6, y: artRect.minY + 3 + CGFloat(index) * 11.5,
+                        width: artRect.width - 12, height: 11))
+        }
+
+        let badgeTitle = NSMutableAttributedString(
+            attributedString: text(
+                card.kind.title, font: NativePageStyle.sans(9, .bold), color: color))
+        badgeTitle.addAttribute(
+            .kern, value: 0.9, range: NSRange(location: 0, length: badgeTitle.length))
+        let badgeSize = badgeTitle.size()
+        let pill = NSRect(
+            x: 10, y: 90, width: ceil(badgeSize.width) + 12, height: ceil(badgeSize.height) + 6)
+        let pillPath = NSBezierPath(roundedRect: pill, xRadius: 5, yRadius: 5)
+        color.withAlphaComponent(0.12).setFill()
+        pillPath.fill()
+        color.withAlphaComponent(0.35).setStroke()
+        pillPath.lineWidth = 0.75
+        pillPath.stroke()
+        badgeTitle.draw(at: NSPoint(x: pill.minX + 6, y: pill.minY + 3))
+
+        let summary = card.summary.isEmpty ? "Needs a look" : card.summary
+        text(summary, font: NativePageStyle.sans(11), color: style.text, wraps: true)
+            .draw(
+                with: NSRect(
+                    x: 10, y: 112, width: bounds.width - 20, height: bounds.height - 112 - 20),
+                options: [.usesLineFragmentOrigin, .truncatesLastVisibleLine])
+
+        let track = NSRect(x: 10, y: bounds.maxY - 14, width: bounds.width - 20, height: 4)
+        style.line.setFill()
+        NSBezierPath(roundedRect: track, xRadius: 2, yRadius: 2).fill()
+        var fill = track
+        fill.size.width *= CGFloat(NativeHandWait.fraction(since: card.since, now: now))
+        color.setFill()
+        NSBezierPath(roundedRect: fill, xRadius: 2, yRadius: 2).fill()
+    }
+
     private func drawGem(color: NSColor) {
         let center = NSPoint(x: 19, y: 17)
         let half: CGFloat = 10
@@ -329,11 +415,16 @@ final class NativeHandSlotView: NSView {
     /// fan read as a stack and not a row. On paper it is a hard ink print.
     func applyLook() {
         let depth = NSShadow()
-        if NativePageStyle.paper {
+        switch NativePageStyle.mode {
+        case .paper:
             depth.shadowColor = NativePageStyle.rgb(43, 34, 51)
             depth.shadowBlurRadius = 0
             depth.shadowOffset = NSSize(width: 4, height: -5)
-        } else {
+        case .light:
+            depth.shadowColor = NSColor.black.withAlphaComponent(0.18)
+            depth.shadowBlurRadius = 12
+            depth.shadowOffset = NSSize(width: 0, height: -4)
+        case .terminal:
             depth.shadowColor = NSColor.black.withAlphaComponent(0.7)
             depth.shadowBlurRadius = 12
             depth.shadowOffset = NSSize(width: -5, height: -3)
@@ -360,9 +451,12 @@ final class NativeHandFlyerView: NSView {
         wantsLayer = true
         // A sheet of the panes' own stock, so covering them reads as a page
         // turned and not as the lights going down.
-        let stock =
-            NativePageStyle.paper
-            ? NativePageStyle.raised : NSColor(srgbRed: 0.05, green: 0.07, blue: 0.14, alpha: 1)
+        let stock: NSColor =
+            switch NativePageStyle.mode {
+            case .paper: NativePageStyle.raised
+            case .light: NativePageStyle.surface
+            case .terminal: NSColor(srgbRed: 0.05, green: 0.07, blue: 0.14, alpha: 1)
+            }
         fill.frame = bounds
         fill.autoresizingMask = [.width, .height]
         fill.wantsLayer = true

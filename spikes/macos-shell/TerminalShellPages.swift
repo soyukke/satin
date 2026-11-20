@@ -436,7 +436,8 @@ extension TerminalShellViewController {
 
     /// The terminal look's reader heads a page with its kind's color.
     private var pageFlightStrip: NSColor? {
-        NativePageStyle.paper ? nil : NativePageStyle.edge(for: pageReaderPage?.kind ?? "markdown")
+        NativePageStyle.isLightSurface
+            ? nil : NativePageStyle.edge(for: pageReaderPage?.kind ?? "markdown")
     }
 
     /// The pages button, in the terminal view's own coordinates.

@@ -86,13 +86,25 @@ enum NativePageFlight {
         }
         let sheet = NSView(frame: from)
         sheet.wantsLayer = true
-        let paper = NativePageStyle.paper
         sheet.layer?.backgroundColor = NativePageStyle.surface.cgColor
-        sheet.layer?.borderColor = (paper ? NativePageStyle.text : NativePageStyle.violet).cgColor
-        sheet.layer?.borderWidth = paper ? 2 : 1
-        sheet.layer?.cornerRadius = paper ? 4 : 0
+        switch NativePageStyle.mode {
+        case .paper:
+            sheet.layer?.borderColor = NativePageStyle.text.cgColor
+            sheet.layer?.borderWidth = 2
+            sheet.layer?.cornerRadius = 4
+            sheet.layer?.shadowOpacity = 0.25
+        case .light:
+            sheet.layer?.borderColor = NativePageStyle.line.cgColor
+            sheet.layer?.borderWidth = 1
+            sheet.layer?.cornerRadius = 10
+            sheet.layer?.shadowOpacity = 0.18
+        case .terminal:
+            sheet.layer?.borderColor = NativePageStyle.violet.cgColor
+            sheet.layer?.borderWidth = 1
+            sheet.layer?.cornerRadius = 0
+            sheet.layer?.shadowOpacity = 0.5
+        }
         sheet.layer?.shadowColor = NSColor.black.cgColor
-        sheet.layer?.shadowOpacity = paper ? 0.25 : 0.5
         sheet.layer?.shadowRadius = 18
         sheet.layer?.shadowOffset = CGSize(width: 0, height: -8)
         if let strip {

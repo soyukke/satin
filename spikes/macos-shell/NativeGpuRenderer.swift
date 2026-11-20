@@ -151,7 +151,7 @@ final class NativeGpuRenderer {
             float p2 = max(0.0, 1.0 - m * abs(paint));
             float p3 = 1.0 - min(1.0, p1 + p2);
             float3 color = u.first.rgb * p1 + u.second.rgb * p2 + u.third.rgb * p3;
-            if (u.paper > 0.5) {
+            if (u.paper > 1.5) {
                 // Paper: the same currents as faint ink soaked into cream
                 // stock, with the grain of its fibres.
                 float2 fibre = floor(in.position.xy);
@@ -161,6 +161,14 @@ final class NativeGpuRenderer {
                 sheet = mix(sheet, u.second.rgb, 0.15 * clamp(p2, 0.0, 1.0));
                 sheet *= 0.985 + 0.03 * grain;
                 sheet = mix(sheet, u.tint.rgb, 0.3 * u.pulse * (0.4 + p1));
+                return float4(sheet, 1.0);
+            }
+            if (u.paper > 0.5) {
+                // Light: soft clean washes over white stock with no paper grain.
+                float3 sheet = u.third.rgb;
+                sheet = mix(sheet, u.first.rgb, 0.09 * clamp(p1, 0.0, 1.0));
+                sheet = mix(sheet, u.second.rgb, 0.08 * clamp(p2, 0.0, 1.0));
+                sheet = mix(sheet, u.tint.rgb, 0.22 * u.pulse * (0.4 + p1));
                 return float4(sheet, 1.0);
             }
             color = mix(u.third.rgb, color, clamp(u.vivid, 0.0, 1.5) / 1.5 + 0.2);
@@ -186,8 +194,8 @@ final class NativeGpuRenderer {
         ]
         /// How strongly an event's tint shows, from 1 when it lands to 0.
         var pulse: Float = 0
-        /// Ink soaking into paper, rather than swirling paint.
-        var paper = false
+        /// 0 for dark swirl, 1 for clean light wash, 2 for textured cream paper.
+        var surfaceStyle: Float = 0
         var tint = SIMD4<Float>(0, 0, 0, 1)
     }
 
@@ -384,7 +392,7 @@ final class NativeGpuRenderer {
             pixel: backdrop.pixel,
             vivid: backdrop.vivid,
             pulse: backdrop.pulse,
-            paper: backdrop.paper ? 1 : 0,
+            paper: backdrop.surfaceStyle,
             first: backdrop.colors[0],
             second: backdrop.colors[1],
             third: backdrop.colors[2],

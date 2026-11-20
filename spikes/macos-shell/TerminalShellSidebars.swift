@@ -372,7 +372,15 @@ extension TerminalShellViewController {
             windowPins.keepLocal(tabIds: Set(snapshot.tabs.map(\.id)))
         }
         let rows = nativeWindowRows(
-            tabs: snapshot.tabs.map(NativeAttentionTab.init),
+            tabs: snapshot.tabs.map {
+                NativeAttentionTab(
+                    id: $0.id,
+                    index: $0.index,
+                    title: $0.title,
+                    activePane: $0.active_pane,
+                    panes: allPaneIds(in: $0)
+                )
+            },
             activeTabIndex: snapshot.active_tab,
             status: { [paneStatuses] in paneStatuses.status(for: $0) },
             isUnread: { [workAttentionStore] in workAttentionStore.isUnread(paneId: $0) },
@@ -391,7 +399,7 @@ extension TerminalShellViewController {
         }
         let tabs = lastSnapshot?.tabs ?? []
         let active = tabs.first { $0.index == lastSnapshot?.active_tab }
-        let panes = sidebarItemsAllTabs ? nil : Set(active?.panes ?? [])
+        let panes = sidebarItemsAllTabs ? nil : Set(active.map(allPaneIds(in:)) ?? [])
         itemsSidebar.update(
             pages: pageInbox.pages,
             unread: Set(pageInbox.unread.map(\.id)),
@@ -424,7 +432,7 @@ extension TerminalShellViewController {
     }
 
     func scanSidebarScreens() {
-        let panes = (lastSnapshot?.tabs ?? []).flatMap(\.panes)
+        let panes = (lastSnapshot?.tabs ?? []).flatMap(allPaneIds(in:))
         sidebarItems.keep(panes: Set(panes))
         var lines: [Int: String] = [:]
         for paneId in panes {

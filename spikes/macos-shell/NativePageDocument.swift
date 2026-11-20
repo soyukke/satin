@@ -350,8 +350,14 @@ final class NativePageDocumentView: NSView, WKNavigationDelegate {
     }
 
     private func look() -> [String: Any] {
-        [
-            "look": NativePageStyle.paper ? "paper" : "datasheet",
+        let lookName =
+            switch NativePageStyle.mode {
+            case .terminal: "datasheet"
+            case .light: "light"
+            case .paper: "paper"
+            }
+        return [
+            "look": lookName,
             "colors": NativePageRenderer.colors(),
         ]
     }
@@ -486,6 +492,16 @@ func runNativePageDocumentSelfTests() -> Bool {
     }
     let index = URL(string: "satin-page://reader/index.html?host")
     let policy = NativePageDocumentView.policy
+    let previousMode = NativePageStyle.mode
+    defer { NativePageStyle.mode = previousMode }
+    NativePageStyle.mode = .light
+    let lightColors = NativePageRenderer.colors()
+    let lightSheetMatches =
+        lightColors["--surface"] == "rgba(255, 255, 255, 1.0)"
+        && lightColors["--sheet"] == lightColors["--surface"]
+    NativePageStyle.mode = .paper
+    let paperColors = NativePageRenderer.colors()
+    let paperSheetMatches = paperColors["--sheet"] == paperColors["--raised"]
     return policy(index, nil, true, false) == .allow
         && policy(index, nil, false, false) == .cancel
         && policy(URL(string: "satin-page://reader/page/p1/artifact.md"), index, true, false)
@@ -495,4 +511,6 @@ func runNativePageDocumentSelfTests() -> Bool {
             == .allow
         && policy(URL(string: "satin-page://reader/notes.md"), index, true, true) == .cancel
         && NativePageRenderer.css(NativePageStyle.rgb(31, 138, 138)) == "rgba(31, 138, 138, 1.0)"
+        && lightSheetMatches
+        && paperSheetMatches
 }

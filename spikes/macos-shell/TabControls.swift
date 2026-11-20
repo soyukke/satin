@@ -546,7 +546,8 @@ final class NativeTabControl: NSSegmentedControl {
     }
 
     /// The terminal look marks the chosen tab as a datasheet does a field: a
-    /// square violet frame over a faint violet wash.
+    /// square violet frame over a faint violet wash. Clean light mode draws a
+    /// crisp white rounded pill with a subtle border.
     private func drawSelectedSurfaceIfNeeded(forSegment segment: Int, in segmentRect: NSRect) {
         guard segment == selectedSegment else {
             return
@@ -558,6 +559,21 @@ final class NativeTabControl: NSSegmentedControl {
                 NativeEase.back(selectionProgress, overshoot: 1.2))
         }
         guard rect.width > 0, rect.height > 0 else {
+            return
+        }
+        if NativePageStyle.isLight {
+            let path = NSBezierPath(
+                roundedRect: rect, xRadius: Metrics.tabCornerRadius,
+                yRadius: Metrics.tabCornerRadius)
+            NativePageStyle.surface.setFill()
+            path.fill()
+            let stroke =
+                window?.isKeyWindow == true
+                ? NativePageStyle.violet.withAlphaComponent(0.45)
+                : NativePageStyle.line
+            stroke.setStroke()
+            path.lineWidth = 1
+            path.stroke()
             return
         }
         let path = NSBezierPath(rect: rect)
@@ -606,8 +622,11 @@ final class NativeTabControl: NSSegmentedControl {
         let selected = segment == selectedSegment
         let hovered = segment == hoveredSegment
         let color: NSColor
-        if NativePageStyle.paper {
-            color = selected ? NativePageStyle.text : NativePageStyle.muted
+        if NativePageStyle.isLightSurface {
+            color =
+                selected
+                ? NativePageStyle.text
+                : (hovered ? NativePageStyle.text.withAlphaComponent(0.85) : NativePageStyle.muted)
         } else if selected {
             color = NativePageStyle.text
         } else if hovered {
@@ -619,11 +638,13 @@ final class NativeTabControl: NSSegmentedControl {
         paragraph.alignment = .center
         paragraph.lineBreakMode = .byTruncatingTail
         // The terminal look numbers its tabs in a datasheet's mono type.
-        let terminal = !NativePageStyle.paper
+        let terminal = NativePageStyle.mode == .terminal
         let attributes: [NSAttributedString.Key: Any] = [
             .font: terminal
                 ? NSFont.monospacedSystemFont(ofSize: 12, weight: selected ? .semibold : .regular)
-                : NSFont.systemFont(ofSize: 13, weight: selected ? .bold : .medium),
+                : NSFont.systemFont(
+                    ofSize: 13,
+                    weight: selected ? (NativePageStyle.paper ? .bold : .semibold) : .medium),
             .foregroundColor: color,
             .paragraphStyle: paragraph,
         ]

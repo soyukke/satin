@@ -165,12 +165,18 @@ final class SatinAppDelegate: NSObject, NSApplicationDelegate {
             self?.requestInteractiveUpdateCheck()
         }
         self.settingsWindowController = settingsController
+        controller.onPaneDisplayModeChanged = { [weak self] in
+            self?.settingsWindowController?.refreshFromStore()
+        }
 
         let mainMenuController = NativeMainMenuController(
             application: NSApp,
             terminalWindow: window,
             settings: settings,
             includesUpdates: !nativeIsDevelopmentBuild,
+            isPaneTabModeActive: { [weak controller] in
+                controller?.paneDisplayMode == .tab
+            },
             actionHandler: { [weak self] action in
                 self?.performMainMenuAction(action)
             }
@@ -335,6 +341,9 @@ final class SatinAppDelegate: NSObject, NSApplicationDelegate {
             shellController?.toggleWindowsSidebar(nil)
         case .toggleItemsSidebar:
             shellController?.toggleItemsSidebar(nil)
+        case .togglePaneDisplayMode:
+            shellController?.togglePaneDisplayMode(nil)
+            settingsWindowController?.refreshFromStore()
         case .toggleTabBar:
             shellController?.toggleTabBar(nil)
         case .checkForUpdates:

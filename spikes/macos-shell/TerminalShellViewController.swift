@@ -359,6 +359,8 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
     var sidebarItemsAllTabs = false
     var smokeWindowsSidebar: NativeSidebarMode?
     var smokeItemsSidebar: NativeSidebarMode?
+    var smokePaneDisplayMode: NativePaneDisplayMode?
+    var onPaneDisplayModeChanged: (() -> Void)?
     var attentionHandStripConstraint: NSLayoutConstraint?
     var attentionHandRun = NativeHandRun()
     /// The pane whose card ⌘J just played, until the hand shows it gone.
@@ -369,6 +371,7 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
     var attentionSelectionMonitor: Any?
     var shortcutHintMonitor: Any?
     var shortcutHintTimer: Timer?
+    var commandDoubleTapState = NativeCommandDoubleTapState()
     var attentionHandArt: [Int: (revision: UInt64, lines: [String])] = [:]
     let metalView: TerminalMetalView
     let terminalTextView = TerminalTextView(frame: .zero)
@@ -504,6 +507,12 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
         self.terminalTextView.onPaneSelected = { [weak self] paneId in
             self?.selectPane(paneId)
         }
+        self.terminalTextView.onPaneTabClose = { [weak self] paneId in
+            self?.requestClosingPane(paneId)
+        }
+        self.terminalTextView.onPaneTabNew = { [weak self] in
+            self?.newPaneInTabMode()
+        }
         self.terminalTextView.onPaneChromeAction = { [weak self] action, paneId, sourceView in
             self?.performPaneChromeAction(action, paneId: paneId, sourceView: sourceView)
         }
@@ -516,7 +525,7 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
                 return self.paneWorkingDirectory(paneId: paneId, logFailure: false) != nil
             case .newWorktree:
                 return self.paneCanCreateWorktree(paneId: paneId)
-            case .close, .splitVertical, .splitHorizontal:
+            case .close, .splitVertical, .splitHorizontal, .togglePaneDisplayMode:
                 return true
             }
         }
@@ -711,6 +720,7 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
         chillSound.ambient = settings.ambientSound
         chillSound.chimes = settings.agentChimes
         startPageInbox()
+        terminalTextView.paneDisplayMode = paneDisplayMode
         applyAppearanceMode()
     }
 
@@ -751,7 +761,7 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
     override func viewDidAppear() {
         super.viewDidAppear()
         updateTabStripToolbarWidth()
-        view.window?.appearance = NSAppearance(named: appearanceMode == .paper ? .aqua : .darkAqua)
+        view.window?.appearance = NSAppearance(named: appearanceMode.nsAppearanceName)
     }
 
     private func startPaneRuntimeIfReady() {
@@ -836,6 +846,9 @@ final class TerminalShellViewController: NSViewController, NSTabViewDelegate,
         chillSound.chimes = settings.agentChimes
         if previous.appearanceMode != settings.appearanceMode {
             applyAppearanceMode()
+        }
+        if previous.paneDisplayMode != settings.paneDisplayMode {
+            applyPaneDisplayModeChange()
         }
         if previous.attentionHand != settings.attentionHand {
             updateAttentionHandVisibility()

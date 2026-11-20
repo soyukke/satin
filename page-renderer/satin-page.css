@@ -21,6 +21,23 @@
   color-scheme: dark;
 }
 
+:root[data-look="light"] {
+  --surface: rgb(255, 255, 255);
+  --raised: rgb(243, 245, 248);
+  --text: rgb(24, 28, 36);
+  --muted: rgb(92, 102, 114);
+  --teal: rgb(13, 128, 138);
+  --violet: rgb(79, 70, 229);
+  --amber: rgb(180, 83, 9);
+  --rose: rgb(207, 34, 46);
+  --ink: rgb(255, 255, 255);
+  --line: rgba(24, 28, 36, 0.14);
+  --backdrop: rgb(243, 245, 248);
+  --font-title: var(--font-sans);
+  --title-weight: 700;
+  color-scheme: light;
+}
+
 :root[data-look="paper"] {
   --surface: rgb(251, 245, 231);
   --raised: rgb(241, 232, 212);
@@ -386,6 +403,12 @@ body.preview .sheet {
   border: 1px solid var(--line);
   border-radius: 6px;
   box-shadow: 0 24px 60px rgba(0, 0, 0, 0.45);
+}
+
+:root[data-look="light"] body.preview .sheet {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  box-shadow: 0 16px 40px rgba(15, 23, 42, 0.12);
 }
 
 :root[data-look="paper"] body.preview .sheet {
