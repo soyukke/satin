@@ -26,6 +26,8 @@ struct PaneState {
     last_frame_ms: i64,
     scroll_active: bool,
     text_blink: bool,
+    has_sync_deadline: bool,
+    sync_deadline_ms: i64,
     last_render_frame: u64,
 }
 
@@ -38,6 +40,8 @@ fn new_pane_state(allocator: Allocator) -> PaneState {
         last_frame_ms: 0,
         scroll_active: false,
         text_blink: false,
+        has_sync_deadline: false,
+        sync_deadline_ms: 0,
         last_render_frame: 0
     };
 }
@@ -73,6 +77,10 @@ fn (self: &PaneState) next_frame_delay_ms(now_ms: i64) -> ?i64 {
     var delay = self.blink.next_frame_delay_ms(now_ms);
     if self.text_blink {
         delay = math::min<i64>(delay orelse text_blink_millis(), text_blink_millis());
+    }
+    if self.has_sync_deadline {
+        let remaining = math::max<i64>(self.sync_deadline_ms - now_ms, 0);
+        delay = math::min<i64>(delay orelse remaining, remaining);
     }
     return delay;
 }
@@ -310,10 +318,20 @@ pub fn (self: &var Frames) render_terminal(
         if runtime.model.advance_animations(dt) {}
         // A scroll the output asked for is kept until the model is brought
         // up to this frame, so whether it is still moving is read after.
-        try runtime.update_model(allocator);
+        try runtime.update_model_at(allocator, now_ms);
         // After the frame: the Unicode placeholders it holds place images.
-        if runtime.collect_kitty(allocator) {} else |_| {
-            has_images = false;
+        // While synchronized output holds the last frame, keep its images too.
+        if !runtime.is_sync_holding() {
+            if runtime.collect_kitty(allocator) {} else |_| {
+                has_images = false;
+            }
+        }
+        if runtime.sync_hold_deadline_ms() |deadline| {
+            pane.has_sync_deadline = true;
+            pane.sync_deadline_ms = deadline;
+        } else {
+            pane.has_sync_deadline = false;
+            pane.sync_deadline_ms = 0;
         }
         pane.scroll_active = runtime.model.has_active_animation();
         try terminal_scene(allocator, &var scene, runtime);

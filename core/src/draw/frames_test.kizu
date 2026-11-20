@@ -316,3 +316,35 @@ test "an editor's frame draws its grid's lines" {
     testing::expect_equal<i64>(0, list.count_of(CommandKind::Quad));
     testing::expect(!frames.needs_animation_frame(0));
 }
+
+test "synchronized output holds the frame and schedules the timeout deadline" {
+    let allocator = mem::page_allocator();
+    var runtime = try small_terminal(allocator);
+    defer runtime.deinit(allocator);
+    try feed_marked(allocator, &var runtime, "stable");
+    var frames = new_frames(allocator);
+    defer frames.deinit(allocator);
+    var list = new_display_list(allocator);
+    defer list.deinit(allocator);
+    let geometry = pane_geometry(160, 160, 10.0, 20.0);
+
+    frames.begin_frame();
+    try frames.render_terminal(allocator, &var list, &var runtime, 7, geometry, fallback_metrics(geometry), true, "", 100);
+    testing::expect(list_spells(&list, "stable"));
+    testing::expect_equal<i64>(1, list.count_of(CommandKind::Quad));
+
+    try feed_marked(allocator, &var runtime, "^[?2026h^[?25l^[2J^[Hupdate");
+    frames.begin_frame();
+    try frames.render_terminal(allocator, &var list, &var runtime, 7, geometry, fallback_metrics(geometry), true, "", 200);
+    testing::expect(list_spells(&list, "stable"));
+    testing::expect(!list_spells(&list, "update"));
+    testing::expect_equal<i64>(1, list.count_of(CommandKind::Quad));
+    testing::expect_equal<i64>(term::sync_hold_limit_ms(), frames.next_frame_delay_ms(200) orelse -1);
+
+    try feed_marked(allocator, &var runtime, "^[?25h^[?2026l");
+    frames.begin_frame();
+    try frames.render_terminal(allocator, &var list, &var runtime, 7, geometry, fallback_metrics(geometry), true, "", 250);
+    testing::expect(list_spells(&list, "update"));
+    testing::expect_equal<i64>(1, list.count_of(CommandKind::Quad));
+    testing::expect(!frames.needs_animation_frame(250));
+}

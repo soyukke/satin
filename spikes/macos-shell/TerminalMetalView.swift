@@ -301,12 +301,10 @@ final class TerminalMetalView: MTKView, CAMetalDisplayLinkDelegate, MTKViewDeleg
             return
         }
 
-        _ = satinSkiaMetalBeginFrame(skiaRenderer)
         var gpuOverflowed = false
         if let gpu = gpuRenderer,
             let frame = frameBuffer(matching: drawable.texture),
-            renderProvider?(frame, skiaRenderer) == true,
-            let encoded = NativeGpuRenderer.frame(from: skiaRenderer),
+            let encoded = encodeGpuFrame(frame: frame),
             gpu.encode(
                 encoded, renderer: skiaRenderer, into: commandBuffer,
                 target: drawable.texture, clearColor: clearColor)
@@ -315,6 +313,7 @@ final class TerminalMetalView: MTKView, CAMetalDisplayLinkDelegate, MTKViewDeleg
             gpuOverflowed = encoded.overflowed
         } else if gpuRenderer == nil,
             let frame = frameBuffer(matching: drawable.texture),
+            satinSkiaMetalBeginFrame(skiaRenderer) != 0,
             renderProvider?(frame, skiaRenderer) == true,
             let blit = commandBuffer.makeBlitCommandEncoder()
         {
@@ -356,9 +355,27 @@ final class TerminalMetalView: MTKView, CAMetalDisplayLinkDelegate, MTKViewDeleg
             committedAt: submissionFinishedAt
         )
         if gpuOverflowed {
-            // The atlas was emptied while the frame was encoded: draw it again.
+            // Even after retrying once on a fresh atlas, ask for another frame.
             requestFrame()
         }
+    }
+
+    /// Encodes the current frame for the GPU. If the glyph atlas filled and
+    /// cleared mid-frame, retries once immediately against the fresh atlas so
+    /// a half-blank frame is never presented.
+    private func encodeGpuFrame(frame: NativeFrameBuffer) -> NativeGpuRenderer.Frame? {
+        for attempt in 0..<2 {
+            _ = satinSkiaMetalBeginFrame(skiaRenderer)
+            guard renderProvider?(frame, skiaRenderer) == true,
+                let encoded = NativeGpuRenderer.frame(from: skiaRenderer)
+            else {
+                return nil
+            }
+            if !encoded.overflowed || attempt == 1 {
+                return encoded
+            }
+        }
+        return nil
     }
 
     /// Draws what is on screen now into a picture, off screen. A transition
@@ -376,21 +393,22 @@ final class TerminalMetalView: MTKView, CAMetalDisplayLinkDelegate, MTKViewDeleg
         else {
             return nil
         }
-        _ = satinSkiaMetalBeginFrame(skiaRenderer)
-        guard renderProvider?(frame, skiaRenderer) == true else {
-            return nil
-        }
         if let gpu = gpuRenderer {
-            guard let encoded = NativeGpuRenderer.frame(from: skiaRenderer),
+            guard let encoded = encodeGpuFrame(frame: frame),
                 gpu.encode(
                     encoded, renderer: skiaRenderer, into: commandBuffer,
                     target: target, clearColor: clearColor)
             else {
                 return nil
             }
-        } else if let blit = commandBuffer.makeBlitCommandEncoder() {
+        } else if satinSkiaMetalBeginFrame(skiaRenderer) != 0,
+            renderProvider?(frame, skiaRenderer) == true,
+            let blit = commandBuffer.makeBlitCommandEncoder()
+        {
             blit.copy(from: frame.texture, to: target)
             blit.endEncoding()
+        } else {
+            return nil
         }
         commandBuffer.commit()
         commandBuffer.waitUntilCompleted()
